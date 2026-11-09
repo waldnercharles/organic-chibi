@@ -1,0 +1,375 @@
+#define _DEFAULT_SOURCE
+
+#include "../src/arena.h"
+#include "../vendor/pico_unit/pico_unit.h"
+#include "ref_lexer.h"
+#include "samples.h"
+
+#include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static void
+print_mismatch(const char *label, const char *src, int n, Token fast, Token ref)
+{
+    fprintf(stderr, "%s: token #%d\n", label, n);
+    fprintf(
+        stderr,
+        "  fast: %-8s start=%u len=%u id=%u\n",
+        lexer_kind_name(fast.kind),
+        fast.start,
+        fast.length,
+        fast.id
+    );
+    fprintf(
+        stderr,
+        "  ref:  %-8s start=%u len=%u id=%u\n",
+        lexer_kind_name(ref.kind),
+        ref.start,
+        ref.length,
+        ref.id
+    );
+
+    u32 from = ref.start > 20 ? ref.start - 20 : 0;
+    fprintf(stderr, "  context: \"");
+    for (u32 i = from; i < ref.start + ref.length + 20 && src[i] != '\0'; i++) {
+        u8 ch = (u8)src[i];
+        if (ch == '\n') {
+            fprintf(stderr, "\\n");
+        } else if (ch < 0x20 || ch >= 0x7f) {
+            fprintf(stderr, "\\x%02x", ch);
+        } else {
+            fputc(ch, stderr);
+        }
+    }
+    fprintf(stderr, "\"\n");
+}
+
+static void
+print_error_mismatch(const char *label, const Lexer *lx, int nfast, const RefLexer *rl)
+{
+    fprintf(stderr, "%s: errors differ\n", label);
+    if (nfast == 0) {
+        fprintf(stderr, "  fast: \"%s\" at byte %u\n", lx->error, lx->error_pos);
+    } else {
+        fprintf(stderr, "  fast: no error\n");
+    }
+    if (rl->error != NULL) {
+        fprintf(stderr, "  ref:  \"%s\" at byte %d\n", rl->error, rl->error_pos);
+    } else {
+        fprintf(stderr, "  ref:  no error\n");
+    }
+}
+
+static bool
+matches_reference(const char *label, const char *src, size_t len, Lexer *lx, RefLexer *rl)
+{
+    Token *fast = malloc(lexer_max_tokens(len) * sizeof *fast);
+    int nfast = lexer_tokenize(lx, src, fast);
+
+    rl->error = NULL;
+    int pos_ref = 0;
+    for (int n = 0;; n++) {
+        Token b = ref_next(rl, src, pos_ref);
+        if (nfast > 0 && rl->error == NULL) {
+            Token a = n < nfast ? fast[n]
+                                : (Token){ TK_OP, UINT32_MAX, UINT32_MAX, 0 };
+            if (a.kind != b.kind || a.start != b.start ||
+                a.length != b.length || a.id != b.id) {
+                print_mismatch(label, src, n, a, b);
+                free(fast);
+                return false;
+            }
+        }
+        if (rl->error != NULL || b.kind == TK_EOF) {
+            break;
+        }
+        pos_ref = b.start + b.length;
+    }
+    free(fast);
+
+    bool fast_failed = nfast == 0, ref_failed = rl->error != NULL;
+    bool same = fast_failed == ref_failed &&
+                (!ref_failed || (lx->error_pos == (u32)rl->error_pos &&
+                                 strcmp(lx->error, rl->error) == 0));
+    if (!same) {
+        print_error_mismatch(label, lx, nfast, rl);
+    }
+    return same;
+}
+
+#define LONG_TEXT                                                              \
+    "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrst" \
+    "uvwxyz"
+
+// clang-format off
+static const char *EDGE_CASES[] = {
+    "",
+    "x",
+    "abcdefgh",                // exactly 8 bytes
+    "abcdefghi",               // 9 bytes
+    "continue offsetof",
+    "very_long_name|x",
+    "header_document}",
+    "abcdefgh_ijklmn{",        // { lands at byte 15 of a 16-byte window
+    "abcdefgh`ijklmno~p",      // ` and ~ are in 0x60..0x7e, like letters
+    "a_b_c_d_e_f_g_h_i_j\x7f",
+    "name\xc3\xa9suffix",
+    "1 1.5 1e5 1e+5 1e-5 1. 1.. 1..2 1ex 1e+ 12.5e3",
+    "\"\" \"a\" \"esc\\\"aped\" \"\\u00e9\" \"\\\\\" \"tab\\t\"",
+    "a // comment\nb //\n//\nc",
+    "<<= >>= &&= ||= ... ::= -> => != == <= >= :: :=",
+    "# ' \\ ` @ $ ? ~",
+    "   \t\r\n\n    x                                  y",
+    "x \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"y z",
+    "x //ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\ny==z",
+    "a abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij b",
+    "1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890abc",
+    "=== ::= <<= >>> &&& ||| ... ->> =>= !== :::: ==== x===y",
+    "\"abc\"def 12.5.6 1e5e5 12..34 a.b.c",
+    "/=== /==> a/==b //=== x/=y ==/= 1/=2",
+    LONG_TEXT "+x 9 \"s\" a " LONG_TEXT,
+    LONG_TEXT LONG_TEXT "+x 9 \"s\" a " LONG_TEXT LONG_TEXT,
+    "\"abcdefghijklmnop\\\"qrstuvwxyz\" x",
+    "// comment with \"quote\" and \\ backslash\ny",
+    "\"str // not a comment\" z // real \"comment\"\nw",
+    "a\"b\"c \\ \"d\" \\\"e\"",
+    "x //",
+    "//\n\"\"//\"\n\"//\"",
+    "\"a\\\\\\\"b\\\\\" x \"\\u00e9\\uABCD\" y",
+    "\"\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\" z",
+    "\"" LONG_TEXT "\ny\"",
+    "\"" LONG_TEXT,
+    "\"" LONG_TEXT "\\q\"",
+    "\"" LONG_TEXT "\\u12G4\"",
+    LONG_TEXT "\x01",
+    "\"" LONG_TEXT "\x01\t\" z",
+    "\"" LONG_TEXT "\\\"\\\\\\u00e9\" w // c \"x\n v",
+    "// " LONG_TEXT "\"\n\"iii\n",
+    "\"// " LONG_TEXT "\" k // \"\n\"\\q\"",
+    "// " LONG_TEXT,
+};
+// clang-format on
+
+static bool
+edge_case_matches(size_t i, int offset)
+{
+    size_t text_len = strlen(EDGE_CASES[i]);
+    size_t len = (size_t)offset + text_len;
+    char *src = calloc(len + LEXER_SOURCE_PADDING, 1);
+    memset(src, ' ', (size_t)offset);
+    memcpy(src + offset, EDGE_CASES[i], text_len);
+
+    char label[48];
+    snprintf(label, sizeof label, "edge case #%zu at offset %d", i, offset);
+
+    Arena arena = { 0 };
+    Lexer lx;
+    lexer_init(&lx, &arena, len);
+    RefLexer *rl = ref_lexer_new();
+
+    bool same = matches_reference(label, src, len, &lx, rl);
+
+    ref_lexer_free(rl);
+    arena_free(&arena);
+    free(src);
+    return same;
+}
+
+TEST_CASE(edge_cases)
+{
+    for (size_t i = 0; i < sizeof EDGE_CASES / sizeof EDGE_CASES[0]; i++) {
+        for (int offset = 0; offset < 128; offset++) {
+            REQUIRE(edge_case_matches(i, offset));
+        }
+    }
+    return true;
+}
+
+static u64
+splitmix64(u64 *state)
+{
+    u64 z = (*state += 0x9E3779B97F4A7C15ULL);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    return z ^ (z >> 31);
+}
+
+static int
+rnd(u64 *rng, int n)
+{
+    return (int)(splitmix64(rng) % (u64)n);
+}
+
+// clang-format off
+static const char *PIECES[] = {
+    "if", "else", "for", "while", "continue", "offsetof", "fn", "return", "true", "as",
+    "x", "_", "name", "Name_2", "abcdefg", "abcdefgh", "abcdefghx",
+    "abcdefghijklmno", "abcdefghijklmnop", "abcdefghijklmnopxy", "a_name_longer_than_sixteen_bytes",
+    "0", "7", "42", "3.14", "1.", "1e5", "1E9", "2e+8", "6e-3", "1e",
+    "\"\"", "\"text\"", "\"\\\" \\\\ \\/ \\b \\f \\n \\r \\t\"", "\"\\u00e9\\uABCD\"", "\"caf\xc3\xa9\"",
+    "\"// not a comment\"", "// comment\n", "//\n", "// \"quote\" \\ backslash\n",
+    "<<", ">>", "&&", "||", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "->", "=>", "==",
+    "!=", "<=", ">=", "..", "::", ":=", "+", "-", "*", "/", "%", "=", "!", "@", "$", "?", "&",
+    "|", "^", "~", "<", ">", ":", ";", ".", ",", "{", "}", "(", ")", "[", "]", "#", "'", "\\",
+    "`", "\x7f", "\xc3\xa9",
+    " ", " ", " ", " ", "  ", "        ", "\t", "\n", "\n", "\r\n",
+};
+// clang-format on
+
+enum
+{
+    NPIECES = sizeof PIECES / sizeof PIECES[0],
+    MAX_PIECES = 400,
+};
+
+static size_t
+gen_program(u64 *rng, char *buf, size_t cap)
+{
+    size_t len = 0;
+    int npieces = rnd(rng, MAX_PIECES);
+    for (int i = 0; i < npieces; i++) {
+        char name[16];
+        const char *piece = PIECES[rnd(rng, NPIECES)];
+        if (rnd(rng, 8) == 0) {
+            snprintf(name, sizeof name, "v%d", rnd(rng, 100000));
+            piece = name;
+        }
+
+        size_t n = strlen(piece);
+        assert(len + n <= cap);
+        memcpy(buf + len, piece, n);
+        len += n;
+    }
+    return len;
+}
+
+TEST_CASE(random_programs)
+{
+    enum
+    {
+        NPROGRAMS = 5000
+    };
+    char **programs = calloc(NPROGRAMS, sizeof *programs);
+    Arena arena = { 0 };
+    Lexer lx;
+    lexer_init(&lx, &arena, 0);
+    RefLexer *rl = ref_lexer_new();
+
+    u64 rng = 1;
+    bool same = true;
+    for (int i = 0; i < NPROGRAMS && same; i++) {
+        char buf[MAX_PIECES * 64];
+        size_t len = gen_program(&rng, buf, sizeof buf);
+        programs[i] = calloc(len + LEXER_SOURCE_PADDING, 1);
+        memcpy(programs[i], buf, len);
+
+        char label[32];
+        snprintf(label, sizeof label, "random program #%d", i);
+        same = matches_reference(label, programs[i], len, &lx, rl);
+    }
+
+    ref_lexer_free(rl);
+    arena_free(&arena);
+    for (int i = 0; i < NPROGRAMS; i++) {
+        free(programs[i]);
+    }
+    free(programs);
+
+    REQUIRE(same);
+    return true;
+}
+
+TEST_CASE(sample_files)
+{
+    Samples s = samples_load(SAMPLES_DIR);
+    if (s.count == 0) {
+        printf("skipped sample_files: no samples in %s\n", SAMPLES_DIR);
+        return true;
+    }
+
+    Arena arena = { 0 };
+    Lexer lx;
+    lexer_init(&lx, &arena, s.total_len);
+    RefLexer *rl = ref_lexer_new();
+
+    bool same = true;
+    for (u32 i = 0; i < s.count && same; i++) {
+        same = matches_reference(s.files[i].path, s.files[i].text, s.files[i].len, &lx, rl);
+    }
+
+    ref_lexer_free(rl);
+    arena_free(&arena);
+    samples_free(s);
+
+    REQUIRE(same);
+    return true;
+}
+
+static void
+print_first_difference(const char *got, size_t got_len, const char *want, size_t want_len)
+{
+    size_t i = 0;
+    while (i < got_len && i < want_len && got[i] == want[i]) {
+        i++;
+    }
+    size_t line_start = i;
+    while (line_start > 0 && want[line_start - 1] != '\n') {
+        line_start--;
+    }
+    int line = 1;
+    for (size_t k = 0; k < line_start; k++) {
+        line += want[k] == '\n';
+    }
+
+    fprintf(
+        stderr,
+        "test/hello.txt line %d\n  got:  %.*s\n  want: %.*s\n",
+        line,
+        (int)strcspn(got + line_start, "\n"),
+        got + line_start,
+        (int)strcspn(want + line_start, "\n"),
+        want + line_start
+    );
+}
+
+TEST_CASE(golden_output)
+{
+    Sample src = sample_read("test/hello.chibi");
+    Sample want = sample_read("test/hello.txt");
+
+    Arena arena = { 0 };
+    Lexer lx;
+    lexer_init(&lx, &arena, src.len);
+    Token *tokens = malloc(lexer_max_tokens(src.len) * sizeof *tokens);
+    int n = lexer_tokenize(&lx, src.text, tokens);
+
+    char *got;
+    size_t got_len;
+    FILE *out = open_memstream(&got, &got_len);
+    lexer_dump(out, src.text, tokens, n - 1);
+    fclose(out);
+
+    bool same = got_len == want.len && memcmp(got, want.text, got_len) == 0;
+    if (!same) {
+        print_first_difference(got, got_len, want.text, want.len);
+    }
+
+    free(got);
+    free(tokens);
+    arena_free(&arena);
+    sample_free(src);
+    sample_free(want);
+
+    REQUIRE(same);
+    return true;
+}
+
+TEST_SUITE(lexer_tests)
+{
+    RUN_TEST_CASE(edge_cases);
+    RUN_TEST_CASE(random_programs);
+    RUN_TEST_CASE(sample_files);
+    RUN_TEST_CASE(golden_output);
+}

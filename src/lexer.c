@@ -1,0 +1,800 @@
+#include "lexer.h"
+
+#include "simd.h"
+
+#include <assert.h>
+#include <stdio.h>
+#include <string.h>
+
+typedef struct
+{
+    int line, col;
+} LineCol;
+
+static LineCol
+advance_line_col(const char *src, LineCol lc, u32 from, u32 to)
+{
+    for (u32 i = from; i < to; i++) {
+        if (src[i] == '\n') {
+            lc.line++;
+            lc.col = 1;
+        } else {
+            lc.col++;
+        }
+    }
+    return lc;
+}
+
+static void
+fail(Lexer *lx, u32 pos, const char *msg)
+{
+    lx->error = msg;
+    lx->error_pos = pos;
+}
+
+#define KEYWORD_TEXT(name, text) text,
+
+static const char *const keywords[] = {
+    CHIBI_TOKENS(CHIBI_SKIP, KEYWORD_TEXT, CHIBI_SKIP, CHIBI_SKIP)
+};
+
+#define KEYWORD_INDEX(name, text) KEYWORD_INDEX_##name,
+enum
+{
+    CHIBI_TOKENS(CHIBI_SKIP, KEYWORD_INDEX, CHIBI_SKIP, CHIBI_SKIP)
+};
+#define KEYWORD_CHECK(name, text)                                              \
+    static_assert(name == TK_IF + KEYWORD_INDEX_##name, "keywords must be consecutive kinds starting at TK_IF");
+CHIBI_TOKENS(CHIBI_SKIP, KEYWORD_CHECK, CHIBI_SKIP, CHIBI_SKIP)
+
+#define SOURCE_BYTES_PER_NAME 256
+
+void
+lexer_init(Lexer *lx, Arena *arena, size_t total_source_bytes)
+{
+    size_t expected = total_source_bytes / SOURCE_BYTES_PER_NAME;
+    if (expected > UINT32_MAX / 4) {
+        expected = UINT32_MAX / 4;
+    }
+
+    *lx = (Lexer){ 0 };
+    names_init(&lx->names, arena, (u32)expected);
+    for (u32 i = 0; i < NKEYWORDS; i++) {
+        [[maybe_unused]] u32 id = names_intern(&lx->names, keywords[i], (u32)strlen(keywords[i]));
+        assert(id == i + 1);
+    }
+}
+
+static inline u8x16
+is_ident(u8x16 v)
+{
+    u8x16 letter = simd_in_range(v | 0x20, 'a', 'z');
+    u8x16 digit = simd_in_range(v, '0', '9');
+    return letter | digit | simd_eq(v, '_');
+}
+
+static inline u8x16
+is_ws(u8x16 v)
+{
+    const u8x16 ws_char = { ' ', 0,    0,    0, 0, 0,    0, 0,
+                            0,   '\t', '\n', 0, 0, '\r', 0, 0 };
+    return simd_eq(simd_lookup16(ws_char, v & 15), v);
+}
+
+static inline u8x16
+pair_firsts(u8x16 v, u8x16 next)
+{
+    enum
+    {
+        BEFORE_EQ = 0x0F,   // + - * / % & | ^ = ! < > :  (+= == != <= ...)
+        BEFORE_GT = 0x30,   // - =                        (-> =>)
+        BEFORE_SAME = 0xC8, // | & . : < >                (|| && .. :: << >>)
+    };
+
+    // Lookup by their low and high bits.
+    const u8x16 lo_sets = { 0, 0x01, 0,    0,    0,    0x01, 0x41, 0,
+                            0, 0,    0x83, 0x01, 0x8A, 0x33, 0xE6, 0x01 };
+    const u8x16 hi_sets = { 0, 0, 0x51, 0xA2, 0, 0x04, 0, 0x08,
+                            0, 0, 0,    0,    0, 0,    0, 0 };
+    u8x16 sets_of_v = simd_lookup16(lo_sets, v & 15) & simd_lookup16(hi_sets, v >> 4);
+
+    u8x16 sets_allowed = (simd_eq(next, '=') & BEFORE_EQ) |
+                         (simd_eq(next, '>') & BEFORE_GT) |
+                         (simd_eq(next, v) & BEFORE_SAME);
+    return simd_any_bits(sets_of_v, sets_allowed);
+}
+
+#define BLOCK_BYTES 64
+
+typedef struct
+{
+    u64 ident;
+    u64 ws;
+    u64 pairs;
+    u64 digit;
+    u64 dot;
+    u64 quote;
+    u64 backslash;
+    u64 comment;
+    u64 line_end;
+} BlockMasks;
+
+static inline u8x16
+is_comment_start(u8x16 v, u8x16 next)
+{
+    return simd_eq(v, '/') & simd_eq(next, '/');
+}
+
+static inline u8x16
+is_line_end(u8x16 v)
+{
+    return simd_eq(v, '\n') | simd_eq(v, 0);
+}
+
+#define MASK64(f, v, ...)                                                      \
+    simd_mask64(                                                               \
+        f((v).v[0] __VA_OPT__(, ) __VA_ARGS__),                                \
+        f((v).v[1] __VA_OPT__(, ) __VA_ARGS__),                                \
+        f((v).v[2] __VA_OPT__(, ) __VA_ARGS__),                                \
+        f((v).v[3] __VA_OPT__(, ) __VA_ARGS__)                                 \
+    )
+
+#define MASK64_PAIR(f, v, n)                                                   \
+    simd_mask64(                                                               \
+        f((v).v[0], (n).v[0]),                                                 \
+        f((v).v[1], (n).v[1]),                                                 \
+        f((v).v[2], (n).v[2]),                                                 \
+        f((v).v[3], (n).v[3])                                                  \
+    )
+
+static inline ALWAYS_INLINE BlockMasks
+block_masks(const u8 *p)
+{
+    u8x64 v = simd_load64(p);
+    u8x64 next = simd_next64(v, p);
+
+    return (BlockMasks){
+        .ident = MASK64(is_ident, v),
+        .ws = MASK64(is_ws, v),
+        .pairs = MASK64_PAIR(pair_firsts, v, next),
+        .digit = MASK64(simd_in_range, v, '0', '9'),
+        .dot = MASK64(simd_eq, v, '.'),
+        .quote = MASK64(simd_eq, v, '"'),
+        .backslash = MASK64(simd_eq, v, '\\'),
+        .comment = MASK64_PAIR(is_comment_start, v, next),
+        .line_end = MASK64(is_line_end, v),
+    };
+}
+
+static inline u64
+prefix_xor(u64 x)
+{
+    x ^= x << 1;
+    x ^= x << 2;
+    x ^= x << 4;
+    x ^= x << 8;
+    x ^= x << 16;
+    x ^= x << 32;
+    return x;
+}
+
+static inline u64
+escaped_bytes(u64 backslash, u64 *carry)
+{
+    const u64 odd = 0xAAAAAAAAAAAAAAAAULL;
+    u64 potential = backslash & ~*carry;
+    u64 code = (((potential << 1) | odd) - potential) ^ odd;
+    u64 escaped = code ^ (backslash | *carry);
+    *carry = (code & backslash) >> 63;
+    return escaped;
+}
+
+static inline bool
+byte_is_digit(u8 c)
+{
+    return (u8)(c - '0') <= 9;
+}
+
+static inline bool
+byte_is_hex(u8 c)
+{
+    return byte_is_digit(c) || (u8)((c | 0x20) - 'a') < 6;
+}
+
+static const u8 escape_code[256] = { ['"'] = 1, ['\\'] = 1, ['/'] = 1,
+                                     ['b'] = 1, ['f'] = 1,  ['n'] = 1,
+                                     ['r'] = 1, ['t'] = 1,  ['u'] = 2 };
+
+static inline bool
+escapes_valid(const char *p, u64 escaped)
+{
+    for (; escaped; escaped &= escaped - 1) {
+        const char *e = p + __builtin_ctzll(escaped);
+        u8 code = escape_code[(u8)*e];
+        bool hex4 = byte_is_hex(e[1]) && byte_is_hex(e[2]) &&
+                    byte_is_hex(e[3]) && byte_is_hex(e[4]);
+        if (code == 0 || (code == 2 && !hex4)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+typedef struct
+{
+    u64 in_string;
+    u64 in_comment;
+    u64 escaped;
+} LiteralState;
+
+typedef struct
+{
+    u64 quiet;
+    u64 closes;
+    bool fallback;
+    LiteralState in, out;
+} Literals;
+
+static inline ALWAYS_INLINE Literals
+resolve_literals(BlockMasks m, LiteralState in, const char *p, u32 from)
+{
+    u64 active = ~0ULL << from;
+    u64 quote = m.quote & active, comment_starts = m.comment & active;
+    u64 backslash = m.backslash & active;
+
+    // This assumes every backslash is in a string. The check below falls back
+    // to slow_token when it's not.
+    u64 escaped = 0, escape_carry = in.escaped;
+    if (UNLIKELY(backslash | escape_carry)) {
+        escaped = escaped_bytes(backslash, &escape_carry);
+        quote &= ~escaped;
+    }
+
+    u64 comment = 0;
+    if (UNLIKELY(in.in_comment)) {
+        u64 ends = m.line_end & active;
+        comment = ((ends & -ends) - 1) & active;
+        quote &= ~comment;
+        comment_starts &= ~comment;
+    }
+
+    // Each "//" outside a string hides the quotes up to its line end, which
+    // changes where later strings are, so this runs once per comment.
+    u64 inside;
+    for (;;) {
+        inside = prefix_xor(quote) ^ -in.in_string;
+        u64 c = comment_starts & ~inside;
+        if (LIKELY(c == 0)) {
+            break;
+        }
+        c &= -c;
+        u64 ends = m.line_end & -c;
+        u64 span = (ends & -ends) - c;
+        comment |= span;
+        quote &= ~span;
+        comment_starts &= ~span;
+    }
+
+    u64 body = inside << 1 | in.in_string;
+    bool fallback = ((backslash & ~comment & ~body) | (m.line_end & body)) != 0 ||
+                    ((escaped & body) && !escapes_valid(p, escaped & body));
+    u64 keep = -(u64)!fallback;
+    return (Literals){
+        .quiet = (body | comment) & keep,
+        .closes = quote & ~inside & keep,
+        .fallback = fallback,
+        .in = in,
+        .out = { inside >> 63 & keep, comment >> 63 & keep, escape_carry & keep },
+    };
+}
+
+static inline Literals
+literals_after(BlockMasks m, const char *p, u64 r)
+{
+    if (r >= BLOCK_BYTES) {
+        return (Literals){ 0 };
+    }
+    return resolve_literals(m, (LiteralState){ 0 }, p, (u32)r);
+}
+
+typedef struct
+{
+    u64 in_name;
+    u64 pair_second;
+} Carry;
+
+static NOINLINE u64
+pairs_from_left(u64 candidates)
+{
+    u64 taken = 0;
+    while (candidates) {
+        u64 b = candidates & -candidates;
+        taken |= b;
+        candidates &= ~(b | (b << 1));
+    }
+    return taken;
+}
+
+static inline u64
+token_starts(Carry *carry, BlockMasks m, u64 quiet)
+{
+    u64 continues_name = m.ident & ((m.ident << 1) | carry->in_name);
+    carry->in_name = m.ident >> 63;
+    u64 starts = ~m.ws & ~continues_name & ~carry->pair_second & ~quiet;
+
+    u64 firsts = m.pairs & starts;
+    if (UNLIKELY(firsts & (firsts << 1))) {
+        firsts = pairs_from_left(firsts);
+    }
+    carry->pair_second = firsts >> 63;
+
+    return starts & ~(firsts << 1);
+}
+
+static inline bool
+has_unusual_number(BlockMasks m, u64 starts)
+{
+    u64 sum;
+    bool crosses = __builtin_add_overflow(m.digit, starts & m.digit, &sum);
+    return crosses || (sum & ~m.digit & (m.ident | m.dot)) != 0;
+}
+
+static inline bool
+byte_is_ws(u8 c)
+{
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+}
+
+static inline u64
+restart_at(u64 starts, u32 r, u8 byte)
+{
+    starts &= ~0ULL << r;
+    return starts | (u64)!byte_is_ws(byte) << r;
+}
+
+static inline u64
+starts_from(const char *src, u64 starts, u64 base, u32 end)
+{
+    u64 r = end - base;
+    if (r >= BLOCK_BYTES) {
+        return 0;
+    }
+    return restart_at(starts, (u32)r, (u8)src[end]);
+}
+
+static inline u64
+past_runs(u64 run, u64 first)
+{
+    return (run + (first & run)) & ~run;
+}
+
+#define SLOW 0x80
+static_assert(TK_OP < SLOW, "token kinds must fit in 7 bits of kind2[]");
+
+#define FIRST(c) [(c) << 8 ...((c) << 8) | 0xFF]
+#define PAIR(c0, c1) [((c0) << 8) | (c1)]
+#define KIND2_OP1(name, c) FIRST(c) = name,
+#define KIND2_OP2(name, c0, c1) PAIR(c0, c1) = name,
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Woverride-init"
+// clang-format off
+#define KIND2_ENTRIES                                                                                           \
+    [0x0000 ... 0x20FF] = SLOW,                                                                                 \
+    [0x2100 ... 0xFFFF] = TK_OP,                                                                                \
+    [('0' << 8) ... ('9' << 8) | 0xFF] = TK_INT,                                                                \
+    [('a' << 8) ... ('z' << 8) | 0xFF] = TK_IDENT,                                                              \
+    [('A' << 8) ... ('Z' << 8) | 0xFF] = TK_IDENT,                                                              \
+    FIRST('_') = TK_IDENT,                                                                                      \
+    FIRST('"') = TK_STRING,                                                                                     \
+    CHIBI_TOKENS(CHIBI_SKIP, CHIBI_SKIP, CHIBI_SKIP, KIND2_OP1)                                                 \
+    CHIBI_TOKENS(CHIBI_SKIP, CHIBI_SKIP, KIND2_OP2, CHIBI_SKIP)                                                 \
+    PAIR('/', '/') = SLOW
+// clang-format on
+
+static const u8 kind2[2][1 << 16] = {
+    [0] = { KIND2_ENTRIES },
+    [1] = { KIND2_ENTRIES, [('0' << 8)...('9' << 8) | 0xFF] = SLOW, FIRST('"') = SLOW },
+};
+
+#define KIND_LEN_OP2(name, c0, c1) [name] = 2,
+static const u8 kind_len[SLOW] = {
+    [0 ... SLOW - 1] = 1,
+    [TK_IDENT] = 0,
+    [TK_INT] = 0,
+    [TK_STRING] = 0,
+    CHIBI_TOKENS(CHIBI_SKIP, CHIBI_SKIP, KIND_LEN_OP2, CHIBI_SKIP)
+};
+#pragma GCC diagnostic pop
+
+static inline u32
+kind2_index(const char *p)
+{
+    u16 two;
+    memcpy(&two, p, 2);
+#if defined(__aarch64__)
+    // __builtin_bswap16 compiles to rev and lsr. rev16 is one instruction.
+    u32 idx = two;
+    __asm__("rev16 %w0, %w0" : "+r"(idx));
+    return idx;
+#else
+    return __builtin_bswap16(two);
+#endif
+}
+
+enum
+{
+    NO_TOKEN,
+    ONE_TOKEN,
+    STOP
+};
+
+static inline const char *
+number_end(const char *p, bool *is_float)
+{
+    *is_float = false;
+    while (byte_is_digit(*p)) {
+        p++;
+    }
+
+    if (p[0] == '.' && byte_is_digit(p[1])) {
+        *is_float = true;
+        p++;
+        while (byte_is_digit(*p)) {
+            p++;
+        }
+    }
+
+    const char e = p[0], sign = p[1];
+    if ((e == 'e' || e == 'E') &&
+        (byte_is_digit(sign) || ((sign == '+' || sign == '-') && byte_is_digit(p[2])))) {
+        *is_float = true;
+        p += 2;
+        while (byte_is_digit(*p)) {
+            p++;
+        }
+    }
+    return p;
+}
+
+static inline int
+escape_len(Lexer *lx, const char *src, const char *q)
+{
+    char esc = q[1];
+    if (esc == '"' || esc == '\\' || esc == '/' || esc == 'b' || esc == 'f' ||
+        esc == 'n' || esc == 'r' || esc == 't') {
+        return 2;
+    }
+    if (esc == 'u') {
+        for (int i = 2; i < 6; i++) {
+            if (!byte_is_hex((u8)q[i])) {
+                fail(lx, (u32)(q - src), "invalid unicode hex escape");
+                return 0;
+            }
+        }
+        return 6;
+    }
+    fail(lx, (u32)(q - src), "unknown escape sequence");
+    return 0;
+}
+
+static inline const char *
+closing_quote(Lexer *lx, const char *src, const char *open)
+{
+    const char *q = open + 1;
+    for (;;) {
+        u8x16 v = simd_load(q);
+        u8x16 special = simd_eq(v, '"') | simd_eq(v, '\\') | simd_eq(v, '\n') |
+                        simd_eq(v, 0);
+        u64 hit = simd_mask16(special);
+        if (!hit) {
+            q += 16;
+            continue;
+        }
+
+        q += simd_first16(hit);
+        char ch = *q;
+        if (ch == '\0' || ch == '\n') {
+            fail(lx, (u32)(q - src), "unterminated string");
+            return NULL;
+        }
+        if (ch == '"') {
+            return q;
+        }
+        int n = escape_len(lx, src, q);
+        if (n == 0) {
+            return NULL;
+        }
+        q += n;
+    }
+}
+
+static inline const char *
+line_end(const char *p)
+{
+    for (;;) {
+        u8x16 v = simd_load(p);
+        u64 end = simd_mask16(simd_eq(v, '\n') | simd_eq(v, 0));
+        if (end) {
+            return p + simd_first16(end);
+        }
+        p += 16;
+    }
+}
+
+static inline ALWAYS_INLINE u32
+slow_token(Lexer *lx, const char *src, u32 at, Token *slot, int *emitted)
+{
+    const char *p = src + at;
+    u8 c = (u8)*p;
+
+    if (byte_is_digit(c)) {
+        bool is_float;
+        const char *end = number_end(p, &is_float);
+        *slot = (Token){ is_float ? TK_FLOAT : TK_INT, at, (u32)(end - p), 0 };
+        *emitted = ONE_TOKEN;
+        return (u32)(end - src);
+    }
+
+    if (c == '"') {
+        const char *close = closing_quote(lx, src, p);
+        if (close == NULL) {
+            *emitted = STOP;
+            return at;
+        }
+        *slot = (Token){ TK_STRING, at, (u32)(close + 1 - p), 0 };
+        *emitted = ONE_TOKEN;
+        return (u32)(close + 1 - src);
+    }
+
+    // Only "//" gets here. '/' and "/=" take the fast path.
+    if (c == '/') {
+        *emitted = NO_TOKEN;
+        return (u32)(line_end(p + 2) - src);
+    }
+
+    if (c != 0) {
+        fail(lx, at, "unexpected character");
+    }
+    *emitted = STOP;
+    return at;
+}
+
+static NOINLINE u32
+finish_literal(Lexer *lx, const char *src, u64 base, LiteralState in, Token *last)
+{
+    if (in.in_comment) {
+        return (u32)(line_end(src + base) - src);
+    }
+    const char *close = closing_quote(lx, src, src + base - 1 - in.escaped);
+    if (close == NULL) {
+        return UINT32_MAX;
+    }
+    u32 end = (u32)(close + 1 - src);
+    last->length = end - last->start;
+    return end;
+}
+
+#define LOW_BYTES(n) ((n) >= 8 ? ~0ULL : (1ULL << (8 * ((n) & 7))) - 1)
+#define KEY_MASK(n) { LOW_BYTES(n), (n) <= 8 ? 0 : LOW_BYTES((n) - 8) }
+static const u64 key_mask[17][2] = {
+    KEY_MASK(0),  KEY_MASK(1),  KEY_MASK(2),  KEY_MASK(3),  KEY_MASK(4),
+    KEY_MASK(5),  KEY_MASK(6),  KEY_MASK(7),  KEY_MASK(8),  KEY_MASK(9),
+    KEY_MASK(10), KEY_MASK(11), KEY_MASK(12), KEY_MASK(13), KEY_MASK(14),
+    KEY_MASK(15), KEY_MASK(16),
+};
+
+static NOINLINE u32
+intern_cold(Names *names, const char *s, u32 len, u64 k0, u64 k1)
+{
+    return names_intern_hashed(names, s, len, k0, k1, names_hash(s, len, k0, k1));
+}
+
+static NOINLINE void
+intern_names(Names *names, const char *src, Token *out, const u32 *name_tokens, int n)
+{
+    NameSlot *slots = names->slots;
+    u32 mask = names->mask;
+
+    for (int i = 0; i < n; i++) {
+        Token *t = &out[name_tokens[i]];
+        const char *s = src + t->start;
+        u32 len = t->length;
+
+        u64 w0, w1;
+        memcpy(&w0, s, 8);
+        memcpy(&w1, s + 8, 8);
+        const u64 *km = key_mask[len < 16 ? len : 16];
+        u64 k0 = w0 & km[0], k1 = w1 & km[1];
+
+        const NameSlot *slot = &slots[(u32)names_hash_short(k0, k1) & mask];
+        u32 id;
+        if (LIKELY(((slot->k0 ^ k0) | (slot->k1 ^ k1) | (slot->len ^ len)) == 0 && len <= 16)) {
+            id = slot->id;
+        } else {
+            id = intern_cold(names, s, len, k0, k1);
+            slots = names->slots; // intern_cold may have grown the table
+            mask = names->mask;
+        }
+
+        t->kind = id <= NKEYWORDS ? (TokenKind)(TK_IF + (id - 1)) : TK_IDENT;
+        t->id = id;
+    }
+}
+
+static inline u32
+trailing_zeros(u64 x, u32 if_zero)
+{
+    return x ? (u32)__builtin_ctzll(x) : if_zero;
+}
+
+static NOINLINE u32
+ident_run_len(const char *p)
+{
+    const char *s = p;
+    for (;;) {
+        u64 stop = simd_mask16(~is_ident(simd_load(p)));
+        if (stop) {
+            return (u32)(p - s) + simd_first16(stop);
+        }
+        p += 16;
+    }
+}
+
+static inline void
+extend_last_token(const char *src, Token *last, u64 next_ident, u64 block_end, u32 string_rest)
+{
+    u32 rest = trailing_zeros(~next_ident, 64);
+    if (UNLIKELY(rest == 64)) {
+        rest = ident_run_len(src + block_end);
+    }
+
+    static_assert(offsetof(Token, start) == 4 && offsetof(Token, length) == 8);
+    u64 kind_start, length_id;
+    memcpy(&kind_start, last, 8);
+    memcpy(&length_id, &last->length, 8);
+
+    u32 start = (u32)(kind_start >> 32), length = (u32)length_id;
+    bool continues = (u32)kind_start == TK_IDENT && start + length == block_end;
+    last->length = length + (continues ? rest : 0) + string_rest;
+}
+
+#define BLOCKS_PER_FLUSH 64
+#define MAX_NAMES_PER_BLOCK (BLOCK_BYTES / 2)
+
+int
+lexer_tokenize(Lexer *lx, const char *src, Token *out)
+{
+    lx->error = NULL;
+
+    // + 1 because the loop writes the next slot before it knows the token's kind.
+    u32 name_tokens[BLOCKS_PER_FLUSH * MAX_NAMES_PER_BLOCK + 1];
+    int nnames = 0;
+    int ntok = 0;
+    Carry carry = { 0 };
+    u32 resume = 0;
+
+    BlockMasks cur = block_masks((const u8 *)src);
+    Literals lit = resolve_literals(cur, (LiteralState){ 0 }, src, 0);
+    for (u64 base = 0;; base += BLOCK_BYTES) {
+        if (UNLIKELY(resume >= base)) {
+            lit = literals_after(cur, src + base, resume - base);
+        } else if (UNLIKELY(lit.fallback && (lit.in.in_string | lit.in.in_comment))) {
+            resume = finish_literal(lx, src, base, lit.in, &out[ntok - 1]);
+            if (resume == UINT32_MAX) {
+                return 0;
+            }
+            lit = literals_after(cur, src + base, resume - base);
+        }
+
+        u64 starts = token_starts(&carry, cur, lit.quiet);
+        if (UNLIKELY(resume >= base)) {
+            starts = starts_from(src, starts, base, resume);
+        }
+        // Built before the token loop, so the CPU works on them during the
+        // loop instead of after the loop's exit, which usually mispredicts.
+        BlockMasks next = block_masks((const u8 *)src + base + BLOCK_BYTES);
+        Literals next_lit = resolve_literals(next, lit.out, src + base + BLOCK_BYTES, 0);
+        const u8 *kinds = kind2[lit.fallback | has_unusual_number(cur, starts)];
+
+        // Bit 63 ends a token that runs into the next block, and extend_last_token adds the rest.
+        u64 name_last = (past_runs(cur.ident, starts) >> 1) | lit.closes | 1ULL << 63;
+
+        while (starts) {
+            u32 pos = (u32)__builtin_ctzll(starts);
+            starts &= starts - 1;
+            u32 at = base + pos;
+
+            u32 kind = kinds[kind2_index(src + at)];
+            if (UNLIKELY(kind & SLOW)) {
+                int emitted;
+                u32 after = slow_token(lx, src, at, &out[ntok], &emitted);
+                if (emitted == STOP) {
+                    if (lx->error != NULL) {
+                        return 0;
+                    }
+                    intern_names(&lx->names, src, out, name_tokens, nnames);
+                    out[ntok] = (Token){ TK_EOF, at, 0, 0 };
+                    return ntok + 1;
+                }
+                ntok += emitted;
+                resume = after;
+                starts = starts_from(src, starts, base, resume);
+                continue;
+            }
+
+            u32 to_last = (u32)__builtin_ctzll(name_last >> pos);
+            u32 fixed_len = kind_len[kind];
+            // Hidden, so clang emits a select (csinc) instead of a branch.
+            OPAQUE(to_last);
+            OPAQUE(fixed_len);
+            u32 len = fixed_len ? fixed_len : to_last + 1;
+
+            out[ntok] = (Token){ (TokenKind)kind, at, len, 0 };
+            name_tokens[nnames] = (u32)ntok;
+            nnames += kind == TK_IDENT;
+            ntok++;
+        }
+
+        if (LIKELY(ntok > 0)) {
+            bool open_string = lit.out.in_string &&
+                               resume < base + BLOCK_BYTES && !next_lit.fallback;
+            u32 string_rest = open_string ? trailing_zeros(next_lit.closes, 63) + 1
+                                          : 0;
+            extend_last_token(src, &out[ntok - 1], next.ident, base + BLOCK_BYTES, string_rest);
+        }
+        if ((base / BLOCK_BYTES) % BLOCKS_PER_FLUSH == BLOCKS_PER_FLUSH - 1) {
+            intern_names(&lx->names, src, out, name_tokens, nnames);
+            nnames = 0;
+        }
+        cur = next;
+        lit = next_lit;
+    }
+}
+
+#define KIND_NAME(name, text) [name] = text,
+#define KIND_NAME_OP2(name, c0, c1) [name] = { c0, c1 },
+#define KIND_NAME_OP1(name, c) [name] = { c },
+static const char kind_names[NKINDS][12] = {
+    CHIBI_TOKENS(KIND_NAME, KIND_NAME, KIND_NAME_OP2, KIND_NAME_OP1)
+};
+
+const char *
+lexer_kind_name(TokenKind k)
+{
+    assert((u32)k < NKINDS);
+    return kind_names[k];
+}
+
+void
+lexer_print_error(const Lexer *lx, const char *src)
+{
+    LineCol lc = advance_line_col(src, (LineCol){ 1, 1 }, 0, lx->error_pos);
+    fprintf(stderr, "chibi:%d:%d: %s\n", lc.line, lc.col, lx->error);
+}
+
+void
+lexer_dump(FILE *out, const char *src, const Token *tokens, int n)
+{
+    LineCol lc = { 1, 1 };
+    u32 at = 0;
+    for (int i = 0; i < n; i++) {
+        const Token *t = &tokens[i];
+        lc = advance_line_col(src, lc, at, t->start);
+        at = t->start;
+
+        fprintf(
+            out,
+            "%-10s @ %d:%d \"%.*s\"",
+            lexer_kind_name(t->kind),
+            lc.line,
+            lc.col,
+            (int)t->length,
+            src + t->start
+        );
+        if (t->id != 0) {
+            fprintf(out, " id=%u", t->id);
+        }
+        fputc('\n', out);
+    }
+}

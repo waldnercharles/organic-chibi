@@ -1,0 +1,12 @@
+CompileFlags:
+  Add:
+    - -std=c23
+    - -Wall
+    - -Wextra
+---
+# Without this, headers parse as Objective-C++.
+If:
+  PathMatch: .*\.h
+CompileFlags:
+  Add:
+    - -xc-header
