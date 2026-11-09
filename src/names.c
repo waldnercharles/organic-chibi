@@ -23,10 +23,12 @@ next_pow2(u64 x)
     while (p < x) {
         p <<= 1;
     }
+
     if (p > (1ULL << 31)) {
         fprintf(stderr, "chibi: name table too large\n");
         exit(1);
     }
+
     return (u32)p;
 }
 

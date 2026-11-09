@@ -19,6 +19,7 @@ sample_read(const char *path)
         fprintf(stderr, "cannot open %s\n", path);
         exit(1);
     }
+
     fseek(f, 0, SEEK_END);
     size_t len = (size_t)ftell(f);
     fseek(f, 0, SEEK_SET);
@@ -49,11 +50,13 @@ walk(Samples *s, const char *dir)
     if (!d) {
         return;
     }
+
     struct dirent *e;
     while ((e = readdir(d)) != NULL) {
         if (e->d_name[0] == '.') {
             continue;
         }
+
         char path[4096];
         snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
         struct stat st;
@@ -69,10 +72,12 @@ walk(Samples *s, const char *dir)
         if (!S_ISREG(st.st_mode) || n <= 6 || strcmp(e->d_name + n - 6, ".chibi") != 0) {
             continue;
         }
+
         if (s->count == s->cap) {
             s->cap = s->cap ? s->cap * 2 : 256;
             s->files = realloc(s->files, s->cap * sizeof *s->files);
         }
+
         Sample f = sample_read(path);
         s->files[s->count++] = f;
         s->total_len += f.len;

@@ -22,6 +22,7 @@ str_slice(String str, size_t start, size_t len)
     if (len > str.len - start) {
         len = str.len - start;
     }
+
     const char *s = str.p + start;
     return (String){ .p = s, .len = len, .hash = str_hash(s, len) };
 }
@@ -34,9 +35,11 @@ str_concat(Arena *a, String x, String y)
     if (s == NULL) {
         return (String){ .p = "", .len = 0 };
     }
+
     memcpy(s, x.p, x.len);
     memcpy(s + x.len, y.p, y.len);
     s[len] = '\0';
+
     return (String){ .p = s, .len = len, .hash = str_hash(s, len) };
 }
 

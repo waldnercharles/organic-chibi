@@ -9,7 +9,7 @@ typedef struct ArenaChunk
     size_t cap;
 } ArenaChunk;
 
-// The field order matters here. If `top` sat next to `bottom`, clang loads both
+// PERF: The field order matters here. If `top` sat next to `bottom`, clang loads both
 // with one 16-byte load, which waits for the pending store to `top` (twice as slow on my M4).
 typedef struct
 {

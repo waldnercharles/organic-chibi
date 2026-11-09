@@ -12,6 +12,7 @@ new_chunk(size_t cap)
     if (c != NULL) {
         c->cap = cap;
     }
+
     return c;
 }
 
@@ -49,13 +50,14 @@ push_chunk(Arena *a, size_t need)
         if (cap < need) {
             cap = need;
         }
+
         c = new_chunk(cap);
         if (c == NULL) {
             return false;
         }
     }
-
     use_chunk(a, c);
+
     return true;
 }
 
@@ -81,9 +83,11 @@ arena_reserve(Arena *a, size_t cap)
     if (cap >= ARENA_MAX_ALLOC) {
         return false;
     }
+
     if ((size_t)(a->top - a->bottom) >= cap) {
         return true;
     }
+
     return push_chunk(a, cap);
 }
 
