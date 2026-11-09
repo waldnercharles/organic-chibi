@@ -3,7 +3,6 @@
 
 #include "../src/lexer.h"
 
-// This table differs from src/names.c (chained buckets, FNV-1a), so one bug cannot hide in both.
 #define REF_BUCKETS 4096
 
 typedef struct RefName
