@@ -242,8 +242,7 @@ resolve_literals(BlockMasks m, LiteralState in, const char *p, u32 from)
     u64 quote = m.quote & active, comment_starts = m.comment & active;
     u64 backslash = m.backslash & active;
 
-    // This assumes every backslash is in a string. The check below falls back
-    // to slow_token when it's not.
+    // This assumes every backslash is in a string.
     u64 escaped = 0, escape_carry = in.escaped;
     if (UNLIKELY(backslash | escape_carry)) {
         escaped = escaped_bytes(backslash, &escape_carry);
@@ -258,8 +257,6 @@ resolve_literals(BlockMasks m, LiteralState in, const char *p, u32 from)
         comment_starts &= ~comment;
     }
 
-    // Each "//" outside a string hides the quotes up to its line end, which
-    // changes where later strings are, so this runs once per comment.
     u64 inside;
     for (;;) {
         inside = prefix_xor(quote) ^ -in.in_string;
