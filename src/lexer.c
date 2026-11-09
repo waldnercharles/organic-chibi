@@ -230,7 +230,6 @@ typedef struct
 typedef struct
 {
     u64 quiet;
-    u64 closes;
     bool fallback;
     LiteralState in, out;
 } Literals;
@@ -278,7 +277,6 @@ resolve_literals(BlockMasks m, LiteralState in, const char *p, u32 from)
     u64 keep = -(u64)!fallback;
     return (Literals){
         .quiet = (body | comment) & keep,
-        .closes = quote & ~inside & keep,
         .fallback = fallback,
         .in = in,
         .out = { inside >> 63 & keep, comment >> 63 & keep, escape_carry & keep },
@@ -402,6 +400,7 @@ static const u8 kind_len[SLOW] = {
     [TK_IDENT] = 0,
     [TK_INT] = 0,
     [TK_STRING] = 0,
+    [TK_EOF] = 0,
     CHIBI_TOKENS(CHIBI_SKIP, CHIBI_SKIP, KIND_LEN_OP2, CHIBI_SKIP)
 };
 #pragma GCC diagnostic pop
@@ -515,7 +514,7 @@ line_end(const char *p)
 }
 
 static inline ALWAYS_INLINE u32
-slow_token(Lexer *lx, const char *src, u32 at, Token *slot, int *emitted)
+slow_token(Lexer *lx, const char *src, u32 at, Tokens out, int ntok, int *emitted)
 {
     const char *p = src + at;
     u8 c = (u8)*p;
@@ -523,7 +522,8 @@ slow_token(Lexer *lx, const char *src, u32 at, Token *slot, int *emitted)
     if (byte_is_digit(c)) {
         bool is_float;
         const char *end = number_end(p, &is_float);
-        *slot = (Token){ is_float ? TK_FLOAT : TK_INT, at, (u32)(end - p), 0 };
+        out.kinds[ntok] = is_float ? TK_FLOAT : TK_INT;
+        out.starts[ntok] = at;
         *emitted = ONE_TOKEN;
         return (u32)(end - src);
     }
@@ -534,7 +534,8 @@ slow_token(Lexer *lx, const char *src, u32 at, Token *slot, int *emitted)
             *emitted = STOP;
             return at;
         }
-        *slot = (Token){ TK_STRING, at, (u32)(close + 1 - p), 0 };
+        out.kinds[ntok] = TK_STRING;
+        out.starts[ntok] = at;
         *emitted = ONE_TOKEN;
         return (u32)(close + 1 - src);
     }
@@ -553,7 +554,7 @@ slow_token(Lexer *lx, const char *src, u32 at, Token *slot, int *emitted)
 }
 
 static NOINLINE u32
-finish_literal(Lexer *lx, const char *src, u64 base, LiteralState in, Token *last)
+finish_literal(Lexer *lx, const char *src, u64 base, LiteralState in)
 {
     if (in.in_comment) {
         return (u32)(line_end(src + base) - src);
@@ -562,9 +563,7 @@ finish_literal(Lexer *lx, const char *src, u64 base, LiteralState in, Token *las
     if (close == NULL) {
         return UINT32_MAX;
     }
-    u32 end = (u32)(close + 1 - src);
-    last->length = end - last->start;
-    return end;
+    return (u32)(close + 1 - src);
 }
 
 #define LOW_BYTES(n) ((n) >= 8 ? ~0ULL : (1ULL << (8 * ((n) & 7))) - 1)
@@ -583,15 +582,16 @@ intern_cold(Names *names, const char *s, u32 len, u64 k0, u64 k1)
 }
 
 static NOINLINE void
-intern_names(Names *names, const char *src, Token *out, const u32 *name_tokens, int n)
+intern_names(Names *names, const char *src, Tokens out, const u32 *name_tokens, int n)
 {
+    Tokens t = out; // PERF: Forces `out` into a register
     NameSlot *slots = names->slots;
     u32 mask = names->mask;
 
     for (int i = 0; i < n; i++) {
-        Token *t = &out[name_tokens[i]];
-        const char *s = src + t->start;
-        u32 len = t->length;
+        u32 k = name_tokens[i];
+        const char *s = src + t.starts[k];
+        u32 len = t.ids[k];
 
         u64 w0, w1;
         memcpy(&w0, s, 8);
@@ -609,8 +609,8 @@ intern_names(Names *names, const char *src, Token *out, const u32 *name_tokens, 
             mask = names->mask;
         }
 
-        t->kind = id <= NKEYWORDS ? (TokenKind)(TK_IF + (id - 1)) : TK_IDENT;
-        t->id = id;
+        t.kinds[k] = id <= NKEYWORDS ? (u8)(TK_IF + (id - 1)) : TK_IDENT;
+        t.ids[k] = id;
     }
 }
 
@@ -634,30 +634,27 @@ ident_run_len(const char *p)
 }
 
 static inline void
-extend_last_token(const char *src, Token *last, u64 next_ident, u64 block_end, u32 string_rest)
+extend_last_name(const char *src, Tokens out, int last, u64 next_ident, u64 block_end)
 {
     u32 rest = trailing_zeros(~next_ident, 64);
     if (UNLIKELY(rest == 64)) {
         rest = ident_run_len(src + block_end);
     }
 
-    static_assert(offsetof(Token, start) == 4 && offsetof(Token, length) == 8);
-    u64 kind_start, length_id;
-    memcpy(&kind_start, last, 8);
-    memcpy(&length_id, &last->length, 8);
-
-    u32 start = (u32)(kind_start >> 32), length = (u32)length_id;
-    bool continues = (u32)kind_start == TK_IDENT && start + length == block_end;
-    last->length = length + (continues ? rest : 0) + string_rest;
+    u32 length = out.ids[last];
+    bool continues = out.kinds[last] == TK_IDENT &&
+                     out.starts[last] + length == block_end;
+    out.ids[last] = length + (continues ? rest : 0);
 }
 
 #define BLOCKS_PER_FLUSH 64
 #define MAX_NAMES_PER_BLOCK (BLOCK_BYTES / 2)
 
 int
-lexer_tokenize(Lexer *lx, const char *src, Token *out)
+lexer_tokenize(Lexer *lx, const char *src, Tokens out)
 {
     lx->error = NULL;
+    Tokens t = out; // PERF: Forces `out` into a register
 
     // + 1 because the loop writes the next slot before it knows the token's kind.
     u32 name_tokens[BLOCKS_PER_FLUSH * MAX_NAMES_PER_BLOCK + 1];
@@ -672,7 +669,7 @@ lexer_tokenize(Lexer *lx, const char *src, Token *out)
         if (UNLIKELY(resume >= base)) {
             lit = literals_after(cur, src + base, resume - base);
         } else if (UNLIKELY(lit.fallback && (lit.in.in_string | lit.in.in_comment))) {
-            resume = finish_literal(lx, src, base, lit.in, &out[ntok - 1]);
+            resume = finish_literal(lx, src, base, lit.in);
             if (resume == UINT32_MAX) {
                 return 0;
             }
@@ -683,14 +680,13 @@ lexer_tokenize(Lexer *lx, const char *src, Token *out)
         if (UNLIKELY(resume >= base)) {
             starts = starts_from(src, starts, base, resume);
         }
-        // Built before the token loop, so the CPU works on them during the
+        // PERF: Built before the token loop so the CPU works on them during the
         // loop instead of after the loop's exit, which usually mispredicts.
         BlockMasks next = block_masks((const u8 *)src + base + BLOCK_BYTES);
         Literals next_lit = resolve_literals(next, lit.out, src + base + BLOCK_BYTES, 0);
         const u8 *kinds = (const u8 *)kind2[lit.fallback | has_unusual_number(cur, starts)];
 
-        // Bit 63 ends a token that runs into the next block, and extend_last_token adds the rest.
-        u64 name_last = (past_runs(cur.ident, starts) >> 1) | lit.closes | 1ULL << 63;
+        u64 name_last = (past_runs(cur.ident, starts) >> 1) | 1ULL << 63;
 
         while (starts) {
             u32 pos = (u32)__builtin_ctzll(starts);
@@ -700,13 +696,15 @@ lexer_tokenize(Lexer *lx, const char *src, Token *out)
             u32 kind = kinds[kind2_index(src + at)];
             if (UNLIKELY(kind & SLOW)) {
                 int emitted;
-                u32 after = slow_token(lx, src, at, &out[ntok], &emitted);
+                u32 after = slow_token(lx, src, at, t, ntok, &emitted);
                 if (emitted == STOP) {
                     if (lx->error != NULL) {
                         return 0;
                     }
-                    intern_names(&lx->names, src, out, name_tokens, nnames);
-                    out[ntok] = (Token){ TK_EOF, at, 0, 0 };
+                    intern_names(&lx->names, src, t, name_tokens, nnames);
+                    t.kinds[ntok] = TK_EOF;
+                    t.starts[ntok] = at;
+                    t.ids[ntok] = 0;
                     return ntok + 1;
                 }
                 ntok += emitted;
@@ -715,28 +713,19 @@ lexer_tokenize(Lexer *lx, const char *src, Token *out)
                 continue;
             }
 
-            u32 to_last = (u32)__builtin_ctzll(name_last >> pos);
-            u32 fixed_len = kind_len[kind];
-            // Hidden, so clang emits a select (csinc) instead of a branch.
-            OPAQUE(to_last);
-            OPAQUE(fixed_len);
-            u32 len = fixed_len ? fixed_len : to_last + 1;
-
-            out[ntok] = (Token){ (TokenKind)kind, at, len, 0 };
+            t.kinds[ntok] = (u8)kind;
+            t.starts[ntok] = at;
+            t.ids[ntok] = (u32)__builtin_ctzll(name_last >> pos) + 1;
             name_tokens[nnames] = (u32)ntok;
             nnames += kind == TK_IDENT;
             ntok++;
         }
 
         if (LIKELY(ntok > 0)) {
-            bool open_string = lit.out.in_string &&
-                               resume < base + BLOCK_BYTES && !next_lit.fallback;
-            u32 string_rest = open_string ? trailing_zeros(next_lit.closes, 63) + 1
-                                          : 0;
-            extend_last_token(src, &out[ntok - 1], next.ident, base + BLOCK_BYTES, string_rest);
+            extend_last_name(src, t, ntok - 1, next.ident, base + BLOCK_BYTES);
         }
         if ((base / BLOCK_BYTES) % BLOCKS_PER_FLUSH == BLOCKS_PER_FLUSH - 1) {
-            intern_names(&lx->names, src, out, name_tokens, nnames);
+            intern_names(&lx->names, src, t, name_tokens, nnames);
             nnames = 0;
         }
         cur = next;
@@ -765,27 +754,72 @@ lexer_print_error(const Lexer *lx, const char *src)
     fprintf(stderr, "chibi:%d:%d: %s\n", lc.line, lc.col, lx->error);
 }
 
+Tokens
+lexer_alloc_tokens(Arena *arena, size_t len)
+{
+    size_t n = lexer_max_tokens(len);
+    return (Tokens){
+        .kinds = arena_alloc(arena, n, 1),
+        .starts = arena_alloc(arena, n * sizeof(u32), alignof(u32)),
+        .ids = arena_alloc(arena, n * sizeof(u32), alignof(u32)),
+    };
+}
+
+static bool
+kind_has_id(TokenKind kind)
+{
+    return kind == TK_IDENT || (kind >= TK_IF && kind < TK_IF + NKEYWORDS);
+}
+
+static const char *
+string_end(const char *p)
+{
+    const char *q = p + 1;
+    while (*q != '"') {
+        q += *q == '\\' ? (q[1] == 'u' ? 6 : 2) : 1;
+    }
+    return q + 1;
+}
+
+u32
+lexer_token_length(const char *src, TokenKind kind, u32 start)
+{
+    const char *p = src + start;
+    if (kind_has_id(kind)) {
+        return ident_run_len(p);
+    }
+    if (kind == TK_INT || kind == TK_FLOAT) {
+        bool is_float;
+        return (u32)(number_end(p, &is_float) - p);
+    }
+    if (kind == TK_STRING) {
+        return (u32)(string_end(p) - p);
+    }
+    return kind_len[kind];
+}
+
 void
-lexer_dump(FILE *out, const char *src, const Token *tokens, int n)
+lexer_dump(FILE *out, const char *src, Tokens tokens, int n)
 {
     LineCol lc = { 1, 1 };
     u32 at = 0;
     for (int i = 0; i < n; i++) {
-        const Token *t = &tokens[i];
-        lc = advance_line_col(src, lc, at, t->start);
-        at = t->start;
+        TokenKind kind = tokens.kinds[i];
+        u32 start = tokens.starts[i];
+        lc = advance_line_col(src, lc, at, start);
+        at = start;
 
         fprintf(
             out,
             "%-10s @ %d:%d \"%.*s\"",
-            lexer_kind_name(t->kind),
+            lexer_kind_name(kind),
             lc.line,
             lc.col,
-            (int)t->length,
-            src + t->start
+            (int)lexer_token_length(src, kind, start),
+            src + start
         );
-        if (t->id != 0) {
-            fprintf(out, " id=%u", t->id);
+        if (kind_has_id(kind)) {
+            fprintf(out, " id=%u", tokens.ids[i]);
         }
         fputc('\n', out);
     }

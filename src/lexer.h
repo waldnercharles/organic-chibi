@@ -112,11 +112,10 @@ enum
 
 typedef struct
 {
-    TokenKind kind;
-    u32 start;
-    u32 length;
-    u32 id;
-} Token;
+    u8 *kinds;
+    u32 *starts;
+    u32 *ids;
+} Tokens;
 
 typedef struct
 {
@@ -133,7 +132,7 @@ void lexer_init(Lexer *lx, Arena *arena, size_t total_source_bytes);
 
 // Returns the token count, including TK_EOF. out needs lexer_max_tokens(len)
 // tokens. On an error it returns 0 and sets error and error_pos.
-int lexer_tokenize(Lexer *lx, const char *src, Token *out);
+int lexer_tokenize(Lexer *lx, const char *src, Tokens out);
 
 void lexer_print_error(const Lexer *lx, const char *src);
 
@@ -143,8 +142,12 @@ lexer_max_tokens(size_t len)
     return len + 1;
 }
 
+Tokens lexer_alloc_tokens(Arena *arena, size_t len);
+
+u32 lexer_token_length(const char *src, TokenKind kind, u32 start);
+
 const char *lexer_kind_name(TokenKind k);
 
-void lexer_dump(FILE *out, const char *src, const Token *tokens, int n);
+void lexer_dump(FILE *out, const char *src, Tokens tokens, int n);
 
 #endif

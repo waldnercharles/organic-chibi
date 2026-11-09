@@ -62,8 +62,8 @@ main(int argc, char **argv)
     size_t len;
     char *src = read_source(&arena, argv[1], &len);
 
-    Token *tokens = arena_alloc(&arena, lexer_max_tokens(len) * sizeof *tokens, alignof(Token));
-    if (!tokens) {
+    Tokens tokens = lexer_alloc_tokens(&arena, len);
+    if (!tokens.kinds || !tokens.starts || !tokens.ids) {
         fatal(argv[1], "out of memory");
     }
 

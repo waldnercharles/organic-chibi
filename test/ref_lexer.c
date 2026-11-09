@@ -129,15 +129,15 @@ ref_lexer_free(RefLexer *rl)
     free(rl);
 }
 
-static Token
+static RefToken
 fail(RefLexer *rl, int pos, const char *msg)
 {
     rl->error = msg;
     rl->error_pos = pos;
-    return (Token){ TK_EOF, pos, 0, 0 };
+    return (RefToken){ TK_EOF, pos, 0, 0 };
 }
 
-Token
+RefToken
 ref_next(RefLexer *rl, const char *src, int pos)
 {
     int i = pos;
@@ -158,7 +158,7 @@ ref_next(RefLexer *rl, const char *src, int pos)
     char c = src[i];
 
     if (c == '\0') {
-        return (Token){ TK_EOF, start, 0, 0 };
+        return (RefToken){ TK_EOF, start, 0, 0 };
     }
 
     if (is_ident_start(c)) {
@@ -173,7 +173,7 @@ ref_next(RefLexer *rl, const char *src, int pos)
                 kind = KEYWORDS[k].kind;
             }
         }
-        return (Token){ kind, start, len, intern(rl, src + start, len) };
+        return (RefToken){ kind, start, len, intern(rl, src + start, len) };
     }
 
     if (is_digit(c)) {
@@ -198,7 +198,7 @@ ref_next(RefLexer *rl, const char *src, int pos)
                 }
             }
         }
-        return (Token){ is_float ? TK_FLOAT : TK_INT, start, i - start, 0 };
+        return (RefToken){ is_float ? TK_FLOAT : TK_INT, start, i - start, 0 };
     }
 
     if (c == '"') {
@@ -222,19 +222,19 @@ ref_next(RefLexer *rl, const char *src, int pos)
                 i++;
             }
         }
-        return (Token){ TK_STRING, start, i + 1 - start, 0 };
+        return (RefToken){ TK_STRING, start, i + 1 - start, 0 };
     }
 
     for (size_t k = 0; k < sizeof OPS / sizeof OPS[0]; k++) {
         const char *op = OPS[k].text;
         size_t n = strlen(op);
         if (strncmp(src + start, op, n) == 0) {
-            return (Token){ OPS[k].kind, start, (int)n, 0 };
+            return (RefToken){ OPS[k].kind, start, (int)n, 0 };
         }
     }
 
     if ((u8)c >= 0x21) {
-        return (Token){ TK_OP, start, 1, 0 };
+        return (RefToken){ TK_OP, start, 1, 0 };
     }
     return fail(rl, start, "unexpected character");
 }

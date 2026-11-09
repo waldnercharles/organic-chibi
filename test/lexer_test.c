@@ -11,7 +11,7 @@
 #include <string.h>
 
 static void
-print_mismatch(const char *label, const char *src, int n, Token fast, Token ref)
+print_mismatch(const char *label, const char *src, int n, RefToken fast, RefToken ref)
 {
     fprintf(stderr, "%s: token #%d\n", label, n);
     fprintf(
@@ -62,23 +62,51 @@ print_error_mismatch(const char *label, const Lexer *lx, int nfast, const RefLex
     }
 }
 
+static Tokens
+tokens_new(size_t len)
+{
+    size_t n = lexer_max_tokens(len);
+    return (Tokens){ malloc(n), malloc(n * sizeof(u32)), malloc(n * sizeof(u32)) };
+}
+
+static void
+tokens_free(Tokens t)
+{
+    free(t.kinds);
+    free(t.starts);
+    free(t.ids);
+}
+
+static RefToken
+fast_token(const char *src, Tokens t, int n)
+{
+    TokenKind kind = t.kinds[n];
+    bool named = kind == TK_IDENT || (kind >= TK_IF && kind < TK_IF + NKEYWORDS);
+    return (RefToken){
+        kind,
+        t.starts[n],
+        lexer_token_length(src, kind, t.starts[n]),
+        named ? t.ids[n] : 0,
+    };
+}
+
 static bool
 matches_reference(const char *label, const char *src, size_t len, Lexer *lx, RefLexer *rl)
 {
-    Token *fast = malloc(lexer_max_tokens(len) * sizeof *fast);
+    Tokens fast = tokens_new(len);
     int nfast = lexer_tokenize(lx, src, fast);
 
     rl->error = NULL;
     int pos_ref = 0;
     for (int n = 0;; n++) {
-        Token b = ref_next(rl, src, pos_ref);
+        RefToken b = ref_next(rl, src, pos_ref);
         if (nfast > 0 && rl->error == NULL) {
-            Token a = n < nfast ? fast[n]
-                                : (Token){ TK_OP, UINT32_MAX, UINT32_MAX, 0 };
+            RefToken a = n < nfast ? fast_token(src, fast, n)
+                                   : (RefToken){ TK_OP, UINT32_MAX, UINT32_MAX, 0 };
             if (a.kind != b.kind || a.start != b.start ||
                 a.length != b.length || a.id != b.id) {
                 print_mismatch(label, src, n, a, b);
-                free(fast);
+                tokens_free(fast);
                 return false;
             }
         }
@@ -87,7 +115,7 @@ matches_reference(const char *label, const char *src, size_t len, Lexer *lx, Ref
         }
         pos_ref = b.start + b.length;
     }
-    free(fast);
+    tokens_free(fast);
 
     bool fast_failed = nfast == 0, ref_failed = rl->error != NULL;
     bool same = fast_failed == ref_failed &&
@@ -342,7 +370,7 @@ TEST_CASE(golden_output)
     Arena arena = { 0 };
     Lexer lx;
     lexer_init(&lx, &arena, src.len);
-    Token *tokens = malloc(lexer_max_tokens(src.len) * sizeof *tokens);
+    Tokens tokens = tokens_new(src.len);
     int n = lexer_tokenize(&lx, src.text, tokens);
 
     char *got;
@@ -357,7 +385,7 @@ TEST_CASE(golden_output)
     }
 
     free(got);
-    free(tokens);
+    tokens_free(tokens);
     arena_free(&arena);
     sample_free(src);
     sample_free(want);

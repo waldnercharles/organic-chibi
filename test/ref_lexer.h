@@ -21,9 +21,17 @@ typedef struct
     int error_pos;
 } RefLexer;
 
+typedef struct
+{
+    TokenKind kind;
+    u32 start;
+    u32 length;
+    u32 id;
+} RefToken;
+
 RefLexer *ref_lexer_new(void);
 void ref_lexer_free(RefLexer *rl);
 
-Token ref_next(RefLexer *rl, const char *src, int pos);
+RefToken ref_next(RefLexer *rl, const char *src, int pos);
 
 #endif

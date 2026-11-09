@@ -19,33 +19,28 @@
 
 #define MAX_THREADS 64
 
-static Token *
-alloc_tokens(Arena *arena, size_t max_len)
-{
-    return arena_alloc(arena, lexer_max_tokens(max_len) * sizeof(Token), alignof(Token));
-}
-
 static u64
-checksum(const Token *tokens, int n)
+checksum(Tokens tokens, int n)
 {
     u64 sum = 0;
     for (int k = 0; k < n - 1; k++) {
-        Token t = tokens[k];
-        sum += (u64)t.kind * 0x9E3779B97F4A7C15ULL + (u64)t.start +
-               (u64)t.length * 0xC2B2AE3D27D4EB4FULL +
-               (u64)t.id * 0x165667B19E3779F9ULL;
+        u8 kind = tokens.kinds[k];
+        u64 id = tokens.ids[k];
+        bool named = kind == TK_IDENT || (kind >= TK_IF && kind < TK_IF + NKEYWORDS);
+        sum += (u64)kind * 0x9E3779B97F4A7C15ULL + (u64)tokens.starts[k] +
+               (named ? id * 0x165667B19E3779F9ULL : 0);
     }
     return sum;
 }
 
 static u64
-lex_checksum(Lexer *lx, const char *src, Token *tokens)
+lex_checksum(Lexer *lx, const char *src, Tokens tokens)
 {
     return checksum(tokens, lexer_tokenize(lx, src, tokens));
 }
 
 static u64
-fingerprint(const Samples *s, Token *tokens, Arena *arena)
+fingerprint(const Samples *s, Tokens tokens, Arena *arena)
 {
     Lexer lx;
     lexer_init(&lx, arena, s->total_len);
@@ -68,7 +63,7 @@ now_sec(void)
 }
 
 static u64
-lex_pass(const Sample *files, u32 lo, u32 hi, size_t bytes, Token *tokens, Arena *pass)
+lex_pass(const Sample *files, u32 lo, u32 hi, size_t bytes, Tokens tokens, Arena *pass)
 {
     arena_reset(pass);
     Lexer lx;
@@ -100,7 +95,7 @@ typedef struct
 {
     const Sample *files;
     u32 lo, hi;
-    Token *tokens;
+    Tokens tokens;
     Arena pass;
     size_t bytes;
     u64 passes, sum;
@@ -145,7 +140,7 @@ measure(const Samples *s, Arena *setup, u32 nthreads)
             .files = s->files,
             .lo = lo,
             .hi = lo + per + (t < rem ? 1 : 0),
-            .tokens = alloc_tokens(setup, s->max_len),
+            .tokens = lexer_alloc_tokens(setup, s->max_len),
         };
         lo = w[t].hi;
         if (pthread_create(&tids[t], NULL, worker_main, &w[t]) != 0) {
@@ -185,7 +180,7 @@ main(void)
     }
 
     Arena setup = { 0 }, scratch = { 0 };
-    u64 print = fingerprint(&s, alloc_tokens(&setup, s.max_len), &scratch);
+    u64 print = fingerprint(&s, lexer_alloc_tokens(&setup, s.max_len), &scratch);
     printf(
         "bench: %u files, %.2f MB, fingerprint 0x%016llx\n",
         s.count,

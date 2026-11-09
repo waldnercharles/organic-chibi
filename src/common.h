@@ -17,8 +17,4 @@ typedef uint64_t u64;
 #define LIKELY(x) __builtin_expect(!!(x), 1)
 #define UNLIKELY(x) __builtin_expect(!!(x), 0)
 
-// Emits no instructions, but the compiler forgets what it knows about x. It then
-// cannot fold x, turn a select on x into a branch, or merge loads around it.
-#define OPAQUE(x) __asm__("" : "+r"(x))
-
 #endif
