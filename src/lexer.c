@@ -368,30 +368,32 @@ past_runs(u64 run, u64 first)
 #define SLOW 0x80
 static_assert(TK_OP < SLOW, "token kinds must fit in 7 bits of kind2[]");
 
-#define FIRST(c) [(c) << 8 ...((c) << 8) | 0xFF]
-#define PAIR(c0, c1) [((c0) << 8) | (c1)]
-#define KIND2_OP1(name, c) FIRST(c) = name,
+static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "kind2[] is indexed by a little-endian load");
+
+#define FIRST(lo, hi) [0 ... 255][(lo)...(hi)]
+#define PAIR(c0, c1) [c1][c0]
+#define KIND2_OP1(name, c) FIRST(c, c) = name,
 #define KIND2_OP2(name, c0, c1) PAIR(c0, c1) = name,
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Woverride-init"
 // clang-format off
 #define KIND2_ENTRIES                                                                                           \
-    [0x0000 ... 0x20FF] = SLOW,                                                                                 \
-    [0x2100 ... 0xFFFF] = TK_OP,                                                                                \
-    [('0' << 8) ... ('9' << 8) | 0xFF] = TK_INT,                                                                \
-    [('a' << 8) ... ('z' << 8) | 0xFF] = TK_IDENT,                                                              \
-    [('A' << 8) ... ('Z' << 8) | 0xFF] = TK_IDENT,                                                              \
-    FIRST('_') = TK_IDENT,                                                                                      \
-    FIRST('"') = TK_STRING,                                                                                     \
+    FIRST(0x00, 0x20) = SLOW,                                                                                   \
+    FIRST(0x21, 0xFF) = TK_OP,                                                                                  \
+    FIRST('0', '9') = TK_INT,                                                                                   \
+    FIRST('a', 'z') = TK_IDENT,                                                                                 \
+    FIRST('A', 'Z') = TK_IDENT,                                                                                 \
+    FIRST('_', '_') = TK_IDENT,                                                                                 \
+    FIRST('"', '"') = TK_STRING,                                                                                \
     CHIBI_TOKENS(CHIBI_SKIP, CHIBI_SKIP, CHIBI_SKIP, KIND2_OP1)                                                 \
     CHIBI_TOKENS(CHIBI_SKIP, CHIBI_SKIP, KIND2_OP2, CHIBI_SKIP)                                                 \
     PAIR('/', '/') = SLOW
 // clang-format on
 
-static const u8 kind2[2][1 << 16] = {
+static const u8 kind2[2][256][256] = {
     [0] = { KIND2_ENTRIES },
-    [1] = { KIND2_ENTRIES, [('0' << 8)...('9' << 8) | 0xFF] = SLOW, FIRST('"') = SLOW },
+    [1] = { KIND2_ENTRIES, FIRST('0', '9') = SLOW, FIRST('"', '"') = SLOW },
 };
 
 #define KIND_LEN_OP2(name, c0, c1) [name] = 2,
@@ -409,14 +411,7 @@ kind2_index(const char *p)
 {
     u16 two;
     memcpy(&two, p, 2);
-#if defined(__aarch64__)
-    // __builtin_bswap16 compiles to rev and lsr. rev16 is one instruction.
-    u32 idx = two;
-    __asm__("rev16 %w0, %w0" : "+r"(idx));
-    return idx;
-#else
-    return __builtin_bswap16(two);
-#endif
+    return two;
 }
 
 enum
@@ -692,7 +687,7 @@ lexer_tokenize(Lexer *lx, const char *src, Token *out)
         // loop instead of after the loop's exit, which usually mispredicts.
         BlockMasks next = block_masks((const u8 *)src + base + BLOCK_BYTES);
         Literals next_lit = resolve_literals(next, lit.out, src + base + BLOCK_BYTES, 0);
-        const u8 *kinds = kind2[lit.fallback | has_unusual_number(cur, starts)];
+        const u8 *kinds = (const u8 *)kind2[lit.fallback | has_unusual_number(cur, starts)];
 
         // Bit 63 ends a token that runs into the next block, and extend_last_token adds the rest.
         u64 name_last = (past_runs(cur.ident, starts) >> 1) | lit.closes | 1ULL << 63;
