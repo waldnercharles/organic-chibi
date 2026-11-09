@@ -25,6 +25,7 @@
 #endif
 
 TEST_SUITE(lexer_tests);
+TEST_SUITE(parser_tests);
 
 int
 main(void)
@@ -33,6 +34,7 @@ main(void)
     pu_display_quiet(true);
 
     RUN_TEST_SUITE(lexer_tests);
+    RUN_TEST_SUITE(parser_tests);
 
     printf("test: %s (" ARCH SIMD PATH ")\n", pu_test_failed() ? "FAILED" : "passed");
     return pu_test_failed();
