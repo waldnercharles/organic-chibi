@@ -2,11 +2,12 @@
 
 #include "../src/arena.h"
 #include "../src/lexer.h"
-#include "../test/samples.h"
+#include "../test/programs.h"
 
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 #include <unistd.h>
 #ifdef __APPLE__
@@ -18,6 +19,21 @@
 #include "../vendor/xxhash/xxhash.h"
 
 #define MAX_THREADS 64
+#define NPROGRAMS 1600
+#define PROGRAM_PIECES 2000
+
+typedef struct
+{
+    char *text;
+    size_t len;
+} Program;
+
+typedef struct
+{
+    Program *files;
+    u32 count;
+    size_t total_len, max_len;
+} Programs;
 
 static u64
 checksum(Tokens tokens, int n)
@@ -51,7 +67,7 @@ line_checksum(Tokens tokens, int n)
 }
 
 static u64
-fingerprint(const Samples *s, Tokens tokens, Arena *arena)
+fingerprint(const Programs *s, Tokens tokens, Arena *arena)
 {
     Lexer lx;
     lexer_init(&lx, arena, s->total_len);
@@ -77,7 +93,7 @@ now_sec(void)
 }
 
 static u64
-lex_pass(const Sample *files, u32 lo, u32 hi, size_t bytes, Tokens tokens, Arena *pass)
+lex_pass(const Program *files, u32 lo, u32 hi, size_t bytes, Tokens tokens, Arena *pass)
 {
     arena_reset(pass);
     Lexer lx;
@@ -107,7 +123,7 @@ cpu_counters(u64 *instructions, u64 *cycles)
 
 typedef struct
 {
-    const Sample *files;
+    const Program *files;
     u32 lo, hi;
     Tokens tokens;
     Arena pass;
@@ -146,7 +162,7 @@ worker_main(void *arg)
 static volatile u64 g_sink;
 
 static void
-measure(const Samples *s, Arena *setup, u32 nthreads)
+measure(const Programs *s, Arena *setup, u32 nthreads)
 {
     pthread_t tids[MAX_THREADS];
     Worker w[MAX_THREADS];
@@ -187,19 +203,40 @@ measure(const Samples *s, Arena *setup, u32 nthreads)
     printf("\n");
 }
 
+static Programs
+make_programs(void)
+{
+    size_t cap = PROGRAM_PIECES * PIECE_MAX_LEN;
+    Programs s = { .files = malloc(NPROGRAMS * sizeof *s.files), .count = NPROGRAMS };
+    size_t page = (size_t)sysconf(_SC_PAGESIZE);
+    u64 rng = 1;
+    for (u32 i = 0; i < NPROGRAMS; i++) {
+        void *text;
+        if (posix_memalign(&text, page, cap + LEXER_SOURCE_PADDING) != 0) {
+            perror("posix_memalign");
+            exit(1);
+        }
+
+        memset(text, 0, cap + LEXER_SOURCE_PADDING);
+        size_t len = random_program(&rng, text, all_pieces, PROGRAM_PIECES);
+
+        s.files[i] = (Program){ text, len };
+        s.total_len += len;
+        s.max_len = len > s.max_len ? len : s.max_len;
+    }
+
+    return s;
+}
+
 int
 main(void)
 {
-    Samples s = samples_load(SAMPLES_DIR);
-    if (s.count == 0) {
-        fprintf(stderr, "bench: no samples in %s\n", SAMPLES_DIR);
-        return 1;
-    }
-
     Arena setup = { 0 }, scratch = { 0 };
+    Programs s = make_programs();
+
     u64 print = fingerprint(&s, lexer_alloc_tokens(&setup, s.max_len), &scratch);
     printf(
-        "bench: %u files, %.2f MB, fingerprint 0x%016llx\n",
+        "bench: %u programs, %.2f MB, fingerprint 0x%016llx\n",
         s.count,
         (double)s.total_len / (1024.0 * 1024.0),
         (unsigned long long)print

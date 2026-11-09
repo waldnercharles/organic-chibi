@@ -29,7 +29,7 @@ endif
 
 bench:
 	@mkdir -p build
-	@$(CC) $(FAST) -DNDEBUG -pthread -o build/bench bench/*.c test/samples.c $(SRC)
+	@$(CC) $(FAST) -DNDEBUG -pthread -o build/bench bench/*.c test/programs.c $(SRC)
 	@build/bench
 
 clean:
