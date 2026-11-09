@@ -115,6 +115,7 @@ typedef struct
     u8 *kinds;
     u32 *starts;
     u32 *ids;
+    u64 *line_starts;
 } Tokens;
 
 typedef struct
@@ -134,17 +135,32 @@ void lexer_init(Lexer *lx, Arena *arena, size_t total_source_bytes);
 // tokens. On an error it returns 0 and sets error and error_pos.
 int lexer_tokenize(Lexer *lx, const char *src, Tokens out);
 
+void print_error_at(const char *src, u32 pos, const char *msg);
+
 void lexer_print_error(const Lexer *lx, const char *src);
 
 static inline size_t
 lexer_max_tokens(size_t len)
 {
-    return len + 1;
+    return len + 1 + 8;
+}
+
+static inline size_t
+lexer_line_words(size_t len)
+{
+    return len / 64 + 1;
 }
 
 Tokens lexer_alloc_tokens(Arena *arena, size_t len);
 
 u32 lexer_token_length(const char *src, TokenKind kind, u32 start);
+
+static inline bool
+lexer_token_starts_line(Tokens t, int i)
+{
+    u32 at = t.starts[i];
+    return t.line_starts[at / 64] >> (at % 64) & 1;
+}
 
 const char *lexer_kind_name(TokenKind k);
 

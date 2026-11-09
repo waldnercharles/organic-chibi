@@ -27,6 +27,7 @@ read_source(Arena *arena, const char *path, size_t *out_len)
     if (fd < 0 || fstat(fd, &st) != 0) {
         fatal(path, "cannot open");
     }
+
     size_t len = (size_t)st.st_size;
     if (len > LEXER_MAX_SOURCE) {
         fatal(path, "too large");
@@ -36,6 +37,7 @@ read_source(Arena *arena, const char *path, size_t *out_len)
     if (!src) {
         fatal(path, "out of memory");
     }
+
     for (size_t got = 0; got < len;) {
         ssize_t n = read(fd, src + got, len - got);
         if (n <= 0) {
@@ -63,7 +65,7 @@ main(int argc, char **argv)
     char *src = read_source(&arena, argv[1], &len);
 
     Tokens tokens = lexer_alloc_tokens(&arena, len);
-    if (!tokens.kinds || !tokens.starts || !tokens.ids) {
+    if (!tokens.kinds || !tokens.starts || !tokens.ids || !tokens.line_starts) {
         fatal(argv[1], "out of memory");
     }
 
@@ -74,6 +76,7 @@ main(int argc, char **argv)
         lexer_print_error(&lx, src);
         return 1;
     }
+
     lexer_dump(stdout, src, tokens, ntok - 1);
     arena_free(&arena);
     return 0;

@@ -18,6 +18,12 @@
 #define SIMD ""
 #endif
 
+#ifdef CHIBI_LEXER_BULK
+#define PATH ", bulk lexer"
+#else
+#define PATH ""
+#endif
+
 TEST_SUITE(lexer_tests);
 
 int
@@ -28,6 +34,6 @@ main(void)
 
     RUN_TEST_SUITE(lexer_tests);
 
-    printf("test: %s (" ARCH SIMD ")\n", pu_test_failed() ? "FAILED" : "passed");
+    printf("test: %s (" ARCH SIMD PATH ")\n", pu_test_failed() ? "FAILED" : "passed");
     return pu_test_failed();
 }

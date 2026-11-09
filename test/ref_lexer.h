@@ -27,6 +27,7 @@ typedef struct
     u32 start;
     u32 length;
     u32 id;
+    bool starts_line;
 } RefToken;
 
 RefLexer *ref_lexer_new(void);

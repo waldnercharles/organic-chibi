@@ -40,6 +40,17 @@ lex_checksum(Lexer *lx, const char *src, Tokens tokens)
 }
 
 static u64
+line_checksum(Tokens tokens, int n)
+{
+    u64 sum = 0;
+    for (int k = 0; k < n; k++) {
+        sum = sum * 3 + lexer_token_starts_line(tokens, k);
+    }
+
+    return sum;
+}
+
+static u64
 fingerprint(const Samples *s, Tokens tokens, Arena *arena)
 {
     Lexer lx;
@@ -48,9 +59,11 @@ fingerprint(const Samples *s, Tokens tokens, Arena *arena)
     XXH64_state_t fs;
     XXH64_reset(&fs, 0);
     for (u32 i = 0; i < s->count; i++) {
-        u64 sum = lex_checksum(&lx, s->files[i].text, tokens);
+        int n = lexer_tokenize(&lx, s->files[i].text, tokens);
+        u64 sum = checksum(tokens, n) + line_checksum(tokens, n);
         XXH64_update(&fs, &sum, sizeof sum);
     }
+
     return XXH64_digest(&fs);
 }
 
@@ -59,6 +72,7 @@ now_sec(void)
 {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
+
     return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
 }
 
@@ -110,6 +124,7 @@ worker_main(void *arg)
     for (u32 i = w->lo; i < w->hi; i++) {
         w->bytes += w->files[i].len;
     }
+
     lex_pass(w->files, w->lo, w->hi, w->bytes, w->tokens, &w->pass);
 
     u64 i0, c0, i1, c1;
@@ -124,6 +139,7 @@ worker_main(void *arg)
 
     w->instructions = i1 - i0;
     w->cycles = c1 - c0;
+
     return NULL;
 }
 
@@ -148,6 +164,7 @@ measure(const Samples *s, Arena *setup, u32 nthreads)
             exit(1);
         }
     }
+
     for (u32 t = 0; t < nthreads; t++) {
         pthread_join(tids[t], NULL);
     }
@@ -190,7 +207,9 @@ main(void)
 
     u32 ncpu = (u32)sysconf(_SC_NPROCESSORS_ONLN);
     ncpu = ncpu < MAX_THREADS ? ncpu : MAX_THREADS;
+
     measure(&s, &setup, 1);
     measure(&s, &setup, ncpu < s.count ? ncpu : s.count);
+
     return 0;
 }

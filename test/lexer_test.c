@@ -16,19 +16,21 @@ print_mismatch(const char *label, const char *src, int n, RefToken fast, RefToke
     fprintf(stderr, "%s: token #%d\n", label, n);
     fprintf(
         stderr,
-        "  fast: %-8s start=%u len=%u id=%u\n",
+        "  fast: %-8s start=%u len=%u id=%u starts_line=%d\n",
         lexer_kind_name(fast.kind),
         fast.start,
         fast.length,
-        fast.id
+        fast.id,
+        fast.starts_line
     );
     fprintf(
         stderr,
-        "  ref:  %-8s start=%u len=%u id=%u\n",
+        "  ref:  %-8s start=%u len=%u id=%u starts_line=%d\n",
         lexer_kind_name(ref.kind),
         ref.start,
         ref.length,
-        ref.id
+        ref.id,
+        ref.starts_line
     );
 
     u32 from = ref.start > 20 ? ref.start - 20 : 0;
@@ -66,7 +68,12 @@ static Tokens
 tokens_new(size_t len)
 {
     size_t n = lexer_max_tokens(len);
-    return (Tokens){ malloc(n), malloc(n * sizeof(u32)), malloc(n * sizeof(u32)) };
+    return (Tokens){
+        malloc(n),
+        malloc(n * sizeof(u32)),
+        malloc(n * sizeof(u32)),
+        malloc(lexer_line_words(len) * sizeof(u64)),
+    };
 }
 
 static void
@@ -75,6 +82,7 @@ tokens_free(Tokens t)
     free(t.kinds);
     free(t.starts);
     free(t.ids);
+    free(t.line_starts);
 }
 
 static RefToken
@@ -87,6 +95,7 @@ fast_token(const char *src, Tokens t, int n)
         t.starts[n],
         lexer_token_length(src, kind, t.starts[n]),
         named ? t.ids[n] : 0,
+        lexer_token_starts_line(t, n),
     };
 }
 
@@ -96,25 +105,37 @@ matches_reference(const char *label, const char *src, size_t len, Lexer *lx, Ref
     Tokens fast = tokens_new(len);
     int nfast = lexer_tokenize(lx, src, fast);
 
+    RefToken *ref = malloc((len + 1) * sizeof *ref);
+    int nref = 0;
     rl->error = NULL;
-    int pos_ref = 0;
-    for (int n = 0;; n++) {
-        RefToken b = ref_next(rl, src, pos_ref);
-        if (nfast > 0 && rl->error == NULL) {
+    for (int pos = 0;;) {
+        RefToken b = ref_next(rl, src, pos);
+        if (rl->error != NULL) {
+            break;
+        }
+        ref[nref++] = b;
+        if (b.kind == TK_EOF) {
+            break;
+        }
+        pos = (int)(b.start + b.length);
+    }
+
+    if (nfast > 0 && rl->error == NULL) {
+        for (int n = 0; n < nref; n++) {
             RefToken a = n < nfast ? fast_token(src, fast, n)
-                                   : (RefToken){ TK_OP, UINT32_MAX, UINT32_MAX, 0 };
+                                   : (RefToken){ TK_OP, UINT32_MAX, UINT32_MAX, 0, false };
+            RefToken b = ref[n];
             if (a.kind != b.kind || a.start != b.start ||
-                a.length != b.length || a.id != b.id) {
+                a.length != b.length || a.id != b.id || a.starts_line != b.starts_line) {
                 print_mismatch(label, src, n, a, b);
+                free(ref);
                 tokens_free(fast);
                 return false;
             }
         }
-        if (rl->error != NULL || b.kind == TK_EOF) {
-            break;
-        }
-        pos_ref = b.start + b.length;
     }
+
+    free(ref);
     tokens_free(fast);
 
     bool fast_failed = nfast == 0, ref_failed = rl->error != NULL;
@@ -177,6 +198,17 @@ static const char *EDGE_CASES[] = {
     "// " LONG_TEXT "\"\n\"iii\n",
     "\"// " LONG_TEXT "\" k // \"\n\"\\q\"",
     "// " LONG_TEXT,
+    "( [ ) ]",
+    "{{{ ))) ]]]",
+    "([{}]) {[()]}",
+    "{ ( } )",
+    "f(a[1], {b}) )",
+    "((((((((((((((((((((((((((((((((((((((((x))))))))))))))))))))))))))))))))))))))))",
+    "a\nb c\n\nd",
+    "a // c\nb\n// only\n\n  c\r\n d",
+    "\"s\"\nx 1.5\ny \"t\" z",
+    "x \\ y\n// a comment that ends the file",
+    "x \\ y\n// " LONG_TEXT "\n z",
 };
 // clang-format on
 
@@ -250,13 +282,14 @@ enum
 {
     NPIECES = sizeof PIECES / sizeof PIECES[0],
     MAX_PIECES = 400,
+    MAX_LONG_PIECES = 4000,
 };
 
 static size_t
 gen_program(u64 *rng, char *buf, size_t cap)
 {
     size_t len = 0;
-    int npieces = rnd(rng, MAX_PIECES);
+    int npieces = rnd(rng, 50) == 0 ? rnd(rng, MAX_LONG_PIECES) : rnd(rng, MAX_PIECES);
     for (int i = 0; i < npieces; i++) {
         char name[16];
         const char *piece = PIECES[rnd(rng, NPIECES)];
@@ -279,7 +312,9 @@ TEST_CASE(random_programs)
     {
         NPROGRAMS = 5000
     };
+
     char **programs = calloc(NPROGRAMS, sizeof *programs);
+
     Arena arena = { 0 };
     Lexer lx;
     lexer_init(&lx, &arena, 0);
@@ -287,9 +322,11 @@ TEST_CASE(random_programs)
 
     u64 rng = 1;
     bool same = true;
+    size_t cap = MAX_LONG_PIECES * 64;
+    char *buf = malloc(cap);
+
     for (int i = 0; i < NPROGRAMS && same; i++) {
-        char buf[MAX_PIECES * 64];
-        size_t len = gen_program(&rng, buf, sizeof buf);
+        size_t len = gen_program(&rng, buf, cap);
         programs[i] = calloc(len + LEXER_SOURCE_PADDING, 1);
         memcpy(programs[i], buf, len);
 
@@ -298,6 +335,7 @@ TEST_CASE(random_programs)
         same = matches_reference(label, programs[i], len, &lx, rl);
     }
 
+    free(buf);
     ref_lexer_free(rl);
     arena_free(&arena);
     for (int i = 0; i < NPROGRAMS; i++) {
@@ -342,10 +380,12 @@ print_first_difference(const char *got, size_t got_len, const char *want, size_t
     while (i < got_len && i < want_len && got[i] == want[i]) {
         i++;
     }
+
     size_t line_start = i;
     while (line_start > 0 && want[line_start - 1] != '\n') {
         line_start--;
     }
+
     int line = 1;
     for (size_t k = 0; k < line_start; k++) {
         line += want[k] == '\n';

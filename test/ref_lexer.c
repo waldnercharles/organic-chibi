@@ -100,6 +100,7 @@ intern(RefLexer *rl, const char *s, int len)
             return n->id;
         }
     }
+
     RefName *n = malloc(sizeof *n);
     *n = (RefName){ s, len, rl->next_id++, *head };
     *head = n;
@@ -134,37 +135,23 @@ fail(RefLexer *rl, int pos, const char *msg)
 {
     rl->error = msg;
     rl->error_pos = pos;
-    return (RefToken){ TK_EOF, pos, 0, 0 };
+    return (RefToken){ TK_EOF, pos, 0, 0, false };
 }
 
-RefToken
-ref_next(RefLexer *rl, const char *src, int pos)
+static RefToken
+ref_token(RefLexer *rl, const char *src, int start)
 {
-    int i = pos;
-
-    for (;;) {
-        if (is_space(src[i])) {
-            i++;
-        } else if (src[i] == '/' && src[i + 1] == '/') {
-            while (src[i] != '\n' && src[i] != '\0') {
-                i++;
-            }
-        } else {
-            break;
-        }
-    }
-
-    int start = i;
+    int i = start;
     char c = src[i];
-
     if (c == '\0') {
-        return (RefToken){ TK_EOF, start, 0, 0 };
+        return (RefToken){ TK_EOF, start, 0, 0, false };
     }
 
     if (is_ident_start(c)) {
         while (is_ident(src[i])) {
             i++;
         }
+
         int len = i - start;
         TokenKind kind = TK_IDENT;
         for (size_t k = 0; k < sizeof KEYWORDS / sizeof KEYWORDS[0]; k++) {
@@ -173,7 +160,7 @@ ref_next(RefLexer *rl, const char *src, int pos)
                 kind = KEYWORDS[k].kind;
             }
         }
-        return (RefToken){ kind, start, len, intern(rl, src + start, len) };
+        return (RefToken){ kind, start, len, intern(rl, src + start, len), false };
     }
 
     if (is_digit(c)) {
@@ -198,7 +185,7 @@ ref_next(RefLexer *rl, const char *src, int pos)
                 }
             }
         }
-        return (RefToken){ is_float ? TK_FLOAT : TK_INT, start, i - start, 0 };
+        return (RefToken){ is_float ? TK_FLOAT : TK_INT, start, i - start, 0, false };
     }
 
     if (c == '"') {
@@ -222,19 +209,43 @@ ref_next(RefLexer *rl, const char *src, int pos)
                 i++;
             }
         }
-        return (RefToken){ TK_STRING, start, i + 1 - start, 0 };
+        return (RefToken){ TK_STRING, start, i + 1 - start, 0, false };
     }
 
     for (size_t k = 0; k < sizeof OPS / sizeof OPS[0]; k++) {
         const char *op = OPS[k].text;
         size_t n = strlen(op);
         if (strncmp(src + start, op, n) == 0) {
-            return (RefToken){ OPS[k].kind, start, (int)n, 0 };
+            return (RefToken){ OPS[k].kind, start, (int)n, 0, false };
         }
     }
 
     if ((u8)c >= 0x21) {
-        return (RefToken){ TK_OP, start, 1, 0 };
+        return (RefToken){ TK_OP, start, 1, 0, false };
     }
     return fail(rl, start, "unexpected character");
+}
+
+RefToken
+ref_next(RefLexer *rl, const char *src, int pos)
+{
+    int i = pos;
+    bool starts_line = pos == 0;
+
+    for (;;) {
+        if (is_space(src[i])) {
+            starts_line |= src[i] == '\n';
+            i++;
+        } else if (src[i] == '/' && src[i + 1] == '/') {
+            while (src[i] != '\n' && src[i] != '\0') {
+                i++;
+            }
+        } else {
+            break;
+        }
+    }
+
+    RefToken t = ref_token(rl, src, i);
+    t.starts_line = starts_line || t.kind == TK_EOF;
+    return t;
 }

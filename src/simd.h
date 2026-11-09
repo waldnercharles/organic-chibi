@@ -17,6 +17,8 @@ typedef uint8x16_t u8x16;
 typedef u8 u8x16 __attribute__((vector_size(16)));
 #endif
 
+typedef u32 u32x4 __attribute__((vector_size(16)));
+
 typedef struct
 {
     u8x16 v[4];

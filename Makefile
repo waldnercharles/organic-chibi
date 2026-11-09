@@ -18,10 +18,13 @@ test:
 	@mkdir -p build
 	@$(CC) $(SAFE) -o build/test test/*.c $(SRC)
 	@$(CC) $(SAFE) -DCHIBI_SIMD_GENERIC -o build/test-generic test/*.c $(SRC)
+	@$(CC) $(SAFE) -DCHIBI_LEXER_BULK -o build/test-bulk test/*.c $(SRC)
 	@build/test
 	@build/test-generic
+	@build/test-bulk
 ifeq ($(shell uname -sm),Darwin arm64)
 	@arch -x86_64 build/test
+	@arch -x86_64 build/test-bulk
 endif
 
 bench:
