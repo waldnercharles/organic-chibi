@@ -7,26 +7,21 @@
 #include <stdio.h>
 
 // clang-format off
-#define CHIBI_TOKENS(OTHER, KW, OP2, OP1)                                      \
+#define CHIBI_TOKENS(OTHER, KW, OP3, OP2, OP1)                                 \
     OTHER(TK_EOF, "EOF")                                                       \
-    OTHER(TK_IDENT, "IDENT")                                                   \
     OTHER(TK_INT, "INT")                                                       \
     OTHER(TK_FLOAT, "FLOAT")                                                   \
     OTHER(TK_STRING, "STRING")                                                 \
+    OTHER(TK_IDENT, "IDENT")                                                   \
     KW(TK_IF, "if")                                                            \
     KW(TK_ELSE, "else")                                                        \
     KW(TK_FOR, "for")                                                          \
     KW(TK_WHILE, "while")                                                      \
     KW(TK_SWITCH, "switch")                                                    \
-    KW(TK_CASE, "case")                                                        \
     KW(TK_BREAK, "break")                                                      \
     KW(TK_CONTINUE, "continue")                                                \
     KW(TK_RETURN, "return")                                                    \
     KW(TK_DEFER, "defer")                                                      \
-    KW(TK_YIELD, "yield")                                                      \
-    KW(TK_GOTO, "goto")                                                        \
-    KW(TK_DEFAULT, "default")                                                  \
-    KW(TK_TYPE, "type")                                                        \
     KW(TK_STRUCT, "struct")                                                    \
     KW(TK_UNION, "union")                                                      \
     KW(TK_ENUM, "enum")                                                        \
@@ -39,12 +34,27 @@
     KW(TK_NIL, "nil")                                                          \
     KW(TK_IS, "is")                                                            \
     KW(TK_IN, "in")                                                            \
-    KW(TK_AS, "as")                                                            \
-    KW(TK_SIZEOF, "sizeof")                                                    \
-    KW(TK_ALIGNOF, "alignof")                                                  \
-    KW(TK_OFFSETOF, "offsetof")                                                \
-    KW(TK_TYPEOF, "typeof")                                                    \
-    KW(TK_CAST, "cast")                                                        \
+    KW(TK_BITCAST, "bitcast")                                                  \
+    KW(TK_AND, "and")                                                          \
+    KW(TK_OR, "or")                                                            \
+    KW(TK_CONST, "const")                                                      \
+    KW(TK_EXPORT, "export")                                                    \
+    KW(TK_UNDEFINED, "undefined")                                              \
+    KW(TK_TRY, "try")                                                          \
+    KW(TK_CATCH, "catch")                                                      \
+    OP1(TK_LPAREN, '(')                                                        \
+    OP1(TK_LBRACK, '[')                                                        \
+    OP1(TK_PERIOD, '.')                                                        \
+    OP2(TK_DEREF, '.', '*')                                                    \
+    OP2(TK_UNWRAP, '!', '!')                                                   \
+    OP1(TK_COLON, ':')                                                         \
+    OP3(TK_SHLEQ, '<', '<', '=')                                               \
+    OP3(TK_SHREQ, '>', '>', '=')                                               \
+    OP3(TK_RANGE_INCLUSIVE, '.', '.', '=')                                     \
+    OP3(TK_ADD_WRAP_EQ, '+', '%', '=')                                         \
+    OP3(TK_SUB_WRAP_EQ, '-', '%', '=')                                         \
+    OP3(TK_MUL_WRAP_EQ, '*', '%', '=')                                         \
+    OP3(TK_OR_ELSE_EQ, '?', '?', '=')                                          \
     OP2(TK_SHL, '<', '<')                                                      \
     OP2(TK_SHR, '>', '>')                                                      \
     OP2(TK_ANDAND, '&', '&')                                                   \
@@ -52,6 +62,9 @@
     OP2(TK_ADDEQ, '+', '=')                                                    \
     OP2(TK_SUBEQ, '-', '=')                                                    \
     OP2(TK_MULEQ, '*', '=')                                                    \
+    OP2(TK_ADD_WRAP, '+', '%')                                                 \
+    OP2(TK_SUB_WRAP, '-', '%')                                                 \
+    OP2(TK_MUL_WRAP, '*', '%')                                                 \
     OP2(TK_DIVEQ, '/', '=')                                                    \
     OP2(TK_MODEQ, '%', '=')                                                    \
     OP2(TK_ANDEQ, '&', '=')                                                    \
@@ -63,9 +76,11 @@
     OP2(TK_NEQ, '!', '=')                                                      \
     OP2(TK_LTE, '<', '=')                                                      \
     OP2(TK_GTE, '>', '=')                                                      \
-    OP2(TK_ELLIPSIS, '.', '.')                                                 \
+    OP2(TK_RANGE, '.', '.')                                                    \
     OP2(TK_DCOLON, ':', ':')                                                   \
     OP2(TK_DASSIGN, ':', '=')                                                  \
+    OP2(TK_OR_ELSE, '?', '?')                                                  \
+    OP2(TK_QUESTION_EQ, '?', '=')                                              \
     OP1(TK_PLUS, '+')                                                          \
     OP1(TK_MINUS, '-')                                                         \
     OP1(TK_STAR, '*')                                                          \
@@ -76,21 +91,17 @@
     OP1(TK_AT, '@')                                                            \
     OP1(TK_DOLLAR, '$')                                                        \
     OP1(TK_QUESTION, '?')                                                      \
-    OP1(TK_AND, '&')                                                           \
-    OP1(TK_OR, '|')                                                            \
+    OP1(TK_AMP, '&')                                                           \
+    OP1(TK_PIPE, '|')                                                          \
     OP1(TK_XOR, '^')                                                           \
     OP1(TK_COMPL, '~')                                                         \
     OP1(TK_LT, '<')                                                            \
     OP1(TK_GT, '>')                                                            \
-    OP1(TK_COLON, ':')                                                         \
     OP1(TK_SEMI, ';')                                                          \
-    OP1(TK_PERIOD, '.')                                                        \
     OP1(TK_COMMA, ',')                                                         \
     OP1(TK_LBRACE, '{')                                                        \
     OP1(TK_RBRACE, '}')                                                        \
-    OP1(TK_LPAREN, '(')                                                        \
     OP1(TK_RPAREN, ')')                                                        \
-    OP1(TK_LBRACK, '[')                                                        \
     OP1(TK_RBRACK, ']')                                                        \
     OTHER(TK_OP, "op")
 // clang-format on
@@ -98,7 +109,7 @@
 #define CHIBI_TOKEN_NAME(name, ...) name,
 typedef enum
 {
-    CHIBI_TOKENS(CHIBI_TOKEN_NAME, CHIBI_TOKEN_NAME, CHIBI_TOKEN_NAME, CHIBI_TOKEN_NAME)
+    CHIBI_TOKENS(CHIBI_TOKEN_NAME, CHIBI_TOKEN_NAME, CHIBI_TOKEN_NAME, CHIBI_TOKEN_NAME, CHIBI_TOKEN_NAME)
 } TokenKind;
 
 #define CHIBI_SKIP(...)
@@ -106,9 +117,49 @@ typedef enum
 
 enum
 {
-    NKINDS = 0 CHIBI_TOKENS(CHIBI_COUNT, CHIBI_COUNT, CHIBI_COUNT, CHIBI_COUNT),
-    NKEYWORDS = 0 CHIBI_TOKENS(CHIBI_SKIP, CHIBI_COUNT, CHIBI_SKIP, CHIBI_SKIP),
+    NKINDS = 0 CHIBI_TOKENS(CHIBI_COUNT, CHIBI_COUNT, CHIBI_COUNT, CHIBI_COUNT, CHIBI_COUNT),
+    NKEYWORDS = 0 CHIBI_TOKENS(CHIBI_SKIP, CHIBI_COUNT, CHIBI_SKIP, CHIBI_SKIP, CHIBI_SKIP),
 };
+
+// clang-format off
+#define CHIBI_BUILTIN_NAMES(TYPE, OTHER)                                       \
+    TYPE(NAME_VOID, "void")                                                    \
+    TYPE(NAME_BOOL, "bool")                                                    \
+    TYPE(NAME_INT, "int")                                                      \
+    TYPE(NAME_I8, "i8")                                                        \
+    TYPE(NAME_I16, "i16")                                                      \
+    TYPE(NAME_I32, "i32")                                                      \
+    TYPE(NAME_I64, "i64")                                                      \
+    TYPE(NAME_U8, "u8")                                                        \
+    TYPE(NAME_U16, "u16")                                                      \
+    TYPE(NAME_U32, "u32")                                                      \
+    TYPE(NAME_U64, "u64")                                                      \
+    TYPE(NAME_F32, "f32")                                                      \
+    TYPE(NAME_F64, "f64")                                                      \
+    TYPE(NAME_UINTPTR, "uintptr")                                              \
+    TYPE(NAME_ERROR, "error")                                                  \
+    OTHER(NAME_TAIL, "tail")                                                   \
+    OTHER(NAME_DISCARD, "_")
+// clang-format on
+
+#define CHIBI_BUILTIN_NAME_ID(name, text) name,
+typedef enum
+{
+    NAME_LAST_KEYWORD = NKEYWORDS,
+    CHIBI_BUILTIN_NAMES(CHIBI_BUILTIN_NAME_ID, CHIBI_BUILTIN_NAME_ID)
+} BuiltinName;
+
+enum
+{
+    NBUILTIN_TYPES = 0 CHIBI_BUILTIN_NAMES(CHIBI_COUNT, CHIBI_SKIP),
+    NFIXED_NAMES = NKEYWORDS CHIBI_BUILTIN_NAMES(CHIBI_COUNT, CHIBI_COUNT),
+};
+
+static inline bool
+lexer_kind_has_id(TokenKind kind)
+{
+    return kind == TK_IDENT || (kind >= TK_IF && kind < TK_IF + NKEYWORDS);
+}
 
 typedef struct
 {

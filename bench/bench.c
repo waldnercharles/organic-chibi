@@ -2,7 +2,8 @@
 
 #include "../src/arena.h"
 #include "../src/lexer.h"
-#include "../test/programs.h"
+#include "../src/parser.h"
+#include "../test/random/code.h"
 
 #include <pthread.h>
 #include <stdio.h>
@@ -20,7 +21,8 @@
 
 #define MAX_THREADS 64
 #define NPROGRAMS 1600
-#define PROGRAM_PIECES 2000
+#define PROGRAM_MIN_SIZE 1024
+#define PROGRAM_SIZE_RANGE 8192
 
 typedef struct
 {
@@ -32,7 +34,7 @@ typedef struct
 {
     Program *files;
     u32 count;
-    size_t total_len, max_len;
+    size_t total_len, max_len, lines;
 } Programs;
 
 static u64
@@ -50,12 +52,6 @@ checksum(Tokens tokens, int n)
 }
 
 static u64
-lex_checksum(Lexer *lx, const char *src, Tokens tokens)
-{
-    return checksum(tokens, lexer_tokenize(lx, src, tokens));
-}
-
-static u64
 line_checksum(Tokens tokens, int n)
 {
     u64 sum = 0;
@@ -67,7 +63,18 @@ line_checksum(Tokens tokens, int n)
 }
 
 static u64
-fingerprint(const Programs *s, Tokens tokens, Arena *arena)
+node_checksum(Nodes nodes, int n)
+{
+    u64 sum = 0;
+    for (int k = 0; k < n; k++) {
+        sum = sum * 31 + (u64)nodes.kinds[k] * 0x9E3779B97F4A7C15ULL +
+              nodes.tokens[k];
+    }
+    return sum;
+}
+
+static u64
+fingerprint(const Programs *s, Tokens tokens, Nodes nodes, Arena *arena)
 {
     Lexer lx;
     lexer_init(&lx, arena, s->total_len);
@@ -76,7 +83,17 @@ fingerprint(const Programs *s, Tokens tokens, Arena *arena)
     XXH64_reset(&fs, 0);
     for (u32 i = 0; i < s->count; i++) {
         int n = lexer_tokenize(&lx, s->files[i].text, tokens);
-        u64 sum = checksum(tokens, n) + line_checksum(tokens, n);
+
+        Parser parser;
+        int count = parser_parse(&parser, tokens, n, nodes);
+        if (count < 0) {
+            fprintf(stderr, "bench: program %u does not parse\n", i);
+            parser_print_error(&parser, s->files[i].text);
+            exit(1);
+        }
+
+        u64 sum = checksum(tokens, n) + line_checksum(tokens, n) +
+                  node_checksum(nodes, count);
         XXH64_update(&fs, &sum, sizeof sum);
     }
 
@@ -90,19 +107,6 @@ now_sec(void)
     clock_gettime(CLOCK_MONOTONIC, &ts);
 
     return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
-}
-
-static u64
-lex_pass(const Program *files, u32 lo, u32 hi, size_t bytes, Tokens tokens, Arena *pass)
-{
-    arena_reset(pass);
-    Lexer lx;
-    lexer_init(&lx, pass, bytes);
-    u64 sum = 0;
-    for (u32 i = lo; i < hi; i++) {
-        sum += lex_checksum(&lx, files[i].text, tokens);
-    }
-    return sum;
 }
 
 static void
@@ -123,31 +127,46 @@ cpu_counters(u64 *instructions, u64 *cycles)
 
 typedef struct
 {
-    const Program *files;
-    u32 lo, hi;
+    const Programs *programs;
     Tokens tokens;
+    Nodes nodes;
+    bool parse;
     Arena pass;
-    size_t bytes;
     u64 passes, sum;
     double seconds;
     u64 instructions, cycles;
 } Worker;
 
+static u64
+run_pass(Worker *w)
+{
+    arena_reset(&w->pass);
+    Lexer lx;
+    lexer_init(&lx, &w->pass, w->programs->total_len);
+
+    u64 sum = 0;
+    for (u32 i = 0; i < w->programs->count; i++) {
+        int n = lexer_tokenize(&lx, w->programs->files[i].text, w->tokens);
+        sum += (u64)n;
+        if (w->parse) {
+            Parser parser;
+            sum += (u64)parser_parse(&parser, w->tokens, n, w->nodes);
+        }
+    }
+    return sum;
+}
+
 static void *
 worker_main(void *arg)
 {
     Worker *w = arg;
-    for (u32 i = w->lo; i < w->hi; i++) {
-        w->bytes += w->files[i].len;
-    }
-
-    lex_pass(w->files, w->lo, w->hi, w->bytes, w->tokens, &w->pass);
+    run_pass(w);
 
     u64 i0, c0, i1, c1;
     cpu_counters(&i0, &c0);
     double t0 = now_sec();
     do {
-        w->sum += lex_pass(w->files, w->lo, w->hi, w->bytes, w->tokens, &w->pass);
+        w->sum += run_pass(w);
         w->passes++;
     } while (w->passes < 3 || now_sec() - t0 < 0.25);
     w->seconds = now_sec() - t0;
@@ -161,20 +180,27 @@ worker_main(void *arg)
 
 static volatile u64 g_sink;
 
-static void
-measure(const Programs *s, Arena *setup, u32 nthreads)
+typedef struct
+{
+    double mb_per_sec;
+    double lines_per_sec;
+    double cycles_per_byte;
+    double cycles_per_line;
+    double instructions_per_byte;
+} Speed;
+
+static Speed
+measure(const Programs *sets, Arena *setup, u32 nthreads, bool parse)
 {
     pthread_t tids[MAX_THREADS];
     Worker w[MAX_THREADS];
-    u32 per = s->count / nthreads, rem = s->count % nthreads, lo = 0;
     for (u32 t = 0; t < nthreads; t++) {
         w[t] = (Worker){
-            .files = s->files,
-            .lo = lo,
-            .hi = lo + per + (t < rem ? 1 : 0),
-            .tokens = lexer_alloc_tokens(setup, s->max_len),
+            .programs = &sets[t],
+            .tokens = lexer_alloc_tokens(setup, sets[t].max_len),
+            .nodes = parser_alloc_nodes(setup, (int)lexer_max_tokens(sets[t].max_len)),
+            .parse = parse,
         };
-        lo = w[t].hi;
         if (pthread_create(&tids[t], NULL, worker_main, &w[t]) != 0) {
             perror("pthread_create");
             exit(1);
@@ -185,68 +211,132 @@ measure(const Programs *s, Arena *setup, u32 nthreads)
         pthread_join(tids[t], NULL);
     }
 
-    double bytes = 0, seconds = 0;
+    double bytes = 0, lines = 0, seconds = 0;
     for (u32 t = 0; t < nthreads; t++) {
-        bytes += (double)w[t].bytes * (double)w[t].passes;
+        bytes += (double)w[t].programs->total_len * (double)w[t].passes;
+        lines += (double)w[t].programs->lines * (double)w[t].passes;
         seconds = w[t].seconds > seconds ? w[t].seconds : seconds;
         g_sink += w[t].sum;
     }
 
-    printf("%4u %s %6.0f MB/s", nthreads, nthreads == 1 ? "thread: " : "threads:", bytes / 1e6 / seconds);
-    if (nthreads == 1 && w[0].cycles > 0) {
+    return (Speed){
+        .mb_per_sec = bytes / 1e6 / seconds,
+        .lines_per_sec = lines / seconds,
+        .cycles_per_byte = (double)w[0].cycles / bytes,
+        .cycles_per_line = (double)w[0].cycles / lines,
+        .instructions_per_byte = (double)w[0].instructions / bytes,
+    };
+}
+
+static void
+print_speed(const char *what, u32 nthreads, Speed speed)
+{
+    printf(
+        "%-14s %3u %s %6.0f MB/s, %6.1f M lines/s",
+        what,
+        nthreads,
+        nthreads == 1 ? "thread: " : "threads:",
+        speed.mb_per_sec,
+        speed.lines_per_sec / 1e6
+    );
+    if (nthreads == 1 && speed.cycles_per_byte > 0) {
         printf(
-            ", %.3f cycles/B, %.3f instr/B",
-            (double)w[0].cycles / bytes,
-            (double)w[0].instructions / bytes
+            ", %.3f cycles/B, %.1f cycles/line, %.3f instr/B",
+            speed.cycles_per_byte,
+            speed.cycles_per_line,
+            speed.instructions_per_byte
         );
     }
     printf("\n");
 }
 
-static Programs
-make_programs(void)
+static size_t
+count_lines(const char *text, size_t len)
 {
-    size_t cap = PROGRAM_PIECES * PIECE_MAX_LEN;
+    size_t lines = 0;
+    for (size_t i = 0; i < len; i++) {
+        lines += text[i] == '\n';
+    }
+    return lines + (len > 0 && text[len - 1] != '\n');
+}
+
+static Programs
+make_programs(Arena *scratch, u64 seed)
+{
+    u64 rng = seed;
+    Vocabulary v;
+    vocabulary_init(&rng, &v, scratch);
+
     Programs s = { .files = malloc(NPROGRAMS * sizeof *s.files), .count = NPROGRAMS };
     size_t page = (size_t)sysconf(_SC_PAGESIZE);
-    u64 rng = 1;
     for (u32 i = 0; i < NPROGRAMS; i++) {
+        size_t size = PROGRAM_MIN_SIZE + (size_t)random_below(&rng, PROGRAM_SIZE_RANGE);
+        size_t cap = size + CODE_SLACK + LEXER_SOURCE_PADDING;
+
         void *text;
-        if (posix_memalign(&text, page, cap + LEXER_SOURCE_PADDING) != 0) {
+        if (posix_memalign(&text, page, cap) != 0) {
             perror("posix_memalign");
             exit(1);
         }
 
-        memset(text, 0, cap + LEXER_SOURCE_PADDING);
-        size_t len = random_program(&rng, text, all_pieces, PROGRAM_PIECES);
+        memset(text, 0, cap);
+        size_t len = random_code(&rng, text, &v, size);
 
         s.files[i] = (Program){ text, len };
         s.total_len += len;
         s.max_len = len > s.max_len ? len : s.max_len;
+        s.lines += count_lines(text, len);
     }
 
     return s;
 }
 
 int
-main(void)
+main(int argc, char **argv)
 {
-    Arena setup = { 0 }, scratch = { 0 };
-    Programs s = make_programs();
+    bool train = argc > 1 && strcmp(argv[1], "train") == 0;
 
-    u64 print = fingerprint(&s, lexer_alloc_tokens(&setup, s.max_len), &scratch);
-    printf(
-        "bench: %u programs, %.2f MB, fingerprint 0x%016llx\n",
-        s.count,
-        (double)s.total_len / (1024.0 * 1024.0),
-        (unsigned long long)print
-    );
+    Arena setup = { 0 }, scratch = { 0 };
+    Programs sets[MAX_THREADS];
+    sets[0] = make_programs(&scratch, train ? 2 : 1);
+
+    Tokens tokens = lexer_alloc_tokens(&setup, sets[0].max_len);
+    Nodes nodes = parser_alloc_nodes(&setup, (int)lexer_max_tokens(sets[0].max_len));
+    u64 print = fingerprint(&sets[0], tokens, nodes, &scratch);
+    if (train) {
+        return 0;
+    }
 
     u32 ncpu = (u32)sysconf(_SC_NPROCESSORS_ONLN);
-    ncpu = ncpu < MAX_THREADS ? ncpu : MAX_THREADS;
+    u32 nthreads = ncpu < MAX_THREADS ? ncpu : MAX_THREADS;
+    for (u32 t = 1; t < nthreads; t++) {
+        sets[t] = make_programs(&scratch, 1 + 2 * (u64)t);
+    }
 
-    measure(&s, &setup, 1);
-    measure(&s, &setup, ncpu < s.count ? ncpu : s.count);
+    printf(
+        "bench: %u programs, %.2f MB, %zu lines (%.1f B/line), fingerprint 0x%016llx\n",
+        sets[0].count,
+        (double)sets[0].total_len / 1e6,
+        sets[0].lines,
+        (double)sets[0].total_len / (double)sets[0].lines,
+        (unsigned long long)print
+    );
+    printf("each of the %u threads lexes its own set of %u programs\n", nthreads, sets[0].count);
+
+    Speed lex = measure(sets, &setup, 1, false);
+    print_speed("lexer", 1, lex);
+    print_speed("lexer", nthreads, measure(sets, &setup, nthreads, false));
+
+    Speed both = measure(sets, &setup, 1, true);
+    print_speed("lexer + parser", 1, both);
+    print_speed("lexer + parser", nthreads, measure(sets, &setup, nthreads, true));
+
+    printf(
+        "parser alone:  %.3f cycles/B, %.1f cycles/line, %.3f instr/B\n",
+        both.cycles_per_byte - lex.cycles_per_byte,
+        both.cycles_per_line - lex.cycles_per_line,
+        both.instructions_per_byte - lex.instructions_per_byte
+    );
 
     return 0;
 }

@@ -2,7 +2,7 @@
 
 #include "../src/arena.h"
 #include "../vendor/pico_unit/pico_unit.h"
-#include "programs.h"
+#include "random/code.h"
 #include "ref_lexer.h"
 #include "samples.h"
 
@@ -123,11 +123,12 @@ matches_reference(const char *label, const char *src, size_t len, Lexer *lx, Ref
 
     if (nfast > 0 && rl->error == NULL) {
         for (int n = 0; n < nref; n++) {
-            RefToken a = n < nfast ? fast_token(src, fast, n)
-                                   : (RefToken){ TK_OP, UINT32_MAX, UINT32_MAX, 0, false };
+            RefToken a = n < nfast
+                           ? fast_token(src, fast, n)
+                           : (RefToken){ TK_OP, UINT32_MAX, UINT32_MAX, 0, false };
             RefToken b = ref[n];
-            if (a.kind != b.kind || a.start != b.start ||
-                a.length != b.length || a.id != b.id || a.starts_line != b.starts_line) {
+            if (a.kind != b.kind || a.start != b.start || a.length != b.length ||
+                a.id != b.id || a.starts_line != b.starts_line) {
                 print_mismatch(label, src, n, a, b);
                 free(ref);
                 tokens_free(fast);
@@ -167,6 +168,12 @@ static const char *EDGE_CASES[] = {
     "a_b_c_d_e_f_g_h_i_j\x7f",
     "name\xc3\xa9suffix",
     "1 1.5 1e5 1e+5 1e-5 1. 1.. 1..2 1ex 1e+ 12.5e3",
+    "1 1.5 1e5 1e+5 1e-5 1. 1.. 1..2 12.5e3 0 0.5 0e5 2.x 1._5 a1_0",
+    "0x1F 0xff_ff 0xABCDEF0123456789 0b1010 0b1_0 0o755 0o7_7 1_000 1_00_000 1_000.5 3.141_592 1e1_0 0..<1_0",
+    "0x", "0xG", "0b2", "0o8", "0b102", "0xFG", "0o78", "1_", "1__0", "0x_1", "1.5_", "1_.5", "1e5_",
+    "017", "0_1", "x := 007", "0X1F", "0B1", "0O7", "12ab", "1e5x", "0x1F.5", "0b1.5",
+    "007 " LONG_TEXT LONG_TEXT,
+    "x " LONG_TEXT " 1_0 0x_F " LONG_TEXT,
     "\"\" \"a\" \"esc\\\"aped\" \"\\u00e9\" \"\\\\\" \"tab\\t\"",
     "a // comment\nb //\n//\nc",
     "<<= >>= &&= ||= ... ::= -> => != == <= >= :: :=",
@@ -177,8 +184,15 @@ static const char *EDGE_CASES[] = {
     "a abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij b",
     "1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890abc",
     "=== ::= <<= >>> &&& ||| ... ->> =>= !== :::: ==== x===y",
+    "<<==> >>=> <<<= >>>= <<=== a<<=b a>>=b<<=c p.* p.*=1 p.*==q ..* .** a.*.b 1.*2",
+    "0..<n 1..=10 a..b ...< ..<= ..== ..<< .. < ..= x..<y.z 1.5..<2 0..<..=..",
     "\"abc\"def 12.5.6 1e5e5 12..34 a.b.c",
     "/=== /==> a/==b //=== x/=y ==/= 1/=2",
+    "a +% b -% c *% d +%= e -%= f *%= g -%x a+%b a-%b a*%b",
+    "+%% -%- *%* %+% +%=%= *%== -%> +%. %%= ++% --% **%= 1+%2 1-%=2",
+    "undefined undefinedx xundefined undefine",
+    "p!! p!!.x a!! + b x!!!! x!!=y x!!==y !!x !! ! !x !=!! a ?? b a??b x ?\?= y x?\?=y",
+    "?\?== ??? ???? ?\?\?= ?= ?=? ?== ?!! !?? ?. ?: ?* ?[ ?T ??T !!!= ?\?!= !!?",
     LONG_TEXT "+x 9 \"s\" a " LONG_TEXT,
     LONG_TEXT LONG_TEXT "+x 9 \"s\" a " LONG_TEXT LONG_TEXT,
     "\"abcdefghijklmnop\\\"qrstuvwxyz\" x",
@@ -248,6 +262,147 @@ TEST_CASE(edge_cases)
     return true;
 }
 
+static const struct
+{
+    const char *src;
+    const char *error;
+    u32 pos;
+} NUMBER_ERRORS[] = {
+    { "0x", "expected a hex digit", 2 },
+    { "0xG", "expected a hex digit", 2 },
+    { "0b2", "expected a binary digit", 2 },
+    { "0o8", "expected an octal digit", 2 },
+    { "0b102", "invalid digit in binary number", 4 },
+    { "0xFG", "invalid digit in hex number", 3 },
+    { "0o78", "invalid digit in octal number", 3 },
+    { "1_", "`_` must sit between two digits", 1 },
+    { "1__0", "`_` must sit between two digits", 1 },
+    { "0x_1", "`_` must sit between two digits", 2 },
+    { "1.5_", "`_` must sit between two digits", 3 },
+    { "017", "leading zeros are not allowed; use `0o` for octal", 0 },
+    { "x := 007", "leading zeros are not allowed; use `0o` for octal", 5 },
+    { "0_1", "leading zeros are not allowed; use `0o` for octal", 0 },
+    { "0X1F", "use a lowercase prefix like `0x`", 1 },
+    { "12ab", "a name cannot follow a number", 2 },
+    { "1e5x", "a name cannot follow a number", 3 },
+};
+
+static bool
+number_fails_with(const char *text, const char *error, u32 pos)
+{
+    size_t len = strlen(text);
+    char *src = calloc(len + LEXER_SOURCE_PADDING, 1);
+    memcpy(src, text, len);
+
+    Arena arena = { 0 };
+    Lexer lx;
+    lexer_init(&lx, &arena, len);
+    Tokens t = tokens_new(len);
+    int n = lexer_tokenize(&lx, src, t);
+
+    bool same = n == 0 && strcmp(lx.error, error) == 0 && lx.error_pos == pos;
+    if (!same) {
+        fprintf(
+            stderr,
+            "lex \"%s\"\n  got:  %s at byte %u\n  want: %s at byte %u\n",
+            text,
+            n == 0 ? lx.error : "no error",
+            lx.error_pos,
+            error,
+            pos
+        );
+    }
+
+    tokens_free(t);
+    arena_free(&arena);
+    free(src);
+    return same;
+}
+
+TEST_CASE(number_errors)
+{
+    for (size_t i = 0; i < sizeof NUMBER_ERRORS / sizeof NUMBER_ERRORS[0]; i++) {
+        REQUIRE(number_fails_with(
+            NUMBER_ERRORS[i].src,
+            NUMBER_ERRORS[i].error,
+            NUMBER_ERRORS[i].pos
+        ));
+    }
+    return true;
+}
+
+TEST_CASE(builtin_names)
+{
+    const char *text = "void error tail count";
+    size_t len = strlen(text);
+    char *src = calloc(len + LEXER_SOURCE_PADDING, 1);
+    memcpy(src, text, len);
+
+    Arena arena = { 0 };
+    Lexer lx;
+    lexer_init(&lx, &arena, len);
+    Tokens t = tokens_new(len);
+    int n = lexer_tokenize(&lx, src, t);
+
+    bool same = n == 5 && t.kinds[0] == TK_IDENT && t.kinds[1] == TK_IDENT &&
+                t.kinds[2] == TK_IDENT && t.ids[0] == NAME_VOID &&
+                t.ids[1] == NAME_ERROR && t.ids[2] == NAME_TAIL &&
+                t.ids[3] == NFIXED_NAMES + 1;
+
+    tokens_free(t);
+    arena_free(&arena);
+    free(src);
+    REQUIRE(same);
+    return true;
+}
+
+#define PIECE_MAX_LEN 64
+#define KEYWORD_PIECE(name, text) text,
+
+// clang-format off
+static const char *const PIECES[] = {
+    CHIBI_TOKENS(CHIBI_SKIP, KEYWORD_PIECE, CHIBI_SKIP, CHIBI_SKIP, CHIBI_SKIP)
+    "x", "_", "name", "Name_2", "abcdefg", "abcdefgh", "abcdefghx",
+    "abcdefghijklmno", "abcdefghijklmnop", "abcdefghijklmnopxy", "a_name_longer_than_sixteen_bytes",
+    "0", "7", "42", "3.14", "1.", "1e5", "1E9", "2e+8", "6e-3", "1e",
+    "0x1F", "0xff_ff", "0b1010", "0o755", "1_000", "1_000.5", "3.141_592", "1e1_0", "07", "1_", "0xG",
+    "\"\"", "\"text\"", "\"\\\" \\\\ \\/ \\b \\f \\n \\r \\t\"", "\"\\u00e9\\uABCD\"", "\"caf\xc3\xa9\"",
+    "\"// not a comment\"", "// comment\n", "//\n", "// \"quote\" \\ backslash\n",
+    "<<", ">>", "&&", "||", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "->", "=>", "==",
+    "!=", "<=", ">=", "..", "..<", "..=", "::", ":=", "+", "-", "*", "/", "%", "=", "!", "@", "$", "?", "&",
+    "+%", "-%", "*%", "+%=", "-%=", "*%=", "!!", "??", "?\?=",
+    "|", "^", "~", "<", ">", ":", ";", ".", ",", "{", "}", "(", ")", "[", "]", "#", "'", "\\",
+    "`", "\x7f", "\xc3\xa9",
+    " ", " ", " ", " ", "  ", "        ", "\t", "\n", "\n", "\r\n",
+};
+// clang-format on
+
+static size_t
+random_program(u64 *rng, char *buf, int count)
+{
+    size_t len = 0;
+    for (int i = 0; i < count; i++) {
+        char name[16];
+        const char *piece = PIECES[random_below(rng, sizeof PIECES / sizeof PIECES[0])];
+        if (random_below(rng, 8) == 0) {
+            snprintf(name, sizeof name, "v%d", random_below(rng, 100000));
+            piece = name;
+        }
+
+        size_t n = strlen(piece);
+        assert(n <= PIECE_MAX_LEN);
+        memcpy(buf + len, piece, n);
+        len += n;
+
+        bool number = piece[0] >= '0' && piece[0] <= '9';
+        if (number && random_below(rng, 20) != 0) {
+            buf[len++] = ' ';
+        }
+    }
+
+    return len;
+}
+
 enum
 {
     MAX_PIECES = 400,
@@ -276,13 +431,18 @@ TEST_CASE(random_programs)
     for (int i = 0; i < NPROGRAMS && same; i++) {
         int count = random_below(&rng, 50) == 0 ? random_below(&rng, MAX_LONG_PIECES)
                                                 : random_below(&rng, MAX_PIECES);
-        size_t len = random_program(&rng, buf, all_pieces, count);
+        size_t len = random_program(&rng, buf, count);
         programs[i] = calloc(len + LEXER_SOURCE_PADDING, 1);
         memcpy(programs[i], buf, len);
 
         char label[32];
         snprintf(label, sizeof label, "random program #%d", i);
         same = matches_reference(label, programs[i], len, &lx, rl);
+        if (lx.error != NULL) {
+            lexer_init(&lx, &arena, 0);
+            ref_lexer_free(rl);
+            rl = ref_lexer_new();
+        }
     }
 
     free(buf);
@@ -361,6 +521,8 @@ TEST_CASE(golden_output)
 TEST_SUITE(lexer_tests)
 {
     RUN_TEST_CASE(edge_cases);
+    RUN_TEST_CASE(number_errors);
+    RUN_TEST_CASE(builtin_names);
     RUN_TEST_CASE(random_programs);
     RUN_TEST_CASE(golden_output);
 }

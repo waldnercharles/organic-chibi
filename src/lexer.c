@@ -33,21 +33,28 @@ fail(Lexer *lx, u32 pos, const char *msg)
     lx->error_pos = pos;
 }
 
-#define KEYWORD_TEXT(name, text) text,
+#define FIXED_NAME_TEXT(name, text) text,
 
-static const char *const keywords[] = {
-    CHIBI_TOKENS(CHIBI_SKIP, KEYWORD_TEXT, CHIBI_SKIP, CHIBI_SKIP)
+// clang-format off
+static const char *const fixed_names[] = {
+    CHIBI_TOKENS(CHIBI_SKIP, FIXED_NAME_TEXT, CHIBI_SKIP, CHIBI_SKIP, CHIBI_SKIP)
+    CHIBI_BUILTIN_NAMES(FIXED_NAME_TEXT, FIXED_NAME_TEXT)
 };
+// clang-format on
 
 #define KEYWORD_INDEX(name, text) KEYWORD_INDEX_##name,
 enum
 {
-    CHIBI_TOKENS(CHIBI_SKIP, KEYWORD_INDEX, CHIBI_SKIP, CHIBI_SKIP)
+    CHIBI_TOKENS(CHIBI_SKIP, KEYWORD_INDEX, CHIBI_SKIP, CHIBI_SKIP, CHIBI_SKIP)
 };
 
 #define KEYWORD_CHECK(name, text)                                              \
     static_assert(name == TK_IF + KEYWORD_INDEX_##name, "keywords must be consecutive kinds starting at TK_IF");
-CHIBI_TOKENS(CHIBI_SKIP, KEYWORD_CHECK, CHIBI_SKIP, CHIBI_SKIP)
+CHIBI_TOKENS(CHIBI_SKIP, KEYWORD_CHECK, CHIBI_SKIP, CHIBI_SKIP, CHIBI_SKIP)
+
+#define TYPE_NAME_CHECK(name, text)                                            \
+    static_assert(name <= NAME_LAST_KEYWORD + NBUILTIN_TYPES, "builtin type names must come before other fixed names");
+CHIBI_BUILTIN_NAMES(TYPE_NAME_CHECK, CHIBI_SKIP)
 
 #define SOURCE_BYTES_PER_NAME 256
 
@@ -61,8 +68,9 @@ lexer_init(Lexer *lx, Arena *arena, size_t total_source_bytes)
 
     *lx = (Lexer){ 0 };
     names_init(&lx->names, arena, (u32)expected);
-    for (u32 i = 0; i < NKEYWORDS; i++) {
-        [[maybe_unused]] u32 id = names_intern(&lx->names, keywords[i], (u32)strlen(keywords[i]));
+    for (u32 i = 0; i < NFIXED_NAMES; i++) {
+        const char *name = fixed_names[i];
+        [[maybe_unused]] u32 id = names_intern(&lx->names, name, (u32)strlen(name));
         assert(id == i + 1);
     }
 }
@@ -89,20 +97,30 @@ pair_firsts(u8x16 v, u8x16 next)
 {
     enum
     {
-        BEFORE_EQ = 0x0F,   // + - * / % & | ^ = ! < > :  (+= == != <= ...)
-        BEFORE_GT = 0x30,   // - =                        (-> =>)
-        BEFORE_SAME = 0xC8, // | & . : < >                (|| && .. :: << >>)
+        BEFORE_EQ = 0x0F, // + - * / % & | ^ = ! < > : ?  (+= == != <= ...)
+        BEFORE_STAR = 0x10,
+        BEFORE_GT = 0x20,   // - =                          (-> =>)
+        BEFORE_SAME = 0x4A, // | & . : < = > ! ?            (|| .. !! ?? ...)
+        BEFORE_PERCENT = 0x80,
     };
 
     // Lookup by their low and high bits.
-    const u8x16 lo_sets = { 0, 0x01, 0,    0,    0,    0x01, 0x41, 0,
-                            0, 0,    0x83, 0x01, 0x8A, 0x33, 0xE6, 0x01 };
-    const u8x16 hi_sets = { 0, 0, 0x51, 0xA2, 0, 0x04, 0, 0x08,
+    const u8x16 lo_sets = { 0, 0x41, 0,    0,    0,    0x01, 0x41, 0,
+                            0, 0,    0x83, 0x81, 0x0A, 0xA3, 0x56, 0x03 };
+    const u8x16 hi_sets = { 0, 0, 0xF1, 0x22, 0, 0x04, 0, 0x08,
                             0, 0, 0,    0,    0, 0,    0, 0 };
     u8x16 sets_of_v = simd_lookup16(lo_sets, v & 15) & simd_lookup16(hi_sets, v >> 4);
 
-    u8x16 sets_allowed = (simd_eq(next, '=') & BEFORE_EQ) |
-                         (simd_eq(next, '>') & BEFORE_GT) |
+    // clang-format off
+    const u8x16 lo_allowed = { 0, 0, 0,           0, 0, BEFORE_PERCENT, 0,         0,
+                               0, 0, BEFORE_STAR, 0, 0, BEFORE_EQ,      BEFORE_GT, 0 };
+    const u8x16 hi_allowed = { 0, 0, BEFORE_STAR | BEFORE_PERCENT, BEFORE_EQ | BEFORE_GT,
+                               0, 0, 0,                            0,
+                               0, 0, 0,                            0,
+                               0, 0, 0,                            0 };
+    // clang-format on
+    u8x16 sets_allowed = (simd_lookup16(lo_allowed, next & 15) &
+                          simd_lookup16(hi_allowed, next >> 4)) |
                          (simd_eq(next, v) & BEFORE_SAME);
 
     return simd_any_bits(sets_of_v, sets_allowed);
@@ -207,6 +225,12 @@ byte_is_hex(u8 c)
     return byte_is_digit(c) || (u8)((c | 0x20) - 'a') < 6;
 }
 
+static inline bool
+byte_is_ident(u8 c)
+{
+    return byte_is_digit(c) || (u8)((c | 0x20) - 'a') < 26 || c == '_';
+}
+
 static const u8 escape_code[256] = { ['"'] = 1, ['\\'] = 1, ['/'] = 1,
                                      ['b'] = 1, ['f'] = 1,  ['n'] = 1,
                                      ['r'] = 1, ['t'] = 1,  ['u'] = 2 };
@@ -308,31 +332,50 @@ typedef struct
     u64 line_break;
 } Carry;
 
+static inline bool
+is_triple(const char *p)
+{
+    bool shift_assign = (p[0] == '<' || p[0] == '>') && p[1] == p[0] && p[2] == '=';
+    bool range = p[0] == '.' && p[1] == '.' && p[2] == '=';
+    bool wrap_assign = (p[0] == '+' || p[0] == '-' || p[0] == '*') &&
+                       p[1] == '%' && p[2] == '=';
+    bool or_else_assign = p[0] == '?' && p[1] == '?' && p[2] == '=';
+    return shift_assign | range | wrap_assign | or_else_assign;
+}
+
 static NOINLINE u64
-pairs_from_left(u64 candidates)
+operators_from_left(const char *p, u64 candidates, u64 *triples)
 {
     u64 taken = 0;
     while (candidates) {
         u64 b = candidates & -candidates;
         taken |= b;
-        candidates &= ~(b | (b << 1));
+        if (is_triple(p + __builtin_ctzll(b))) {
+            *triples |= b;
+            candidates &= ~(b | (b << 1) | (b << 2));
+        } else {
+            candidates &= ~(b | (b << 1));
+        }
     }
 
     return taken;
 }
 
 static inline u64
-token_starts(Carry *carry, BlockMasks m, u64 quiet)
+token_starts(Carry *carry, BlockMasks m, u64 quiet, const char *p, u64 *triples)
 {
     u64 continues_name = m.ident & ((m.ident << 1) | carry->in_name);
     carry->in_name = m.ident >> 63;
     u64 starts = ~m.ws & ~continues_name & ~carry->pair_second & ~quiet;
 
     u64 firsts = m.pairs & starts;
-    if (UNLIKELY(firsts & (firsts << 1))) {
-        firsts = pairs_from_left(firsts);
+    *triples = 0;
+    if (UNLIKELY(firsts & ((firsts >> 1) | (m.dot & (m.dot >> 1))))) {
+        firsts = operators_from_left(p, firsts, triples);
+    } else if (UNLIKELY(firsts >> 63) && is_triple(p + 63)) {
+        *triples = 1ULL << 63;
     }
-    carry->pair_second = firsts >> 63;
+    carry->pair_second = (firsts >> 63) | (*triples >> 62);
 
     return starts & ~(firsts << 1);
 }
@@ -388,6 +431,7 @@ static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "kind2[] is indexed by 
 #define PAIR(c0, c1) [c1][c0]
 #define KIND2_OP1(name, c) FIRST(c, c) = name,
 #define KIND2_OP2(name, c0, c1) PAIR(c0, c1) = name,
+#define KIND2_SLOW_OP3(name, c0, c1, c2) PAIR(c0, c1) = SLOW,
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Woverride-init"
@@ -400,16 +444,21 @@ static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "kind2[] is indexed by 
     FIRST('A', 'Z') = TK_IDENT,                                                                                 \
     FIRST('_', '_') = TK_IDENT,                                                                                 \
     FIRST('"', '"') = TK_STRING,                                                                                \
-    CHIBI_TOKENS(CHIBI_SKIP, CHIBI_SKIP, CHIBI_SKIP, KIND2_OP1)                                                 \
-    CHIBI_TOKENS(CHIBI_SKIP, CHIBI_SKIP, KIND2_OP2, CHIBI_SKIP)                                                 \
-    PAIR('/', '/') = SLOW
+    CHIBI_TOKENS(CHIBI_SKIP, CHIBI_SKIP, CHIBI_SKIP, CHIBI_SKIP, KIND2_OP1)                                     \
+    CHIBI_TOKENS(CHIBI_SKIP, CHIBI_SKIP, CHIBI_SKIP, KIND2_OP2, CHIBI_SKIP)                                     \
+    PAIR('/', '/') = SLOW,                                                                                      \
+    ['0' ... '9']['0'] = SLOW
 // clang-format on
 
 static const u8 kind2[2][256][256] = {
     [0] = { KIND2_ENTRIES },
-    [1] = { KIND2_ENTRIES, FIRST('0', '9') = SLOW, FIRST('"', '"') = SLOW },
+    [1] = { KIND2_ENTRIES,
+            FIRST('0', '9') = SLOW,
+            FIRST('"', '"') = SLOW,
+            CHIBI_TOKENS(CHIBI_SKIP, CHIBI_SKIP, KIND2_SLOW_OP3, CHIBI_SKIP, CHIBI_SKIP) },
 };
 
+#define KIND_LEN_OP3(name, c0, c1, c2) [name] = 3,
 #define KIND_LEN_OP2(name, c0, c1) [name] = 2,
 static const u8 kind_len[SLOW] = {
     [0 ... SLOW - 1] = 1,
@@ -417,7 +466,7 @@ static const u8 kind_len[SLOW] = {
     [TK_INT] = 0,
     [TK_STRING] = 0,
     [TK_EOF] = 0,
-    CHIBI_TOKENS(CHIBI_SKIP, CHIBI_SKIP, KIND_LEN_OP2, CHIBI_SKIP)
+    CHIBI_TOKENS(CHIBI_SKIP, CHIBI_SKIP, KIND_LEN_OP3, KIND_LEN_OP2, CHIBI_SKIP)
 };
 #pragma GCC diagnostic pop
 
@@ -436,33 +485,93 @@ enum
     STOP
 };
 
-static inline const char *
-number_end(const char *p, bool *is_float)
+typedef struct
 {
-    *is_float = false;
-    while (byte_is_digit(*p)) {
-        p++;
-    }
+    const char *end;
+    const char *error;
+    TokenKind kind;
+} Number;
 
-    if (p[0] == '.' && byte_is_digit(p[1])) {
-        *is_float = true;
-        p++;
-        while (byte_is_digit(*p)) {
+static inline bool
+byte_in_base(u8 c, u32 base)
+{
+    return base == 16 ? byte_is_hex(c) : (u8)(c - '0') < base;
+}
+
+static inline const char *
+digits_end(const char *p, u32 base, const char **error)
+{
+    for (;;) {
+        while (byte_in_base((u8)*p, base)) {
             p++;
         }
+        if (*p != '_') {
+            return p;
+        }
+        if (!byte_in_base((u8)p[1], base)) {
+            *error = "`_` must sit between two digits";
+            return p;
+        }
+        p++;
+    }
+}
+
+static Number
+scan_number(const char *p)
+{
+    static const char *const expected[17] = {
+        [2] = "expected a binary digit",
+        [8] = "expected an octal digit",
+        [16] = "expected a hex digit",
+    };
+    static const char *const invalid[17] = {
+        [2] = "invalid digit in binary number",
+        [8] = "invalid digit in octal number",
+        [10] = "a name cannot follow a number",
+        [16] = "invalid digit in hex number",
+    };
+
+    if (p[0] == '0' && (p[1] == 'X' || p[1] == 'B' || p[1] == 'O')) {
+        return (Number){ p + 1, "use a lowercase prefix like `0x`", TK_INT };
     }
 
-    const char e = p[0], sign = p[1];
-    if ((e == 'e' || e == 'E') &&
-        (byte_is_digit(sign) || ((sign == '+' || sign == '-') && byte_is_digit(p[2])))) {
-        *is_float = true;
+    const char *error = NULL;
+    TokenKind kind = TK_INT;
+    u32 base = 10;
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'b' || p[1] == 'o')) {
+        base = p[1] == 'x' ? 16 : p[1] == 'b' ? 2 : 8;
         p += 2;
-        while (byte_is_digit(*p)) {
-            p++;
+        if (!byte_in_base((u8)*p, base)) {
+            return (Number){ p,
+                             *p == '_' ? "`_` must sit between two digits"
+                                       : expected[base],
+                             kind };
+        }
+        p = digits_end(p, base, &error);
+    } else {
+        if (p[0] == '0' &&
+            (byte_is_digit((u8)p[1]) || (p[1] == '_' && byte_is_digit((u8)p[2])))) {
+            return (Number){ p, "leading zeros are not allowed; use `0o` for octal", kind };
+        }
+
+        p = digits_end(p, 10, &error);
+        if (error == NULL && p[0] == '.' && byte_is_digit((u8)p[1])) {
+            kind = TK_FLOAT;
+            p = digits_end(p + 1, 10, &error);
+        }
+        if (error == NULL && (p[0] == 'e' || p[0] == 'E')) {
+            const char *digits = p + 1 + (p[1] == '+' || p[1] == '-');
+            if (byte_is_digit((u8)*digits)) {
+                kind = TK_FLOAT;
+                p = digits_end(digits, 10, &error);
+            }
         }
     }
 
-    return p;
+    if (error == NULL && byte_is_ident((u8)*p)) {
+        error = invalid[base];
+    }
+    return (Number){ p, error, kind };
 }
 
 static inline int
@@ -540,12 +649,16 @@ slow_token(Lexer *lx, const char *src, u32 at, Tokens out, int ntok, int *emitte
     u8 c = (u8)*p;
 
     if (byte_is_digit(c)) {
-        bool is_float;
-        const char *end = number_end(p, &is_float);
-        out.kinds[ntok] = is_float ? TK_FLOAT : TK_INT;
+        Number n = scan_number(p);
+        if (n.error != NULL) {
+            fail(lx, (u32)(n.end - src), n.error);
+            *emitted = STOP;
+            return at;
+        }
+        out.kinds[ntok] = n.kind;
         out.starts[ntok] = at;
         *emitted = ONE_TOKEN;
-        return (u32)(end - src);
+        return (u32)(n.end - src);
     }
 
     if (c == '"') {
@@ -558,6 +671,45 @@ slow_token(Lexer *lx, const char *src, u32 at, Tokens out, int ntok, int *emitte
         out.starts[ntok] = at;
         *emitted = ONE_TOKEN;
         return (u32)(close + 1 - src);
+    }
+
+    if (c == '<' || c == '>') {
+        bool assign = p[2] == '=';
+        TokenKind shift = c == '<' ? TK_SHL : TK_SHR;
+        out.kinds[ntok] = assign ? (c == '<' ? TK_SHLEQ : TK_SHREQ) : shift;
+        out.starts[ntok] = at;
+        *emitted = ONE_TOKEN;
+        return at + 2 + assign;
+    }
+
+    if (c == '.') {
+        bool inclusive = p[2] == '=';
+        out.kinds[ntok] = inclusive ? TK_RANGE_INCLUSIVE : TK_RANGE;
+        out.starts[ntok] = at;
+        *emitted = ONE_TOKEN;
+        return at + 2 + inclusive;
+    }
+
+    if ((c == '+' || c == '-' || c == '*') && p[1] == '%') {
+        bool assign = p[2] == '=';
+        TokenKind wrap = c == '+' ? TK_ADD_WRAP
+                       : c == '-' ? TK_SUB_WRAP
+                                  : TK_MUL_WRAP;
+        TokenKind wrap_assign = c == '+' ? TK_ADD_WRAP_EQ
+                              : c == '-' ? TK_SUB_WRAP_EQ
+                                         : TK_MUL_WRAP_EQ;
+        out.kinds[ntok] = assign ? wrap_assign : wrap;
+        out.starts[ntok] = at;
+        *emitted = ONE_TOKEN;
+        return at + 2 + assign;
+    }
+
+    if (c == '?') {
+        bool assign = p[2] == '=';
+        out.kinds[ntok] = assign ? TK_OR_ELSE_EQ : TK_OR_ELSE;
+        out.starts[ntok] = at;
+        *emitted = ONE_TOKEN;
+        return at + 2 + assign;
     }
 
     // Only "//" gets here. '/' and "/=" take the fast path.
@@ -620,12 +772,6 @@ ident_run_len(const char *p)
 #define MAX_NAMES_PER_BLOCK (BLOCK_BYTES / 2)
 
 #ifdef CHIBI_LEXER_BULK
-
-static inline bool
-byte_is_ident(u8 c)
-{
-    return byte_is_digit(c) || (u8)((c | 0x20) - 'a') < 26 || c == '_';
-}
 
 static NOINLINE void
 intern_names(
@@ -736,7 +882,11 @@ read_kinds(Lexer *lx, const char *src, Tokens out, int from, int to, u32 *name_t
         u32 at = t.starts[i];
         u32 kind = kinds[kind2_index(src + at)];
         if (UNLIKELY(kind & SLOW)) {
-            fail(lx, at, "unexpected character");
+            Number n = byte_is_digit((u8)src[at])
+                         ? scan_number(src + at)
+                         : (Number){ src + at, "unexpected character", TK_OP };
+            assert(n.error != NULL);
+            fail(lx, (u32)(n.end - src), n.error);
             return -1;
         }
 
@@ -782,7 +932,8 @@ lexer_tokenize(Lexer *lx, const char *src, Tokens out)
             lit = literals_after(cur, src + base, resume - base);
         }
 
-        u64 starts = token_starts(&carry, cur, lit.quiet);
+        u64 triples;
+        u64 starts = token_starts(&carry, cur, lit.quiet, src + base, &triples);
         if (UNLIKELY(resume >= base)) {
             starts = starts_from(src, starts, base, resume) & ~lit.quiet;
         }
@@ -791,7 +942,7 @@ lexer_tokenize(Lexer *lx, const char *src, Tokens out)
 
         BlockMasks next = block_masks((const u8 *)src + base + BLOCK_BYTES);
         Literals next_lit = resolve_literals(next, lit.out, src + base + BLOCK_BYTES, 0);
-        bool slow = lit.fallback | has_unusual_number(cur, starts);
+        bool slow = lit.fallback | has_unusual_number(cur, starts) | (triples != 0);
 
         u32 block = (u32)(base / BLOCK_BYTES) % BLOCKS_PER_FLUSH;
         u64 after_next = byte_is_ident((u8)src[base + 2 * BLOCK_BYTES]);
@@ -947,7 +1098,8 @@ lexer_tokenize(Lexer *lx, const char *src, Tokens out)
             lit = literals_after(cur, src + base, resume - base);
         }
 
-        u64 starts = token_starts(&carry, cur, lit.quiet);
+        u64 triples;
+        u64 starts = token_starts(&carry, cur, lit.quiet, src + base, &triples);
         if (UNLIKELY(resume >= base)) {
             starts = starts_from(src, starts, base, resume) & ~lit.quiet;
         }
@@ -956,7 +1108,8 @@ lexer_tokenize(Lexer *lx, const char *src, Tokens out)
         // loop instead of after the loop's exit, which usually mispredicts.
         BlockMasks next = block_masks((const u8 *)src + base + BLOCK_BYTES);
         Literals next_lit = resolve_literals(next, lit.out, src + base + BLOCK_BYTES, 0);
-        const u8 *kinds = (const u8 *)kind2[lit.fallback | has_unusual_number(cur, starts)];
+        bool slow = lit.fallback | has_unusual_number(cur, starts) | (triples != 0);
+        const u8 *kinds = (const u8 *)kind2[slow];
 
         u64 name_last = (past_runs(cur.ident, starts) >> 1) | 1ULL << 63;
         t.line_starts[base / BLOCK_BYTES] = first_on_line(&carry, cur.line_end, starts);
@@ -1014,10 +1167,11 @@ lexer_tokenize(Lexer *lx, const char *src, Tokens out)
 #endif
 
 #define KIND_NAME(name, text) [name] = text,
+#define KIND_NAME_OP3(name, c0, c1, c2) [name] = { c0, c1, c2 },
 #define KIND_NAME_OP2(name, c0, c1) [name] = { c0, c1 },
 #define KIND_NAME_OP1(name, c) [name] = { c },
 static const char kind_names[NKINDS][12] = {
-    CHIBI_TOKENS(KIND_NAME, KIND_NAME, KIND_NAME_OP2, KIND_NAME_OP1)
+    CHIBI_TOKENS(KIND_NAME, KIND_NAME, KIND_NAME_OP3, KIND_NAME_OP2, KIND_NAME_OP1)
 };
 
 const char *
@@ -1052,12 +1206,6 @@ lexer_alloc_tokens(Arena *arena, size_t len)
     };
 }
 
-static bool
-kind_has_id(TokenKind kind)
-{
-    return kind == TK_IDENT || (kind >= TK_IF && kind < TK_IF + NKEYWORDS);
-}
-
 static const char *
 string_end(const char *p)
 {
@@ -1073,13 +1221,12 @@ lexer_token_length(const char *src, TokenKind kind, u32 start)
 {
     const char *p = src + start;
 
-    if (kind_has_id(kind)) {
+    if (lexer_kind_has_id(kind)) {
         return ident_run_len(p);
     }
 
     if (kind == TK_INT || kind == TK_FLOAT) {
-        bool is_float;
-        return (u32)(number_end(p, &is_float) - p);
+        return (u32)(scan_number(p).end - p);
     }
 
     if (kind == TK_STRING) {
@@ -1110,7 +1257,7 @@ lexer_dump(FILE *out, const char *src, Tokens tokens, int n)
             (int)lexer_token_length(src, kind, start),
             src + start
         );
-        if (kind_has_id(kind)) {
+        if (lexer_kind_has_id(kind)) {
             fprintf(out, " id=%u", tokens.ids[i]);
         }
         fputc('\n', out);

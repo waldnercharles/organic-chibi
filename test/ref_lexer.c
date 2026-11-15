@@ -34,6 +34,43 @@ is_hex(char c)
     return is_digit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
 }
 
+static int
+digit_value(char c)
+{
+    if (is_digit(c)) {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+    }
+    return 99;
+}
+
+static const char *const
+    MISPLACED_SEPARATOR = "`_` must sit between two digits";
+
+static int
+skip_digits(RefLexer *rl, const char *src, int i, int base)
+{
+    for (;;) {
+        if (digit_value(src[i]) < base) {
+            i++;
+        } else if (src[i] == '_' && digit_value(src[i + 1]) < base) {
+            i++;
+        } else if (src[i] == '_') {
+            rl->error = MISPLACED_SEPARATOR;
+            rl->error_pos = i;
+            return i;
+        } else {
+            return i;
+        }
+    }
+}
+
+// clang-format off
 static const struct
 {
     const char *text;
@@ -41,44 +78,95 @@ static const struct
 } KEYWORDS[] = {
     { "if", TK_IF },           { "else", TK_ELSE },
     { "for", TK_FOR },         { "while", TK_WHILE },
-    { "switch", TK_SWITCH },   { "case", TK_CASE },
-    { "break", TK_BREAK },     { "continue", TK_CONTINUE },
-    { "return", TK_RETURN },   { "defer", TK_DEFER },
-    { "yield", TK_YIELD },     { "goto", TK_GOTO },
-    { "default", TK_DEFAULT }, { "type", TK_TYPE },
-    { "struct", TK_STRUCT },   { "union", TK_UNION },
-    { "enum", TK_ENUM },       { "fn", TK_FN },
-    { "package", TK_PACKAGE }, { "import", TK_IMPORT },
-    { "pub", TK_PUB },         { "true", TK_TRUE },
-    { "false", TK_FALSE },     { "nil", TK_NIL },
-    { "is", TK_IS },           { "in", TK_IN },
-    { "as", TK_AS },           { "sizeof", TK_SIZEOF },
-    { "alignof", TK_ALIGNOF }, { "offsetof", TK_OFFSETOF },
-    { "typeof", TK_TYPEOF },   { "cast", TK_CAST },
+    { "switch", TK_SWITCH },   { "break", TK_BREAK },
+    { "continue", TK_CONTINUE }, { "return", TK_RETURN },
+    { "defer", TK_DEFER },     { "struct", TK_STRUCT },
+    { "union", TK_UNION },     { "enum", TK_ENUM },
+    { "fn", TK_FN },           { "package", TK_PACKAGE },
+    { "import", TK_IMPORT },   { "pub", TK_PUB },
+    { "true", TK_TRUE },       { "false", TK_FALSE },
+    { "nil", TK_NIL },         { "is", TK_IS },
+    { "in", TK_IN },           { "bitcast", TK_BITCAST },
+    { "and", TK_AND },         { "or", TK_OR },
+    { "const", TK_CONST },     { "export", TK_EXPORT },
+    { "undefined", TK_UNDEFINED }, { "try", TK_TRY },
+    { "catch", TK_CATCH },
+};
+// clang-format on
+
+#define BUILTIN_NAME_TEXT(name, text) text,
+
+static const char *const BUILTIN_NAMES[] = {
+    CHIBI_BUILTIN_NAMES(BUILTIN_NAME_TEXT, BUILTIN_NAME_TEXT)
 };
 
-// ref_next takes the first match, so two-char operators must come before one-char ones.
+// ref_next takes the first match, so longer operators must come before shorter ones.
 static const struct
 {
     const char *text;
     TokenKind kind;
 } OPS[] = {
-    { "<<", TK_SHL },      { ">>", TK_SHR },       { "&&", TK_ANDAND },
-    { "||", TK_OROR },     { "+=", TK_ADDEQ },     { "-=", TK_SUBEQ },
-    { "*=", TK_MULEQ },    { "/=", TK_DIVEQ },     { "%=", TK_MODEQ },
-    { "&=", TK_ANDEQ },    { "|=", TK_OREQ },      { "^=", TK_XOREQ },
-    { "->", TK_ARROW },    { "=>", TK_FAT_ARROW }, { "==", TK_EQEQ },
-    { "!=", TK_NEQ },      { "<=", TK_LTE },       { ">=", TK_GTE },
-    { "..", TK_ELLIPSIS }, { "::", TK_DCOLON },    { ":=", TK_DASSIGN },
-    { "+", TK_PLUS },      { "-", TK_MINUS },      { "*", TK_STAR },
-    { "/", TK_SLASH },     { "%", TK_PERCENT },    { "=", TK_EQ },
-    { "!", TK_NOT },       { "@", TK_AT },         { "$", TK_DOLLAR },
-    { "?", TK_QUESTION },  { "&", TK_AND },        { "|", TK_OR },
-    { "^", TK_XOR },       { "~", TK_COMPL },      { "<", TK_LT },
-    { ">", TK_GT },        { ":", TK_COLON },      { ";", TK_SEMI },
-    { ".", TK_PERIOD },    { ",", TK_COMMA },      { "{", TK_LBRACE },
-    { "}", TK_RBRACE },    { "(", TK_LPAREN },     { ")", TK_RPAREN },
-    { "[", TK_LBRACK },    { "]", TK_RBRACK },
+    { "<<=", TK_SHLEQ },
+    { ">>=", TK_SHREQ },
+    { "..=", TK_RANGE_INCLUSIVE },
+    { "+%=", TK_ADD_WRAP_EQ },
+    { "-%=", TK_SUB_WRAP_EQ },
+    { "*%=", TK_MUL_WRAP_EQ },
+    { "?\?=", TK_OR_ELSE_EQ },
+    { ".*", TK_DEREF },
+    { "!!", TK_UNWRAP },
+    { "??", TK_OR_ELSE },
+    { "?=", TK_QUESTION_EQ },
+    { "<<", TK_SHL },
+    { ">>", TK_SHR },
+    { "&&", TK_ANDAND },
+    { "||", TK_OROR },
+    { "+=", TK_ADDEQ },
+    { "-=", TK_SUBEQ },
+    { "*=", TK_MULEQ },
+    { "+%", TK_ADD_WRAP },
+    { "-%", TK_SUB_WRAP },
+    { "*%", TK_MUL_WRAP },
+    { "/=", TK_DIVEQ },
+    { "%=", TK_MODEQ },
+    { "&=", TK_ANDEQ },
+    { "|=", TK_OREQ },
+    { "^=", TK_XOREQ },
+    { "->", TK_ARROW },
+    { "=>", TK_FAT_ARROW },
+    { "==", TK_EQEQ },
+    { "!=", TK_NEQ },
+    { "<=", TK_LTE },
+    { ">=", TK_GTE },
+    { "..", TK_RANGE },
+    { "::", TK_DCOLON },
+    { ":=", TK_DASSIGN },
+    { "+", TK_PLUS },
+    { "-", TK_MINUS },
+    { "*", TK_STAR },
+    { "/", TK_SLASH },
+    { "%", TK_PERCENT },
+    { "=", TK_EQ },
+    { "!", TK_NOT },
+    { "@", TK_AT },
+    { "$", TK_DOLLAR },
+    { "?", TK_QUESTION },
+    { "&", TK_AMP },
+    { "|", TK_PIPE },
+    { "^", TK_XOR },
+    { "~", TK_COMPL },
+    { "<", TK_LT },
+    { ">", TK_GT },
+    { ":", TK_COLON },
+    { ";", TK_SEMI },
+    { ".", TK_PERIOD },
+    { ",", TK_COMMA },
+    { "{", TK_LBRACE },
+    { "}", TK_RBRACE },
+    { "(", TK_LPAREN },
+    { ")", TK_RPAREN },
+    { "[", TK_LBRACK },
+    { "]", TK_RBRACK },
 };
 
 static u32
@@ -114,6 +202,9 @@ ref_lexer_new(void)
     rl->next_id = 1;
     for (size_t k = 0; k < sizeof KEYWORDS / sizeof KEYWORDS[0]; k++) {
         intern(rl, KEYWORDS[k].text, (int)strlen(KEYWORDS[k].text));
+    }
+    for (size_t k = 0; k < sizeof BUILTIN_NAMES / sizeof BUILTIN_NAMES[0]; k++) {
+        intern(rl, BUILTIN_NAMES[k], (int)strlen(BUILTIN_NAMES[k]));
     }
     return rl;
 }
@@ -164,26 +255,54 @@ ref_token(RefLexer *rl, const char *src, int start)
     }
 
     if (is_digit(c)) {
-        bool is_float = false;
-        while (is_digit(src[i])) {
-            i++;
+        char second = src[i + 1];
+        if (c == '0' && (second == 'X' || second == 'B' || second == 'O')) {
+            return fail(rl, i + 1, "use a lowercase prefix like `0x`");
         }
-        if (src[i] == '.' && is_digit(src[i + 1])) {
-            is_float = true;
-            i++;
-            while (is_digit(src[i])) {
-                i++;
+
+        int base = 10;
+        if (c == '0' && (second == 'x' || second == 'b' || second == 'o')) {
+            base = second == 'x' ? 16 : second == 'b' ? 2 : 8;
+            i += 2;
+            if (src[i] == '_') {
+                return fail(rl, i, MISPLACED_SEPARATOR);
             }
+            if (digit_value(src[i]) >= base) {
+                return fail(
+                    rl,
+                    i,
+                    base == 16  ? "expected a hex digit"
+                    : base == 2 ? "expected a binary digit"
+                                : "expected an octal digit"
+                );
+            }
+        } else if (c == '0' && (is_digit(second) || (second == '_' && is_digit(src[i + 2])))) {
+            return fail(rl, i, "leading zeros are not allowed; use `0o` for octal");
         }
-        if (src[i] == 'e' || src[i] == 'E') {
+
+        bool is_float = false;
+        i = skip_digits(rl, src, i, base);
+        if (rl->error == NULL && base == 10 && src[i] == '.' && is_digit(src[i + 1])) {
+            is_float = true;
+            i = skip_digits(rl, src, i + 1, 10);
+        }
+        if (rl->error == NULL && base == 10 && (src[i] == 'e' || src[i] == 'E')) {
             int digits_at = (src[i + 1] == '+' || src[i + 1] == '-') ? i + 2 : i + 1;
             if (is_digit(src[digits_at])) {
                 is_float = true;
-                i = digits_at;
-                while (is_digit(src[i])) {
-                    i++;
-                }
+                i = skip_digits(rl, src, digits_at, 10);
             }
+        }
+        if (rl->error != NULL) {
+            return (RefToken){ TK_EOF, rl->error_pos, 0, 0, false };
+        }
+
+        if (is_ident(src[i])) {
+            const char *msg = base == 10 ? "a name cannot follow a number"
+                            : base == 16 ? "invalid digit in hex number"
+                            : base == 2  ? "invalid digit in binary number"
+                                         : "invalid digit in octal number";
+            return fail(rl, i, msg);
         }
         return (RefToken){ is_float ? TK_FLOAT : TK_INT, start, i - start, 0, false };
     }
