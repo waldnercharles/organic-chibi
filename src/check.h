@@ -196,6 +196,8 @@ typedef struct
     u32 owner;
     u32 ret;
     u32 loops;
+    u32 depth;
+    u32 calls;
     bool reachable;
 } Body;
 

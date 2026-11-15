@@ -777,6 +777,25 @@ static const Case BODIES[] = {
         "    %8 = end bool false\n"
         "    ret bool %8\n",
     },
+    {
+        "const OFF := false\n"
+        "fn g() -> bool {\n"
+        "    return true\n"
+        "}\n"
+        "fn skip() -> bool {\n"
+        "    return OFF and g()\n"
+        "}\n",
+        "fn g() -> bool\n"
+        "    slots:\n"
+        "    ret bool true\n"
+        "fn skip() -> bool\n"
+        "    slots:\n"
+        "    if @0 false\n"
+        "        %1 = call bool g()\n"
+        "        drop %1\n"
+        "    end\n"
+        "    ret bool false\n",
+    },
 };
 
 TEST_CASE(declarations)

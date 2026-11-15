@@ -2,6 +2,9 @@
 
 #include "../src/arm64.h"
 #include "../vendor/pico_unit/pico_unit.h"
+#include "ir_reference.h"
+#include "random/code.h"
+#include "random/program.h"
 
 #include <assert.h>
 #include <math.h>
@@ -23,7 +26,7 @@ typedef struct
 } Program;
 
 static bool
-build(Program *p, const char *text)
+check_text(Program *p, const char *text)
 {
     *p = (Program){ 0 };
     size_t len = strlen(text);
@@ -49,6 +52,15 @@ build(Program *p, const char *text)
     check_package(&p->c, &p->file, 1);
     if (p->c.ndiags) {
         check_print_diagnostics(stderr, &p->c);
+        return false;
+    }
+    return true;
+}
+
+static bool
+build(Program *p, const char *text)
+{
+    if (!check_text(p, text)) {
         return false;
     }
     if (!arm64_compile(&p->n, &p->c)) {
@@ -664,8 +676,507 @@ TEST_CASE(control_flow)
     return true;
 }
 
+static bool
+rejects(const char *text)
+{
+    Program p = { 0 };
+    size_t len = strlen(text);
+    lexer_init(&p.lx, &p.arena, len);
+    char *src = arena_alloc(&p.arena, len + LEXER_SOURCE_PADDING, 16);
+    memset(src, 0, len + LEXER_SOURCE_PADDING);
+    memcpy(src, text, len);
+    Tokens tokens = lexer_alloc_tokens(&p.arena, len);
+    int ntokens = lexer_tokenize(&p.lx, src, tokens);
+    Nodes nodes = parser_alloc_nodes(&p.arena, ntokens);
+    Parser parser;
+    int count = parser_parse(&parser, tokens, ntokens, nodes);
+    p.file = (ParsedFile){ "a",   src,        tokens,
+                           nodes, (u32)count, (u32)parser.top_count,
+                           true };
+    check_init(&p.c, &p.lx.names);
+    check_package(&p.c, &p.file, 1);
+    bool ok = count >= 0 && p.c.ndiags == 0 && !arm64_compile(&p.n, &p.c) &&
+              p.n.error && strstr(p.n.error, "supports only") != NULL;
+    if (!ok) {
+        fprintf(stderr, "arm64 test: expected the backend to reject\n%s", text);
+    }
+    release_program(&p);
+    return ok;
+}
+
+TEST_CASE(unsupported_types)
+{
+    REQUIRE(rejects("fn b(a: int) -> !void {\n    if a > 0 {\n        return\n    }\n}\n"));
+    REQUIRE(rejects("fn id(p: *int) -> *int {\n    return p\n}\n"));
+    REQUIRE(rejects("fn o(p: ?int) -> ?int {\n    return p\n}\n"));
+    REQUIRE(rejects("fn s(p: []u8) -> int {\n    return 0\n}\n"));
+    return true;
+}
+
+static const char CONSTANT_CONDITIONS[] = "const DEBUG := false\n"
+                                          "fn g() -> bool {\n"
+                                          "    return true\n"
+                                          "}\n"
+                                          "fn f(a: int, b: bool) -> int {\n"
+                                          "    if b {\n"
+                                          "        return a + 1000\n"
+                                          "    }\n"
+                                          "    return a\n"
+                                          "}\n"
+                                          "fn t(x: int) -> int {\n"
+                                          "    return f(x, DEBUG and g())\n"
+                                          "}\n"
+                                          "fn u(x: int) -> int {\n"
+                                          "    return f(x, !DEBUG or g())\n"
+                                          "}\n"
+                                          "fn v(x: int) -> int {\n"
+                                          "    if DEBUG {\n"
+                                          "        return f(x, g())\n"
+                                          "    } else {\n"
+                                          "        y := x * 2\n"
+                                          "        return y\n"
+                                          "    }\n"
+                                          "}\n"
+                                          "fn w(x: int) -> int {\n"
+                                          "    if !DEBUG {\n"
+                                          "        return x + 1\n"
+                                          "    } else {\n"
+                                          "        return f(x, g())\n"
+                                          "    }\n"
+                                          "}\n";
+
+TEST_CASE(constant_conditions)
+{
+    Program p;
+    REQUIRE(build(&p, CONSTANT_CONDITIONS));
+    REQUIRE(((I1 *)fn(&p, "t"))(5) == 5);
+    REQUIRE(((I1 *)fn(&p, "u"))(7) == 1007);
+    REQUIRE(((I1 *)fn(&p, "v"))(4) == 8);
+    REQUIRE(((I1 *)fn(&p, "w"))(4) == 5);
+    release_program(&p);
+    return true;
+}
+
+typedef bool B8(bool, bool, bool, bool, bool, bool, bool, bool);
+
+TEST_CASE(deep_logic)
+{
+    Program p;
+    REQUIRE(build(
+        &p,
+        "fn deep(a: bool, b: bool, c: bool, d: bool, e: bool, f: bool, g: "
+        "bool, h: bool) -> bool {\n"
+        "    return a and (b or (c and (d or (e and (f or (g and h))))))\n"
+        "}\n"
+    ));
+    B8 *deep = (B8 *)fn(&p, "deep");
+    for (int m = 0; m < 256; m++) {
+        bool v[8];
+        for (int k = 0; k < 8; k++) {
+            v[k] = (m >> k) & 1;
+        }
+        bool want = v[0] &&
+                    (v[1] || (v[2] && (v[3] || (v[4] && (v[5] || (v[6] && v[7]))))));
+        REQUIRE(deep(v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]) == want);
+    }
+    release_program(&p);
+    return true;
+}
+
+typedef int64_t E4(int64_t, int64_t, int64_t, double);
+
+static int
+call_e4(E4 *f, const int64_t *args, double d, int64_t *result)
+{
+    trap_kind = 0;
+    if (sigsetjmp(trap_jump, 1) == 0) {
+        *result = f(args[0], args[1], args[2], d);
+        return 0;
+    }
+    return trap_kind;
+}
+
+static int64_t
+random_argument(u64 *rng)
+{
+    static const int64_t edges[] = {
+        0,         1,          -1,        127,       128,     -128,   -129,
+        255,       256,        32767,     -32768,    65535,   65536,  INT32_MAX,
+        INT32_MIN, UINT32_MAX, INT64_MAX, INT64_MIN, 1000003, -999983
+    };
+    int pick = random_below(rng, 10);
+    if (pick < 6) {
+        return random_below(rng, 41) - 20;
+    }
+    if (pick < 8) {
+        return random_below(rng, 2001) - 1000;
+    }
+    return edges[random_below(rng, sizeof edges / sizeof edges[0])];
+}
+
+static double
+random_float_argument(u64 *rng)
+{
+    static const double edges[] = { 0.0,   -0.0, 0.5,   -2.75, 1e18,
+                                    -1e19, 3e9,  1e300, NAN,   INFINITY };
+    if (random_below(rng, 4) == 0) {
+        return edges[random_below(rng, sizeof edges / sizeof edges[0])];
+    }
+    return (random_below(rng, 4001) - 2000) / 8.0;
+}
+
+TEST_CASE(differential)
+{
+    const char *env = getenv("CHIBI_DIFFERENTIAL");
+    const char *seed_text = getenv("CHIBI_DIFFERENTIAL_SEED");
+    int programs = env ? atoi(env) : 150;
+    catch_traps();
+    char *text = malloc(PROGRAM_SIZE);
+    u64 rng = seed_text ? strtoull(seed_text, NULL, 10) : 0x5EED;
+    for (int k = 0; k < programs; k++) {
+        u64 seed = rng;
+        size_t len = random_typed_program(&rng, text);
+        text[len] = 0;
+        Program p;
+        if (!build(&p, text)) {
+            fprintf(stderr, "differential: seed %llu\n%s", (unsigned long long)seed, text);
+            REQUIRE(false);
+        }
+
+        IrReference ref;
+        ir_reference_init(&ref, &p.c);
+        for (u32 e = 0; e < PROGRAM_ENTRIES; e++) {
+            char name[8];
+            snprintf(name, sizeof name, "e%u", e);
+            u32 decl = decl_named(&p, name);
+            E4 *f = (E4 *)native_entry(&p.n, decl);
+            for (int run = 0; run < 6; run++) {
+                int64_t args[3] = { random_argument(&rng),
+                                    random_argument(&rng),
+                                    random_argument(&rng) };
+                double d = random_float_argument(&rng);
+                u64 slots[4] = { (u64)args[0], (u64)args[1], (u64)args[2], 0 };
+                memcpy(&slots[3], &d, sizeof d);
+                u64 want = 0;
+                int64_t got = 0;
+                int want_trap = ir_reference_run(&ref, decl, slots, &want);
+                int got_trap = call_e4(f, args, d, &got);
+                if (want_trap != got_trap || (!want_trap && (int64_t)want != got)) {
+                    fprintf(
+                        stderr,
+                        "differential: seed %llu, %s(%lld, %lld, %lld, %g): "
+                        "reference %lld "
+                        "(trap %d), native %lld (trap %d)\n%s",
+                        (unsigned long long)seed,
+                        name,
+                        (long long)args[0],
+                        (long long)args[1],
+                        (long long)args[2],
+                        d,
+                        (long long)want,
+                        want_trap,
+                        (long long)got,
+                        got_trap,
+                        text
+                    );
+                    ir_reference_free(&ref);
+                    release_program(&p);
+                    free(text);
+                    REQUIRE(false);
+                }
+            }
+        }
+        ir_reference_free(&ref);
+        release_program(&p);
+    }
+    free(text);
+    return true;
+}
+
+TEST_CASE(store_while_loaded)
+{
+    Program p;
+    REQUIRE(check_text(
+        &p,
+        "fn f(a: int) -> int {\n"
+        "    x := a\n"
+        "    y := x\n"
+        "    x = 5\n"
+        "    return y * 10 + x\n"
+        "}\n"
+    ));
+    IrCode *code = &p.c.ir.code;
+    const IrFunc *f = &p.c.ir.funcs[0];
+    u32 first = f->first;
+    while (code->kinds[first] != IR_STORE || code->bs[first] & IR_CONST ||
+           code->kinds[first + 1] != IR_STORE || !(code->bs[first + 1] & IR_CONST)) {
+        first++;
+        REQUIRE(first + 1 < f->first + f->count);
+    }
+    u32 slot = code->as[first], value = code->bs[first];
+    code->as[first] = code->as[first + 1];
+    code->bs[first] = code->bs[first + 1];
+    code->as[first + 1] = slot;
+    code->bs[first + 1] = value;
+    REQUIRE(arm64_compile(&p.n, &p.c));
+    REQUIRE(((I1 *)fn(&p, "f"))(7) == 75);
+    release_program(&p);
+    return true;
+}
+
+typedef uint64_t U1(uint64_t);
+
+static int
+call_u1(U1 *f, uint64_t a, uint64_t *result)
+{
+    trap_kind = 0;
+    if (sigsetjmp(trap_jump, 1) == 0) {
+        *result = f(a);
+        return 0;
+    }
+    return trap_kind;
+}
+
+static const char *const DIVIDE_TYPES[] = { "i8", "i16", "i32", "int",
+                                            "u8", "u16", "u32", "u64" };
+static const int DIVIDE_BITS[] = { 8, 16, 32, 64, 8, 16, 32, 64 };
+
+static const int64_t DIVISORS[] = {
+    1,           2,          3,          4,         5,         6,
+    7,           8,          9,          10,        11,        12,
+    13,          16,         25,         31,        32,        60,
+    64,          100,        127,        128,       255,       256,
+    641,         1000,       4096,       65535,     65536,     INT32_MAX,
+    0x80000000,  UINT32_MAX, 1000000007, 1ll << 62, INT64_MAX, INT64_MIN,
+    -1,          -2,         -3,         -4,        -7,        -8,
+    -10,         -100,       -128,       -32768,    INT32_MIN, -1000000007,
+    -(1ll << 62)
+};
+static const uint64_t BIG_DIVISORS[] = { 0x8000000000000000ull,
+                                         0x8000000000000001ull,
+                                         0xFFFFFFFFFFFFFFFFull,
+                                         0xFFFFFFFFFFFFFFFEull,
+                                         0x9E3779B97F4A7C15ull };
+
+static bool
+divisor_fits(int k, int64_t d)
+{
+    int bits = DIVIDE_BITS[k];
+    bool s = k < 4;
+    if (bits == 64) {
+        return s || d > 0;
+    }
+    if (s) {
+        return d >= -(1ll << (bits - 1)) && d < (1ll << (bits - 1));
+    }
+    return d > 0 && d < (1ll << bits);
+}
+
+static int
+divide_reference(int k, bool rem, uint64_t a, uint64_t d, uint64_t *out)
+{
+    int bits = DIVIDE_BITS[k];
+    if (k >= 4) {
+        *out = rem ? a % d : a / d;
+        return 0;
+    }
+    int64_t x = (int64_t)a, y = (int64_t)d;
+    int64_t lo = bits == 64 ? INT64_MIN : -(1ll << (bits - 1));
+    if (x == lo && y == -1) {
+        *out = 0;
+        return rem ? 0 : TRAP_OVERFLOW;
+    }
+    *out = (uint64_t)(rem ? x % y : x / y);
+    return 0;
+}
+
+TEST_CASE(constant_division)
+{
+    char *text = malloc(1 << 20);
+    size_t len = 0;
+    u32 count = 0;
+    uint64_t divisors[8][64];
+    u32 ndivisors[8] = { 0 };
+    for (int k = 0; k < 8; k++) {
+        for (size_t j = 0; j < sizeof DIVISORS / sizeof DIVISORS[0]; j++) {
+            if (divisor_fits(k, DIVISORS[j])) {
+                divisors[k][ndivisors[k]++] = (uint64_t)DIVISORS[j];
+            }
+        }
+        if (k == 7) {
+            for (size_t j = 0; j < sizeof BIG_DIVISORS / sizeof BIG_DIVISORS[0]; j++) {
+                divisors[k][ndivisors[k]++] = BIG_DIVISORS[j];
+            }
+        }
+        for (u32 j = 0; j < ndivisors[k]; j++) {
+            for (int rem = 0; rem < 2; rem++) {
+                const char *op = rem ? "%" : "/";
+                char divisor[32];
+                if (k < 4) {
+                    snprintf(divisor, sizeof divisor, "(%lld)", (long long)divisors[k][j]);
+                } else {
+                    snprintf(divisor, sizeof divisor, "%llu", (unsigned long long)divisors[k][j]);
+                }
+                if (k == 3) {
+                    len += (size_t)snprintf(
+                        text + len,
+                        (1 << 20) - len,
+                        "fn q%u(a: int) -> int => a %s %s\n",
+                        count++,
+                        op,
+                        divisor
+                    );
+                } else if (k == 7) {
+                    len += (size_t)snprintf(
+                        text + len,
+                        (1 << 20) - len,
+                        "fn q%u(a: u64) -> u64 => a %s %s\n",
+                        count++,
+                        op,
+                        divisor
+                    );
+                } else {
+                    len += (size_t)snprintf(
+                        text + len,
+                        (1 << 20) - len,
+                        "fn q%u(a: int) -> int => int(%s(a) %s %s)\n",
+                        count++,
+                        DIVIDE_TYPES[k],
+                        op,
+                        divisor
+                    );
+                }
+            }
+        }
+    }
+
+    Program p;
+    REQUIRE(build(&p, text));
+    catch_traps();
+    u64 rng = 7;
+    u32 at = 0;
+    bool ok = true;
+    for (int k = 0; k < 8 && ok; k++) {
+        int bits = DIVIDE_BITS[k];
+        bool s = k < 4;
+        uint64_t mask = bits == 64 ? ~0ull : (1ull << bits) - 1;
+        uint64_t lo = s ? (uint64_t)(-(int64_t)(mask >> 1) - 1) : 0;
+        uint64_t hi = s ? mask >> 1 : mask;
+        for (u32 j = 0; j < ndivisors[k]; j++) {
+            for (int rem = 0; rem < 2; rem++) {
+                char name[16];
+                snprintf(name, sizeof name, "q%u", at++);
+                void *f = fn(&p, name);
+                uint64_t d = divisors[k][j];
+                for (int n = 0; n < 160 && ok; n++) {
+                    uint64_t a;
+                    switch (n) {
+                        case 0: a = lo; break;
+                        case 1: a = lo + 1; break;
+                        case 2: a = hi; break;
+                        case 3: a = hi - 1; break;
+                        case 4: a = 0; break;
+                        case 5: a = 1; break;
+                        case 6: a = s ? (uint64_t)-1 : 2; break;
+                        case 7: a = d; break;
+                        case 8: a = d - 1; break;
+                        case 9: a = d + 1; break;
+                        case 10: a = 0 - d; break;
+                        case 11: a = 2 * d; break;
+                        case 12: a = 2 * d - 1; break;
+                        default: {
+                            uint64_t r = (uint64_t)random_below(&rng, 1 << 30) << 34 ^
+                                         (uint64_t)random_below(&rng, 1 << 30) << 4 ^
+                                         (uint64_t)random_below(&rng, 16);
+                            a = n % 3 ? r >> random_below(&rng, 64) : r;
+                            break;
+                        }
+                    }
+                    a &= mask;
+                    if (s && bits < 64 && (a >> (bits - 1)) & 1) {
+                        a |= ~mask;
+                    }
+                    uint64_t want = 0, got = 0;
+                    int want_trap = divide_reference(k, rem, a, d, &want);
+                    int got_trap;
+                    if (k == 7) {
+                        got_trap = call_u1((U1 *)f, a, &got);
+                    } else {
+                        int64_t r = 0;
+                        got_trap = call_i2((I2 *)f, (int64_t)a, 0, &r);
+                        got = (uint64_t)r;
+                    }
+                    if (got_trap != want_trap || (!want_trap && got != want)) {
+                        fprintf(
+                            stderr,
+                            "%s %s %llu: want %llu (trap %d), got %llu (trap "
+                            "%d)\n",
+                            DIVIDE_TYPES[k],
+                            rem ? "%" : "/",
+                            (unsigned long long)d,
+                            (unsigned long long)want,
+                            want_trap,
+                            (unsigned long long)got,
+                            got_trap
+                        );
+                        fprintf(stderr, "  dividend %lld\n", (long long)a);
+                        ok = false;
+                    }
+                }
+            }
+        }
+    }
+    release_program(&p);
+    free(text);
+    REQUIRE(ok);
+    return true;
+}
+
+typedef int64_t W1(uint64_t);
+
+TEST_CASE(narrow_parameters)
+{
+    Program p;
+    REQUIRE(build(
+        &p,
+        "fn t(a: u32) -> int => int(a / 3)\n"
+        "fn t_store(a: u32) -> int {\n"
+        "    x := a\n"
+        "    return int(x % 10)\n"
+        "}\n"
+        "fn g(x: int) -> int => x\n"
+        "fn t_call(a: u32) -> int {\n"
+        "    y := g(1)\n"
+        "    return int(a / 3) + int(a / 7) + y - 1\n"
+        "}\n"
+        "fn t8(a: u8) -> int => int(a / 3)\n"
+        "fn ti8(a: i8) -> int => int(a / 3)\n"
+        "fn tb(a: bool) -> int {\n"
+        "    if a {\n"
+        "        return 1\n"
+        "    }\n"
+        "    return 0\n"
+        "}\n"
+    ));
+    REQUIRE(((W1 *)fn(&p, "t"))(0x100000009ull) == 3);
+    REQUIRE(((W1 *)fn(&p, "t_store"))(0x100000009ull) == 9);
+    REQUIRE(((W1 *)fn(&p, "t_call"))(0x100000009ull) == 4);
+    REQUIRE(((W1 *)fn(&p, "t8"))(0xFFFFFF0Full) == 5);
+    REQUIRE(((W1 *)fn(&p, "ti8"))(0x1F4ull) == -4);
+    REQUIRE(((W1 *)fn(&p, "tb"))(0x100ull) == 0);
+    release_program(&p);
+    return true;
+}
+
 TEST_SUITE(arm64_tests)
 {
+    RUN_TEST_CASE(narrow_parameters);
+    RUN_TEST_CASE(constant_division);
+    RUN_TEST_CASE(differential);
+    RUN_TEST_CASE(store_while_loaded);
+    RUN_TEST_CASE(unsupported_types);
+    RUN_TEST_CASE(constant_conditions);
+    RUN_TEST_CASE(deep_logic);
     RUN_TEST_CASE(small_integers);
     RUN_TEST_CASE(wide_integers);
     RUN_TEST_CASE(control_flow);

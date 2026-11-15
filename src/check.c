@@ -705,7 +705,7 @@ add_slot(Checker *c, u32 name, u32 type, u32 node)
         code->slots_cap = code->slots_cap ? code->slots_cap * 2 : 16;
         code->slots = resize(code->slots, code->slots_cap, sizeof *code->slots);
     }
-    code->slots[code->nslots] = (IrSlot){ name, type, node };
+    code->slots[code->nslots] = (IrSlot){ name, type, node, 0 };
     return code->nslots++ - c->body.first_slot;
 }
 
@@ -715,6 +715,15 @@ slot_at(const Checker *c, u32 slot)
     return &c->body.code->slots[c->body.first_slot + slot];
 }
 
+static void
+weigh(Checker *c, u32 slot)
+{
+    IrSlot *s = slot_at(c, slot);
+    u32 depth = c->body.depth < 6 ? c->body.depth : 6;
+    u32 w = s->weight + (1u << (3 * depth));
+    s->weight = w < s->weight ? UINT32_MAX : w;
+}
+
 static Operand
 load_local(Checker *c, u32 slot)
 {
@@ -722,6 +731,7 @@ load_local(Checker *c, u32 slot)
     if (type == TYPE_ID_NONE) {
         return poison;
     }
+    weigh(c, slot);
     return emit_value(c, IR_LOAD, type, slot, 0);
 }
 
@@ -730,6 +740,7 @@ store_local(Checker *c, u32 slot, Operand v)
 {
     u32 type = slot_at(c, slot)->type;
     if (type != TYPE_ID_NONE && v.type != TYPE_ID_NONE) {
+        weigh(c, slot);
         emit(c, IR_STORE, type, slot, operand_ir(c, v));
     }
 }
@@ -1574,6 +1585,7 @@ call_fn(Checker *c, u32 file, u32 token, u32 decl, u32 first_arg, u32 nargs)
     }
 
     u32 i = emit(c, IR_CALL, ret, decl, relative);
+    c->body.calls++;
     return ret == TYPE_ID_VOID ? (Operand){ TYPE_ID_VOID, 0 }
                                : (Operand){ ret, REF_VALUE | i };
 }
@@ -1653,6 +1665,9 @@ logical(Checker *c, u32 file, u8 kind)
         return b;
     }
     if (mode == SHORT_SKIP) {
+        if (b.type != TYPE_ID_NONE && !is_constant(b)) {
+            emit(c, IR_DROP, 0, value_of(b), 0);
+        }
         emit(c, IR_END, 0, 0, 0);
         return a;
     }
@@ -1830,6 +1845,7 @@ close_while(Checker *c, u32 token)
     emit(c, IR_REPEAT, 0, loop.loop, 0);
     emit(c, IR_END, 0, 0, 0);
     emit(c, IR_END, 0, 0, 0);
+    c->body.depth--;
 
     bool forever = c->stack[m + 2].ref;
     c->body.reachable = !forever || loop.broken;
@@ -1875,6 +1891,7 @@ for_value(Checker *c, u32 file, u32 node, u32 token, bool inclusive)
             report(c, file, c->files[file].nodes.tokens[node - 1], DIAG_UNSUPPORTED, 0, 0);
         }
         u32 loop = emit(c, IR_LOOP, 0, 0, 0);
+        c->body.depth++;
         emit(c, IR_IF, 0, ir_const(c, TYPE_ID_BOOL, 0), 0);
         push_loop(c, (Loop){ loop, emit(c, IR_BLOCK, 0, 0, 0), NO_SLOT, false, false });
         return;
@@ -1892,6 +1909,7 @@ for_value(Checker *c, u32 file, u32 node, u32 token, bool inclusive)
     }
 
     u32 loop = emit(c, IR_LOOP, 0, 0, 0);
+    c->body.depth++;
     u32 i = value_of(load_local(c, slot));
     u32 n = value_of(load_local(c, slot + 1));
     u32 test = emit(c, inclusive ? IR_LE : IR_LT, type, i, n);
@@ -1916,11 +1934,13 @@ close_for(Checker *c, u32 token)
         }
         u32 i = value_of(load_local(c, loop.slot));
         u32 next = emit(c, IR_ADD_WRAP, type, i, ir_const(c, type, 1));
+        weigh(c, loop.slot);
         emit(c, IR_STORE, type, loop.slot, next);
         emit(c, IR_REPEAT, 0, loop.loop, 0);
     }
     emit(c, IR_END, 0, 0, 0);
     emit(c, IR_END, 0, 0, 0);
+    c->body.depth--;
 
     unbind_to(c, c->stack[m].ref);
     c->body.reachable = true;
@@ -1974,6 +1994,7 @@ body_marker(Checker *c, u32 file, u8 kind, u32 token)
         }
         case NODE_WHILE_START: {
             u32 loop = emit(c, IR_LOOP, 0, 0, 0);
+            c->body.depth++;
             push_loop(c, (Loop){ loop, loop, NO_SLOT, false, false });
             break;
         }
@@ -2462,6 +2483,7 @@ finish_ir(Checker *c, u32 decl, u32 nparams)
         .nslots = code->nslots - b->first_slot,
         .first_const = b->first_const,
         .nconsts = code->nconsts - b->first_const,
+        .calls = b->calls,
     };
 
     if (code != &ir->code) {

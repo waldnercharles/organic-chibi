@@ -27,7 +27,12 @@ enum
     V31 = 31,
     INT_POOL = 0x0000FE00u,
     FLOAT_POOL = 0x1FFF0000u,
-    WORDS_PER_FUNCTION = 64,
+    CALLEE_INT = 0x1FF80000u,
+    CALLEE_FLOAT = 0x0000FF00u,
+    ARGUMENTS = 0x000000FFu,
+    ALIAS = 64,
+    PROLOGUE_WORDS = 13,
+    WORDS_PER_FUNCTION = 96,
     WORDS_PER_INSTRUCTION = 32,
     WORDS_PER_ARGUMENT = 8,
 };
@@ -84,6 +89,17 @@ enum
     OP_UXTB = 0x53001C00u,
     OP_UXTH = 0x53003C00u,
     OP_CSET = 0x1A9F07E0u,
+    OP_CSNEG = 0x5A800400u,
+    OP_AND_IMM = 0x12000000u,
+    OP_ORR_IMM = 0x32000000u,
+    OP_EOR_IMM = 0x52000000u,
+    OP_ANDS_IMM = 0x72000000u,
+    OP_ASR_IMM = 0x13007C00u,
+    OP_LSR_IMM = 0x53007C00u,
+    SHIFT_LSR = 0x00400000u,
+    SHIFT_IMM12 = 0x00400000u,
+    OP_SUBS_EXT = 0x6B200000u,
+    OP_ANDS = 0x6A000000u,
     OP_EOR_ONE = 0x52000000u,
     OP_B = 0x14000000u,
     OP_B_COND = 0x54000000u,
@@ -100,6 +116,10 @@ enum
     OP_RESET_SP = 0x910003BFu,
     OP_POP_FRAME = 0xA8C17BFDu,
     OP_SUB_SP = 0xD10003FFu,
+    OP_STP_X = 0xA9000000u,
+    OP_LDP_X = 0xA9400000u,
+    OP_STP_D = 0x6D000000u,
+    OP_LDP_D = 0x6D400000u,
     OP_SUB_SP_HIGH = 0xD14003FFu,
     OP_ADD_FROM_SP = 0x910003E0u,
     OP_ADD_HIGH = 0x91400000u,
@@ -142,6 +162,7 @@ enum
     INFO_FLOAT = 0x04,
     INFO_SIGNED = 0x08,
     INFO_SMALL = 0x10,
+    INFO_UNSUPPORTED = 0x20,
 };
 
 typedef struct
@@ -158,6 +179,7 @@ typedef struct
     u32 ends;
     u8 kind;
     u8 result;
+    bool dead_else;
 } Open;
 
 typedef struct
@@ -175,6 +197,18 @@ typedef struct
     u32 holders[64];
     u32 free_int;
     u32 free_float;
+    u32 free_callee_int;
+    u32 free_callee_float;
+    u32 saved_int;
+    u32 saved_float;
+    u32 pinned_int;
+    u32 pinned_float;
+    u8 *slot_regs;
+    u32 slot_regs_cap;
+    u32 *aliases;
+    u32 *alias_at;
+    u32 naliases;
+    u32 epilogue;
     u32 *spill_free;
     u32 nspill_free;
     u32 spill_free_cap;
@@ -192,6 +226,7 @@ typedef struct
     u32 traps[NTRAPS];
     u32 fused;
     u8 fused_cond;
+    u32 tested;
     const char *error;
 } Emit;
 
@@ -264,7 +299,10 @@ type_info(const Checker *c, u32 type)
     u32 bits = c->types.arg0[type];
     u8 scale = bits == 64 ? 3 : bits == 32 ? 2 : bits == 16 ? 1 : 0;
     bool integer = kind == TYPE_INT;
+    bool supported = kind == TYPE_NONE || kind == TYPE_VOID || kind == TYPE_BOOL ||
+                     integer || kind == TYPE_UINTPTR || kind == TYPE_FLOAT;
     return (u8)(scale | (kind == TYPE_FLOAT ? INFO_FLOAT : 0) |
+                (supported ? 0 : INFO_UNSUPPORTED) |
                 (integer && c->types.arg1[type] ? INFO_SIGNED : 0) |
                 (integer && bits < 32 ? INFO_SMALL : 0));
 }
@@ -467,39 +505,61 @@ new_spill(Emit *e)
 }
 
 static void
-spill_reg(Emit *e, u32 holder_index)
+free_holder(Emit *e, u32 h)
 {
-    bool fl = holder_index >= 32;
-    u32 reg = holder_index & 31;
-    u32 v = e->holders[holder_index];
-    u32 offset = new_spill(e);
-    if (fl) {
-        memory(e, OP_STRD, 3, reg, offset, X8);
-        e->free_float |= 1u << reg;
+    e->holders[h] = NO_VALUE;
+    if (h >= 32) {
+        u32 bit = 1u << (h - 32);
+        *(bit & CALLEE_FLOAT ? &e->free_callee_float : &e->free_float) |= bit;
     } else {
-        memory(e, OP_STRX, 3, reg, offset, X8);
-        e->free_int |= 1u << reg;
+        u32 bit = 1u << h;
+        *(bit & CALLEE_INT ? &e->free_callee_int : &e->free_int) |= bit;
     }
-    e->holders[holder_index] = NO_VALUE;
+}
+
+static void
+spill_reg(Emit *e, u32 h)
+{
+    u32 v = e->holders[h];
+    u32 offset = new_spill(e);
+    memory(e, h >= 32 ? OP_STRD : OP_STRX, 3, h & 31, offset, X8);
+    free_holder(e, h);
     e->regs[v] = NO_REG;
     e->spills[v] = offset;
 }
 
 static void
+spill_holders(Emit *e, u32 used, u32 base)
+{
+    for (; used; used &= used - 1) {
+        u32 h = base + (u32)__builtin_ctz(used);
+        if (e->holders[h] != NO_VALUE) {
+            spill_reg(e, h);
+        }
+    }
+}
+
+static void
 spill_all(Emit *e)
 {
-    for (u32 used = ~e->free_int & INT_POOL; used; used &= used - 1) {
-        u32 h = (u32)__builtin_ctz(used);
-        if (e->holders[h] != NO_VALUE) {
-            spill_reg(e, h);
-        }
+    u32 ints = (~e->free_int & INT_POOL) |
+               (CALLEE_INT & ~e->free_callee_int & ~e->pinned_int);
+    u32 floats = (~e->free_float & FLOAT_POOL) |
+                 (CALLEE_FLOAT & ~e->free_callee_float & ~e->pinned_float);
+    if ((ints | floats | e->naliases) == 0) {
+        return;
     }
-    for (u32 used = ~e->free_float & FLOAT_POOL; used; used &= used - 1) {
-        u32 h = 32 + (u32)__builtin_ctz(used);
-        if (e->holders[h] != NO_VALUE) {
-            spill_reg(e, h);
-        }
+    spill_holders(e, ints, 0);
+    spill_holders(e, floats, 32);
+    for (u32 k = 0; k < e->naliases; k++) {
+        u32 v = e->aliases[k];
+        u32 h = e->regs[v] - ALIAS;
+        u32 offset = new_spill(e);
+        memory(e, h >= 32 ? OP_STRD : OP_STRX, 3, h & 31, offset, X8);
+        e->regs[v] = NO_REG;
+        e->spills[v] = offset;
     }
+    e->naliases = 0;
 }
 
 static u32
@@ -508,16 +568,15 @@ take_reg(Emit *e, bool fl)
     u32 *free_mask = fl ? &e->free_float : &e->free_int;
     if (*free_mask == 0) {
         u32 oldest = NO_VALUE, at = 0;
-        for (u32 h = fl ? 32 : 0, end = h + 32; h < end; h++) {
+        u32 base = fl ? 32 : 0;
+        for (u32 used = fl ? FLOAT_POOL : INT_POOL; used; used &= used - 1) {
+            u32 h = base + (u32)__builtin_ctz(used);
             if (e->holders[h] < oldest) {
                 oldest = e->holders[h];
                 at = h;
             }
         }
-        if (oldest == NO_VALUE) {
-            e->error = "an expression nests `and` and `or` too deeply";
-            return fl ? V29 : X8;
-        }
+        assert(oldest != NO_VALUE);
         spill_reg(e, at);
     }
     u32 reg = (u32)__builtin_ctz(*free_mask);
@@ -535,6 +594,66 @@ alloc(Emit *e, u32 v, u8 info)
     e->regs[v] = (u8)h;
     e->vinfo[v] = info;
     return reg;
+}
+
+static void
+add_alias(Emit *e, u32 v, u32 h, u8 info)
+{
+    e->alias_at[v] = e->naliases;
+    e->aliases[e->naliases++] = v;
+    e->regs[v] = (u8)(ALIAS + h);
+    e->vinfo[v] = info;
+}
+
+static void
+drop_alias(Emit *e, u32 k)
+{
+    assert(k < e->naliases);
+    u32 last = e->aliases[--e->naliases];
+    e->aliases[k] = last;
+    e->alias_at[last] = k;
+}
+
+static bool
+aliased(const Emit *e, u32 h)
+{
+    for (u32 k = 0; k < e->naliases; k++) {
+        if (e->regs[e->aliases[k]] == ALIAS + h) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static u32
+result(Emit *e, u32 v, u8 info)
+{
+    if (v + 1 < e->fn->count) {
+        u32 at = e->fn->first + v + 1;
+        u8 kind = e->ir->kinds[at];
+        if (kind == IR_STORE && e->ir->bs[at] == v) {
+            u8 h = e->slot_regs[e->ir->as[at]];
+            if (h != NO_REG && !aliased(e, h)) {
+                add_alias(e, v, h, info);
+                return h & 31;
+            }
+        } else if (kind == IR_RET && e->ir->as[at] == v && e->ir->types[at] != TYPE_ID_VOID) {
+            add_alias(e, v, is_float(info) ? 32 : 0, info);
+            return 0;
+        } else if (kind == IR_CALL) {
+            const u32 *args = e->ir->extra + e->fn->first_extra + e->ir->bs[at];
+            bool fl = is_float(info);
+            u32 same = 0;
+            for (u32 j = 1; j <= args[0] && same < 8; j++) {
+                if (args[j] == v) {
+                    add_alias(e, v, (fl ? 32 : 0) + same, info);
+                    return same;
+                }
+                same += is_float(operand_info(e, args[j])) == fl;
+            }
+        }
+    }
+    return alloc(e, v, info);
 }
 
 static u32
@@ -575,20 +694,97 @@ release(Emit *e, u32 x)
         e->spill_free[e->nspill_free++] = e->spills[x];
         return;
     }
-    e->holders[h] = NO_VALUE;
-    if (h >= 32) {
-        e->free_float |= 1u << (h - 32);
+    if (h >= ALIAS) {
+        drop_alias(e, e->alias_at[x]);
     } else {
-        e->free_int |= 1u << h;
+        free_holder(e, h);
     }
     e->regs[x] = NO_REG;
 }
 
-static bool
-small_constant(const Emit *e, u32 x)
+static void
+save_for_call(Emit *e, u32 used, bool fl)
 {
-    return (x & IR_CONST) && !is_float(operand_info(e, x)) &&
-           constant_bits(e, x) < 4096;
+    u32 base = fl ? 32 : 0;
+    u32 *callee = fl ? &e->free_callee_float : &e->free_callee_int;
+    for (; used; used &= used - 1) {
+        u32 reg = (u32)__builtin_ctz(used);
+        u32 v = e->holders[base + reg];
+        if (v == NO_VALUE) {
+            continue;
+        }
+        if (*callee == 0) {
+            spill_reg(e, base + reg);
+            continue;
+        }
+        u32 to = (u32)__builtin_ctz(*callee);
+        *callee &= *callee - 1;
+        *(fl ? &e->saved_float : &e->saved_int) |= 1u << to;
+        if (fl) {
+            fmov(e, to, reg);
+        } else {
+            mov(e, SF, to, reg);
+        }
+        free_holder(e, base + reg);
+        e->holders[base + to] = v;
+        e->regs[v] = (u8)(base + to);
+    }
+}
+
+static void
+materialize(Emit *e, u32 k)
+{
+    u32 v = e->aliases[k];
+    u32 h = e->regs[v] - ALIAS;
+    drop_alias(e, k);
+    u32 r = alloc(e, v, e->vinfo[v]);
+    if (h >= 32) {
+        fmov(e, r, h & 31);
+    } else {
+        mov(e, SF, r, h);
+    }
+}
+
+static bool
+imm12(u64 v, u32 *field)
+{
+    if (v < 4096) {
+        *field = (u32)v << 10;
+        return true;
+    }
+    if ((v & 0xFFF) == 0 && v >> 12 < 4096) {
+        *field = SHIFT_IMM12 | (u32)(v >> 12) << 10;
+        return true;
+    }
+    return false;
+}
+
+static bool
+arith_imm(const Emit *e, u32 x, u8 t, bool negate, u32 *field, bool *flip)
+{
+    *flip = false;
+    if (!(x & IR_CONST) || is_float(t)) {
+        return false;
+    }
+    u64 v = constant_bits(e, x);
+    int64_t sv = (int64_t)v;
+    if (!width(t)) {
+        v &= 0xFFFFFFFFu;
+        sv = (int32_t)(u32)v;
+    }
+    if (imm12(v, field)) {
+        return true;
+    }
+    *flip = negate && sv < 0 && imm12(0 - (u64)sv, field);
+    return *flip;
+}
+
+static void
+swap(u32 *a, u32 *b)
+{
+    u32 t = *a;
+    *a = *b;
+    *b = t;
 }
 
 static u32
@@ -608,11 +804,16 @@ normalize(Emit *e, u8 t, u32 d, u32 n)
     }
 }
 
+static u32
+extension(u32 bits, bool s)
+{
+    return (bits == 8 ? 0u : bits == 16 ? 1u : 2u) | (s ? 4u : 0u);
+}
+
 static void
 check_small(Emit *e, u8 t, u32 d)
 {
-    put(e, extend_op(t) | d << 5 | X8);
-    put(e, OP_SUBS | d << 16 | X8 << 5 | ZR);
+    put(e, OP_SUBS_EXT | d << 16 | extension(bits_of(t), is_signed(t)) << 13 | d << 5 | ZR);
     trap_if(e, COND_NE, TRAP_OVERFLOW);
 }
 
@@ -625,25 +826,31 @@ add_sub(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
         u32 ra = fetch(e, a, V30), rb = fetch(e, b, V31);
         release(e, a);
         release(e, b);
-        u32 d = alloc(e, i, t);
+        u32 d = result(e, i, t);
         put(e, (sub ? OP_FSUB : OP_FADD) | precision(t) | rb << 16 | ra << 5 | d);
         return;
     }
 
     bool checked = kind == IR_ADD || kind == IR_SUB;
     bool small = is_small(t);
-    bool imm = small_constant(e, b);
+    if (!sub && (a & IR_CONST) && !(b & IR_CONST)) {
+        swap(&a, &b);
+    }
+    u32 field;
+    bool flip;
+    bool imm = arith_imm(e, b, t, is_signed(t) || !checked, &field, &flip);
     u32 sf = width(t);
     u32 ra = fetch(e, a, X16);
     u32 rb = imm ? 0 : fetch(e, b, X17);
     release(e, a);
     release(e, b);
-    u32 d = alloc(e, i, t);
+    u32 d = result(e, i, t);
     bool flags = checked && !small;
-    u32 op = imm ? (sub ? (flags ? OP_SUBS_IMM : OP_SUB_IMM)
-                        : (flags ? OP_ADDS_IMM : OP_ADD_IMM))
+    bool negative = sub != flip;
+    u32 op = imm ? (negative ? (flags ? OP_SUBS_IMM : OP_SUB_IMM)
+                             : (flags ? OP_ADDS_IMM : OP_ADD_IMM))
                  : (sub ? (flags ? OP_SUBS : OP_SUB) : (flags ? OP_ADDS : OP_ADD));
-    u32 operand = imm ? (u32)constant_bits(e, b) << 10 : rb << 16;
+    u32 operand = imm ? field : rb << 16;
     put(e, op | sf | operand | ra << 5 | d);
     if (flags) {
         trap_if(e, is_signed(t) ? COND_VS : (sub ? COND_LO : COND_HS), TRAP_OVERFLOW);
@@ -664,7 +871,7 @@ multiply(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
         u32 ra = fetch(e, a, V30), rb = fetch(e, b, V31);
         release(e, a);
         release(e, b);
-        u32 d = alloc(e, i, t);
+        u32 d = result(e, i, t);
         put(e, OP_FMUL | precision(t) | rb << 16 | ra << 5 | d);
         return;
     }
@@ -672,7 +879,7 @@ multiply(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
     u32 ra = fetch(e, a, X16), rb = fetch(e, b, X17);
     release(e, a);
     release(e, b);
-    u32 d = alloc(e, i, t);
+    u32 d = result(e, i, t);
     u32 sf = width(t);
     bool s = is_signed(t);
     if (kind == IR_MUL_WRAP || is_small(t)) {
@@ -699,6 +906,247 @@ multiply(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
     }
 }
 
+static bool
+shifted_mask(u64 v)
+{
+    u64 filled = (v - 1) | v;
+    return v && ((filled + 1) & filled) == 0;
+}
+
+static bool
+logical_imm(u64 value, u32 sf, u32 *field)
+{
+    u32 size = sf ? 64 : 32;
+    if (!sf) {
+        value &= 0xFFFFFFFFu;
+    }
+    u64 all = sf ? ~0ull : 0xFFFFFFFFull;
+    if (value == 0 || value == all) {
+        return false;
+    }
+    while (size > 2) {
+        u32 half = size / 2;
+        u64 mask = (1ull << half) - 1;
+        if ((value & mask) != ((value >> half) & mask)) {
+            break;
+        }
+        size = half;
+    }
+    u64 mask = ~0ull >> (64 - size);
+    u64 v = value & mask;
+    u32 zeros, ones;
+    if (shifted_mask(v)) {
+        zeros = (u32)__builtin_ctzll(v);
+        ones = (u32)__builtin_ctzll(~(v >> zeros));
+    } else {
+        v |= ~mask;
+        if (!shifted_mask(~v)) {
+            return false;
+        }
+        u32 leading = (u32)__builtin_clzll(~v);
+        zeros = 64 - leading;
+        ones = leading + (u32)__builtin_ctzll(~v) - (64 - size);
+    }
+    u32 immr = (size - zeros) & (size - 1);
+    u64 nimms = (~(u64)(size - 1) << 1) | (ones - 1);
+    u32 n = (u32)((nimms >> 6) & 1) ^ 1;
+    *field = n << 22 | immr << 16 | (u32)(nimms & 0x3F) << 10;
+    return true;
+}
+
+static void
+signed_magic(int64_t d, u32 w, int64_t *magic, u32 *shift)
+{
+    u64 two = 1ull << (w - 1);
+    u64 ad = d < 0 ? 0 - (u64)d : (u64)d;
+    u64 t = two + (d < 0);
+    u64 anc = t - 1 - t % ad;
+    u32 p = w - 1;
+    u64 q1 = two / anc, r1 = two - q1 * anc;
+    u64 q2 = two / ad, r2 = two - q2 * ad;
+    u64 delta;
+    do {
+        p++;
+        q1 *= 2;
+        r1 *= 2;
+        if (r1 >= anc) {
+            q1++;
+            r1 -= anc;
+        }
+        q2 *= 2;
+        r2 *= 2;
+        if (r2 >= ad) {
+            q2++;
+            r2 -= ad;
+        }
+        delta = ad - r2;
+    } while (q1 < delta || (q1 == delta && r1 == 0));
+    u64 m = q2 + 1;
+    if (d < 0) {
+        m = 0 - m;
+    }
+    if (w == 32) {
+        m = (u64)(int64_t)(int32_t)(u32)m;
+    }
+    *magic = (int64_t)m;
+    *shift = p - w;
+}
+
+static void
+unsigned_magic(u64 d, u64 *magic, bool *add, u32 *shift)
+{
+    const u64 high = 0x8000000000000000ull;
+    *add = false;
+    u64 nc = ~0ull - (0 - d) % d;
+    u32 p = 63;
+    u64 q1 = high / nc, r1 = high - q1 * nc;
+    u64 q2 = (high - 1) / d, r2 = (high - 1) - q2 * d;
+    u64 delta;
+    do {
+        p++;
+        if (r1 >= nc - r1) {
+            q1 = 2 * q1 + 1;
+            r1 = 2 * r1 - nc;
+        } else {
+            q1 = 2 * q1;
+            r1 = 2 * r1;
+        }
+        if (r2 + 1 >= d - r2) {
+            *add |= q2 >= high - 1;
+            q2 = 2 * q2 + 1;
+            r2 = 2 * r2 + 1 - d;
+        } else {
+            *add |= q2 >= high;
+            q2 = 2 * q2;
+            r2 = 2 * r2 + 1;
+        }
+        delta = d - 1 - r2;
+    } while (p < 128 && (q1 < delta || (q1 == delta && r1 == 0)));
+    *magic = q2 + 1;
+    *shift = p - 64;
+}
+
+static void
+shift_imm(Emit *e, u32 op, u32 sf, u32 d, u32 n, u32 count)
+{
+    put(e, op | sf | (sf ? 0x00408000u : 0) | count << 16 | n << 5 | d);
+}
+
+static bool
+tests_zero(const Emit *e, u32 i)
+{
+    if (i + 1 >= e->fn->count) {
+        return false;
+    }
+    u32 at = e->fn->first + i + 1;
+    u8 kind = e->ir->kinds[at];
+    u32 b = e->ir->bs[at];
+    return (kind == IR_EQ || kind == IR_NE) && e->ir->as[at] == i &&
+           (b & IR_CONST) && constant_bits(e, b) == 0;
+}
+
+static void
+divide_constant(Emit *e, u32 i, u8 kind, u8 t, u32 a, u64 divisor)
+{
+    u32 sf = width(t);
+    u32 w = sf ? 64 : 32;
+    bool s = is_signed(t);
+    bool rem = kind == IR_REM;
+    bool pow2 = (!s || (int64_t)divisor > 0) && !(divisor & (divisor - 1));
+    u32 k = (u32)__builtin_ctzll(divisor);
+    u32 field = 0;
+    if (rem && pow2 && k > 0 && tests_zero(e, i)) {
+        u32 ra = fetch(e, a, X16);
+        release(e, a);
+        [[maybe_unused]] bool mask = logical_imm(divisor - 1, sf, &field);
+        assert(mask);
+        put(e, OP_ANDS_IMM | sf | field | ra << 5 | ZR);
+        e->tested = i + 1;
+        return;
+    }
+
+    u32 ra = fetch(e, a, X16);
+    release(e, a);
+    u32 d = result(e, i, t);
+    if (pow2 && k == 0) {
+        mov(e, sf, d, rem ? ZR : ra);
+        return;
+    }
+    if (pow2 && !s) {
+        if (rem) {
+            [[maybe_unused]] bool mask = logical_imm(divisor - 1, sf, &field);
+            assert(mask);
+            put(e, OP_AND_IMM | sf | field | ra << 5 | d);
+        } else {
+            shift_imm(e, OP_LSR_IMM, sf, d, ra, k);
+        }
+        return;
+    }
+    if (pow2) {
+        [[maybe_unused]] bool mask = logical_imm(divisor - 1, sf, &field);
+        assert(mask);
+        if (rem) {
+            put(e, OP_SUBS | sf | ra << 16 | ZR << 5 | X8);
+            put(e, OP_AND_IMM | sf | field | ra << 5 | X17);
+            put(e, OP_AND_IMM | sf | field | X8 << 5 | X8);
+            put(e, OP_CSNEG | sf | X8 << 16 | (u32)COND_MI << 12 | X17 << 5 | d);
+            return;
+        }
+        if (k == 1) {
+            put(e, OP_ADD | sf | SHIFT_LSR | ra << 16 | (w - 1) << 10 | ra << 5 | X8);
+        } else {
+            shift_imm(e, OP_ASR_IMM, sf, X8, ra, w - 1);
+            put(e, OP_ADD | sf | SHIFT_LSR | X8 << 16 | (w - k) << 10 | ra << 5 | X8);
+        }
+        shift_imm(e, OP_ASR_IMM, sf, d, X8, k);
+        return;
+    }
+
+    if (s) {
+        int64_t magic;
+        u32 shift;
+        signed_magic((int64_t)divisor, w, &magic, &shift);
+        mov_imm(e, X17, (u64)magic, sf);
+        if (sf) {
+            put(e, OP_SMULH | X17 << 16 | ra << 5 | X8);
+        } else {
+            put(e, OP_SMULL | X17 << 16 | ra << 5 | X8);
+            shift_imm(e, OP_ASR_IMM, SF, X8, X8, 32);
+        }
+        if ((int64_t)divisor > 0 && magic < 0) {
+            put(e, OP_ADD | sf | ra << 16 | X8 << 5 | X8);
+        } else if ((int64_t)divisor < 0 && magic > 0) {
+            put(e, OP_SUB | sf | ra << 16 | X8 << 5 | X8);
+        }
+        if (shift) {
+            shift_imm(e, OP_ASR_IMM, sf, X8, X8, shift);
+        }
+        u32 q = rem ? X8 : d;
+        put(e, OP_ADD | sf | SHIFT_LSR | X8 << 16 | (w - 1) << 10 | X8 << 5 | q);
+    } else {
+        u64 magic;
+        bool add;
+        u32 shift;
+        unsigned_magic(divisor, &magic, &add, &shift);
+        mov_imm(e, X17, magic, SF);
+        put(e, OP_UMULH | X17 << 16 | ra << 5 | X8);
+        u32 q = rem ? X8 : d;
+        if (add) {
+            put(e, OP_SUB | SF | X8 << 16 | ra << 5 | X17);
+            put(e, OP_ADD | SF | SHIFT_LSR | X17 << 16 | 1u << 10 | X8 << 5 | X8);
+            shift_imm(e, OP_LSR_IMM, SF, q, X8, shift - 1);
+        } else if (shift) {
+            shift_imm(e, OP_LSR_IMM, SF, q, X8, shift);
+        } else {
+            mov(e, SF, q, X8);
+        }
+    }
+    if (rem) {
+        mov_imm(e, X17, divisor, sf);
+        put(e, OP_MSUB | sf | X17 << 16 | ra << 10 | X8 << 5 | d);
+    }
+}
+
 static void
 divide(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
 {
@@ -707,9 +1155,20 @@ divide(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
         u32 ra = fetch(e, a, V30), rb = fetch(e, b, V31);
         release(e, a);
         release(e, b);
-        u32 d = alloc(e, i, t);
+        u32 d = result(e, i, t);
         put(e, OP_FDIV | precision(t) | rb << 16 | ra << 5 | d);
         return;
+    }
+    if (b & IR_CONST) {
+        u64 divisor = constant_bits(e, b);
+        if (!width(t)) {
+            divisor = is_signed(t) ? (u64)(int64_t)(int32_t)(u32)divisor
+                                   : divisor & 0xFFFFFFFFu;
+        }
+        if (divisor != 0 && (!is_signed(t) || divisor != ~0ull)) {
+            divide_constant(e, i, kind, t, a, divisor);
+            return;
+        }
     }
 
     u32 sf = width(t);
@@ -724,7 +1183,7 @@ divide(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
     u32 ra = fetch(e, a, X16), rb = fetch(e, b, X17);
     release(e, a);
     release(e, b);
-    u32 d = alloc(e, i, t);
+    u32 d = result(e, i, t);
     if (!known || divisor == 0) {
         trap_if_zero(e, rb, sf, TRAP_DIVIDE);
     }
@@ -755,12 +1214,31 @@ static void
 bitwise(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
 {
     u8 t = e->info[type];
-    u32 ra = fetch(e, a, X16), rb = fetch(e, b, X17);
+    u32 sf = width(t);
+    if ((a & IR_CONST) && !(b & IR_CONST)) {
+        swap(&a, &b);
+    }
+    u32 field = 0;
+    bool imm = (b & IR_CONST) && logical_imm(constant_bits(e, b), sf, &field);
+    u32 ra = fetch(e, a, X16);
+    u32 rb = imm ? 0 : fetch(e, b, X17);
     release(e, a);
     release(e, b);
-    u32 d = alloc(e, i, t);
-    u32 op = kind == IR_AND ? OP_AND : kind == IR_OR ? OP_ORR : OP_EOR;
-    put(e, op | width(t) | rb << 16 | ra << 5 | d);
+    if (kind == IR_AND && tests_zero(e, i)) {
+        put(e, (imm ? OP_ANDS_IMM | field : OP_ANDS | rb << 16) | sf | ra << 5 | ZR);
+        e->tested = i + 1;
+        return;
+    }
+    u32 d = result(e, i, t);
+    if (imm) {
+        u32 op = kind == IR_AND ? OP_AND_IMM
+               : kind == IR_OR  ? OP_ORR_IMM
+                                : OP_EOR_IMM;
+        put(e, op | sf | field | ra << 5 | d);
+    } else {
+        u32 op = kind == IR_AND ? OP_AND : kind == IR_OR ? OP_ORR : OP_EOR;
+        put(e, op | sf | rb << 16 | ra << 5 | d);
+    }
 }
 
 static void
@@ -774,7 +1252,7 @@ shift(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
     if (b & IR_CONST) {
         u32 count = (u32)constant_bits(e, b);
         release(e, a);
-        u32 d = alloc(e, i, t);
+        u32 d = result(e, i, t);
         u32 base = sf ? 0xD3400000u : 0x53000000u;
         if (kind == IR_SHL) {
             put(e,
@@ -794,7 +1272,7 @@ shift(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
     u32 rb = fetch(e, b, X17);
     release(e, a);
     release(e, b);
-    u32 d = alloc(e, i, t);
+    u32 d = result(e, i, t);
     put(e, OP_SUBS_IMM | width(count_info) | bits_of(t) << 10 | rb << 5 | ZR);
     trap_if(e, COND_HS, TRAP_SHIFT);
     u32 op = kind == IR_SHL ? OP_LSLV : s ? OP_ASRV : OP_LSRV;
@@ -830,20 +1308,29 @@ static void
 compare(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
 {
     u8 t = e->info[type];
-    if (is_float(t)) {
+    if (e->tested == i) {
+        e->tested = NO_VALUE;
+    } else if (is_float(t)) {
         u32 ra = fetch(e, a, V30), rb = fetch(e, b, V31);
         release(e, a);
         release(e, b);
         put(e, OP_FCMP | precision(t) | rb << 16 | ra << 5);
     } else {
-        bool imm = small_constant(e, b);
+        if ((a & IR_CONST) && !(b & IR_CONST)) {
+            swap(&a, &b);
+            static const u8 mirrored[] = { IR_GT, IR_GE, IR_LT, IR_LE };
+            kind = kind >= IR_LT ? mirrored[kind - IR_LT] : kind;
+        }
+        u32 field;
+        bool flip;
+        bool imm = arith_imm(e, b, t, is_signed(t) || kind <= IR_NE, &field, &flip);
         u32 ra = fetch(e, a, X16);
         u32 rb = imm ? 0 : fetch(e, b, X17);
         release(e, a);
         release(e, b);
         u32 sf = width(t);
         if (imm) {
-            put(e, OP_SUBS_IMM | sf | (u32)constant_bits(e, b) << 10 | ra << 5 | ZR);
+            put(e, (flip ? OP_ADDS_IMM : OP_SUBS_IMM) | sf | field | ra << 5 | ZR);
         } else {
             put(e, OP_SUBS | sf | rb << 16 | ra << 5 | ZR);
         }
@@ -856,7 +1343,7 @@ compare(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
         e->fused_cond = cond;
         return;
     }
-    u32 d = alloc(e, i, e->info[TYPE_ID_BOOL]);
+    u32 d = result(e, i, e->info[TYPE_ID_BOOL]);
     put(e, OP_CSET | (u32)(cond ^ 1) << 12 | d);
 }
 
@@ -867,14 +1354,14 @@ unary(Emit *e, u32 i, u8 kind, u32 type, u32 a)
     if (is_float(t)) {
         u32 ra = fetch(e, a, V30);
         release(e, a);
-        u32 d = alloc(e, i, t);
+        u32 d = result(e, i, t);
         put(e, OP_FNEG | precision(t) | ra << 5 | d);
         return;
     }
 
     u32 ra = fetch(e, a, X16);
     release(e, a);
-    u32 d = alloc(e, i, t);
+    u32 d = result(e, i, t);
     u32 sf = width(t);
     bool small = is_small(t);
     switch (kind) {
@@ -917,7 +1404,7 @@ convert(Emit *e, u32 i, u32 to, u32 a)
     if (!float_from && !float_to) {
         u32 ra = fetch(e, a, X16);
         release(e, a);
-        u32 d = alloc(e, i, tt);
+        u32 d = result(e, i, tt);
         if (width(tt) && !width(from)) {
             put(e,
                 is_signed(from) ? OP_SXTW | ra << 5 | d
@@ -928,14 +1415,14 @@ convert(Emit *e, u32 i, u32 to, u32 a)
     } else if (!float_from) {
         u32 ra = fetch(e, a, X16);
         release(e, a);
-        u32 d = alloc(e, i, tt);
+        u32 d = result(e, i, tt);
         u32 op = is_signed(from) ? OP_SCVTF : OP_UCVTF;
         put(e, op | width(from) | precision(tt) | ra << 5 | d);
     } else {
         assert(float_to);
         u32 ra = fetch(e, a, V30);
         release(e, a);
-        u32 d = alloc(e, i, tt);
+        u32 d = result(e, i, tt);
         if (bits_of(from) == bits_of(tt)) {
             fmov(e, d, ra);
         } else {
@@ -995,7 +1482,7 @@ narrow(Emit *e, u32 i, u32 to, u32 a)
             put(e, OP_FCMP | fp | V29 << 16 | ra << 5);
             trap_if(e, COND_LT, TRAP_RANGE);
         }
-        u32 d = alloc(e, i, tt);
+        u32 d = result(e, i, tt);
         put(e, (to_signed ? OP_FCVTZS : OP_FCVTZU) | width(tt) | fp | ra << 5 | d);
         return;
     }
@@ -1004,37 +1491,30 @@ narrow(Emit *e, u32 i, u32 to, u32 a)
     release(e, a);
     u32 sf = width(from);
     u32 from_bits = bits_of(from);
-    bool from_signed = is_signed(from);
-    if (from_signed) {
-        int64_t low = to_signed ? -(int64_t)(1ull << (to_bits - 1)) : 0;
-        int64_t from_low = from_bits == 64 ? INT64_MIN
-                                           : -(int64_t)(1ull << (from_bits - 1));
-        if (low > from_low) {
-            if (low == 0) {
-                put(e, OP_SUBS_IMM | sf | ra << 5 | ZR);
-            } else {
-                mov_imm(e, X8, (u64)low, sf);
-                put(e, OP_SUBS | sf | X8 << 16 | ra << 5 | ZR);
-            }
+    if (is_signed(from)) {
+        if (to_bits >= from_bits) {
+            put(e, OP_SUBS_IMM | sf | ra << 5 | ZR);
             trap_if(e, COND_LT, TRAP_RANGE);
-        }
-    }
-    u64 high = to_signed ? (1ull << (to_bits - 1)) - 1
-                         : (to_bits == 64 ? ~0ull : (1ull << to_bits) - 1);
-    u64 from_high = from_signed
-                      ? (1ull << (from_bits - 1)) - 1
-                      : (from_bits == 64 ? ~0ull : (1ull << from_bits) - 1);
-    if (high < from_high) {
-        if (high < 4096) {
-            put(e, OP_SUBS_IMM | sf | (u32)high << 10 | ra << 5 | ZR);
         } else {
-            mov_imm(e, X8, high, sf);
-            put(e, OP_SUBS | sf | X8 << 16 | ra << 5 | ZR);
+            put(e,
+                OP_SUBS_EXT | sf | ra << 16 |
+                    extension(to_bits, to_signed) << 13 | ra << 5 | ZR);
+            trap_if(e, COND_NE, TRAP_RANGE);
         }
-        trap_if(e, from_signed ? COND_GT : COND_HI, TRAP_RANGE);
+    } else if (to_bits - to_signed < from_bits) {
+        u32 field = 0;
+        [[maybe_unused]] bool
+            mask = logical_imm(~((1ull << (to_bits - to_signed)) - 1), sf, &field);
+        assert(mask);
+        put(e, OP_ANDS_IMM | sf | field | ra << 5 | ZR);
+        trap_if(e, COND_NE, TRAP_RANGE);
     }
-    u32 d = alloc(e, i, tt);
-    mov(e, width(tt), d, ra);
+    u32 d = result(e, i, tt);
+    if (width(tt) && !sf) {
+        put(e, OP_ORR | ra << 16 | ZR << 5 | d);
+    } else {
+        mov(e, width(tt), d, ra);
+    }
 }
 
 static void
@@ -1043,7 +1523,7 @@ truncate_to(Emit *e, u32 i, u32 to, u32 a)
     u8 tt = e->info[to];
     u32 ra = fetch(e, a, X16);
     release(e, a);
-    u32 d = alloc(e, i, tt);
+    u32 d = result(e, i, tt);
     if (is_small(tt)) {
         put(e, extend_op(tt) | ra << 5 | d);
     } else {
@@ -1090,7 +1570,8 @@ call(Emit *e, u32 i, u32 type, u32 decl, u32 b, const Native *n)
         }
         move_into(e, d, args[j], fl);
     }
-    spill_all(e);
+    save_for_call(e, ~e->free_int & INT_POOL, false);
+    save_for_call(e, ~e->free_float & FLOAT_POOL, true);
 
     u64 pc = (u64)(uintptr_t)(e->code + here(e));
     u64 entry = (u64)(uintptr_t)(n->entries + decl);
@@ -1101,7 +1582,7 @@ call(Emit *e, u32 i, u32 type, u32 decl, u32 b, const Native *n)
 
     if (type != TYPE_ID_VOID) {
         bool fl = is_float(t);
-        u32 d = alloc(e, i, e->info[type]);
+        u32 d = result(e, i, e->info[type]);
         if (fl) {
             fmov(e, d, 0);
         } else {
@@ -1111,11 +1592,12 @@ call(Emit *e, u32 i, u32 type, u32 decl, u32 b, const Native *n)
 }
 
 static void
-epilogue(Emit *e)
+align_loop(Emit *e)
 {
-    put(e, OP_RESET_SP);
-    put(e, OP_POP_FRAME);
-    put(e, OP_RET);
+    put(e, OP_NOP);
+    while ((uintptr_t)e->at & 15) {
+        put(e, OP_NOP);
+    }
 }
 
 static Open *
@@ -1128,6 +1610,167 @@ find_open(Emit *e, u32 target)
     }
     assert(false && "branch to a construct that isn't open");
     return NULL;
+}
+
+static const char UNSUPPORTED_TYPE[] = "the arm64 backend supports only "
+                                       "integers, floats and bool so far";
+
+static u32
+arm_end(const Emit *e, u32 i)
+{
+    const u8 *kinds = e->ir->kinds + e->fn->first;
+    u32 depth = 0;
+    for (u32 k = i + 1;; k++) {
+        u8 kind = kinds[k];
+        if (kind == IR_BLOCK || kind == IR_LOOP || kind == IR_IF) {
+            depth++;
+        } else if (kind == IR_END) {
+            if (depth == 0) {
+                return k;
+            }
+            depth--;
+        } else if (kind == IR_ELSE && depth == 0) {
+            return k;
+        }
+    }
+}
+
+static bool
+in_pool(u8 h)
+{
+    return h < 32 ? (INT_POOL >> h) & 1 : h < 64 && (FLOAT_POOL >> (h - 32)) & 1;
+}
+
+static void
+store_pinned(Emit *e, u8 h, u32 type, u32 b)
+{
+    for (u32 k = e->naliases; k-- > 0;) {
+        u32 v = e->aliases[k];
+        if (v != b && e->regs[v] == ALIAS + h) {
+            materialize(e, k);
+        }
+    }
+    bool fl = h >= 32;
+    u32 r = h & 31u;
+    u8 t = e->info[type];
+    if (b & IR_CONST) {
+        if (fl) {
+            float_imm(e, r, constant_bits(e, b), bits_of(t) == 64);
+        } else {
+            mov_imm(e, r, constant_bits(e, b), width(t));
+        }
+    } else if (e->regs[b] == ALIAS + h) {
+        release(e, b);
+    } else {
+        move_into(e, r, b, fl);
+    }
+}
+
+static void
+pin_by_weight(Emit *e, bool fl, u32 first, u32 cheap, u32 callee)
+{
+    const IrSlot *slots = e->ir->slots + e->fn->first_slot;
+    u32 top[32];
+    u32 ntop = 0;
+    u32 room = (u32)__builtin_popcount(cheap | callee);
+    for (u32 s = first; s < e->fn->nslots; s++) {
+        u8 info = e->info[slots[s].type];
+        u32 w = slots[s].weight;
+        if (!w || is_float(info) != fl || e->slot_regs[s] != NO_REG ||
+            (info & INFO_UNSUPPORTED) ||
+            (ntop == room && w <= slots[top[room - 1]].weight)) {
+            continue;
+        }
+        u32 at = ntop < room ? ntop++ : room - 1;
+        while (at > 0 && slots[top[at - 1]].weight < w) {
+            top[at] = top[at - 1];
+            at--;
+        }
+        top[at] = s;
+    }
+
+    u32 base = fl ? 32 : 0;
+    for (u32 k = 0; k < ntop; k++) {
+        u32 s = top[k];
+        if (cheap) {
+            e->slot_regs[s] = (u8)(base + (u32)__builtin_ctz(cheap));
+            cheap &= cheap - 1;
+        } else if (slots[s].weight >= 2) {
+            u32 r = (u32)__builtin_ctz(callee);
+            callee &= callee - 1;
+            e->slot_regs[s] = (u8)(base + r);
+            *(fl ? &e->saved_float : &e->saved_int) |= 1u << r;
+        }
+    }
+}
+
+static void
+pin_locals(Emit *e)
+{
+    const IrFunc *fn = e->fn;
+    const IrSlot *slots = e->ir->slots + fn->first_slot;
+    e->slot_regs = grow(
+        e->slot_regs,
+        &e->slot_regs_cap,
+        fn->nslots + 1,
+        sizeof *e->slot_regs
+    );
+    memset(e->slot_regs, NO_REG, fn->nslots);
+    e->saved_int = 0;
+    e->saved_float = 0;
+
+    u32 cheap[2] = { 0, 0 };
+    u32 first = 0;
+    if (fn->calls == 0) {
+        cheap[0] = ARGUMENTS;
+        cheap[1] = ARGUMENTS;
+        u32 used[2] = { 0, 0 };
+        for (u32 p = 0; p < fn->nparams; p++) {
+            bool fl = is_float(e->info[slots[p].type]);
+            u32 r = used[fl]++;
+            if (r < 8 && slots[p].weight) {
+                e->slot_regs[p] = (u8)((fl ? 32 : 0) + r);
+                cheap[fl] &= ~(1u << r);
+            }
+        }
+        first = fn->nparams;
+    }
+
+    u32 wanted[2] = { 0, 0 };
+    for (u32 s = first; s < fn->nslots; s++) {
+        wanted[is_float(e->info[slots[s].type])] += slots[s].weight != 0 &&
+                                                    e->slot_regs[s] == NO_REG;
+    }
+    u32 callee[2] = { CALLEE_INT, CALLEE_FLOAT };
+    for (u32 c = 0; c < 2; c++) {
+        if (wanted[c] > (u32)__builtin_popcount(cheap[c] | callee[c])) {
+            pin_by_weight(e, c, first, cheap[c], callee[c]);
+            continue;
+        }
+        u32 base = c ? 32 : 0;
+        for (u32 s = first; s < fn->nslots && wanted[c]; s++) {
+            u8 info = e->info[slots[s].type];
+            u32 w = slots[s].weight;
+            if (is_float(info) != c || !w || e->slot_regs[s] != NO_REG ||
+                (info & INFO_UNSUPPORTED)) {
+                continue;
+            }
+            wanted[c]--;
+            if (cheap[c]) {
+                e->slot_regs[s] = (u8)(base + (u32)__builtin_ctz(cheap[c]));
+                cheap[c] &= cheap[c] - 1;
+            } else if (w >= 2) {
+                u32 r = (u32)__builtin_ctz(callee[c]);
+                callee[c] &= callee[c] - 1;
+                e->slot_regs[s] = (u8)(base + r);
+                *(c ? &e->saved_float : &e->saved_int) |= 1u << r;
+            }
+        }
+    }
+    e->pinned_int = e->saved_int;
+    e->pinned_float = e->saved_float;
+    e->free_callee_int = CALLEE_INT & ~e->saved_int;
+    e->free_callee_float = CALLEE_FLOAT & ~e->saved_float;
 }
 
 static void
@@ -1143,7 +1786,13 @@ lay_out_frame(Emit *e)
     );
     u32 counts[4] = { 0 };
     for (u32 s = 0; s < fn->nslots; s++) {
-        counts[e->info[slots[s].type] & INFO_SCALE]++;
+        u8 info = e->info[slots[s].type];
+        if (info & INFO_UNSUPPORTED) {
+            e->error = UNSUPPORTED_TYPE;
+        }
+        if (e->slot_regs[s] == NO_REG && slots[s].weight) {
+            counts[info & INFO_SCALE]++;
+        }
     }
     u32 bases[4];
     u32 offset = 0;
@@ -1153,6 +1802,9 @@ lay_out_frame(Emit *e)
         offset += counts[k] << k;
     }
     for (u32 s = 0; s < fn->nslots; s++) {
+        if (e->slot_regs[s] != NO_REG || !slots[s].weight) {
+            continue;
+        }
         u32 k = e->info[slots[s].type] & INFO_SCALE;
         e->slot_offsets[s] = bases[k];
         bases[k] += 1u << k;
@@ -1160,21 +1812,44 @@ lay_out_frame(Emit *e)
     e->locals = (offset + 7) & ~7u;
 }
 
-static void
+static u32
+callee_words(u32 *out, bool load, u32 saved_int, u32 saved_float)
+{
+    u32 n = 0;
+    for (u32 r = 19; r < 29; r += 2) {
+        if (saved_int & (3u << r)) {
+            u32 imm = (u32) - (int32_t)(2 * (n + 1)) & 0x7F;
+            out[n++] = (load ? OP_LDP_X : OP_STP_X) | imm << 15 |
+                       (r + 1) << 10 | X29 << 5 | r;
+        }
+    }
+    for (u32 r = 8; r < 16; r += 2) {
+        if (saved_float & (3u << r)) {
+            u32 imm = (u32) - (int32_t)(2 * (n + 1)) & 0x7F;
+            out[n++] = (load ? OP_LDP_D : OP_STP_D) | imm << 15 |
+                       (r + 1) << 10 | X29 << 5 | r;
+        }
+    }
+    return n;
+}
+
+static u32
 emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
 {
     const IrCode *ir = e->ir;
     e->fn = fn;
     e->code = code;
-    e->at = code;
     e->nopen = 0;
     e->nfixups = 1;
     e->nspill_free = 0;
     e->spill_top = 0;
     e->spill_max = 0;
+    e->naliases = 0;
+    e->epilogue = 0;
     e->free_int = INT_POOL;
     e->free_float = FLOAT_POOL;
     e->fused = NO_VALUE;
+    e->tested = NO_VALUE;
     memset(e->traps, 0, sizeof e->traps);
     memset(e->holders, 0xFF, sizeof e->holders);
     if (fn->count > e->values_cap) {
@@ -1182,26 +1857,41 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
         e->regs = realloc(e->regs, e->values_cap * sizeof *e->regs);
         e->spills = realloc(e->spills, e->values_cap * sizeof *e->spills);
         e->vinfo = realloc(e->vinfo, e->values_cap * sizeof *e->vinfo);
+        e->aliases = realloc(e->aliases, e->values_cap * sizeof *e->aliases);
+        e->alias_at = realloc(e->alias_at, e->values_cap * sizeof *e->alias_at);
     }
     memset(e->regs, NO_REG, fn->count);
+    pin_locals(e);
     lay_out_frame(e);
+    memset(code, 0, PROLOGUE_WORDS * sizeof *code);
+    e->at = code + PROLOGUE_WORDS;
 
-    put(e, OP_PUSH_FRAME);
-    put(e, OP_SET_FRAME);
-    put(e, OP_NOP);
-    put(e, OP_NOP);
-
+    const IrSlot *slots = ir->slots + fn->first_slot;
     u32 ints = 0, floats = 0;
     for (u32 p = 0; p < fn->nparams; p++) {
-        u32 type = slot_type(e, p);
+        u32 type = slots[p].type;
         bool fl = is_float(e->info[type]);
         u32 r = fl ? floats++ : ints++;
         if (r >= 8) {
             e->error = "a function has more than 8 integer or 8 float "
                        "parameters";
-            return;
+            return 0;
         }
-        store_typed(e, type, r, e->slot_offsets[p]);
+        u8 h = e->slot_regs[p];
+        u8 info = e->info[type];
+        if (h != NO_REG) {
+            if (fl) {
+                fmov(e, h & 31u, r);
+            } else if (bits_of(info) < 32) {
+                put(e, extend_op(info) | r << 5 | h);
+            } else if (bits_of(info) == 32) {
+                put(e, OP_ORR | r << 16 | ZR << 5 | h);
+            } else {
+                mov(e, SF, h, r);
+            }
+        } else if (slots[p].weight) {
+            store_typed(e, type, r, e->slot_offsets[p]);
+        }
     }
 
     for (u32 i = 0; i < fn->count && !e->error; i++) {
@@ -1210,14 +1900,27 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
         u32 type = ir->types[at];
         u32 a = ir->as[at];
         u32 b = ir->bs[at];
+        if (e->info[type] & INFO_UNSUPPORTED) {
+            e->error = UNSUPPORTED_TYPE;
+            break;
+        }
         switch (kind) {
             case IR_LOAD: {
                 u32 st = slot_type(e, a);
-                u32 d = alloc(e, i, e->info[st]);
+                if (e->slot_regs[a] != NO_REG) {
+                    add_alias(e, i, e->slot_regs[a], e->info[st]);
+                    break;
+                }
+                u32 d = result(e, i, e->info[st]);
                 load_typed(e, st, d, e->slot_offsets[a]);
                 break;
             }
             case IR_STORE: {
+                u8 h = e->slot_regs[a];
+                if (h != NO_REG) {
+                    store_pinned(e, h, type, b);
+                    break;
+                }
                 u32 r;
                 if ((b & IR_CONST) && constant_bits(e, b) == 0) {
                     r = ZR;
@@ -1260,47 +1963,72 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                 if (type != TYPE_ID_VOID) {
                     move_into(e, 0, a, is_float(e->info[type]));
                 }
-                epilogue(e);
+                if (i + 1 < fn->count) {
+                    add_fixup(e, &e->epilogue);
+                    put(e, OP_B);
+                }
                 break;
             case IR_BLOCK:
             case IR_LOOP:
             case IR_IF: {
                 e->open = grow(e->open, &e->open_cap, e->nopen + 1, sizeof *e->open);
+                if (kind == IR_IF && (a & IR_CONST)) {
+                    assert(type == TYPE_ID_NONE);
+                    if (constant_bits(e, a)) {
+                        e->open[e->nopen++] = (Open){ .target = i,
+                                                      .kind = IR_IF,
+                                                      .dead_else = true };
+                        break;
+                    }
+                    i = arm_end(e, i);
+                    if (ir->kinds[fn->first + i] == IR_ELSE) {
+                        e->open[e->nopen++] = (Open){ .target = i, .kind = IR_BLOCK };
+                    }
+                    break;
+                }
+
+                if (kind == IR_IF && e->fused != a) {
+                    u32 r = fetch(e, a, X16);
+                    release(e, a);
+                    spill_all(e);
+                    Open o = { .target = i, .kind = kind, .result = NO_REG };
+                    add_fixup(e, &o.skip);
+                    put(e, OP_CBZ | r);
+                    e->open[e->nopen++] = o;
+                    break;
+                }
+
+                spill_all(e);
+                if (kind == IR_LOOP) {
+                    align_loop(e);
+                }
                 Open o = { .target = i, .start = here(e), .kind = kind, .result = NO_REG };
                 if (kind == IR_IF) {
-                    bool typed = type != TYPE_ID_NONE;
-                    if (a & IR_CONST) {
-                        if (constant_bits(e, a) == 0) {
-                            add_fixup(e, &o.skip);
-                            put(e, OP_B);
-                        }
-                    } else if (e->fused == a) {
-                        if (typed) {
-                            spill_all(e);
-                        }
-                        add_fixup(e, &o.skip);
-                        put(e, OP_B_COND | (u32)(e->fused_cond ^ 1));
-                        e->fused = NO_VALUE;
-                    } else {
-                        u32 r = fetch(e, a, X16);
-                        release(e, a);
-                        if (typed) {
-                            spill_all(e);
-                        }
-                        add_fixup(e, &o.skip);
-                        put(e, OP_CBZ | r);
-                    }
-                    if (typed) {
-                        o.result = (u8)take_reg(e, is_float(e->info[type]));
-                    }
+                    add_fixup(e, &o.skip);
+                    put(e, OP_B_COND | (u32)(e->fused_cond ^ 1));
+                    e->fused = NO_VALUE;
                 }
                 e->open[e->nopen++] = o;
                 break;
             }
             case IR_ELSE: {
                 Open *o = &e->open[e->nopen - 1];
+                if (o->dead_else) {
+                    e->nopen--;
+                    i = arm_end(e, i);
+                    break;
+                }
                 if (type != TYPE_ID_NONE) {
-                    move_into(e, o->result, a, is_float(e->info[type]));
+                    bool fl = is_float(e->info[type]);
+                    u32 r;
+                    if (!(a & IR_CONST) && in_pool(e->regs[a])) {
+                        r = e->regs[a] & 31u;
+                    } else {
+                        r = take_reg(e, fl);
+                        *(fl ? &e->free_float : &e->free_int) |= 1u << r;
+                    }
+                    move_into(e, r, a, fl);
+                    o->result = (u8)r;
                 }
                 add_fixup(e, &o->ends);
                 put(e, OP_B);
@@ -1313,6 +2041,9 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                 if (o.kind == IR_IF && type != TYPE_ID_NONE) {
                     bool fl = is_float(e->info[type]);
                     move_into(e, o.result, a, fl);
+                    u32 *free_mask = fl ? &e->free_float : &e->free_int;
+                    assert(*free_mask & (1u << o.result));
+                    *free_mask &= ~(1u << o.result);
                     u32 h = (fl ? 32 : 0) + o.result;
                     e->holders[h] = i;
                     e->regs[i] = (u8)h;
@@ -1341,6 +2072,21 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
         add_fixup(e, &e->traps[TRAP_UNREACHABLE]);
         put(e, OP_B);
     }
+
+    u32 saves[PROLOGUE_WORDS];
+    u32 nsaves = callee_words(saves, false, e->saved_int, e->saved_float);
+    u32 frame = (16 * nsaves + e->locals + e->spill_max + 15) & ~15u;
+    bool record = fn->calls || frame;
+    patch(e, e->epilogue, here(e));
+    e->at += callee_words(e->at, true, e->saved_int, e->saved_float);
+    if (record) {
+        if (frame) {
+            put(e, OP_RESET_SP);
+        }
+        put(e, OP_POP_FRAME);
+    }
+    put(e, OP_RET);
+
     for (u32 k = 1; k < NTRAPS; k++) {
         if (e->traps[k]) {
             patch(e, e->traps[k], here(e));
@@ -1348,15 +2094,27 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
         }
     }
 
-    u32 frame = (e->locals + e->spill_max + 15) & ~15u;
     if (frame >= (1u << 24)) {
         e->error = "a function's frame is larger than 16 MB";
-    } else if (frame) {
-        code[2] = OP_SUB_SP | (frame & 0xFFF) << 10;
+        return 0;
+    }
+    u32 prologue[PROLOGUE_WORDS];
+    u32 k = 0;
+    if (record) {
+        prologue[k++] = OP_PUSH_FRAME;
+        prologue[k++] = OP_SET_FRAME;
+    }
+    if (frame) {
+        prologue[k++] = OP_SUB_SP | (frame & 0xFFF) << 10;
         if (frame >> 12) {
-            code[3] = OP_SUB_SP_HIGH | (frame >> 12) << 10;
+            prologue[k++] = OP_SUB_SP_HIGH | (frame >> 12) << 10;
         }
     }
+    memcpy(prologue + k, saves, nsaves * sizeof *saves);
+    k += nsaves;
+    assert(k <= PROLOGUE_WORDS);
+    memcpy(code + PROLOGUE_WORDS - k, prologue, k * sizeof *prologue);
+    return PROLOGUE_WORDS - k;
 }
 
 static void
@@ -1417,9 +2175,10 @@ arm64_compile(Native *n, const Checker *c)
     Emit e = { .c = c, .ir = &ir->code, .info = info };
     for (u32 f = 0; f < ir->nfuncs && !e.error; f++) {
         const IrFunc *fn = &ir->funcs[f];
+        n->words = (n->words + 3) & ~(size_t)3;
         u32 *at = n->code + n->words;
-        n->entries[fn->decl] = (u64)(uintptr_t)at;
-        emit_function(&e, fn, at, n);
+        u32 entry = emit_function(&e, fn, at, n);
+        n->entries[fn->decl] = (u64)(uintptr_t)(at + entry);
         n->words += here(&e);
         assert(n->words <= words);
     }
@@ -1437,6 +2196,9 @@ arm64_compile(Native *n, const Checker *c)
     free(e.spills);
     free(e.spill_free);
     free(e.slot_offsets);
+    free(e.slot_regs);
+    free(e.aliases);
+    free(e.alias_at);
     free(e.open);
     free(e.fixups);
     n->error = e.error;

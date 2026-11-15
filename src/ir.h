@@ -61,6 +61,7 @@ typedef struct
     u32 name;
     u32 type;
     u32 node;
+    u32 weight;
 } IrSlot;
 
 typedef struct
@@ -100,6 +101,7 @@ typedef struct
     u32 nslots;
     u32 first_const;
     u32 nconsts;
+    u32 calls;
 } IrFunc;
 
 typedef struct
