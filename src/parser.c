@@ -128,6 +128,9 @@ parse_items(Parser *p, TokenKind close)
             emit(p, NODE_NAMED_ARG, at);
         } else {
             parse_binary(p, PREC_OR);
+            if (p->out.kinds[p->count - 1] == NODE_LABELED_VALUE) {
+                p->out.kinds[p->count - 1] = NODE_LABELED_ITEM;
+            }
         }
 
         if (p->tokens.kinds[p->pos] != TK_COMMA) {
@@ -1514,6 +1517,7 @@ static const bool shows_name[NNODES] = {
     [NODE_CONTINUE_VALUE] = true,
     [NODE_LABELED] = true,
     [NODE_LABELED_VALUE] = true,
+    [NODE_LABELED_ITEM] = true,
 };
 
 #define NODE_LABEL(name, arity, label) [name] = label,

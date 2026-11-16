@@ -1792,6 +1792,54 @@ returns_nothing(const Checker *c, u32 type)
                                     c->types.arg0[type] == TYPE_ID_VOID);
 }
 
+static bool
+may_widen(const Checker *c, Operand v)
+{
+    return !is_constant(v) && !(v.ref & REF_RESULT) &&
+           (widens(c, v.type, TYPE_ID_I64) || widens(c, v.type, TYPE_ID_F64));
+}
+
+static void
+add_peer(Checker *c, Peers *peers, Break b)
+{
+    if (c->nbreaks == c->breaks_cap) {
+        c->breaks_cap = c->breaks_cap ? c->breaks_cap * 2 : 16;
+        c->breaks = resize(c->breaks, c->breaks_cap, sizeof *c->breaks);
+    }
+    c->breaks[c->nbreaks++] = b;
+    if (b.value.type != TYPE_ID_VOID) {
+        peers->type = peers->type == TYPE_ID_NONE
+                        ? b.value.type
+                        : peer_type(c, peers->type, b.value.type);
+    }
+    if (peers->last != 0) {
+        c->breaks[peers->last - 1].next = c->nbreaks;
+    } else {
+        peers->first = c->nbreaks;
+    }
+    peers->last = c->nbreaks;
+}
+
+static void
+exit_to_peers(Checker *c, u32 file, u32 token, Peers *peers, u8 kind, u32 loop, Operand v)
+{
+    if (v.type == TYPE_ID_NONE) {
+        return;
+    }
+    if (!is_value_type(v.type)) {
+        report(c, file, token, DIAG_NOT_VALUE, 0, 0);
+        return;
+    }
+
+    if (may_widen(c, v)) {
+        emit(c, IR_NOP, 0, 0, 0);
+    }
+    u32 value = is_constant(v) ? 0 : value_of(v);
+    u32 at = kind == IR_RET ? emit(c, IR_RET, 0, value, 0)
+                            : emit(c, IR_EXIT, 0, loop, value);
+    add_peer(c, peers, (Break){ v, token, at, 0 });
+}
+
 static void
 return_value(Checker *c, u32 file, u32 token, bool has_value)
 {
@@ -1801,11 +1849,15 @@ return_value(Checker *c, u32 file, u32 token, bool has_value)
     c->body.reachable = false;
 
     u32 ret = c->body.ret;
+    if (ret == TYPE_ID_INFERRED && has_value) {
+        c->body.returns_value = true;
+        exit_to_peers(c, file, v_token, &c->body.returns, IR_RET, 0, v);
+        return;
+    }
     if (ret == TYPE_ID_INFERRED) {
-        ret = c->body.ret = has_value ? value_type(c, file, v_token, v) : TYPE_ID_VOID;
-        if (ret == TYPE_ID_NONE) {
-            return;
-        }
+        u32 at = emit(c, IR_RET, TYPE_ID_VOID, 0, 0);
+        add_peer(c, &c->body.returns, (Break){ { TYPE_ID_VOID, 0 }, token, at, 0 });
+        return;
     }
     if (!has_value) {
         if (returns_nothing(c, ret)) {
@@ -1826,42 +1878,6 @@ return_value(Checker *c, u32 file, u32 token, bool has_value)
     if (v.type != TYPE_ID_NONE) {
         emit(c, IR_RET, ret, operand_ir(c, v), 0);
     }
-}
-
-static bool
-may_widen(const Checker *c, Operand v)
-{
-    return !is_constant(v) && !(v.ref & REF_RESULT) &&
-           (widens(c, v.type, TYPE_ID_I64) || widens(c, v.type, TYPE_ID_F64));
-}
-
-static void
-break_to_peer(Checker *c, u32 file, u32 token, Loop *target, Operand v)
-{
-    if (v.type == TYPE_ID_NONE) {
-        return;
-    }
-    if (!is_value_type(v.type)) {
-        report(c, file, token, DIAG_NOT_VALUE, 0, 0);
-        return;
-    }
-
-    if (may_widen(c, v)) {
-        emit(c, IR_NOP, 0, 0, 0);
-    }
-    u32 exit = emit(c, IR_EXIT, 0, target->loop, is_constant(v) ? 0 : value_of(v));
-
-    if (c->nbreaks == c->breaks_cap) {
-        c->breaks_cap = c->breaks_cap ? c->breaks_cap * 2 : 16;
-        c->breaks = resize(c->breaks, c->breaks_cap, sizeof *c->breaks);
-    }
-    c->breaks[c->nbreaks++] = (Break){ v, token, exit, 0 };
-    if (target->last != 0) {
-        c->breaks[target->last - 1].next = c->nbreaks;
-    } else {
-        target->breaks = c->nbreaks;
-    }
-    target->last = c->nbreaks;
 }
 
 static void
@@ -1908,7 +1924,7 @@ jump(Checker *c, u32 file, u32 token, u8 kind)
         return;
     }
     if (target->peer) {
-        break_to_peer(c, file, v_token, target, v);
+        exit_to_peers(c, file, v_token, &target->peers, IR_EXIT, target->loop, v);
         return;
     }
     Operand x = convert(c, file, v_token, v, target->type);
@@ -1923,7 +1939,16 @@ block_result_type(Checker *c, const u8 *kinds, u32 node)
     u32 depth = 0;
     for (u32 i = node;; i++) {
         depth += kinds[i] == NODE_VALUE_LABEL_START;
-        if (kinds[i] == NODE_LABELED_VALUE && depth-- == 0) {
+        bool end = kinds[i] == NODE_LABELED_VALUE || kinds[i] == NODE_LABELED_ITEM;
+        if (end && depth-- == 0) {
+            if (kinds[i] == NODE_LABELED_ITEM) {
+                u32 m = c->sp - 1;
+                while (c->stack[--m].type < OPERAND_MARKER) {
+                }
+                bool call = c->stack[m].type == OPERAND_MARKER + NODE_CALL_ARGS &&
+                            c->stack[m - 1].type == OPERAND_FN;
+                return call ? expected_type(c, 1) : TYPE_ID_NONE;
+            }
             u8 next = kinds[i + 1];
             bool direct = c->sp > 1 && c->stack[c->sp - 2].type ==
                                            OPERAND_MARKER + NODE_VALUE;
@@ -1959,27 +1984,31 @@ open_labeled_block(Checker *c, const u8 *kinds, u32 node)
 }
 
 static u32
-settle_peer(Checker *c, u32 file, const Loop *target)
+settle_peers(Checker *c, u32 file, Peers peers, u32 *operands)
 {
-    u32 type = c->breaks[target->breaks - 1].value.type;
-    for (u32 k = target->breaks; k != 0; k = c->breaks[k - 1].next) {
-        type = peer_type(c, type, c->breaks[k - 1].value.type);
+    u32 type = peers.type;
+    if (type == TYPE_ID_NONE) {
+        return TYPE_ID_NONE;
     }
     type = type == TYPE_ID_UNTYPED_INT   ? TYPE_ID_I64
          : type == TYPE_ID_UNTYPED_FLOAT ? TYPE_ID_F32
                                          : type;
 
     IrCode *code = c->body.code;
-    for (u32 k = target->breaks; k != 0; k = c->breaks[k - 1].next) {
+    for (u32 k = peers.first; k != 0; k = c->breaks[k - 1].next) {
         Break b = c->breaks[k - 1];
         u32 at = c->body.first + b.exit;
+        if (b.value.type == TYPE_ID_VOID) {
+            report(c, file, b.token, DIAG_RETURN_EMPTY, 0, type);
+            continue;
+        }
         if (is_constant(b.value)) {
             Operand x = convert(c, file, b.token, b.value, type);
             if (x.type == TYPE_ID_NONE) {
                 code->kinds[at] = IR_NOP;
                 continue;
             }
-            code->bs[at] = operand_ir(c, x);
+            operands[at] = operand_ir(c, x);
         } else if (b.value.type != type) {
             if (!may_widen(c, b.value) || !widens(c, b.value.type, type)) {
                 report(c, file, b.token, DIAG_MISMATCH, b.value.type, type);
@@ -1989,7 +2018,7 @@ settle_peer(Checker *c, u32 file, const Loop *target)
             code->kinds[at - 1] = IR_CONVERT;
             code->types[at - 1] = type;
             code->as[at - 1] = value_of(b.value);
-            code->bs[at] = b.exit - 1;
+            operands[at] = b.exit - 1;
         }
         code->types[at] = type;
     }
@@ -2010,8 +2039,8 @@ close_labeled_block(Checker *c, u32 file, u32 token)
         report(c, file, token, DIAG_BLOCK_END, 0, 0);
     }
     c->body.reachable = target.broken;
-    if (target.peer && target.breaks != 0) {
-        target.type = settle_peer(c, file, &target);
+    if (target.peer) {
+        target.type = settle_peers(c, file, target.peers, c->body.code->bs);
     }
     if (target.type == TYPE_ID_NONE) {
         emit(c, IR_END, 0, 0, 0);
@@ -2537,7 +2566,8 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                 push(c, token, OPERAND_STMT, 0);
                 break;
             }
-            case NODE_LABELED_VALUE: {
+            case NODE_LABELED_VALUE:
+            case NODE_LABELED_ITEM: {
                 Operand v = pop(c);
                 c->sp = list_start(c, NODE_VALUE_LABEL_START);
                 push_operand(c, token, v);
@@ -2793,10 +2823,11 @@ check_body(Checker *c, u32 decl)
     assert(c->sp == base + 1);
     c->sp = base;
 
+    if (c->body.ret == TYPE_ID_INFERRED) {
+        u32 type = settle_peers(c, file, c->body.returns, c->body.code->as);
+        c->body.ret = c->body.returns_value ? type : TYPE_ID_VOID;
+    }
     if (c->body.reachable) {
-        if (c->body.ret == TYPE_ID_INFERRED) {
-            c->body.ret = TYPE_ID_VOID;
-        }
         if (returns_nothing(c, c->body.ret)) {
             emit(c, IR_RET, c->body.ret, 0, 0);
         } else if (c->body.ret != TYPE_ID_NONE) {
@@ -2809,9 +2840,6 @@ check_body(Checker *c, u32 decl)
                 c->body.ret
             );
         }
-    }
-    if (c->body.ret == TYPE_ID_INFERRED) {
-        c->body.ret = TYPE_ID_VOID;
     }
     if (c->types.arg1[fn] == TYPE_ID_INFERRED) {
         d->types[decl] = intern_type(c, TYPE_FN, c->types.arg0[fn], c->body.ret);

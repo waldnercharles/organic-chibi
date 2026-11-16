@@ -183,6 +183,13 @@ typedef struct
 
 typedef struct
 {
+    u32 first;
+    u32 last;
+    u32 type;
+} Peers;
+
+typedef struct
+{
     u32 loop;
     u32 next;
     u32 slot;
@@ -194,8 +201,7 @@ typedef struct
     u32 label;
     u32 type;
     u32 marker;
-    u32 breaks;
-    u32 last;
+    Peers peers;
 } Loop;
 
 typedef struct
@@ -216,11 +222,13 @@ typedef struct
     u32 decl;
     u32 owner;
     u32 ret;
+    Peers returns;
     u32 loops;
     u32 breaks;
     u32 depth;
     u32 calls;
     bool reachable;
+    bool returns_value;
 } Body;
 
 typedef struct
