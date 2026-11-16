@@ -42,6 +42,7 @@ typedef struct
     u32 name;
     u8 type;
     bool given;
+    bool narrowed;
 } Label;
 
 typedef struct
@@ -399,29 +400,67 @@ nonliteral(Gen *g, u8 t, int depth)
     convert_from(g, t, n->type, n->name);
 }
 
+static bool
+widens_to(u8 from, u8 to)
+{
+    if (from == to || from == T_BOOL || to == T_BOOL ||
+        (is_float(from) && !is_float(to))) {
+        return false;
+    }
+    if (is_float(to)) {
+        u32 mantissa = to == T_F32 ? 24 : 53;
+        return is_float(from) ? type_bits[from] < type_bits[to]
+                              : type_bits[from] - is_signed(from) <= mantissa;
+    }
+    return widens(from, to);
+}
+
+static void
+break_value(Gen *g, Label *to, int depth)
+{
+    u8 narrower[NTYPES];
+    u32 n = 0;
+    for (u8 u = 0; u < NTYPES; u++) {
+        if (widens_to(u, to->type)) {
+            narrower[n++] = u;
+        }
+    }
+    if (n == 0 || !chance(g, 30)) {
+        to->given |= !expr(g, to->type, depth);
+        return;
+    }
+
+    u8 u = narrower[random_below(g->rng, (int)n)];
+    to->narrowed = true;
+    Var *v = pick_var(g, u, false);
+    if (v) {
+        emit(g, "%s", v->name);
+    } else {
+        conversion(g, u, depth);
+    }
+}
+
 static void
 value_block(Gen *g, u8 t, int depth)
 {
     u32 own = g->nvalues;
-    g->values[g->nvalues++] = (Label){ g->names++, t, false };
+    g->values[g->nvalues++] = (Label){ g->names++, t, false, false };
     emit(g, "(b%u: { ", g->values[own].name);
     for (int k = random_below(g->rng, 3); k > 0; k--) {
         emit(g, "if ");
         expr(g, T_BOOL, depth - 1);
         Label *to = &g->values[chance(g, 70) ? own : (u32)random_below(g->rng, (int)own + 1)];
         emit(g, " { break b%u ", to->name);
-        if (to->given) {
-            expr(g, to->type, depth - 1);
-        } else {
-            nonliteral(g, to->type, depth - 1);
-        }
-        to->given = true;
+        break_value(g, to, depth - 1);
         emit(g, " }; ");
     }
     Label *self = &g->values[own];
     emit(g, "break b%u ", self->name);
+    bool defaults = t == T_INT || t == T_F32 || t == T_BOOL;
     if (self->given) {
-        expr(g, t, depth - 1);
+        break_value(g, self, depth - 1);
+    } else if (defaults && !self->narrowed && chance(g, 30)) {
+        literal(g, t, false);
     } else {
         nonliteral(g, t, depth - 1);
     }

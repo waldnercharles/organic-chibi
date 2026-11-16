@@ -2083,6 +2083,7 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                 put(e, OP_B | ((o->start - here(e)) & 0x03FFFFFFu));
                 break;
             }
+            case IR_NOP: break;
             default: assert(false && "unknown IR instruction");
         }
     }

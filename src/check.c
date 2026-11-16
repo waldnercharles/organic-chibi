@@ -869,34 +869,32 @@ cast(Checker *c, u32 file, u32 token, Operand o, u32 to)
 }
 
 static u32
+peer_type(const Checker *c, u32 a, u32 b)
+{
+    if (is_untyped(a) && is_untyped(b)) {
+        return a == b ? a : TYPE_ID_UNTYPED_FLOAT;
+    }
+    return is_untyped(a) || widens(c, a, b) ? b : a;
+}
+
+static u32
 unify(Checker *c, u32 file, u32 token, Operand *a, Operand *b)
 {
     if (a->type == b->type) {
         return a->type;
     }
 
-    bool ua = is_untyped(a->type);
-    bool ub = is_untyped(b->type);
-    if (ua && ub) {
-        a->type = TYPE_ID_UNTYPED_FLOAT;
-        b->type = TYPE_ID_UNTYPED_FLOAT;
-        return TYPE_ID_UNTYPED_FLOAT;
+    u32 type = peer_type(c, a->type, b->type);
+    if (is_untyped(type)) {
+        a->type = type;
+        b->type = type;
+        return type;
     }
-    if (ua) {
-        *a = convert(c, file, token, *a, b->type);
-        return a->type;
-    }
-    if (ub) {
-        *b = convert(c, file, token, *b, a->type);
-        return b->type;
-    }
-    if (!(a->ref & REF_RESULT) && widens(c, a->type, b->type)) {
-        *a = convert(c, file, token, *a, b->type);
-        return a->type;
-    }
-    if (!(b->ref & REF_RESULT) && widens(c, b->type, a->type)) {
-        *b = convert(c, file, token, *b, a->type);
-        return b->type;
+    Operand *from = type == a->type ? b : a;
+    if (is_untyped(from->type) ||
+        (!(from->ref & REF_RESULT) && widens(c, from->type, type))) {
+        *from = convert(c, file, token, *from, type);
+        return from->type;
     }
 
     report(c, file, token, DIAG_MISMATCH, a->type, b->type);
@@ -1830,6 +1828,42 @@ return_value(Checker *c, u32 file, u32 token, bool has_value)
     }
 }
 
+static bool
+may_widen(const Checker *c, Operand v)
+{
+    return !is_constant(v) && !(v.ref & REF_RESULT) &&
+           (widens(c, v.type, TYPE_ID_I64) || widens(c, v.type, TYPE_ID_F64));
+}
+
+static void
+break_to_peer(Checker *c, u32 file, u32 token, Loop *target, Operand v)
+{
+    if (v.type == TYPE_ID_NONE) {
+        return;
+    }
+    if (!is_value_type(v.type)) {
+        report(c, file, token, DIAG_NOT_VALUE, 0, 0);
+        return;
+    }
+
+    if (may_widen(c, v)) {
+        emit(c, IR_NOP, 0, 0, 0);
+    }
+    u32 exit = emit(c, IR_EXIT, 0, target->loop, is_constant(v) ? 0 : value_of(v));
+
+    if (c->nbreaks == c->breaks_cap) {
+        c->breaks_cap = c->breaks_cap ? c->breaks_cap * 2 : 16;
+        c->breaks = resize(c->breaks, c->breaks_cap, sizeof *c->breaks);
+    }
+    c->breaks[c->nbreaks++] = (Break){ v, token, exit, 0 };
+    if (target->last != 0) {
+        c->breaks[target->last - 1].next = c->nbreaks;
+    } else {
+        target->breaks = c->nbreaks;
+    }
+    target->last = c->nbreaks;
+}
+
 static void
 jump(Checker *c, u32 file, u32 token, u8 kind)
 {
@@ -1873,8 +1907,9 @@ jump(Checker *c, u32 file, u32 token, u8 kind)
         report(c, file, token, DIAG_BREAK_VALUE, 0, 0);
         return;
     }
-    if (target->type == TYPE_ID_NONE && v.type != TYPE_ID_NONE) {
-        target->type = value_type(c, file, v_token, v);
+    if (target->peer) {
+        break_to_peer(c, file, v_token, target, v);
+        return;
     }
     Operand x = convert(c, file, v_token, v, target->type);
     if (x.type != TYPE_ID_NONE) {
@@ -1918,8 +1953,47 @@ open_labeled_block(Checker *c, const u8 *kinds, u32 node)
         .label = label.ref,
         .type = expected,
         .marker = c->sp,
+        .peer = value && expected == TYPE_ID_NONE,
     };
     push_loop(c, target);
+}
+
+static u32
+settle_peer(Checker *c, u32 file, const Loop *target)
+{
+    u32 type = c->breaks[target->breaks - 1].value.type;
+    for (u32 k = target->breaks; k != 0; k = c->breaks[k - 1].next) {
+        type = peer_type(c, type, c->breaks[k - 1].value.type);
+    }
+    type = type == TYPE_ID_UNTYPED_INT   ? TYPE_ID_I64
+         : type == TYPE_ID_UNTYPED_FLOAT ? TYPE_ID_F32
+                                         : type;
+
+    IrCode *code = c->body.code;
+    for (u32 k = target->breaks; k != 0; k = c->breaks[k - 1].next) {
+        Break b = c->breaks[k - 1];
+        u32 at = c->body.first + b.exit;
+        if (is_constant(b.value)) {
+            Operand x = convert(c, file, b.token, b.value, type);
+            if (x.type == TYPE_ID_NONE) {
+                code->kinds[at] = IR_NOP;
+                continue;
+            }
+            code->bs[at] = operand_ir(c, x);
+        } else if (b.value.type != type) {
+            if (!may_widen(c, b.value) || !widens(c, b.value.type, type)) {
+                report(c, file, b.token, DIAG_MISMATCH, b.value.type, type);
+                code->kinds[at] = IR_NOP;
+                continue;
+            }
+            code->kinds[at - 1] = IR_CONVERT;
+            code->types[at - 1] = type;
+            code->as[at - 1] = value_of(b.value);
+            code->bs[at] = b.exit - 1;
+        }
+        code->types[at] = type;
+    }
+    return type;
 }
 
 static Operand
@@ -1936,6 +2010,9 @@ close_labeled_block(Checker *c, u32 file, u32 token)
         report(c, file, token, DIAG_BLOCK_END, 0, 0);
     }
     c->body.reachable = target.broken;
+    if (target.peer && target.breaks != 0) {
+        target.type = settle_peer(c, file, &target);
+    }
     if (target.type == TYPE_ID_NONE) {
         emit(c, IR_END, 0, 0, 0);
         return poison;
@@ -2696,6 +2773,7 @@ check_body(Checker *c, u32 decl)
         .owner = ++c->owners,
         .ret = (u32)c->types.arg1[fn],
         .loops = c->nloops,
+        .breaks = c->nbreaks,
         .reachable = true,
     };
     u32 scope = c->nscope;
@@ -2741,6 +2819,7 @@ check_body(Checker *c, u32 decl)
 
     unbind_to(c, scope);
     c->nloops = c->body.loops;
+    c->nbreaks = c->body.breaks;
     d->funcs[decl] = finish_ir(c, decl, nparams);
     c->body = outer;
     c->nbodies--;
@@ -3336,6 +3415,7 @@ print_function(FILE *out, const Checker *c, const IrFunc *fn)
                 }
                 break;
             case IR_REPEAT: fprintf(out, " @%u", a); break;
+            case IR_NOP: break;
             default:
                 fputc(' ', out);
                 print_type(out, c, type);
@@ -3412,6 +3492,7 @@ check_free(Checker *c)
     free(c->bindings);
     free(c->scope);
     free(c->loops);
+    free(c->breaks);
     free(c->members);
     free(c->scratch);
     free(c->lists);

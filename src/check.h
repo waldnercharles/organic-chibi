@@ -190,10 +190,21 @@ typedef struct
     bool broken;
     bool block;
     bool value;
+    bool peer;
     u32 label;
     u32 type;
     u32 marker;
+    u32 breaks;
+    u32 last;
 } Loop;
+
+typedef struct
+{
+    Operand value;
+    u32 token;
+    u32 exit;
+    u32 next;
+} Break;
 
 typedef struct
 {
@@ -206,6 +217,7 @@ typedef struct
     u32 owner;
     u32 ret;
     u32 loops;
+    u32 breaks;
     u32 depth;
     u32 calls;
     bool reachable;
@@ -287,6 +299,9 @@ typedef struct
     Loop *loops;
     u32 nloops;
     u32 loops_cap;
+    Break *breaks;
+    u32 nbreaks;
+    u32 breaks_cap;
 } Checker;
 
 void check_init(Checker *c, const Names *names);

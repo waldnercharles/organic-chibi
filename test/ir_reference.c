@@ -387,6 +387,7 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                 i = r->ends[fn->first + a] - fn->first + 1;
                 continue;
             case IR_REPEAT: i = a + 1; continue;
+            case IR_NOP: break;
             default: assert(false && "unknown IR instruction");
         }
         if (fail) {
