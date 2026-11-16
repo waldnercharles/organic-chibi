@@ -43,6 +43,7 @@ typedef struct
     u8 type;
     bool given;
     bool narrowed;
+    bool typed;
 } Label;
 
 typedef struct
@@ -73,7 +74,6 @@ typedef struct
     u32 level;
     u8 ret;
     Label result;
-    bool typed_result;
     u32 loops;
     u32 max_loops;
     u32 indent;
@@ -418,9 +418,41 @@ widens_to(u8 from, u8 to)
     return widens(from, to);
 }
 
+static void value_block(Gen *g, u8 t, int depth, bool typed);
+
+static void
+plain_value(Gen *g, u8 u, int depth)
+{
+    Var *v = pick_var(g, u, false);
+    if (v && chance(g, 60)) {
+        emit(g, "%s", v->name);
+    } else {
+        conversion(g, u, depth);
+    }
+}
+
+static void
+plain_block(Gen *g, u8 u, int depth)
+{
+    u32 name = g->names++;
+    emit(g, "(b%u: { if ", name);
+    expr(g, T_BOOL, 1);
+    emit(g, " { break b%u ", name);
+    plain_value(g, u, depth - 1);
+    emit(g, " }; break b%u ", name);
+    plain_value(g, u, depth - 1);
+    emit(g, " })");
+}
+
 static void
 break_value(Gen *g, Label *to, int depth)
 {
+    if (g->nvalues < MAX_LABELS && depth > 1 && chance(g, 8)) {
+        value_block(g, to->type, depth, to->typed);
+        to->given = true;
+        return;
+    }
+
     u8 narrower[NTYPES];
     u32 n = 0;
     for (u8 u = 0; u < NTYPES; u++) {
@@ -435,6 +467,10 @@ break_value(Gen *g, Label *to, int depth)
 
     u8 u = narrower[random_below(g->rng, (int)n)];
     to->narrowed = true;
+    if (depth > 1 && chance(g, 20)) {
+        plain_block(g, u, depth);
+        return;
+    }
     Var *v = pick_var(g, u, false);
     if (v) {
         emit(g, "%s", v->name);
@@ -444,12 +480,12 @@ break_value(Gen *g, Label *to, int depth)
 }
 
 static void
-last_value(Gen *g, Label *to, bool typed, int depth)
+last_value(Gen *g, Label *to, int depth)
 {
     bool defaults = to->type == T_INT || to->type == T_F32 || to->type == T_BOOL;
-    if (typed && chance(g, 30)) {
+    if (to->typed && chance(g, 30)) {
         literal(g, to->type, false);
-    } else if (typed || to->given) {
+    } else if (to->typed || to->given) {
         break_value(g, to, depth);
     } else if (defaults && !to->narrowed && chance(g, 30)) {
         literal(g, to->type, false);
@@ -462,7 +498,7 @@ static void
 value_block(Gen *g, u8 t, int depth, bool typed)
 {
     u32 own = g->nvalues;
-    g->values[g->nvalues++] = (Label){ g->names++, t, false, false };
+    g->values[g->nvalues++] = (Label){ g->names++, t, false, false, typed };
     emit(g, "(b%u: { ", g->values[own].name);
     for (int k = random_below(g->rng, 3); k > 0; k--) {
         emit(g, "if ");
@@ -473,7 +509,7 @@ value_block(Gen *g, u8 t, int depth, bool typed)
         emit(g, " }; ");
     }
     emit(g, "break b%u ", g->values[own].name);
-    last_value(g, &g->values[own], typed, depth - 1);
+    last_value(g, &g->values[own], depth - 1);
     emit(g, " })");
     g->nvalues = own;
 }
@@ -821,7 +857,7 @@ function(Gen *g, int count)
     }
     line(g);
     emit(g, "return ");
-    last_value(g, &g->result, g->typed_result, 4);
+    last_value(g, &g->result, 4);
     emit(g, "\n}\n");
     g->indent = 0;
 }
@@ -839,8 +875,7 @@ random_typed_program(u64 *rng, char *buf)
         g.names = 0;
         g.level = h->level;
         g.ret = h->ret;
-        g.result = (Label){ .type = h->ret };
-        g.typed_result = chance(&g, 50);
+        g.result = (Label){ .type = h->ret, .typed = chance(&g, 50) };
         g.max_loops = 1;
         emit(&g, "fn h%u(", k);
         for (u32 p = 0; p < h->nparams; p++) {
@@ -848,7 +883,7 @@ random_typed_program(u64 *rng, char *buf)
             Var *v = declare(&g, 'p', h->params[p], false);
             emit(&g, "%s%s: %s", p ? ", " : "", v->name, type_names[h->params[p]]);
         }
-        emit(&g, g.typed_result ? ") -> %s {" : ") {", type_names[h->ret]);
+        emit(&g, g.result.typed ? ") -> %s {" : ") {", type_names[h->ret]);
         g.nhelpers = k;
         function(&g, 2 + random_below(rng, 4));
     }
@@ -859,8 +894,7 @@ random_typed_program(u64 *rng, char *buf)
         g.names = 0;
         g.level = MAX_HELPERS;
         g.ret = T_INT;
-        g.result = (Label){ .type = T_INT };
-        g.typed_result = true;
+        g.result = (Label){ .type = T_INT, .typed = true };
         g.max_loops = 2;
         emit(&g, "fn e%u(a: int, b: int, c: int, d: f64) -> int {", k);
         declare(&g, 'a', T_INT, false);

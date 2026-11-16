@@ -186,6 +186,7 @@ typedef struct
     u32 first;
     u32 last;
     u32 type;
+    u32 result;
 } Peers;
 
 typedef struct

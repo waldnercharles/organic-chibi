@@ -1521,7 +1521,7 @@ innermost_loop(Checker *c)
 }
 
 static Loop *
-find_label(Checker *c, u32 file, u32 token)
+lookup_label(const Checker *c, u32 file, u32 token)
 {
     u32 id = c->files[file].tokens.ids[token];
     for (u32 k = c->nloops; k-- > c->body.loops;) {
@@ -1529,8 +1529,17 @@ find_label(Checker *c, u32 file, u32 token)
             return &c->loops[k];
         }
     }
-    report(c, file, token, DIAG_UNKNOWN_LABEL, 0, 0);
     return NULL;
+}
+
+static Loop *
+find_label(Checker *c, u32 file, u32 token)
+{
+    Loop *target = lookup_label(c, file, token);
+    if (target == NULL) {
+        report(c, file, token, DIAG_UNKNOWN_LABEL, 0, 0);
+    }
+    return target;
 }
 
 static u32
@@ -1807,6 +1816,7 @@ add_peer(Checker *c, Peers *peers, Break b)
         c->breaks = resize(c->breaks, c->breaks_cap, sizeof *c->breaks);
     }
     c->breaks[c->nbreaks++] = b;
+    peers->result |= is_untyped(b.value.type) ? 0 : b.value.ref & REF_RESULT;
     if (b.value.type != TYPE_ID_VOID) {
         peers->type = peers->type == TYPE_ID_NONE
                         ? b.value.type
@@ -1934,8 +1944,9 @@ jump(Checker *c, u32 file, u32 token, u8 kind)
 }
 
 static u32
-block_result_type(Checker *c, const u8 *kinds, u32 node)
+block_result_type(Checker *c, u32 file, u32 node)
 {
+    const u8 *kinds = c->files[file].nodes.kinds;
     u32 depth = 0;
     for (u32 i = node;; i++) {
         depth += kinds[i] == NODE_VALUE_LABEL_START;
@@ -1955,6 +1966,10 @@ block_result_type(Checker *c, const u8 *kinds, u32 node)
             if (next == NODE_RETURN_VALUE) {
                 return c->body.ret == TYPE_ID_INFERRED ? TYPE_ID_NONE : c->body.ret;
             }
+            if (next == NODE_BREAK_VALUE) {
+                const Loop *to = lookup_label(c, file, c->files[file].nodes.tokens[i + 1]);
+                return to && to->value && !to->peer ? to->type : TYPE_ID_NONE;
+            }
             if (direct && (next == NODE_VAR_TYPE_INIT || next == NODE_ASSIGN)) {
                 return expected_type(c, 1);
             }
@@ -1964,11 +1979,11 @@ block_result_type(Checker *c, const u8 *kinds, u32 node)
 }
 
 static void
-open_labeled_block(Checker *c, const u8 *kinds, u32 node)
+open_labeled_block(Checker *c, u32 file, u32 node)
 {
     Operand label = c->stack[c->sp - 1];
     bool value = label.type == OPERAND_MARKER + NODE_VALUE_LABEL_START;
-    u32 expected = value ? block_result_type(c, kinds, node) : TYPE_ID_NONE;
+    u32 expected = value ? block_result_type(c, file, node) : TYPE_ID_NONE;
     Loop target = {
         .loop = emit(c, IR_BLOCK, 0, 0, 0),
         .next = NO_SLOT,
@@ -2047,7 +2062,7 @@ close_labeled_block(Checker *c, u32 file, u32 token)
         return poison;
     }
     u32 i = emit(c, IR_END, target.type, 0, 0);
-    return (Operand){ target.type, REF_VALUE | REF_RESULT | i };
+    return (Operand){ target.type, REF_VALUE | target.peers.result | i };
 }
 
 static void
@@ -2202,7 +2217,7 @@ body_marker(Checker *c, u32 file, u32 node, u8 kind, u32 token)
     switch (kind) {
         case NODE_BLOCK_START:
             if (pending_label(c, c->sp)) {
-                open_labeled_block(c, c->files[file].nodes.kinds, node);
+                open_labeled_block(c, file, node);
             }
             push(c, token, OPERAND_MARKER + kind, c->nscope);
             return;
