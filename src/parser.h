@@ -145,6 +145,7 @@
     LIST(NODE_UNION, NODE_UNION_START, 0, "union")                             \
     LIST(NODE_ANON_UNION, NODE_UNION_START, 0, "union")                        \
     LIST(NODE_LABELED, NODE_LABEL_START, 0, "label")                           \
+    LIST(NODE_LABELED_VALUE, NODE_VALUE_LABEL_START, 0, "label")               \
     LIST(NODE_FOR, NODE_FOR_START, 0, "for")                                   \
     LIST(NODE_CASE, NODE_CASE_START, 0, "case")                                \
     LIST(NODE_SWITCH, NODE_SWITCH_START, 0, "switch")                          \
@@ -168,6 +169,7 @@
     MARKER(NODE_ENUM_START)                                                    \
     MARKER(NODE_UNION_START)                                                   \
     MARKER(NODE_LABEL_START)                                                   \
+    MARKER(NODE_VALUE_LABEL_START)                                             \
     MARKER(NODE_FOR_START)                                                     \
     MARKER(NODE_CASE_START)                                                    \
     MARKER(NODE_CASE_BODY)                                                     \

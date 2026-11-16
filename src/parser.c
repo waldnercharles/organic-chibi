@@ -252,10 +252,10 @@ parse_postfix(Parser *p)
                     p->out.tokens[last] != (u32)(at - 1)) {
                     return;
                 }
-                p->out.kinds[last] = NODE_LABEL_START;
+                p->out.kinds[last] = NODE_VALUE_LABEL_START;
                 p->pos++;
                 parse_block(p);
-                emit(p, NODE_LABELED, at - 1);
+                emit(p, NODE_LABELED_VALUE, at - 1);
                 break;
             }
 
@@ -1513,6 +1513,7 @@ static const bool shows_name[NNODES] = {
     [NODE_CONTINUE_LABEL] = true,
     [NODE_CONTINUE_VALUE] = true,
     [NODE_LABELED] = true,
+    [NODE_LABELED_VALUE] = true,
 };
 
 #define NODE_LABEL(name, arity, label) [name] = label,

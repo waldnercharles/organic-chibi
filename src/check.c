@@ -1514,7 +1514,37 @@ declare_local(Checker *c, u32 file, u32 node, u32 type, Operand v)
 static Loop *
 innermost_loop(Checker *c)
 {
-    return c->nloops > c->body.loops ? &c->loops[c->nloops - 1] : NULL;
+    for (u32 k = c->nloops; k-- > c->body.loops;) {
+        if (!c->loops[k].block) {
+            return &c->loops[k];
+        }
+    }
+    return NULL;
+}
+
+static Loop *
+find_label(Checker *c, u32 file, u32 token)
+{
+    u32 id = c->files[file].tokens.ids[token];
+    for (u32 k = c->nloops; k-- > c->body.loops;) {
+        if (c->loops[k].label == id) {
+            return &c->loops[k];
+        }
+    }
+    report(c, file, token, DIAG_UNKNOWN_LABEL, 0, 0);
+    return NULL;
+}
+
+static u32
+pending_label(const Checker *c, u32 below)
+{
+    if (below == 0) {
+        return 0;
+    }
+    Operand o = c->stack[below - 1];
+    bool label = o.type == OPERAND_MARKER + NODE_LABEL_START ||
+                 o.type == OPERAND_MARKER + NODE_VALUE_LABEL_START;
+    return label ? o.ref : 0;
 }
 
 static void
@@ -1801,24 +1831,117 @@ return_value(Checker *c, u32 file, u32 token, bool has_value)
 }
 
 static void
-jump(Checker *c, u32 file, u32 token, bool is_break)
+jump(Checker *c, u32 file, u32 token, u8 kind)
 {
+    bool is_break = kind <= NODE_BREAK_VALUE;
+    u32 form = kind - (is_break ? NODE_BREAK : NODE_CONTINUE);
+    u32 v_token = form == 2 ? c->stack_tokens[c->sp - 1] : token;
+    Operand v = form == 2 ? pop(c) : poison;
     push(c, token, OPERAND_STMT, 0);
-    Loop *loop = innermost_loop(c);
-    if (loop == NULL) {
-        report(c, file, token, DIAG_OUTSIDE_LOOP, 0, 0);
+    Loop *target = form ? find_label(c, file, token) : innermost_loop(c);
+    if (target == NULL) {
+        if (form == 0) {
+            report(c, file, token, DIAG_OUTSIDE_LOOP, 0, 0);
+        }
         return;
     }
 
     c->body.reachable = false;
-    if (is_break) {
-        loop->broken = true;
-        emit(c, IR_EXIT, 0, loop->loop, 0);
-    } else if (loop->next == loop->loop) {
-        emit(c, IR_REPEAT, 0, loop->loop, 0);
-    } else {
-        emit(c, IR_EXIT, 0, loop->next, 0);
+    if (!is_break) {
+        if (form == 2) {
+            report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
+        } else if (target->block) {
+            report(c, file, token, DIAG_CONTINUE_BLOCK, 0, 0);
+        } else if (target->next == target->loop) {
+            emit(c, IR_REPEAT, 0, target->loop, 0);
+        } else {
+            emit(c, IR_EXIT, 0, target->next, 0);
+        }
+        return;
     }
+
+    target->broken = true;
+    if (form < 2) {
+        if (target->value) {
+            report(c, file, token, DIAG_BREAK_EMPTY, 0, 0);
+        } else {
+            emit(c, IR_EXIT, 0, target->loop, 0);
+        }
+        return;
+    }
+    if (!target->value) {
+        report(c, file, token, DIAG_BREAK_VALUE, 0, 0);
+        return;
+    }
+    if (target->type == TYPE_ID_NONE && v.type != TYPE_ID_NONE) {
+        target->type = value_type(c, file, v_token, v);
+    }
+    Operand x = convert(c, file, v_token, v, target->type);
+    if (x.type != TYPE_ID_NONE) {
+        emit(c, IR_EXIT, x.type, target->loop, operand_ir(c, x));
+    }
+}
+
+static u32
+block_result_type(Checker *c, const u8 *kinds, u32 node)
+{
+    u32 depth = 0;
+    for (u32 i = node;; i++) {
+        depth += kinds[i] == NODE_VALUE_LABEL_START;
+        if (kinds[i] == NODE_LABELED_VALUE && depth-- == 0) {
+            u8 next = kinds[i + 1];
+            bool direct = c->sp > 1 && c->stack[c->sp - 2].type ==
+                                           OPERAND_MARKER + NODE_VALUE;
+            if (next == NODE_RETURN_VALUE) {
+                return c->body.ret == TYPE_ID_INFERRED ? TYPE_ID_NONE : c->body.ret;
+            }
+            if (direct && (next == NODE_VAR_TYPE_INIT || next == NODE_ASSIGN)) {
+                return expected_type(c, 1);
+            }
+            return TYPE_ID_NONE;
+        }
+    }
+}
+
+static void
+open_labeled_block(Checker *c, const u8 *kinds, u32 node)
+{
+    Operand label = c->stack[c->sp - 1];
+    bool value = label.type == OPERAND_MARKER + NODE_VALUE_LABEL_START;
+    u32 expected = value ? block_result_type(c, kinds, node) : TYPE_ID_NONE;
+    Loop target = {
+        .loop = emit(c, IR_BLOCK, 0, 0, 0),
+        .next = NO_SLOT,
+        .slot = NO_SLOT,
+        .block = true,
+        .value = value,
+        .label = label.ref,
+        .type = expected,
+        .marker = c->sp,
+    };
+    push_loop(c, target);
+}
+
+static Operand
+close_labeled_block(Checker *c, u32 file, u32 token)
+{
+    Loop target = c->loops[--c->nloops];
+    bool reachable = c->body.reachable;
+    c->body.reachable = reachable || target.broken;
+    if (!target.value) {
+        emit(c, IR_END, 0, 0, 0);
+        return (Operand){ OPERAND_STMT, 0 };
+    }
+    if (reachable) {
+        report(c, file, token, DIAG_BLOCK_END, 0, 0);
+    }
+    c->body.reachable = target.broken;
+    if (target.type == TYPE_ID_NONE) {
+        emit(c, IR_END, 0, 0, 0);
+        return poison;
+    }
+    u32 i = emit(c, IR_END, target.type, 0, 0);
+    return (Operand){ target.type, REF_VALUE | REF_RESULT | i };
 }
 
 static void
@@ -1884,6 +2007,8 @@ for_range(Checker *c, u32 file, u32 node, u32 token)
 static void
 for_value(Checker *c, u32 file, u32 node, u32 token, bool inclusive)
 {
+    u32 m = list_start(c, NODE_FOR_START);
+    u32 label = pending_label(c, m);
     Operand range = pop(c);
     push(c, token, OPERAND_STMT, 0);
     if (range.type != OPERAND_RANGE) {
@@ -1893,7 +2018,7 @@ for_value(Checker *c, u32 file, u32 node, u32 token, bool inclusive)
         u32 loop = emit(c, IR_LOOP, 0, 0, 0);
         c->body.depth++;
         emit(c, IR_IF, 0, ir_const(c, TYPE_ID_BOOL, 0), 0);
-        push_loop(c, (Loop){ loop, emit(c, IR_BLOCK, 0, 0, 0), NO_SLOT, false, false });
+        push_loop(c, (Loop){ loop, emit(c, IR_BLOCK, 0, 0, 0), NO_SLOT, .label = label });
         return;
     }
 
@@ -1914,7 +2039,7 @@ for_value(Checker *c, u32 file, u32 node, u32 token, bool inclusive)
     u32 n = value_of(load_local(c, slot + 1));
     u32 test = emit(c, inclusive ? IR_LE : IR_LT, type, i, n);
     emit(c, IR_IF, 0, test, 0);
-    push_loop(c, (Loop){ loop, emit(c, IR_BLOCK, 0, 0, 0), slot, inclusive, false });
+    push_loop(c, (Loop){ loop, emit(c, IR_BLOCK, 0, 0, 0), slot, inclusive, .label = label });
 }
 
 static void
@@ -1966,10 +2091,15 @@ literal_end(const u8 *kinds, u32 i)
 }
 
 static void
-body_marker(Checker *c, u32 file, u8 kind, u32 token)
+body_marker(Checker *c, u32 file, u32 node, u8 kind, u32 token)
 {
     switch (kind) {
         case NODE_BLOCK_START:
+            if (pending_label(c, c->sp)) {
+                open_labeled_block(c, c->files[file].nodes.kinds, node);
+            }
+            push(c, token, OPERAND_MARKER + kind, c->nscope);
+            return;
         case NODE_FOR_START:
             push(c, token, OPERAND_MARKER + kind, c->nscope);
             return;
@@ -1995,9 +2125,13 @@ body_marker(Checker *c, u32 file, u8 kind, u32 token)
         case NODE_WHILE_START: {
             u32 loop = emit(c, IR_LOOP, 0, 0, 0);
             c->body.depth++;
-            push_loop(c, (Loop){ loop, loop, NO_SLOT, false, false });
+            push_loop(c, (Loop){ loop, loop, NO_SLOT, .label = pending_label(c, c->sp) });
             break;
         }
+        case NODE_LABEL_START:
+        case NODE_VALUE_LABEL_START:
+            push(c, token, OPERAND_MARKER + kind, c->files[file].tokens.ids[token]);
+            return;
         case NODE_WHILE_BODY: {
             u32 cond_token = c->stack_tokens[c->sp - 1];
             Operand cond = pop(c);
@@ -2038,7 +2172,7 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                 continue;
             }
             if (in_body) {
-                body_marker(c, file, kind, token);
+                body_marker(c, file, i, kind, token);
             } else if (kind == NODE_AND_LEFT || kind == NODE_OR_LEFT) {
                 logical_left(c, file, token, kind);
             } else {
@@ -2304,12 +2438,32 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                 return_value(c, file, token, kind == NODE_RETURN_VALUE);
                 break;
             case NODE_BREAK:
-            case NODE_CONTINUE: jump(c, file, token, kind == NODE_BREAK); break;
+            case NODE_BREAK_LABEL:
+            case NODE_BREAK_VALUE:
+            case NODE_CONTINUE:
+            case NODE_CONTINUE_LABEL:
+            case NODE_CONTINUE_VALUE: jump(c, file, token, kind); break;
             case NODE_BLOCK: {
                 u32 m = list_start(c, NODE_BLOCK_START);
                 unbind_to(c, c->stack[m].ref);
                 c->sp = m;
+                Loop *top = c->nloops > c->body.loops ? &c->loops[c->nloops - 1] : NULL;
+                if (top && top->block && top->marker == m) {
+                    push_operand(c, token, close_labeled_block(c, file, token));
+                } else {
+                    push(c, token, OPERAND_STMT, 0);
+                }
+                break;
+            }
+            case NODE_LABELED: {
+                c->sp = list_start(c, NODE_LABEL_START);
                 push(c, token, OPERAND_STMT, 0);
+                break;
+            }
+            case NODE_LABELED_VALUE: {
+                Operand v = pop(c);
+                c->sp = list_start(c, NODE_VALUE_LABEL_START);
+                push_operand(c, token, v);
                 break;
             }
             case NODE_IF: close_if(c, token); break;
@@ -3080,6 +3234,7 @@ print_function(FILE *out, const Checker *c, const IrFunc *fn)
     fputc('\n', out);
 
     u32 depth = 1;
+    u8 openers[PARSER_MAX_DEPTH * 4];
     for (u32 i = 0; i < fn->count; i++) {
         u32 at = fn->first + i;
         u8 kind = code->kinds[at];
@@ -3087,6 +3242,7 @@ print_function(FILE *out, const Checker *c, const IrFunc *fn)
         u32 a = code->as[at];
         u32 b = code->bs[at];
         depth -= kind == IR_END || kind == IR_ELSE;
+        assert(depth < sizeof openers);
         fprintf(out, "%*s", 4 * depth, "");
 
         bool value = kind < IR_CALL || (kind == IR_CALL && type != TYPE_ID_VOID) ||
@@ -3164,11 +3320,21 @@ print_function(FILE *out, const Checker *c, const IrFunc *fn)
                 if (type != TYPE_ID_NONE) {
                     fputc(' ', out);
                     print_type(out, c, type);
-                    fputc(' ', out);
-                    print_operand(out, c, fn, a);
+                    if (openers[depth] == IR_IF) {
+                        fputc(' ', out);
+                        print_operand(out, c, fn, a);
+                    }
                 }
                 break;
             case IR_EXIT:
+                fprintf(out, " @%u", a);
+                if (type != TYPE_ID_NONE) {
+                    fputc(' ', out);
+                    print_type(out, c, type);
+                    fputc(' ', out);
+                    print_operand(out, c, fn, b);
+                }
+                break;
             case IR_REPEAT: fprintf(out, " @%u", a); break;
             default:
                 fputc(' ', out);
@@ -3179,6 +3345,9 @@ print_function(FILE *out, const Checker *c, const IrFunc *fn)
                 print_operand(out, c, fn, b);
         }
         fputc('\n', out);
+        if (kind == IR_BLOCK || kind == IR_LOOP || kind == IR_IF) {
+            openers[depth] = kind;
+        }
         depth += kind == IR_BLOCK || kind == IR_LOOP || kind == IR_IF || kind == IR_ELSE;
     }
 }

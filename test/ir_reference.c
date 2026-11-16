@@ -153,6 +153,7 @@ ir_reference_init(IrReference *r, const Checker *c)
     *r = (IrReference){ .c = c };
     r->ends = malloc((ir->code.count + 1) * sizeof *r->ends);
     r->elses = malloc((ir->code.count + 1) * sizeof *r->elses);
+    r->opens = malloc((ir->code.count + 1) * sizeof *r->opens);
     u32 *stack = malloc((ir->code.count + 1) * sizeof *stack);
     for (u32 f = 0; f < ir->nfuncs; f++) {
         const IrFunc *fn = &ir->funcs[f];
@@ -168,6 +169,7 @@ ir_reference_init(IrReference *r, const Checker *c)
             } else if (kind == IR_END) {
                 u32 open = stack[--depth];
                 r->ends[open] = g;
+                r->opens[g] = open;
                 if (r->elses[open] != NONE) {
                     r->ends[r->elses[open]] = g;
                 }
@@ -183,6 +185,7 @@ ir_reference_free(IrReference *r)
 {
     free(r->ends);
     free(r->elses);
+    free(r->opens);
 }
 
 static int
@@ -372,11 +375,17 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                 i = r->ends[g] - fn->first + 1;
                 continue;
             case IR_END:
+                assert(type == TYPE_ID_NONE || ir->kinds[r->opens[g]] == IR_IF);
                 if (type != TYPE_ID_NONE) {
                     v = OPERAND(a);
                 }
                 break;
-            case IR_EXIT: i = r->ends[fn->first + a] - fn->first + 1; continue;
+            case IR_EXIT:
+                if (type != TYPE_ID_NONE) {
+                    vals[r->ends[fn->first + a] - fn->first] = OPERAND(b);
+                }
+                i = r->ends[fn->first + a] - fn->first + 1;
+                continue;
             case IR_REPEAT: i = a + 1; continue;
             default: assert(false && "unknown IR instruction");
         }

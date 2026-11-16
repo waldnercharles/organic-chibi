@@ -1642,6 +1642,21 @@ in_pool(u8 h)
 }
 
 static void
+hand_over(Emit *e, Open *o, u32 type, u32 v)
+{
+    bool fl = is_float(e->info[type]);
+    if (o->result == NO_REG) {
+        if (!(v & IR_CONST) && in_pool(e->regs[v])) {
+            o->result = e->regs[v] & 31u;
+        } else {
+            o->result = (u8)take_reg(e, fl);
+            *(fl ? &e->free_float : &e->free_int) |= 1u << o->result;
+        }
+    }
+    move_into(e, o->result, v, fl);
+}
+
+static void
 store_pinned(Emit *e, u8 h, u32 type, u32 b)
 {
     for (u32 k = e->naliases; k-- > 0;) {
@@ -2019,16 +2034,7 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                     break;
                 }
                 if (type != TYPE_ID_NONE) {
-                    bool fl = is_float(e->info[type]);
-                    u32 r;
-                    if (!(a & IR_CONST) && in_pool(e->regs[a])) {
-                        r = e->regs[a] & 31u;
-                    } else {
-                        r = take_reg(e, fl);
-                        *(fl ? &e->free_float : &e->free_int) |= 1u << r;
-                    }
-                    move_into(e, r, a, fl);
-                    o->result = (u8)r;
+                    hand_over(e, o, type, a);
                 }
                 add_fixup(e, &o->ends);
                 put(e, OP_B);
@@ -2038,9 +2044,14 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
             }
             case IR_END: {
                 Open o = e->open[--e->nopen];
-                if (o.kind == IR_IF && type != TYPE_ID_NONE) {
+                if (type != TYPE_ID_NONE) {
                     bool fl = is_float(e->info[type]);
-                    move_into(e, o.result, a, fl);
+                    if (o.kind == IR_IF) {
+                        move_into(e, o.result, a, fl);
+                    } else if (o.result == NO_REG) {
+                        o.result = (u8)take_reg(e, fl);
+                        *(fl ? &e->free_float : &e->free_int) |= 1u << o.result;
+                    }
                     u32 *free_mask = fl ? &e->free_float : &e->free_int;
                     assert(*free_mask & (1u << o.result));
                     *free_mask &= ~(1u << o.result);
@@ -2055,8 +2066,16 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
             }
             case IR_EXIT: {
                 Open *o = find_open(e, a);
-                add_fixup(e, &o->ends);
-                put(e, OP_B);
+                if (type != TYPE_ID_NONE) {
+                    hand_over(e, o, type, b);
+                }
+                bool falls = i + 1 < fn->count &&
+                             ir->kinds[fn->first + i + 1] == IR_END &&
+                             o == &e->open[e->nopen - 1];
+                if (!falls) {
+                    add_fixup(e, &o->ends);
+                    put(e, OP_B);
+                }
                 break;
             }
             case IR_REPEAT: {

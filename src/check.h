@@ -138,6 +138,11 @@ enum
     X(DIAG_RETURN_EMPTY, "`return` needs a value of type `%U`")                                     \
     X(DIAG_MISSING_RETURN, "the function can reach its end without returning a value of type `%U`") \
     X(DIAG_OUTSIDE_LOOP, "`%t` is only allowed inside a loop")                                      \
+    X(DIAG_UNKNOWN_LABEL, "no statement around this is labeled `%t`")                              \
+    X(DIAG_CONTINUE_BLOCK, "`%t` labels a block, so `continue` can't go to it")                    \
+    X(DIAG_BREAK_VALUE, "`%t` isn't a block used as a value, so `break` can't give it one")       \
+    X(DIAG_BREAK_EMPTY, "`%t` is used as a value, so `break %t` needs one")                        \
+    X(DIAG_BLOCK_END, "the block can reach its end without a value; end it with `break` and a value") \
     X(DIAG_UNSUPPORTED, "the checker doesn't support this yet")
 // clang-format on
 
@@ -183,6 +188,11 @@ typedef struct
     u32 slot;
     bool inclusive;
     bool broken;
+    bool block;
+    bool value;
+    u32 label;
+    u32 type;
+    u32 marker;
 } Loop;
 
 typedef struct

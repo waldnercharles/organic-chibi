@@ -8,6 +8,7 @@ typedef struct
     const Checker *c;
     u32 *ends;
     u32 *elses;
+    u32 *opens;
     u64 steps;
 } IrReference;
 

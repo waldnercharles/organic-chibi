@@ -34,7 +34,15 @@ enum
     MAX_HELPERS = 6,
     MAX_PARAMS = 3,
     NAME_LEN = 8,
+    MAX_LABELS = 16,
 };
+
+typedef struct
+{
+    u32 name;
+    u8 type;
+    bool given;
+} Label;
 
 typedef struct
 {
@@ -66,6 +74,11 @@ typedef struct
     u32 loops;
     u32 max_loops;
     u32 indent;
+    u32 loop_labels[MAX_LABELS];
+    u32 block_labels[MAX_LABELS];
+    u32 nblock_labels;
+    Label values[MAX_LABELS];
+    u32 nvalues;
 } Gen;
 
 static bool
@@ -158,14 +171,20 @@ pick_numeric_var(Gen *g)
 }
 
 static Var *
-declare(Gen *g, char prefix, u8 t, bool assignable)
+declare_as(Gen *g, char prefix, u32 number, u8 t, bool assignable)
 {
     assert(g->nvars < MAX_VARS);
     Var *v = &g->vars[g->nvars++];
-    snprintf(v->name, NAME_LEN, "%c%u", prefix, g->names++);
+    snprintf(v->name, NAME_LEN, "%c%u", prefix, number);
     v->type = t;
     v->assignable = assignable;
     return v;
+}
+
+static Var *
+declare(Gen *g, char prefix, u8 t, bool assignable)
+{
+    return declare_as(g, prefix, g->names++, t, assignable);
 }
 
 static void
@@ -380,6 +399,36 @@ nonliteral(Gen *g, u8 t, int depth)
     convert_from(g, t, n->type, n->name);
 }
 
+static void
+value_block(Gen *g, u8 t, int depth)
+{
+    u32 own = g->nvalues;
+    g->values[g->nvalues++] = (Label){ g->names++, t, false };
+    emit(g, "(b%u: { ", g->values[own].name);
+    for (int k = random_below(g->rng, 3); k > 0; k--) {
+        emit(g, "if ");
+        expr(g, T_BOOL, depth - 1);
+        Label *to = &g->values[chance(g, 70) ? own : (u32)random_below(g->rng, (int)own + 1)];
+        emit(g, " { break b%u ", to->name);
+        if (to->given) {
+            expr(g, to->type, depth - 1);
+        } else {
+            nonliteral(g, to->type, depth - 1);
+        }
+        to->given = true;
+        emit(g, " }; ");
+    }
+    Label *self = &g->values[own];
+    emit(g, "break b%u ", self->name);
+    if (self->given) {
+        expr(g, t, depth - 1);
+    } else {
+        nonliteral(g, t, depth - 1);
+    }
+    emit(g, " })");
+    g->nvalues = own;
+}
+
 static bool
 expr(Gen *g, u8 t, int depth)
 {
@@ -389,6 +438,11 @@ expr(Gen *g, u8 t, int depth)
             return true;
         }
         nonliteral(g, t, 0);
+        return false;
+    }
+
+    if (g->nvalues < MAX_LABELS && depth > 1 && chance(g, 6)) {
+        value_block(g, t, depth);
         return false;
     }
 
@@ -486,15 +540,26 @@ expr(Gen *g, u8 t, int depth)
 static void block(Gen *g, int depth, int count);
 
 static void
+loop_label(Gen *g)
+{
+    g->loop_labels[g->loops] = 0;
+    if (chance(g, 40)) {
+        g->loop_labels[g->loops] = g->names++;
+        emit(g, "l%u: ", g->loop_labels[g->loops]);
+    }
+}
+
+static void
 statement(Gen *g, int depth)
 {
     int pick = random_below(g->rng, 20);
     if (pick < 5) {
         u8 t = random_type(g, false);
         line(g);
-        emit(g, "v%u: %s = ", g->names, type_names[t]);
+        u32 n = g->names++;
+        emit(g, "v%u: %s = ", n, type_names[t]);
         expr(g, t, 3);
-        declare(g, 'v', t, true);
+        declare_as(g, 'v', n, t, true);
         return;
     }
     if (pick < 10) {
@@ -558,6 +623,7 @@ statement(Gen *g, int depth)
         memcpy(name, k->name, NAME_LEN);
         emit(g, "%s: int = 0", name);
         line(g);
+        loop_label(g);
         emit(g, "while %s < %d", name, 1 + random_below(g->rng, 3));
         if (chance(g, 30)) {
             emit(g, " and ");
@@ -577,6 +643,7 @@ statement(Gen *g, int depth)
     }
     if (pick < 17 && depth > 0 && g->loops < g->max_loops) {
         line(g);
+        loop_label(g);
         u32 saved = g->nvars;
         if (chance(g, 50)) {
             Var *i = declare(g, 'n', T_INT, false);
@@ -618,15 +685,43 @@ statement(Gen *g, int depth)
         }
         return;
     }
-    if (pick < 19 && g->loops > 0) {
+    if (pick < 19 && (g->loops > 0 || g->nblock_labels > 0)) {
         line(g);
         emit(g, "if ");
         expr(g, T_BOOL, 2);
         emit(g, " {");
         g->indent++;
         line(g);
-        emit(g, chance(g, 60) ? "break" : "continue");
+        bool is_break = chance(g, 60);
+        u32 labeled = 0;
+        for (u32 k = 0; k < g->loops; k++) {
+            labeled += g->loop_labels[k] != 0;
+        }
+        if (g->nblock_labels > 0 && (g->loops == 0 || chance(g, 25))) {
+            emit(g, "break d%u", g->block_labels[random_below(g->rng, (int)g->nblock_labels)]);
+        } else if (labeled > 0 && chance(g, 50)) {
+            u32 pick_label = (u32)random_below(g->rng, (int)labeled);
+            for (u32 k = 0; k < g->loops; k++) {
+                if (g->loop_labels[k] && pick_label-- == 0) {
+                    emit(g, "%s l%u", is_break ? "break" : "continue", g->loop_labels[k]);
+                    break;
+                }
+            }
+        } else {
+            emit(g, is_break ? "break" : "continue");
+        }
         g->indent--;
+        line(g);
+        emit(g, "}");
+        return;
+    }
+    if (pick < 20 && depth > 0 && g->nblock_labels < MAX_LABELS && chance(g, 40)) {
+        line(g);
+        u32 name = g->names++;
+        emit(g, "d%u: {", name);
+        g->block_labels[g->nblock_labels++] = name;
+        block(g, depth - 1, 1 + random_below(g->rng, 3));
+        g->nblock_labels--;
         line(g);
         emit(g, "}");
         return;
@@ -718,16 +813,18 @@ random_typed_program(u64 *rng, char *buf)
         for (int n = 0; n < floats; n++) {
             u8 t = chance(&g, 50) ? T_F64 : T_F32;
             line(&g);
-            emit(&g, "v%u: %s = ", g.names, type_names[t]);
+            u32 name = g.names++;
+            emit(&g, "v%u: %s = ", name, type_names[t]);
             expr(&g, t, 1);
-            declare(&g, 'v', t, true);
+            declare_as(&g, 'v', name, t, true);
         }
         for (int n = 0; n < 3; n++) {
             u8 t = random_type(&g, false);
             line(&g);
-            emit(&g, "v%u: %s = ", g.names, type_names[t]);
+            u32 name = g.names++;
+            emit(&g, "v%u: %s = ", name, type_names[t]);
             nonliteral(&g, t, 1);
-            declare(&g, 'v', t, true);
+            declare_as(&g, 'v', name, t, true);
         }
         function(&g, 3 + random_below(rng, 6));
     }

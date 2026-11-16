@@ -689,7 +689,7 @@ static const struct
     { "x: E!T", "NAME NAME ERROR_UNION VAR_TYPE" },
     { "a: for x in b {}", "LABEL_START FOR_START NAME FOR_VALUE BLOCK_START BLOCK FOR LABELED" },
     { "break a 1", "INT BREAK_VALUE" },
-    { "x := b: { break b 1 }", "LABEL_START BLOCK_START INT BREAK_VALUE BLOCK LABELED VAR_INIT" },
+    { "x := b: { break b 1 }", "VALUE_LABEL_START BLOCK_START INT BREAK_VALUE BLOCK LABELED_VALUE VAR_INIT" },
     { "x: T = undefined", "NAME VALUE UNDEFINED VAR_TYPE_INIT" },
     { "a +% -%b", "NAME NAME NEG_WRAP ADD_WRAP EXPR_STMT" },
     { "x *%= 2", "NAME VALUE INT MUL_WRAP_ASSIGN" },
