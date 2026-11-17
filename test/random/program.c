@@ -5,6 +5,7 @@
 #include <assert.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 typedef enum
@@ -35,7 +36,24 @@ enum
     MAX_PARAMS = 3,
     NAME_LEN = 8,
     MAX_LABELS = 16,
+    MAX_ARMS = 6,
+    MAX_ENUMS = 2,
+    MAX_MEMBERS = 8,
+    NO_ENUM = 0xFFFFFFFFu,
 };
+
+typedef struct
+{
+    int64_t lo;
+    int64_t hi;
+} Span;
+
+typedef struct
+{
+    int64_t values[MAX_MEMBERS];
+    u8 count;
+    u8 backing;
+} Enum;
 
 typedef struct
 {
@@ -82,6 +100,10 @@ typedef struct
     u32 nblock_labels;
     Label values[MAX_LABELS];
     u32 nvalues;
+    Enum enums[MAX_ENUMS];
+    u32 nenums;
+    u8 switch_type;
+    u32 nspans;
 } Gen;
 
 static bool
@@ -514,11 +536,378 @@ value_block(Gen *g, u8 t, int depth, bool typed)
     g->nvalues = own;
 }
 
+static void block(Gen *g, int depth, int count);
+
+static bool
+fits_type(u8 t, int64_t v)
+{
+    u32 bits = type_bits[t];
+    if (is_signed(t)) {
+        return bits == 64 || (v >= -(1ll << (bits - 1)) && v < (1ll << (bits - 1)));
+    }
+    return v >= 0 && (bits >= 63 || v < (1ll << bits));
+}
+
+static void
+print_value(Gen *g, int64_t v)
+{
+    print_int(g, v < 0, v < 0 ? 0 - (u64)v : (u64)v);
+}
+
+static int
+compare_values(const void *a, const void *b)
+{
+    int64_t x = *(const int64_t *)a, y = *(const int64_t *)b;
+    return (x > y) - (x < y);
+}
+
+static u32
+int_spans(Gen *g, u8 u, Span *out, u32 max)
+{
+    static const int64_t edges[] = { 127,   128,   255,  256,   -128,  -129,
+                                     32767, 65535, 1000, -1000, 100000 };
+    int64_t values[2 * MAX_ARMS * 3];
+    u32 n = 0;
+    for (u32 k = 0; k < 2 * max; k++) {
+        int64_t v = chance(g, 70)
+                      ? random_below(g->rng, 41) - 20
+                      : edges[random_below(g->rng, (int)(sizeof edges / sizeof edges[0]))];
+        if (fits_type(u, v)) {
+            values[n++] = v;
+        }
+    }
+    qsort(values, n, sizeof *values, compare_values);
+    u32 count = 0;
+    for (u32 k = 0; k < n && count < max; k++) {
+        if (k > 0 && values[k] == values[k - 1]) {
+            continue;
+        }
+        Span s = { values[k], values[k] };
+        if (k + 1 < n && values[k + 1] > values[k] && chance(g, 25)) {
+            s.hi = values[++k];
+        }
+        out[count++] = s;
+    }
+    return count;
+}
+
+static u32
+full_spans(Gen *g, u8 u, Span *out)
+{
+    int64_t lo = u == T_I8 ? -128 : 0, hi = u == T_I8 ? 127 : 255;
+    u32 count = 0;
+    int64_t from = lo;
+    for (u32 k = 0; k < 3 && from < hi; k++) {
+        int64_t to = from + random_below(g->rng, (int)(hi - from));
+        out[count++] = (Span){ from, to };
+        from = to + 1;
+    }
+    if (from <= hi) {
+        out[count++] = (Span){ from, hi };
+    }
+    return count;
+}
+
+static void
+print_span(Gen *g, u8 u, Span s)
+{
+    print_value(g, s.lo);
+    if (s.hi == s.lo) {
+        return;
+    }
+    if (s.hi < INT64_MAX && fits_type(u, s.hi + 1) && chance(g, 30)) {
+        emit(g, "..");
+        print_value(g, s.hi + 1);
+    } else {
+        emit(g, "..=");
+        print_value(g, s.hi);
+    }
+}
+
+static void
+print_member(Gen *g, u32 e, u32 m, bool literal_ok)
+{
+    if (literal_ok && chance(g, 60)) {
+        emit(g, ".m%u", m);
+    } else {
+        emit(g, "E%u.m%u", e, m);
+    }
+}
+
+static bool
+enum_value(Gen *g, u32 e, int depth)
+{
+    const Enum *en = &g->enums[e];
+    int r = random_below(g->rng, 100);
+    if (r < 35 || depth <= 0) {
+        emit(g, "E%u.m%u", e, random_below(g->rng, en->count));
+        return true;
+    }
+    if (r < 55) {
+        emit(g, "E%u(", e);
+        print_value(g, en->values[random_below(g->rng, en->count)]);
+        emit(g, ")");
+        return true;
+    }
+    if (r < 92) {
+        u8 u = random_int_type(g);
+        emit(g, "(switch (");
+        nonliteral(g, u, depth - 1);
+        emit(g, " & 3) { ");
+        for (u32 k = 0; k < 3; k++) {
+            emit(g, "%u => ", k);
+            print_member(g, e, (u32)random_below(g->rng, en->count), true);
+            emit(g, ", ");
+        }
+        emit(g, "_ => E%u.m%u })", e, random_below(g->rng, en->count));
+        return false;
+    }
+    emit(g, "E%u(", e);
+    nonliteral(g, random_int_type(g), depth - 1);
+    emit(g, ")");
+    return false;
+}
+
+static bool
+enum_int(Gen *g, u8 t, int depth)
+{
+    u32 e = (u32)random_below(g->rng, (int)g->nenums);
+    const Enum *en = &g->enums[e];
+    bool fit = true;
+    for (u32 k = 0; k < en->count; k++) {
+        fit &= fits_type(t, en->values[k]);
+    }
+    size_t start = g->len;
+    bool constant = enum_value(g, e, depth - 1);
+    char operand[PROGRAM_SIZE / 64];
+    size_t n = g->len - start;
+    assert(n < sizeof operand);
+    memcpy(operand, g->out + start, n);
+    operand[n] = 0;
+    g->len = start;
+    if (t == T_INT || ((fit || !constant) && chance(g, 20))) {
+        emit(g, "%s(%s)", type_names[t], operand);
+        return constant;
+    }
+    char wide[PROGRAM_SIZE / 64 + 8];
+    snprintf(wide, sizeof wide, "int(%s)", operand);
+    if (constant) {
+        u64 mask = max_of(t) < max_of(T_INT) ? max_of(t) : max_of(T_INT);
+        emit(g, "%s((%s & %llu))", type_names[t], wide, (unsigned long long)mask);
+    } else {
+        convert_from(g, t, T_INT, wide);
+    }
+    return constant;
+}
+
+static void
+enum_compare(Gen *g, int depth)
+{
+    u32 e = (u32)random_below(g->rng, (int)g->nenums);
+    emit(g, "(");
+    enum_value(g, e, depth - 1);
+    emit(g, chance(g, 50) ? " == " : " != ");
+    print_member(g, e, (u32)random_below(g->rng, g->enums[e].count), true);
+    emit(g, ")");
+}
+
+static u32
+scrutinee(Gen *g, int depth, Span *spans, bool *exhaustive)
+{
+    if (g->nenums && chance(g, 35)) {
+        u32 e = (u32)random_below(g->rng, (int)g->nenums);
+        enum_value(g, e, depth);
+        *exhaustive = chance(g, 50);
+        u32 count = g->enums[e].count;
+        g->nspans = *exhaustive ? count : 1 + (u32)random_below(g->rng, (int)count);
+        return e;
+    }
+    *exhaustive = chance(g, 30);
+    u8 u = *exhaustive ? (chance(g, 50) ? T_I8 : T_U8) : random_int_type(g);
+    if (*exhaustive && chance(g, 30)) {
+        u = T_BOOL;
+    }
+    if (u == T_BOOL) {
+        expr(g, T_BOOL, depth);
+        g->switch_type = u;
+        g->nspans = 2;
+        spans[0] = (Span){ 0, 0 };
+        spans[1] = (Span){ 1, 1 };
+        return NO_ENUM;
+    }
+    nonliteral(g, u, depth);
+    g->switch_type = u;
+    g->nspans = *exhaustive
+                  ? full_spans(g, u, spans)
+                  : int_spans(g, u, spans, 1 + (u32)random_below(g->rng, MAX_ARMS));
+    return NO_ENUM;
+}
+
+static u32
+arm_labels(Gen *g, u32 e, const Span *spans, u32 *next, bool last)
+{
+    u32 n = g->nspans;
+    u32 take = last ? n - *next : 1 + (u32)random_below(g->rng, 2);
+    if (take > n - *next) {
+        take = n - *next;
+    }
+    for (u32 k = 0; k < take; k++) {
+        emit(g, k ? ", " : "");
+        u32 at = *next + k;
+        if (e != NO_ENUM) {
+            print_member(g, e, at, true);
+        } else if (g->switch_type == T_BOOL) {
+            emit(g, spans[at].lo ? "true" : "false");
+        } else {
+            print_span(g, g->switch_type, spans[at]);
+        }
+    }
+    *next += take;
+    return take;
+}
+
+static void
+switch_value(Gen *g, u8 t, int depth, bool typed)
+{
+    Label own = { .type = t, .typed = typed };
+    Span spans[MAX_ARMS];
+    bool exhaustive;
+    emit(g, "(switch ");
+    u32 e = scrutinee(g, depth - 1, spans, &exhaustive);
+    u8 type = g->switch_type;
+    u32 nspans = g->nspans;
+    emit(g, " { ");
+    u32 n = nspans;
+    u32 next = 0;
+    while (next < n) {
+        g->switch_type = type;
+        g->nspans = nspans;
+        bool last = exhaustive && next + 2 >= n;
+        arm_labels(g, e, spans, &next, last);
+        emit(g, " => ");
+        if (exhaustive && next == n) {
+            last_value(g, &own, depth - 1);
+        } else {
+            break_value(g, &own, depth - 1);
+            emit(g, ", ");
+        }
+    }
+    if (!exhaustive) {
+        emit(g, "_ => ");
+        last_value(g, &own, depth - 1);
+    }
+    emit(g, " })");
+}
+
+static void
+switch_statement(Gen *g, int depth)
+{
+    line(g);
+    u32 label = 0;
+    if (g->nblock_labels < MAX_LABELS && chance(g, 25)) {
+        label = g->names++;
+        emit(g, "d%u: ", label);
+    }
+    Span spans[MAX_ARMS];
+    bool exhaustive;
+    emit(g, "switch ");
+    u32 e = scrutinee(g, 2, spans, &exhaustive);
+    u8 type = g->switch_type;
+    u32 nspans = g->nspans;
+    emit(g, " {");
+    if (label) {
+        g->block_labels[g->nblock_labels++] = label;
+    }
+    g->indent++;
+    u32 n = nspans;
+    u32 next = 0;
+    bool any = false;
+    while (next < n || (!exhaustive && !any)) {
+        g->switch_type = type;
+        g->nspans = nspans;
+        line(g);
+        if (next < n) {
+            arm_labels(g, e, spans, &next, exhaustive && next + 2 >= n);
+        } else {
+            emit(g, "_");
+            any = true;
+        }
+        if (!exhaustive && next == n && !any && chance(g, 40)) {
+            any = true;
+            emit(g, ", _");
+        }
+        emit(g, " => ");
+        if (chance(g, 25)) {
+            emit(g, "return ");
+            break_value(g, &g->result, 2);
+        } else {
+            emit(g, "{");
+            g->indent++;
+            block(g, depth - 1, 1 + random_below(g->rng, 2));
+            g->indent--;
+            line(g);
+            emit(g, "}");
+        }
+    }
+    g->indent--;
+    if (label) {
+        g->nblock_labels--;
+    }
+    line(g);
+    emit(g, "}");
+}
+
+static void
+enum_declarations(Gen *g)
+{
+    static const u8 backings[] = { NTYPES, NTYPES, T_U8,  T_I8,
+                                   T_U16,  T_I32,  T_INT, T_U64 };
+    g->nenums = MAX_ENUMS;
+    for (u32 e = 0; e < MAX_ENUMS; e++) {
+        Enum *en = &g->enums[e];
+        en->backing = backings[random_below(g->rng, (int)sizeof backings)];
+        bool negative = en->backing == NTYPES || is_signed(en->backing);
+        int64_t v = negative && chance(g, 30) ? -(int64_t)random_below(g->rng, 130)
+                                              : random_below(g->rng, 4);
+        u32 want = 1 + (u32)random_below(g->rng, MAX_MEMBERS);
+        emit(
+            g,
+            "enum E%u%s%s {",
+            e,
+            en->backing == NTYPES ? "" : ": ",
+            en->backing == NTYPES ? "" : type_names[en->backing]
+        );
+        en->count = 0;
+        bool automatic = v == 0;
+        while (en->count < want) {
+            u8 check = en->backing == NTYPES ? T_I16 : en->backing;
+            if (!fits_type(check, v)) {
+                break;
+            }
+            emit(g, "%s m%u", en->count ? "," : "", en->count);
+            if (!automatic) {
+                emit(g, " = ");
+                print_value(g, v);
+            }
+            en->values[en->count++] = v;
+            automatic = chance(g, 60);
+            v += automatic ? 1 : 2 + random_below(g->rng, 60);
+        }
+        if (en->count == 0) {
+            emit(g, " m0 = 0");
+            en->values[en->count++] = 0;
+        }
+        emit(g, " }\n");
+    }
+}
+
 static void
 typed_expr(Gen *g, u8 t, int depth)
 {
     if (g->nvalues < MAX_LABELS && depth > 1 && chance(g, 8)) {
         value_block(g, t, depth, true);
+    } else if (depth > 1 && chance(g, 5)) {
+        switch_value(g, t, depth, true);
     } else {
         expr(g, t, depth);
     }
@@ -538,6 +927,17 @@ expr(Gen *g, u8 t, int depth)
 
     if (g->nvalues < MAX_LABELS && depth > 1 && chance(g, 6)) {
         value_block(g, t, depth, false);
+        return false;
+    }
+    if (depth > 1 && chance(g, 4)) {
+        switch_value(g, t, depth, false);
+        return false;
+    }
+    if (is_int(t) && g->nenums && chance(g, 5)) {
+        return enum_int(g, t, depth);
+    }
+    if (t == T_BOOL && g->nenums && chance(g, 6)) {
+        enum_compare(g, depth);
         return false;
     }
 
@@ -632,8 +1032,6 @@ expr(Gen *g, u8 t, int depth)
     return false;
 }
 
-static void block(Gen *g, int depth, int count);
-
 static void
 loop_label(Gen *g)
 {
@@ -647,7 +1045,7 @@ loop_label(Gen *g)
 static void
 statement(Gen *g, int depth)
 {
-    int pick = random_below(g->rng, 20);
+    int pick = random_below(g->rng, 22);
     if (pick < 5) {
         u8 t = random_type(g, false);
         line(g);
@@ -833,6 +1231,10 @@ statement(Gen *g, int depth)
         g->indent--;
         line(g);
         emit(g, "}");
+        return;
+    }
+    if (depth > 0) {
+        switch_statement(g, depth);
     }
 }
 
@@ -866,6 +1268,7 @@ size_t
 random_typed_program(u64 *rng, char *buf)
 {
     Gen g = { .rng = rng, .out = buf };
+    enum_declarations(&g);
     for (u32 k = 0; k < MAX_HELPERS; k++) {
         Helper *h = &g.helpers[k];
         h->level = (u8)(k / 2);

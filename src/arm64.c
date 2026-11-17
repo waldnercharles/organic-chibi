@@ -106,6 +106,9 @@ enum
     OP_CBZ = 0x34000000u,
     OP_CBNZ = 0x35000000u,
     OP_BLR_X16 = 0xD63F0200u,
+    OP_BR = 0xD61F0000u,
+    OP_ADR = 0x10000000u,
+    OP_LDRSW_SCALED = 0xB8A07800u,
     OP_RET = 0xD65F03C0u,
     OP_BRK = 0xD4200000u,
     OP_NOP = 0xD503201Fu,
@@ -173,10 +176,29 @@ typedef struct
 
 typedef struct
 {
+    u32 at;
+    u32 target;
+} Branch;
+
+typedef struct
+{
+    u64 lo;
+    u64 hi;
+    u32 target;
+} Range;
+
+typedef struct
+{
     u32 target;
     u32 start;
     u32 skip;
     u32 ends;
+    u32 first_branch;
+    u32 first_arm;
+    u32 table;
+    u32 span;
+    u32 stub;
+    u64 min;
     u8 kind;
     u8 result;
     bool dead_else;
@@ -223,6 +245,14 @@ typedef struct
     Fixup *fixups;
     u32 nfixups;
     u32 fixups_cap;
+    Branch *branches;
+    u32 nbranches;
+    u32 branches_cap;
+    u32 *arm_at;
+    u32 narms;
+    u32 arms_cap;
+    Range *ranges;
+    u32 ranges_cap;
     u32 traps[NTRAPS];
     u32 fused;
     u8 fused_cond;
@@ -296,6 +326,10 @@ static u8
 type_info(const Checker *c, u32 type)
 {
     u8 kind = c->types.kinds[type];
+    if (kind == TYPE_ENUM) {
+        u32 backing = (u32)c->types.arg1[type];
+        return backing ? type_info(c, backing) : INFO_UNSUPPORTED;
+    }
     u32 bits = c->types.arg0[type];
     u8 scale = bits == 64 ? 3 : bits == 32 ? 2 : bits == 16 ? 1 : 0;
     bool integer = kind == TYPE_INT;
@@ -331,20 +365,25 @@ add_fixup(Emit *e, u32 *list)
 }
 
 static void
+patch_one(Emit *e, u32 at, u32 target)
+{
+    int32_t delta = (int32_t)target - (int32_t)at;
+    u32 word = e->code[at];
+    if ((word & 0xFC000000u) == OP_B) {
+        e->code[at] = word | ((u32)delta & 0x03FFFFFFu);
+    } else {
+        if (delta < -(1 << 18) || delta >= (1 << 18)) {
+            e->error = "a function is too large for a conditional branch";
+        }
+        e->code[at] = word | ((u32)delta & 0x7FFFFu) << 5;
+    }
+}
+
+static void
 patch(Emit *e, u32 list, u32 target)
 {
     for (u32 f = list; f; f = e->fixups[f].next) {
-        u32 at = e->fixups[f].at;
-        int32_t delta = (int32_t)target - (int32_t)at;
-        u32 word = e->code[at];
-        if ((word & 0xFC000000u) == OP_B) {
-            e->code[at] = word | ((u32)delta & 0x03FFFFFFu);
-        } else {
-            if (delta < -(1 << 18) || delta >= (1 << 18)) {
-                e->error = "a function is too large for a conditional branch";
-            }
-            e->code[at] = word | ((u32)delta & 0x7FFFFu) << 5;
-        }
+        patch_one(e, e->fixups[f].at, target);
     }
 }
 
@@ -1455,6 +1494,114 @@ float_bound(Emit *e, u32 reg, u8 t, double value)
 }
 
 static void
+compare_imm(Emit *e, u32 reg, u64 v, u32 sf, bool may_negate)
+{
+    if (!sf) {
+        v &= 0xFFFFFFFFu;
+    }
+    u32 field;
+    if (imm12(v, &field)) {
+        put(e, OP_SUBS_IMM | sf | field | reg << 5 | ZR);
+        return;
+    }
+    u64 negated = sf ? 0 - v : (0 - v) & 0xFFFFFFFFu;
+    if (may_negate && imm12(negated, &field)) {
+        put(e, OP_ADDS_IMM | sf | field | reg << 5 | ZR);
+        return;
+    }
+    u32 temp = reg == X17 ? X8 : X17;
+    mov_imm(e, temp, v, sf);
+    put(e, OP_SUBS | sf | temp << 16 | reg << 5 | ZR);
+}
+
+static void
+subtract_imm(Emit *e, u32 d, u32 n, u64 v, u32 sf)
+{
+    if (!sf) {
+        v &= 0xFFFFFFFFu;
+    }
+    u32 field;
+    if (v == 0) {
+        put(e, OP_ORR | sf | n << 16 | ZR << 5 | d);
+    } else if (imm12(v, &field)) {
+        put(e, OP_SUB_IMM | sf | field | n << 5 | d);
+    } else if (imm12(sf ? 0 - v : (0 - v) & 0xFFFFFFFFu, &field)) {
+        put(e, OP_ADD_IMM | sf | field | n << 5 | d);
+    } else {
+        mov_imm(e, X8, v, sf);
+        put(e, OP_SUB | sf | X8 << 16 | n << 5 | d);
+    }
+}
+
+static void
+branch_to(Emit *e, u32 op, u32 target, u8 trap)
+{
+    if (target == NO_VALUE) {
+        add_fixup(e, &e->traps[trap]);
+    } else {
+        e->branches = grow(
+            e->branches,
+            &e->branches_cap,
+            e->nbranches + 1,
+            sizeof *e->branches
+        );
+        e->branches[e->nbranches++] = (Branch){ here(e), target };
+    }
+    put(e, op);
+}
+
+static void
+test_range(Emit *e, u32 r, u8 t, Range range, u8 trap)
+{
+    u32 sf = width(t);
+    if (range.lo == range.hi) {
+        compare_imm(e, r, range.lo, sf, true);
+        branch_to(e, OP_B_COND | COND_EQ, range.target, trap);
+        return;
+    }
+    subtract_imm(e, X17, r, range.lo, sf);
+    compare_imm(e, X17, range.hi - range.lo, sf, false);
+    branch_to(e, OP_B_COND | COND_LS, range.target, trap);
+}
+
+static void
+search(Emit *e, u32 r, u8 t, const Range *ranges, u32 n, u32 fallback, u8 trap)
+{
+    if (n <= 3) {
+        for (u32 k = 0; k < n; k++) {
+            test_range(e, r, t, ranges[k], trap);
+        }
+        branch_to(e, OP_B, fallback, trap);
+        return;
+    }
+    u32 mid = n / 2;
+    compare_imm(e, r, ranges[mid].lo, width(t), is_signed(t));
+    u32 left = 0;
+    add_fixup(e, &left);
+    put(e, OP_B_COND | (is_signed(t) ? COND_LT : COND_LO));
+    search(e, r, t, ranges + mid, n - mid, fallback, trap);
+    patch(e, left, here(e));
+    search(e, r, t, ranges, mid, fallback, trap);
+}
+
+static void
+check_member(Emit *e, u32 d, u8 t, const u32 *runs)
+{
+    u32 n = runs[0] / 4;
+    e->ranges = grow(e->ranges, &e->ranges_cap, n + 1, sizeof *e->ranges);
+    for (u32 k = 0; k < n; k++) {
+        const u32 *w = runs + 1 + 4 * k;
+        e->ranges[k] = (Range){ w[0] | (u64)w[1] << 32, w[2] | (u64)w[3] << 32, 0 };
+    }
+    u32 first = e->nbranches;
+    search(e, d, t, e->ranges, n, NO_VALUE, TRAP_RANGE);
+    for (u32 k = first; k < e->nbranches; k++) {
+        patch_one(e, e->branches[k].at, here(e));
+    }
+    e->nbranches = first;
+}
+
+static void
 narrow(Emit *e, u32 i, u32 to, u32 a)
 {
     u8 tt = e->info[to];
@@ -1492,7 +1639,8 @@ narrow(Emit *e, u32 i, u32 to, u32 a)
     u32 sf = width(from);
     u32 from_bits = bits_of(from);
     if (is_signed(from)) {
-        if (to_bits >= from_bits) {
+        if (to_signed && to_bits >= from_bits) {
+        } else if (to_bits >= from_bits) {
             put(e, OP_SUBS_IMM | sf | ra << 5 | ZR);
             trap_if(e, COND_LT, TRAP_RANGE);
         } else {
@@ -1510,10 +1658,20 @@ narrow(Emit *e, u32 i, u32 to, u32 a)
         trap_if(e, COND_NE, TRAP_RANGE);
     }
     u32 d = result(e, i, tt);
-    if (width(tt) && !sf) {
+    if (width(tt) && !sf && is_signed(from) && to_signed) {
+        put(e, OP_SXTW | ra << 5 | d);
+    } else if (width(tt) && !sf) {
         put(e, OP_ORR | ra << 16 | ZR << 5 | d);
     } else {
         mov(e, width(tt), d, ra);
+    }
+    if (e->c->types.kinds[to] == TYPE_ENUM) {
+        check_member(
+            e,
+            d,
+            tt,
+            e->ir->extra + e->fn->first_extra + e->ir->bs[e->fn->first + i]
+        );
     }
 }
 
@@ -1592,6 +1750,105 @@ call(Emit *e, u32 i, u32 type, u32 decl, u32 b, const Native *n)
 }
 
 static void
+open_switch(Emit *e, u32 i, u32 type, u32 a, u32 b)
+{
+    u8 t = e->info[type];
+    u32 sf = width(t);
+    u64 mask = sf ? ~0ull : 0xFFFFFFFFull;
+    const u32 *x = e->ir->extra + e->fn->first_extra + b;
+    u32 n = x[0];
+    u32 fallback = x[1];
+    u32 r = fetch(e, a, X16);
+    release(e, a);
+    spill_all(e);
+
+    Open o = { .target = i,
+               .kind = IR_SWITCH,
+               .result = NO_REG,
+               .first_branch = e->nbranches,
+               .first_arm = e->narms,
+               .table = NO_VALUE,
+               .stub = NO_VALUE };
+    e->ranges = grow(e->ranges, &e->ranges_cap, n + 1, sizeof *e->ranges);
+    u64 count = 0;
+    for (u32 k = 0; k < n; k++) {
+        const u32 *w = x + 2 + 5 * k;
+        Range range = { w[0] | (u64)w[1] << 32, w[2] | (u64)w[3] << 32, w[4] };
+        e->ranges[k] = range;
+        count += ((range.hi - range.lo) & mask) + 1;
+    }
+
+    u64 span = n ? ((e->ranges[n - 1].hi - e->ranges[0].lo) & mask) + 1 : 0;
+    if (n >= 4 && span != 0 && span <= 8ull * n && 10 * count >= 4 * span) {
+        o.min = e->ranges[0].lo;
+        o.span = (u32)span;
+        subtract_imm(e, X17, r, o.min, sf);
+        compare_imm(e, X17, span - 1, sf, false);
+        branch_to(e, OP_B_COND | COND_HI, fallback, TRAP_UNREACHABLE);
+        put(e, OP_ADR | 4u << 5 | X16);
+        put(e, OP_LDRSW_SCALED | X17 << 16 | X16 << 5 | X17);
+        put(e, OP_ADD | SF | X17 << 16 | X16 << 5 | X16);
+        put(e, OP_BR | X16 << 5);
+        o.table = here(e);
+        for (u64 k = 0; k < span; k++) {
+            put(e, 0);
+        }
+        if (count < span && fallback == NO_VALUE) {
+            o.stub = here(e);
+            branch_to(e, OP_B, NO_VALUE, TRAP_UNREACHABLE);
+        }
+    } else {
+        search(e, r, t, e->ranges, n, fallback, TRAP_UNREACHABLE);
+    }
+
+    e->arm_at = grow(e->arm_at, &e->arms_cap, e->narms + 1, sizeof *e->arm_at);
+    e->arm_at[e->narms++] = here(e);
+    e->open = grow(e->open, &e->open_cap, e->nopen + 1, sizeof *e->open);
+    e->open[e->nopen++] = o;
+}
+
+static void
+start_arm(Emit *e, u32 i)
+{
+    Open *o = &e->open[e->nopen - 1];
+    u8 before = e->ir->kinds[e->fn->first + i - 1];
+    if (before != IR_RET && before != IR_EXIT && before != IR_REPEAT) {
+        add_fixup(e, &o->ends);
+        put(e, OP_B);
+    }
+    e->arm_at = grow(e->arm_at, &e->arms_cap, e->narms + 1, sizeof *e->arm_at);
+    e->arm_at[e->narms++] = here(e);
+}
+
+static void
+finish_switch(Emit *e, const Open *o)
+{
+    const u32 *arms = e->arm_at + o->first_arm;
+    for (u32 k = o->first_branch; k < e->nbranches; k++) {
+        patch_one(e, e->branches[k].at, arms[e->branches[k].target]);
+    }
+    if (o->table != NO_VALUE) {
+        const u32 *x = e->ir->extra + e->fn->first_extra +
+                       e->ir->bs[e->fn->first + o->target];
+        u32 fallback = x[1] == NO_VALUE ? o->stub : arms[x[1]];
+        for (u32 k = 0; k < o->span; k++) {
+            e->code[o->table + k] = (fallback - o->table) * 4;
+        }
+        for (u32 k = 0; k < x[0]; k++) {
+            const u32 *w = x + 2 + 5 * k;
+            u32 lo = (u32)((w[0] | (u64)w[1] << 32) - o->min);
+            u32 hi = (u32)((w[2] | (u64)w[3] << 32) - o->min);
+            u32 offset = (arms[w[4]] - o->table) * 4;
+            for (u32 v = lo; v <= hi; v++) {
+                e->code[o->table + v] = offset;
+            }
+        }
+    }
+    e->nbranches = o->first_branch;
+    e->narms = o->first_arm;
+}
+
+static void
 align_loop(Emit *e)
 {
     put(e, OP_NOP);
@@ -1622,7 +1879,7 @@ arm_end(const Emit *e, u32 i)
     u32 depth = 0;
     for (u32 k = i + 1;; k++) {
         u8 kind = kinds[k];
-        if (kind == IR_BLOCK || kind == IR_LOOP || kind == IR_IF) {
+        if (kind == IR_BLOCK || kind == IR_LOOP || kind == IR_IF || kind == IR_SWITCH) {
             depth++;
         } else if (kind == IR_END) {
             if (depth == 0) {
@@ -2062,6 +2319,9 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                 }
                 patch(e, o.skip, here(e));
                 patch(e, o.ends, here(e));
+                if (o.kind == IR_SWITCH) {
+                    finish_switch(e, &o);
+                }
                 break;
             }
             case IR_EXIT: {
@@ -2084,6 +2344,8 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                 break;
             }
             case IR_NOP: break;
+            case IR_SWITCH: open_switch(e, i, type, a, b); break;
+            case IR_CASE: start_arm(e, i); break;
             default: assert(false && "unknown IR instruction");
         }
     }
@@ -2221,6 +2483,9 @@ arm64_compile(Native *n, const Checker *c)
     free(e.alias_at);
     free(e.open);
     free(e.fixups);
+    free(e.branches);
+    free(e.arm_at);
+    free(e.ranges);
     n->error = e.error;
     return e.error == NULL;
 }

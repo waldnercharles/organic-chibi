@@ -33,6 +33,7 @@ typedef enum
     TYPE_UNTYPED_FLOAT,
     TYPE_UNDEFINED,
     TYPE_INFERRED,
+    TYPE_ENUM_LITERAL,
     TYPE_POINTER,
     TYPE_OPTIONAL,
     TYPE_SLICE,
@@ -64,7 +65,8 @@ typedef enum
     X(TYPE_ID_UNTYPED_INT, TYPE_UNTYPED_INT, 0, 0, "untyped integer")          \
     X(TYPE_ID_UNTYPED_FLOAT, TYPE_UNTYPED_FLOAT, 0, 0, "untyped float")        \
     X(TYPE_ID_UNDEFINED, TYPE_UNDEFINED, 0, 0, "undefined")                    \
-    X(TYPE_ID_INFERRED, TYPE_INFERRED, 0, 0, "(inferred)")
+    X(TYPE_ID_INFERRED, TYPE_INFERRED, 0, 0, "(inferred)")                     \
+    X(TYPE_ID_ENUM_LITERAL, TYPE_ENUM_LITERAL, 0, 0, "enum literal")
 // clang-format on
 
 #define CHIBI_FIXED_TYPE_ID(id, kind, bits, is_signed, text) id,
@@ -143,6 +145,17 @@ enum
     X(DIAG_BREAK_VALUE, "`%t` isn't a block used as a value, so `break` can't give it one")       \
     X(DIAG_BREAK_EMPTY, "`%t` is used as a value, so `break %t` needs one")                        \
     X(DIAG_BLOCK_END, "the block can reach its end without a value; end it with `break` and a value") \
+    X(DIAG_NO_MEMBER, "`%U` has no member `%n`")                                                   \
+    X(DIAG_NOT_ENUM, "`%U` is not an enum, so `.%n` can't be one of its values")                  \
+    X(DIAG_UNKNOWN_ENUM, "the enum of `.%n` isn't known here; write its name, as in `Name.%n`")    \
+    X(DIAG_NOT_ENUM_VALUE, "%v is not the value of a member of `%U`")                              \
+    X(DIAG_NO_ZERO_MEMBER, "`%U` has no member with the value 0, so this needs a value")           \
+    X(DIAG_SWITCH_TYPE, "`switch` needs an integer, an enum or `bool`, found `%T`")               \
+    X(DIAG_CASE_TWICE, "this value is already handled at %l")                                     \
+    X(DIAG_EMPTY_RANGE, "this range is empty")                                                    \
+    X(DIAG_MISSING_CASE, "the switch doesn't handle %w; add an arm for it or a `_` arm")          \
+    X(DIAG_MISSING_MEMBER, "the switch doesn't handle `.%n`; add an arm for it or a `_` arm")     \
+    X(DIAG_ARM_END, "this arm can reach its end without a value")                                 \
     X(DIAG_UNSUPPORTED, "the checker doesn't support this yet")
 // clang-format on
 
@@ -199,6 +212,8 @@ typedef struct
     bool block;
     bool value;
     bool peer;
+    bool dispatch;
+    bool before;
     u32 label;
     u32 type;
     u32 marker;
@@ -212,6 +227,31 @@ typedef struct
     u32 exit;
     u32 next;
 } Break;
+
+typedef struct
+{
+    u64 lo;
+    u64 hi;
+    u32 arm;
+    u32 token;
+} CaseRange;
+
+typedef struct
+{
+    u32 at;
+    u32 type;
+    u32 token;
+    u32 first_case;
+    u32 arms;
+    u32 default_arm;
+    u32 default_token;
+    u32 label;
+    u32 loop;
+    bool value;
+    bool before;
+    bool reaches;
+    bool skipped;
+} Switch;
 
 typedef struct
 {
@@ -311,6 +351,16 @@ typedef struct
     Break *breaks;
     u32 nbreaks;
     u32 breaks_cap;
+    CaseRange *cases;
+    u32 ncases;
+    u32 cases_cap;
+    Switch *switches;
+    u32 nswitches;
+    u32 switches_cap;
+    u64 *member_keys;
+    u32 *member_slots;
+    u32 member_mask;
+    u32 member_count;
 } Checker;
 
 void check_init(Checker *c, const Names *names);

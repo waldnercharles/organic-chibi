@@ -150,6 +150,8 @@
     LIST(NODE_FOR, NODE_FOR_START, 0, "for")                                   \
     LIST(NODE_CASE, NODE_CASE_START, 0, "case")                                \
     LIST(NODE_SWITCH, NODE_SWITCH_START, 0, "switch")                          \
+    LIST(NODE_VALUE_SWITCH, NODE_VALUE_SWITCH_START, 0, "switch")              \
+    LIST(NODE_SWITCH_ITEM, NODE_VALUE_SWITCH_START, 0, "switch")               \
     MARKER(NODE_CALL_ARGS)                                                     \
     MARKER(NODE_AND_LEFT)                                                      \
     MARKER(NODE_OR_LEFT)                                                       \
@@ -175,6 +177,7 @@
     MARKER(NODE_CASE_START)                                                    \
     MARKER(NODE_CASE_BODY)                                                     \
     MARKER(NODE_SWITCH_START)                                                  \
+    MARKER(NODE_VALUE_SWITCH_START)                                            \
     MARKER(NODE_VALUE)
 // clang-format on
 

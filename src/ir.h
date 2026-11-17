@@ -43,7 +43,9 @@
     X(IR_END, "end")                                                           \
     X(IR_EXIT, "exit")                                                         \
     X(IR_REPEAT, "repeat")                                                     \
-    X(IR_NOP, "nop")
+    X(IR_NOP, "nop")                                                           \
+    X(IR_SWITCH, "switch")                                                     \
+    X(IR_CASE, "case")
 // clang-format on
 
 #define CHIBI_IR_KIND(name, text) name,

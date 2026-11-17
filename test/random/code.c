@@ -683,7 +683,7 @@ put_target(Writer *w)
 }
 
 static void put_block(Writer *w, int count);
-static void put_switch(Writer *w);
+static void put_switch(Writer *w, bool value);
 static void put_call(Writer *w);
 
 static void
@@ -696,7 +696,7 @@ put_decl(Writer *w)
         PUT(w, " := ");
         int value = random_below(w->rng, 100);
         if (value < 2) {
-            put_switch(w);
+            put_switch(w, true);
         } else if (value < 4) {
             put_name(w);
             PUT(w, ":");
@@ -927,7 +927,7 @@ put_arm_value(Writer *w)
 }
 
 static void
-put_arm_body(Writer *w)
+put_arm_body(Writer *w, bool value)
 {
     w->operands = STATEMENT_OPERANDS;
     int r = random_below(w->rng, 100);
@@ -937,7 +937,7 @@ put_arm_body(Writer *w)
     }
 
     PUT(w, " ");
-    if (r < 60) {
+    if (r < 60 || (value && r < 80)) {
         put_call(w);
     } else if (r < 80) {
         put_assign(w);
@@ -949,7 +949,7 @@ put_arm_body(Writer *w)
 }
 
 static void
-put_switch(Writer *w)
+put_switch(Writer *w, bool value)
 {
     PUT(w, "switch ");
     if (chance(w->rng, 20)) {
@@ -974,7 +974,7 @@ put_switch(Writer *w)
             put_arm_value(w);
         }
         PUT(w, " =>");
-        put_arm_body(w);
+        put_arm_body(w, value);
         if (chance(w->rng, 20)) {
             PUT(w, ",");
         }
@@ -982,7 +982,7 @@ put_switch(Writer *w)
     if (chance(w->rng, 60)) {
         put_line_break(w, 0);
         PUT(w, "_ =>");
-        put_arm_body(w);
+        put_arm_body(w, value);
     }
     w->indent--;
 
@@ -1069,7 +1069,7 @@ put_statement(Writer *w)
         case STATEMENT_WHILE: put_while(w); break;
         case STATEMENT_CONST: put_const(w); break;
         case STATEMENT_FOR: put_for(w); break;
-        case STATEMENT_SWITCH: put_switch(w); break;
+        case STATEMENT_SWITCH: put_switch(w, false); break;
     }
 
     if (chance(w->rng, 4)) {

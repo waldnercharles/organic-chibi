@@ -23,6 +23,9 @@ static Ty
 ty(const Checker *c, u32 type)
 {
     u8 kind = c->types.kinds[type];
+    if (kind == TYPE_ENUM) {
+        return ty(c, (u32)c->types.arg1[type]);
+    }
     if (kind == TYPE_BOOL) {
         return (Ty){ false, false, 8 };
     }
@@ -139,6 +142,25 @@ compare(u8 kind, u64 a, u64 b, Ty t)
     }
 }
 
+static bool
+within(u64 x, const u32 *range, Ty t)
+{
+    u64 lo = range[0] | (u64)range[1] << 32;
+    u64 hi = range[2] | (u64)range[3] << 32;
+    return wide(x, t) >= wide(lo, t) && wide(x, t) <= wide(hi, t);
+}
+
+static bool
+is_member(const u32 *runs, Ty t, u64 x)
+{
+    for (u32 k = 0; k < runs[0]; k += 4) {
+        if (within(x, runs + 1 + k, t)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static u32
 value_type(const IrCode *ir, u32 g)
 {
@@ -155,6 +177,7 @@ ir_reference_init(IrReference *r, const Checker *c)
     r->elses = malloc((ir->code.count + 1) * sizeof *r->elses);
     r->opens = malloc((ir->code.count + 1) * sizeof *r->opens);
     u32 *stack = malloc((ir->code.count + 1) * sizeof *stack);
+    u32 *last = malloc((ir->code.count + 1) * sizeof *last);
     for (u32 f = 0; f < ir->nfuncs; f++) {
         const IrFunc *fn = &ir->funcs[f];
         u32 depth = 0;
@@ -162,22 +185,26 @@ ir_reference_init(IrReference *r, const Checker *c)
             r->ends[g] = NONE;
             r->elses[g] = NONE;
             u8 kind = ir->code.kinds[g];
-            if (kind == IR_BLOCK || kind == IR_LOOP || kind == IR_IF) {
+            if (kind == IR_BLOCK || kind == IR_LOOP || kind == IR_IF ||
+                kind == IR_SWITCH) {
+                last[depth] = g;
                 stack[depth++] = g;
-            } else if (kind == IR_ELSE) {
-                r->elses[stack[depth - 1]] = g;
+            } else if (kind == IR_ELSE || kind == IR_CASE) {
+                r->elses[last[depth - 1]] = g;
+                last[depth - 1] = g;
             } else if (kind == IR_END) {
                 u32 open = stack[--depth];
                 r->ends[open] = g;
                 r->opens[g] = open;
-                if (r->elses[open] != NONE) {
-                    r->ends[r->elses[open]] = g;
+                for (u32 m = r->elses[open]; m != NONE; m = r->elses[m]) {
+                    r->ends[m] = g;
                 }
             }
         }
         assert(depth == 0);
     }
     free(stack);
+    free(last);
 }
 
 void
@@ -336,11 +363,15 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                     } else {
                         v = canon(t.sign ? (u64)(int64_t)d : (u64)d, t);
                     }
-                } else if (!fits(wide(s, from), t)) {
+                } else if (
+                    !fits(wide(s, from), t) ||
+                    (c->types.kinds[type] == TYPE_ENUM &&
+                     !is_member(ir->extra + fn->first_extra + b, t, canon(s, t)))
+                ) {
                     assert(kind == IR_NARROW);
                     fail = TRAP_RANGE;
                 } else {
-                    v = s;
+                    v = canon(s, t);
                 }
                 break;
             }
@@ -388,6 +419,28 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                 continue;
             case IR_REPEAT: i = a + 1; continue;
             case IR_NOP: break;
+            case IR_SWITCH: {
+                const u32 *x = ir->extra + fn->first_extra + b;
+                u64 s = OPERAND(a);
+                u32 arm = x[1];
+                for (u32 k = 0; k < x[0]; k++) {
+                    if (within(s, x + 2 + 5 * k, t)) {
+                        arm = x[2 + 5 * k + 4];
+                        break;
+                    }
+                }
+                if (arm == NONE) {
+                    fail = TRAP_UNREACHABLE;
+                    break;
+                }
+                u32 m = g;
+                for (u32 k = 0; k < arm; k++) {
+                    m = r->elses[m];
+                }
+                i = m - fn->first + 1;
+                continue;
+            }
+            case IR_CASE: i = r->ends[g] - fn->first + 1; continue;
             default: assert(false && "unknown IR instruction");
         }
         if (fail) {

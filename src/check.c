@@ -758,6 +758,194 @@ float_constant(Checker *c, u32 file, u32 token, u32 value, u32 type)
     return (Operand){ type, exact_from_float(&c->exacts, bits, width) };
 }
 
+static u64
+member_hash(u64 key)
+{
+    return (key * 0x9E3779B97F4A7C15ull) >> 32;
+}
+
+static void
+grow_member_map(Checker *c, u32 cap)
+{
+    u64 *keys = c->member_keys;
+    u32 *slots = c->member_slots;
+    u32 old = keys ? c->member_mask + 1 : 0;
+    c->member_keys = calloc(cap, sizeof *c->member_keys);
+    c->member_slots = malloc(cap * sizeof *c->member_slots);
+    c->member_mask = cap - 1;
+    for (u32 i = 0; i < old; i++) {
+        if (keys[i]) {
+            u32 h = (u32)member_hash(keys[i]) & c->member_mask;
+            while (c->member_keys[h]) {
+                h = (h + 1) & c->member_mask;
+            }
+            c->member_keys[h] = keys[i];
+            c->member_slots[h] = slots[i];
+        }
+    }
+    free(keys);
+    free(slots);
+}
+
+static void
+index_members(Checker *c, u32 decl, u32 first)
+{
+    u32 need_count = c->member_count + c->nmembers - first;
+    u32 cap = c->member_keys ? c->member_mask + 1 : 0;
+    if (2 * need_count > cap) {
+        u32 grown = cap ? cap : 64;
+        while (2 * need_count > grown) {
+            grown *= 2;
+        }
+        grow_member_map(c, grown);
+    }
+    for (u32 i = first; i < c->nmembers; i++) {
+        u64 key = (u64)decl << 32 | c->members[i].name;
+        u32 h = (u32)member_hash(key) & c->member_mask;
+        while (c->member_keys[h]) {
+            h = (h + 1) & c->member_mask;
+        }
+        c->member_keys[h] = key;
+        c->member_slots[h] = i;
+    }
+    c->member_count = need_count;
+}
+
+static u32
+find_member(const Checker *c, u32 decl, u32 name)
+{
+    if (!c->member_keys) {
+        return NO_SLOT;
+    }
+    u64 key = (u64)decl << 32 | name;
+    for (u32 h = (u32)member_hash(key) & c->member_mask; c->member_keys[h];
+         h = (h + 1) & c->member_mask) {
+        if (c->member_keys[h] == key) {
+            return c->member_slots[h];
+        }
+    }
+    return NO_SLOT;
+}
+
+static u32
+scalar_type(const Checker *c, u32 type)
+{
+    return c->types.kinds[type] == TYPE_ENUM ? (u32)c->types.arg1[type] : type;
+}
+
+static bool
+signed_type(const Checker *c, u32 type)
+{
+    u32 t = scalar_type(c, type);
+    return c->types.kinds[t] == TYPE_INT && c->types.arg1[t];
+}
+
+static u64
+order_key(const Checker *c, u32 type, u64 bits)
+{
+    return signed_type(c, type) ? bits ^ (1ull << 63) : bits;
+}
+
+static int
+compare_keys(const void *a, const void *b)
+{
+    u64 x = *(const u64 *)a, y = *(const u64 *)b;
+    return (x > y) - (x < y);
+}
+
+static u64
+list_u64(const Checker *c, u32 at)
+{
+    return c->lists[at] | (u64)c->lists[at + 1] << 32;
+}
+
+static void
+enum_runs(Checker *c, u32 decl)
+{
+    u32 type = c->decls.types[decl];
+    u32 first = c->decls.members[decl];
+    u32 n = c->decls.member_counts[decl];
+    u64 *keys = malloc((n + 1) * sizeof *keys);
+    u32 count = 0;
+    for (u32 i = 0; i < n; i++) {
+        u32 v = c->members[first + i].value;
+        if (v < MEMBER_NONE) {
+            keys[count++] = order_key(c, type, exact_bits(&c->exacts, v));
+        }
+    }
+    qsort(keys, count, sizeof *keys, compare_keys);
+
+    u32 runs = 0;
+    for (u32 i = 0; i < count; i++) {
+        runs += i == 0 || keys[i] > keys[i - 1] + 1;
+    }
+    u32 list = reserve_list(c, 4 * runs);
+    u64 flip = order_key(c, type, 0);
+    u32 at = list + 1;
+    for (u32 i = 0; i < count; i++) {
+        if (i > 0 && keys[i] <= keys[i - 1] + 1) {
+            u64 hi = keys[i] ^ flip;
+            c->lists[at - 2] = (u32)hi;
+            c->lists[at - 1] = (u32)(hi >> 32);
+            continue;
+        }
+        u64 bits = keys[i] ^ flip;
+        c->lists[at] = c->lists[at + 2] = (u32)bits;
+        c->lists[at + 1] = c->lists[at + 3] = (u32)(bits >> 32);
+        at += 4;
+    }
+    c->decls.values[decl] = list;
+    free(keys);
+}
+
+static bool
+enum_has(const Checker *c, u32 type, u64 key)
+{
+    u32 list = c->decls.values[c->types.arg0[type]];
+    u64 flip = order_key(c, type, 0);
+    u32 lo = 0, hi = c->lists[list] / 4;
+    while (lo < hi) {
+        u32 mid = (lo + hi) / 2;
+        u32 at = list + 1 + 4 * mid;
+        if ((list_u64(c, at + 2) ^ flip) < key) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo < c->lists[list] / 4 && (list_u64(c, list + 1 + 4 * lo) ^ flip) <= key;
+}
+
+static u32
+smallest_backing(Checker *c, u32 file, u32 lo, u32 lo_token, u32 hi, u32 hi_token)
+{
+    bool sign = exact_sign(&c->exacts, lo) < 0;
+    for (u32 scale = 0; scale < 4; scale++) {
+        u32 bits = 8u << scale;
+        if (exact_fits(&c->exacts, lo, bits, sign) &&
+            exact_fits(&c->exacts, hi, bits, sign)) {
+            return (sign ? TYPE_ID_I8 : TYPE_ID_U8) + scale;
+        }
+    }
+    bool low = sign && !exact_fits(&c->exacts, lo, 64, true);
+    report(c, file, low ? lo_token : hi_token, DIAG_DOES_NOT_FIT, low ? lo : hi, sign ? TYPE_ID_I64 : TYPE_ID_U64);
+    return TYPE_ID_NONE;
+}
+
+static NOINLINE Operand
+enum_member(Checker *c, u32 file, u32 token, u32 type, u32 name)
+{
+    u32 decl = c->types.arg0[type];
+    need(c, decl, file, token);
+    u32 m = find_member(c, decl, name);
+    if (m == NO_SLOT) {
+        report(c, file, token, DIAG_NO_MEMBER, name, type);
+        return poison;
+    }
+    u32 v = c->members[m].value;
+    return v < MEMBER_NONE ? (Operand){ type, v } : poison;
+}
+
 static Operand
 convert(Checker *c, u32 file, u32 token, Operand o, u32 to)
 {
@@ -774,6 +962,13 @@ convert(Checker *c, u32 file, u32 token, Operand o, u32 to)
 
     const Types *t = &c->types;
     u8 to_kind = t->kinds[to];
+    if (o.type == TYPE_ID_ENUM_LITERAL) {
+        if (to_kind == TYPE_ENUM) {
+            return enum_member(c, file, token, to, o.ref);
+        }
+        report(c, file, token, DIAG_NOT_ENUM, o.ref, to);
+        return poison;
+    }
     if (is_untyped(o.type)) {
         u32 v = value_of(o);
         if (to_kind == TYPE_INT || to_kind == TYPE_UINTPTR) {
@@ -827,7 +1022,76 @@ masked(const Checker *c, u32 value, u32 to)
     return false;
 }
 
-static Operand
+static bool
+bits_fit(u64 bits, bool from_signed, u32 to_bits, bool to_signed)
+{
+    if (from_signed && (int64_t)bits < 0) {
+        return to_signed && (to_bits == 64 ||
+                             (int64_t)bits >= -(int64_t)(1ull << (to_bits - 1)));
+    }
+    u32 room = to_bits - to_signed;
+    return room >= 64 || bits < (1ull << room);
+}
+
+static NOINLINE Operand
+to_enum(Checker *c, u32 file, u32 token, Operand o, u32 to)
+{
+    need(c, c->types.arg0[to], file, token);
+    u32 backing = (u32)c->types.arg1[to];
+    if (!backing) {
+        return poison;
+    }
+    if (is_constant(o)) {
+        u32 v = value_of(o);
+        if (!int_fits(c, backing, v) ||
+            !enum_has(c, to, order_key(c, to, exact_bits(&c->exacts, v)))) {
+            report(c, file, token, DIAG_NOT_ENUM_VALUE, v, to);
+            return poison;
+        }
+        return (Operand){ to, v };
+    }
+
+    u32 list = c->decls.values[c->types.arg0[to]];
+    u32 words = c->lists[list] + 1;
+    IrCode *code = c->body.code;
+    if (code->nextra + words > code->extra_cap) {
+        code->extra_cap = (code->nextra + words) * 2;
+        code->extra = resize(code->extra, code->extra_cap, sizeof *code->extra);
+    }
+    memcpy(code->extra + code->nextra, c->lists + list, words * sizeof *code->extra);
+    u32 runs = code->nextra - c->body.first_extra;
+    code->nextra += words;
+    return emit_value(c, IR_NARROW, to, value_of(o), runs);
+}
+
+static NOINLINE Operand
+from_enum(Checker *c, u32 file, u32 token, Operand o, u32 to)
+{
+    if (is_constant(o)) {
+        u32 v = value_of(o);
+        if (int_fits(c, to, v)) {
+            return (Operand){ to, v };
+        }
+        report(c, file, token, DIAG_DOES_NOT_FIT, v, to);
+        return poison;
+    }
+
+    u32 backing = (u32)c->types.arg1[o.type];
+    u32 list = c->decls.values[c->types.arg0[o.type]];
+    u32 n = c->lists[list];
+    bool from_signed = signed_type(c, o.type);
+    u32 bits = c->types.arg0[to];
+    bool to_signed = c->types.arg1[to];
+    bool fits = n == 0 ||
+                (bits_fit(list_u64(c, list + 1), from_signed, bits, to_signed) &&
+                 bits_fit(list_u64(c, list + n - 1), from_signed, bits, to_signed));
+    u8 kind = !fits                  ? IR_NARROW
+            : widens(c, backing, to) ? IR_CONVERT
+                                     : IR_TRUNCATE;
+    return emit_value(c, kind, to, value_of(o), 0);
+}
+
+static ALWAYS_INLINE Operand
 cast(Checker *c, u32 file, u32 token, Operand o, u32 to)
 {
     if (o.type == TYPE_ID_NONE || to == TYPE_ID_NONE) {
@@ -840,6 +1104,15 @@ cast(Checker *c, u32 file, u32 token, Operand o, u32 to)
     const Types *t = &c->types;
     u8 to_kind = t->kinds[to];
     bool to_int = to_kind == TYPE_INT || to_kind == TYPE_UINTPTR;
+    if (o.type == TYPE_ID_ENUM_LITERAL) {
+        return convert(c, file, token, o, to);
+    }
+    if (to_kind == TYPE_ENUM && is_value_type(o.type) && is_int(c, o.type)) {
+        return to_enum(c, file, token, o, to);
+    }
+    if (to_int && is_value_type(o.type) && t->kinds[o.type] == TYPE_ENUM) {
+        return from_enum(c, file, token, o, to);
+    }
     if (!is_value_type(o.type) || !is_number(c, o.type) ||
         (!to_int && to_kind != TYPE_FLOAT)) {
         report(c, file, token, is_value_type(o.type) ? DIAG_MISMATCH : DIAG_NOT_VALUE, o.type, to);
@@ -871,6 +1144,9 @@ cast(Checker *c, u32 file, u32 token, Operand o, u32 to)
 static u32
 peer_type(const Checker *c, u32 a, u32 b)
 {
+    if (a == TYPE_ID_ENUM_LITERAL || b == TYPE_ID_ENUM_LITERAL) {
+        return a == TYPE_ID_ENUM_LITERAL ? b : a;
+    }
     if (is_untyped(a) && is_untyped(b)) {
         return a == b ? a : TYPE_ID_UNTYPED_FLOAT;
     }
@@ -881,6 +1157,10 @@ static u32
 unify(Checker *c, u32 file, u32 token, Operand *a, Operand *b)
 {
     if (a->type == b->type) {
+        if (a->type == TYPE_ID_ENUM_LITERAL) {
+            report(c, file, token, DIAG_UNKNOWN_ENUM, a->ref, 0);
+            return TYPE_ID_NONE;
+        }
         return a->type;
     }
 
@@ -891,7 +1171,7 @@ unify(Checker *c, u32 file, u32 token, Operand *a, Operand *b)
         return type;
     }
     Operand *from = type == a->type ? b : a;
-    if (is_untyped(from->type) ||
+    if (is_untyped(from->type) || from->type == TYPE_ID_ENUM_LITERAL ||
         (!(from->ref & REF_RESULT) && widens(c, from->type, type))) {
         *from = convert(c, file, token, *from, type);
         return from->type;
@@ -909,7 +1189,9 @@ applies(const Checker *c, u8 cls, u32 type)
         case OP_COMPARE: return is_number(c, type);
         case OP_INT:
         case OP_SHIFT: return is_int(c, type);
-        case OP_EQUALITY: return is_number(c, type) || type == TYPE_ID_BOOL;
+        case OP_EQUALITY:
+            return is_number(c, type) || type == TYPE_ID_BOOL ||
+                   c->types.kinds[type] == TYPE_ENUM;
         default: assert(false && "unknown operator class"); return false;
     }
 }
@@ -981,7 +1263,7 @@ fold(Checker *c, u32 file, u32 token, u8 kind, u32 type, Operand a, Operand b)
     return constant_result(c, file, token, type, r);
 }
 
-static u32
+static ALWAYS_INLINE u32
 expected_type(const Checker *c, u32 own)
 {
     for (u32 m = c->sp - own; m-- > 0;) {
@@ -1250,10 +1532,14 @@ inferred_type(Checker *c, u32 file, u32 token, Operand v)
         report(c, file, token, DIAG_NOT_CONSTANT, 0, 0);
         return TYPE_ID_NONE;
     }
+    if (v.type == TYPE_ID_ENUM_LITERAL) {
+        report(c, file, token, DIAG_UNKNOWN_ENUM, v.ref, 0);
+        return TYPE_ID_NONE;
+    }
     return v.type;
 }
 
-static u32
+static ALWAYS_INLINE u32
 value_type(Checker *c, u32 file, u32 token, Operand v)
 {
     if (v.type == TYPE_ID_NONE) {
@@ -1261,6 +1547,10 @@ value_type(Checker *c, u32 file, u32 token, Operand v)
     }
     if (!is_value_type(v.type)) {
         report(c, file, token, DIAG_NOT_VALUE, 0, 0);
+        return TYPE_ID_NONE;
+    }
+    if (v.type == TYPE_ID_ENUM_LITERAL) {
+        report(c, file, token, DIAG_UNKNOWN_ENUM, v.ref, 0);
         return TYPE_ID_NONE;
     }
     return v.type == TYPE_ID_UNTYPED_INT   ? TYPE_ID_I64
@@ -1320,6 +1610,8 @@ close_enum(Checker *c, u32 decl, u32 file)
 
     u32 next = EXACT_ZERO;
     bool known = true;
+    bool any = false;
+    u32 lo = EXACT_ZERO, hi = EXACT_ZERO, lo_token = 0, hi_token = 0;
     for (u32 i = m + 1; i < c->sp; i++) {
         if (c->stack[i].type != OPERAND_MEMBER) {
             continue;
@@ -1342,10 +1634,25 @@ close_enum(Checker *c, u32 decl, u32 file)
         mem->type = TYPE_ID_NONE;
         mem->value = known ? next : MEMBER_NONE;
         if (known) {
+            if (!any || exact_compare(&c->exacts, next, lo) < 0) {
+                lo = next;
+                lo_token = token;
+            }
+            if (!any || exact_compare(&c->exacts, next, hi) > 0) {
+                hi = next;
+                hi_token = token;
+            }
+            any = true;
             ExactStatus status;
             next = exact_binary(&c->exacts, EXACT_ADD, next, EXACT_ONE, EXACT_INT_BITS, &status);
             known = status == EXACT_OK;
         }
+    }
+
+    if (!backing) {
+        backing = any ? smallest_backing(c, file, lo, lo_token, hi, hi_token)
+                      : TYPE_ID_U8;
+        c->types.arg1[c->decls.types[decl]] = backing;
     }
 
     u32 first = collect_members(c, file, m + 1, DIAG_DUPLICATE_MEMBER);
@@ -1353,6 +1660,12 @@ close_enum(Checker *c, u32 decl, u32 file)
     c->decls.member_counts[decl] = c->nmembers - first;
     c->nscratch = c->stack[m].ref;
     c->sp = m;
+    index_members(c, decl, first);
+    if (backing) {
+        enum_runs(c, decl);
+    } else {
+        c->decls.values[decl] = reserve_list(c, 0);
+    }
 }
 
 static void
@@ -1561,6 +1874,7 @@ push_loop(Checker *c, Loop loop)
         c->loops_cap = c->loops_cap ? c->loops_cap * 2 : 16;
         c->loops = resize(c->loops, c->loops_cap, sizeof *c->loops);
     }
+    loop.before = c->body.reachable;
     c->loops[c->nloops++] = loop;
 }
 
@@ -1891,6 +2205,20 @@ return_value(Checker *c, u32 file, u32 token, bool has_value)
 }
 
 static void
+give(Checker *c, u32 file, u32 token, Loop *target, Operand v)
+{
+    target->broken = true;
+    if (target->peer) {
+        exit_to_peers(c, file, token, &target->peers, IR_EXIT, target->loop, v);
+        return;
+    }
+    Operand x = convert(c, file, token, v, target->type);
+    if (x.type != TYPE_ID_NONE) {
+        emit(c, IR_EXIT, x.type, target->loop, operand_ir(c, x));
+    }
+}
+
+static void
 jump(Checker *c, u32 file, u32 token, u8 kind)
 {
     bool is_break = kind <= NODE_BREAK_VALUE;
@@ -1899,16 +2227,15 @@ jump(Checker *c, u32 file, u32 token, u8 kind)
     Operand v = form == 2 ? pop(c) : poison;
     push(c, token, OPERAND_STMT, 0);
     Loop *target = form ? find_label(c, file, token) : innermost_loop(c);
+    c->body.reachable = false;
     if (target == NULL) {
         if (form == 0) {
             report(c, file, token, DIAG_OUTSIDE_LOOP, 0, 0);
         }
         return;
     }
-
-    c->body.reachable = false;
     if (!is_break) {
-        if (form == 2) {
+        if (form == 2 || target->dispatch) {
             report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
         } else if (target->block) {
             report(c, file, token, DIAG_CONTINUE_BLOCK, 0, 0);
@@ -1933,36 +2260,29 @@ jump(Checker *c, u32 file, u32 token, u8 kind)
         report(c, file, token, DIAG_BREAK_VALUE, 0, 0);
         return;
     }
-    if (target->peer) {
-        exit_to_peers(c, file, v_token, &target->peers, IR_EXIT, target->loop, v);
-        return;
-    }
-    Operand x = convert(c, file, v_token, v, target->type);
-    if (x.type != TYPE_ID_NONE) {
-        emit(c, IR_EXIT, x.type, target->loop, operand_ir(c, x));
-    }
+    give(c, file, v_token, target, v);
 }
 
 static u32
-block_result_type(Checker *c, u32 file, u32 node)
+result_type(Checker *c, u32 file, u32 node, u32 own, u8 start, u8 end_kind, u8 item)
 {
     const u8 *kinds = c->files[file].nodes.kinds;
     u32 depth = 0;
-    for (u32 i = node;; i++) {
-        depth += kinds[i] == NODE_VALUE_LABEL_START;
-        bool end = kinds[i] == NODE_LABELED_VALUE || kinds[i] == NODE_LABELED_ITEM;
+    for (u32 i = node + 1;; i++) {
+        depth += kinds[i] == start;
+        bool end = kinds[i] == end_kind || kinds[i] == item;
         if (end && depth-- == 0) {
-            if (kinds[i] == NODE_LABELED_ITEM) {
-                u32 m = c->sp - 1;
+            if (kinds[i] == item) {
+                u32 m = c->sp - own;
                 while (c->stack[--m].type < OPERAND_MARKER) {
                 }
                 bool call = c->stack[m].type == OPERAND_MARKER + NODE_CALL_ARGS &&
                             c->stack[m - 1].type == OPERAND_FN;
-                return call ? expected_type(c, 1) : TYPE_ID_NONE;
+                return call ? expected_type(c, own) : TYPE_ID_NONE;
             }
             u8 next = kinds[i + 1];
-            bool direct = c->sp > 1 && c->stack[c->sp - 2].type ==
-                                           OPERAND_MARKER + NODE_VALUE;
+            bool direct = c->sp > own && c->stack[c->sp - own - 1].type ==
+                                             OPERAND_MARKER + NODE_VALUE;
             if (next == NODE_RETURN_VALUE) {
                 return c->body.ret == TYPE_ID_INFERRED ? TYPE_ID_NONE : c->body.ret;
             }
@@ -1970,8 +2290,13 @@ block_result_type(Checker *c, u32 file, u32 node)
                 const Loop *to = lookup_label(c, file, c->files[file].nodes.tokens[i + 1]);
                 return to && to->value && !to->peer ? to->type : TYPE_ID_NONE;
             }
+            if (next == NODE_CASE) {
+                const Switch *s = &c->switches[c->nswitches - 1];
+                const Loop *to = s->value ? &c->loops[s->loop] : NULL;
+                return to && !to->peer ? to->type : TYPE_ID_NONE;
+            }
             if (direct && (next == NODE_VAR_TYPE_INIT || next == NODE_ASSIGN)) {
-                return expected_type(c, 1);
+                return expected_type(c, own);
             }
             return TYPE_ID_NONE;
         }
@@ -1983,7 +2308,9 @@ open_labeled_block(Checker *c, u32 file, u32 node)
 {
     Operand label = c->stack[c->sp - 1];
     bool value = label.type == OPERAND_MARKER + NODE_VALUE_LABEL_START;
-    u32 expected = value ? block_result_type(c, file, node) : TYPE_ID_NONE;
+    u32 expected = value
+                     ? result_type(c, file, node, 1, NODE_VALUE_LABEL_START, NODE_LABELED_VALUE, NODE_LABELED_ITEM)
+                     : TYPE_ID_NONE;
     Loop target = {
         .loop = emit(c, IR_BLOCK, 0, 0, 0),
         .next = NO_SLOT,
@@ -2003,6 +2330,11 @@ settle_peers(Checker *c, u32 file, Peers peers, u32 *operands)
 {
     u32 type = peers.type;
     if (type == TYPE_ID_NONE) {
+        return TYPE_ID_NONE;
+    }
+    if (type == TYPE_ID_ENUM_LITERAL) {
+        Break b = c->breaks[peers.first - 1];
+        report(c, file, b.token, DIAG_UNKNOWN_ENUM, b.value.ref, 0);
         return TYPE_ID_NONE;
     }
     type = type == TYPE_ID_UNTYPED_INT   ? TYPE_ID_I64
@@ -2045,7 +2377,7 @@ close_labeled_block(Checker *c, u32 file, u32 token)
 {
     Loop target = c->loops[--c->nloops];
     bool reachable = c->body.reachable;
-    c->body.reachable = reachable || target.broken;
+    c->body.reachable = target.before && (reachable || target.broken);
     if (!target.value) {
         emit(c, IR_END, 0, 0, 0);
         return (Operand){ OPERAND_STMT, 0 };
@@ -2053,7 +2385,379 @@ close_labeled_block(Checker *c, u32 file, u32 token)
     if (reachable) {
         report(c, file, token, DIAG_BLOCK_END, 0, 0);
     }
-    c->body.reachable = target.broken;
+    c->body.reachable = target.before && target.broken;
+    if (target.peer) {
+        target.type = settle_peers(c, file, target.peers, c->body.code->bs);
+    }
+    if (target.type == TYPE_ID_NONE) {
+        emit(c, IR_END, 0, 0, 0);
+        return poison;
+    }
+    u32 i = emit(c, IR_END, target.type, 0, 0);
+    return (Operand){ target.type, REF_VALUE | target.peers.result | i };
+}
+
+static Switch *
+top_switch(Checker *c)
+{
+    return &c->switches[c->nswitches - 1];
+}
+
+static NOINLINE void
+begin_switch(Checker *c, u32 file, u32 node, u8 kind, u32 token)
+{
+    bool value = kind == NODE_VALUE_SWITCH_START;
+    Switch s = {
+        .at = NO_SLOT,
+        .token = token,
+        .first_case = c->ncases,
+        .default_arm = NO_SLOT,
+        .label = value ? 0 : pending_label(c, c->sp),
+        .loop = NO_SLOT,
+        .value = value,
+    };
+    if (value) {
+        u32 expected = result_type(c, file, node, 0, NODE_VALUE_SWITCH_START, NODE_VALUE_SWITCH, NODE_SWITCH_ITEM);
+        s.loop = c->nloops;
+        push_loop(
+            c,
+            (Loop){ .loop = emit(c, IR_BLOCK, 0, 0, 0),
+                    .next = NO_SLOT,
+                    .slot = NO_SLOT,
+                    .block = true,
+                    .value = true,
+                    .type = expected,
+                    .marker = NO_SLOT,
+                    .peer = expected == TYPE_ID_NONE }
+        );
+    }
+    if (c->nswitches == c->switches_cap) {
+        c->switches_cap = c->switches_cap ? c->switches_cap * 2 : 16;
+        c->switches = resize(c->switches, c->switches_cap, sizeof *c->switches);
+    }
+    c->switches[c->nswitches++] = s;
+    push(c, token, OPERAND_MARKER + kind, 0);
+}
+
+static NOINLINE void
+open_switch(Checker *c, u32 file)
+{
+    Switch *s = top_switch(c);
+    u32 token = c->stack_tokens[c->sp - 1];
+    Operand v = pop(c);
+    u32 type = value_type(c, file, token, v);
+    u8 k = c->types.kinds[type];
+    if (type && k != TYPE_INT && k != TYPE_UINTPTR && k != TYPE_ENUM &&
+        type != TYPE_ID_BOOL) {
+        report(c, file, token, DIAG_SWITCH_TYPE, type, 0);
+        type = TYPE_ID_NONE;
+    }
+    v = type ? convert(c, file, token, v, type) : poison;
+    s->type = v.type;
+    s->before = c->body.reachable;
+    s->at = s->type
+              ? emit(c, IR_SWITCH, s->type, operand_ir(c, v), 0)
+              : emit(c, IR_SWITCH, TYPE_ID_BOOL, ir_const(c, TYPE_ID_BOOL, 0), 0);
+    if (s->label) {
+        push_loop(
+            c,
+            (Loop){ .loop = s->at,
+                    .next = NO_SLOT,
+                    .slot = NO_SLOT,
+                    .block = true,
+                    .dispatch = true,
+                    .label = s->label,
+                    .marker = NO_SLOT }
+        );
+    }
+}
+
+static bool
+in_case_labels(const Checker *c)
+{
+    u32 m = c->sp;
+    while (m > 0 && c->stack[--m].type < OPERAND_MARKER) {
+    }
+    return c->stack[m].type == OPERAND_MARKER + NODE_CASE_START;
+}
+
+static void
+add_case(Checker *c, u64 lo, u64 hi, u32 token)
+{
+    if (c->ncases == c->cases_cap) {
+        c->cases_cap *= 2;
+        c->cases = resize(c->cases, c->cases_cap, sizeof *c->cases);
+    }
+    c->cases[c->ncases++] = (CaseRange){ lo, hi, top_switch(c)->arms, token };
+}
+
+static bool
+case_value(Checker *c, u32 file, u32 token, Operand o, u64 *key)
+{
+    Switch *s = top_switch(c);
+    if (s->type == TYPE_ID_NONE || o.type == TYPE_ID_NONE) {
+        s->skipped = true;
+        return false;
+    }
+    Operand x = convert(c, file, token, o, s->type);
+    if (x.type != TYPE_ID_NONE && !is_constant(x)) {
+        report(c, file, token, DIAG_NOT_CONSTANT, 0, 0);
+        x = poison;
+    }
+    if (x.type == TYPE_ID_NONE) {
+        s->skipped = true;
+        return false;
+    }
+    *key = order_key(c, s->type, exact_bits(&c->exacts, value_of(x)));
+    return true;
+}
+
+static NOINLINE void
+case_range(Checker *c, u32 file, u32 token, bool inclusive)
+{
+    u32 hi_token = c->stack_tokens[c->sp - 1];
+    Operand hi = pop(c);
+    u32 lo_token = c->stack_tokens[c->sp - 1];
+    Operand lo = pop(c);
+    push(c, token, OPERAND_RANGE, 0);
+
+    Switch *s = top_switch(c);
+    u8 k = c->types.kinds[s->type];
+    if (s->type && k != TYPE_INT && k != TYPE_UINTPTR) {
+        report(c, file, token, DIAG_NOT_INTEGER, 0, 0);
+        s->skipped = true;
+        return;
+    }
+    u64 a = 0, b = 0;
+    bool ok = case_value(c, file, lo_token, lo, &a);
+    ok &= case_value(c, file, hi_token, hi, &b);
+    if (!ok) {
+        return;
+    }
+    if (inclusive ? b < a : b <= a) {
+        report(c, file, token, DIAG_EMPTY_RANGE, 0, 0);
+        s->skipped = true;
+        return;
+    }
+    add_case(c, a, inclusive ? b : b - 1, token);
+}
+
+static NOINLINE void
+case_labels(Checker *c, u32 file)
+{
+    Switch *s = top_switch(c);
+    u32 m = list_start(c, NODE_CASE_START);
+    for (u32 k = m + 1; k < c->sp; k++) {
+        Operand o = c->stack[k];
+        u32 token = c->stack_tokens[k];
+        if (o.type == OPERAND_RANGE) {
+            continue;
+        }
+        if (o.type == OPERAND_DISCARD) {
+            if (s->default_arm != NO_SLOT) {
+                report(c, file, token, DIAG_CASE_TWICE, 0, s->default_token);
+            } else {
+                s->default_arm = s->arms;
+                s->default_token = token;
+            }
+            continue;
+        }
+        u64 key;
+        if (case_value(c, file, token, o, &key)) {
+            add_case(c, key, key, token);
+        }
+    }
+    c->sp = m + 1;
+}
+
+static NOINLINE void
+close_arm(Checker *c, u32 file, u32 token)
+{
+    Switch *s = top_switch(c);
+    u32 m = list_start(c, NODE_CASE_BODY);
+    unbind_to(c, c->stack[m].ref);
+    bool has_item = c->sp > m + 1;
+    Operand v = has_item ? c->stack[c->sp - 1] : (Operand){ OPERAND_STMT, 0 };
+    u32 v_token = has_item ? c->stack_tokens[c->sp - 1] : token;
+    if (!s->value) {
+        s->reaches |= c->body.reachable;
+    } else if (v.type == OPERAND_STMT) {
+        if (c->body.reachable) {
+            report(c, file, token, DIAG_ARM_END, 0, 0);
+        }
+    } else {
+        give(c, file, v_token, &c->loops[s->loop], v);
+    }
+    c->body.reachable = false;
+    c->sp = m - 1;
+}
+
+static int
+compare_cases(const void *a, const void *b)
+{
+    const CaseRange *x = a, *y = b;
+    if (x->lo != y->lo) {
+        return x->lo < y->lo ? -1 : 1;
+    }
+    return (x->token > y->token) - (x->token < y->token);
+}
+
+static u32
+exact_from_key(Checker *c, u32 type, u64 key)
+{
+    u64 bits = key ^ order_key(c, type, 0);
+    if (signed_type(c, type) || bits <= INT64_MAX) {
+        return exact_int(&c->exacts, (int64_t)bits);
+    }
+    ExactStatus status;
+    u32 half = exact_int(&c->exacts, (int64_t)(bits >> 1));
+    u32 twice = exact_binary(&c->exacts, EXACT_ADD, half, half, EXACT_INT_BITS, &status);
+    return exact_binary(
+        &c->exacts,
+        EXACT_ADD,
+        twice,
+        exact_int(&c->exacts, (int64_t)(bits & 1)),
+        EXACT_INT_BITS,
+        &status
+    );
+}
+
+static u64
+first_missing(const CaseRange *cases, u32 n, u32 *j, u64 lo, u64 hi, bool *missing)
+{
+    u64 next = lo;
+    for (;;) {
+        while (*j < n && cases[*j].hi < next) {
+            (*j)++;
+        }
+        if (*j == n || cases[*j].lo > next) {
+            *missing = true;
+            return next;
+        }
+        if (cases[*j].hi >= hi) {
+            *missing = false;
+            return 0;
+        }
+        next = cases[*j].hi + 1;
+    }
+}
+
+static NOINLINE void
+report_missing(Checker *c, u32 file, Switch *s, const CaseRange *cases, u32 n)
+{
+    u32 type = s->type;
+    u32 j = 0;
+    bool missing = false;
+    if (c->types.kinds[type] == TYPE_ENUM) {
+        u32 list = c->decls.values[c->types.arg0[type]];
+        u64 flip = order_key(c, type, 0);
+        for (u32 r = 0; r < c->lists[list] / 4 && !missing; r++) {
+            u32 at = list + 1 + 4 * r;
+            u64 key = first_missing(cases, n, &j, list_u64(c, at) ^ flip, list_u64(c, at + 2) ^ flip, &missing);
+            if (!missing) {
+                continue;
+            }
+            u32 decl = c->types.arg0[type];
+            u32 first = c->decls.members[decl];
+            for (u32 i = 0; i < c->decls.member_counts[decl]; i++) {
+                Member m = c->members[first + i];
+                if (m.value < MEMBER_NONE &&
+                    order_key(c, type, exact_bits(&c->exacts, m.value)) == key) {
+                    report(c, file, s->token, DIAG_MISSING_MEMBER, m.name, 0);
+                    break;
+                }
+            }
+        }
+        return;
+    }
+
+    u32 bits = type == TYPE_ID_BOOL ? 1 : c->types.arg0[type];
+    bool sign = signed_type(c, type);
+    u64 lo = sign ? (1ull << 63) - (1ull << (bits - 1)) : 0;
+    u64 hi = sign       ? (1ull << 63) + ((1ull << (bits - 1)) - 1)
+           : bits == 64 ? UINT64_MAX
+                        : (1ull << bits) - 1;
+    u64 key = first_missing(cases, n, &j, lo, hi, &missing);
+    if (missing) {
+        report(c, file, s->token, DIAG_MISSING_CASE, exact_from_key(c, type, key), type);
+    }
+}
+
+static NOINLINE void
+finish_cases(Checker *c, u32 file)
+{
+    Switch *s = top_switch(c);
+    CaseRange *cases = c->cases + s->first_case;
+    u32 n = c->ncases - s->first_case;
+    qsort(cases, n, sizeof *cases, compare_cases);
+
+    u32 cover = 0;
+    for (u32 k = 1; k < n; k++) {
+        if (cases[k].lo <= cases[cover].hi) {
+            bool later = cases[k].token > cases[cover].token;
+            report(
+                c,
+                file,
+                later ? cases[k].token : cases[cover].token,
+                DIAG_CASE_TWICE,
+                0,
+                later ? cases[cover].token : cases[k].token
+            );
+        }
+        if (cases[k].hi > cases[cover].hi) {
+            cover = k;
+        }
+    }
+    if (s->type && !s->skipped && s->default_arm == NO_SLOT) {
+        report_missing(c, file, s, cases, n);
+    }
+
+    IrCode *code = c->body.code;
+    u32 words = 2 + 5 * n;
+    if (code->nextra + words > code->extra_cap) {
+        code->extra_cap = (code->nextra + words) * 2;
+        code->extra = resize(code->extra, code->extra_cap, sizeof *code->extra);
+    }
+    u32 *x = code->extra + code->nextra;
+    code->bs[c->body.first + s->at] = code->nextra - c->body.first_extra;
+    code->nextra += words;
+    x[0] = n;
+    x[1] = s->default_arm;
+    u64 flip = s->type ? order_key(c, s->type, 0) : 0;
+    for (u32 k = 0; k < n; k++) {
+        u64 lo = cases[k].lo ^ flip, hi = cases[k].hi ^ flip;
+        u32 *e = x + 2 + 5 * k;
+        e[0] = (u32)lo;
+        e[1] = (u32)(lo >> 32);
+        e[2] = (u32)hi;
+        e[3] = (u32)(hi >> 32);
+        e[4] = cases[k].arm;
+    }
+}
+
+static NOINLINE Operand
+close_switch(Checker *c, u32 file, u8 kind)
+{
+    if (top_switch(c)->at == NO_SLOT) {
+        open_switch(c, file);
+    }
+    emit(c, IR_END, 0, 0, 0);
+    finish_cases(c, file);
+    c->sp = list_start(c, kind == NODE_SWITCH ? NODE_SWITCH_START : NODE_VALUE_SWITCH_START);
+
+    Switch s = c->switches[--c->nswitches];
+    c->ncases = s.first_case;
+    bool reaches = s.reaches;
+    if (s.label) {
+        reaches |= c->loops[--c->nloops].broken;
+    }
+    if (!s.value) {
+        c->body.reachable = s.before && reaches;
+        return (Operand){ OPERAND_STMT, 0 };
+    }
+
+    Loop target = c->loops[--c->nloops];
+    c->body.reachable = target.before && target.broken;
     if (target.peer) {
         target.type = settle_peers(c, file, target.peers, c->body.code->bs);
     }
@@ -2092,7 +2796,7 @@ close_while(Checker *c, u32 token)
     c->body.depth--;
 
     bool forever = c->stack[m + 2].ref;
-    c->body.reachable = !forever || loop.broken;
+    c->body.reachable = loop.before && (!forever || loop.broken);
     c->sp = m;
     push(c, token, OPERAND_STMT, 0);
 }
@@ -2189,7 +2893,7 @@ close_for(Checker *c, u32 token)
     c->body.depth--;
 
     unbind_to(c, c->stack[m].ref);
-    c->body.reachable = true;
+    c->body.reachable = loop.before;
     c->sp = m;
     push(c, token, OPERAND_STMT, 0);
 }
@@ -2253,6 +2957,27 @@ body_marker(Checker *c, u32 file, u32 node, u8 kind, u32 token)
         case NODE_VALUE_LABEL_START:
             push(c, token, OPERAND_MARKER + kind, c->files[file].tokens.ids[token]);
             return;
+        case NODE_SWITCH_START:
+        case NODE_VALUE_SWITCH_START:
+            begin_switch(c, file, node, kind, token);
+            return;
+        case NODE_CASE_START:
+            if (top_switch(c)->at == NO_SLOT) {
+                open_switch(c, file);
+            }
+            push(c, token, OPERAND_MARKER + kind, 0);
+            return;
+        case NODE_CASE_BODY: {
+            case_labels(c, file);
+            Switch *s = top_switch(c);
+            if (s->arms > 0) {
+                emit(c, IR_CASE, 0, s->arms, 0);
+            }
+            s->arms++;
+            c->body.reachable = s->before;
+            push(c, token, OPERAND_MARKER + kind, c->nscope);
+            return;
+        }
         case NODE_WHILE_BODY: {
             u32 cond_token = c->stack_tokens[c->sp - 1];
             Operand cond = pop(c);
@@ -2308,7 +3033,7 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
             case NODE_NAME: {
                 u32 id = ids[token];
                 if (in_body && id == NAME_DISCARD) {
-                    if (kinds[i + 1] == NODE_VALUE) {
+                    if (kinds[i + 1] == NODE_VALUE || in_case_labels(c)) {
                         push(c, token, OPERAND_DISCARD, 0);
                     } else {
                         report(c, file, token, DIAG_DISCARD, 0, 0);
@@ -2343,6 +3068,19 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
             case NODE_INT:
                 push_operand(c, token, number_literal(c, file, i, TYPE_ID_UNTYPED_INT));
                 break;
+            case NODE_ENUM_LITERAL:
+                push(c, token, TYPE_ID_ENUM_LITERAL, ids[token]);
+                break;
+            case NODE_FIELD: {
+                Operand o = c->stack[c->sp - 1];
+                if (o.type == TYPE_ID_TYPE && c->types.kinds[o.ref] == TYPE_ENUM) {
+                    pop(c);
+                    push_operand(c, token, enum_member(c, file, token, o.ref, ids[token]));
+                } else {
+                    unsupported(c, file, i);
+                }
+                break;
+            }
             case NODE_FLOAT:
                 push_operand(c, token, number_literal(c, file, i, TYPE_ID_UNTYPED_FLOAT));
                 break;
@@ -2515,7 +3253,12 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
             case NODE_VAR_TYPE: {
                 u32 t = type_operand(c, file, child, pop(c));
                 bool scalar = is_number(c, t) || t == TYPE_ID_BOOL;
-                if (t && !scalar) {
+                if (t && c->types.kinds[t] == TYPE_ENUM) {
+                    scalar = enum_has(c, t, order_key(c, t, 0));
+                    if (!scalar) {
+                        report(c, file, token, DIAG_NO_ZERO_MEMBER, 0, t);
+                    }
+                } else if (t && !scalar) {
                     report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
                 }
                 declare_local(c, file, i, t, scalar ? (Operand){ t, EXACT_ZERO } : poison);
@@ -2594,6 +3337,8 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
             case NODE_RANGE_INCLUSIVE:
                 if (in_body && kinds[i + 1] == NODE_FOR_VALUE) {
                     for_range(c, file, i, token);
+                } else if (in_body && in_case_labels(c)) {
+                    case_range(c, file, token, kind == NODE_RANGE_INCLUSIVE);
                 } else {
                     unsupported(c, file, i);
                 }
@@ -2602,6 +3347,29 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                 for_value(c, file, i, token, kinds[i - 1] == NODE_RANGE_INCLUSIVE);
                 break;
             case NODE_FOR: close_for(c, token); break;
+            case NODE_CASE:
+                if (in_body) {
+                    close_arm(c, file, token);
+                } else {
+                    c->sp = list_start(c, NODE_CASE_START);
+                }
+                break;
+            case NODE_SWITCH:
+            case NODE_VALUE_SWITCH:
+            case NODE_SWITCH_ITEM:
+                if (in_body) {
+                    push_operand(c, token, close_switch(c, file, kind));
+                } else {
+                    unsupported(c, file, i);
+                }
+                break;
+            case NODE_SWITCH_VALUE:
+            case NODE_SWITCH_REF:
+                if (in_body) {
+                    report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
+                    c->stack[c->sp - 1] = poison;
+                }
+                break;
             default: unsupported(c, file, i);
         }
     }
@@ -2987,6 +3755,8 @@ check_init(Checker *c, const Names *names)
     c->stack = malloc(c->stack_cap * sizeof *c->stack);
     c->stack_tokens = malloc(c->stack_cap * sizeof *c->stack_tokens);
     c->claims = malloc(CHECK_MAX_DEPTH * sizeof *c->claims);
+    c->cases_cap = 64;
+    c->cases = malloc(c->cases_cap * sizeof *c->cases);
     c->builders = calloc(CHECK_MAX_DEPTH, sizeof *c->builders);
 }
 
@@ -3205,6 +3975,8 @@ check_print_diagnostics(FILE *out, const Checker *c)
                 case 'm':
                     print_location(out, f, f->nodes.tokens[d.arg2]);
                     break;
+                case 'l': print_location(out, f, d.arg2); break;
+                case 'w': print_constant(out, c, d.arg2, d.arg); break;
                 case 'v': exact_print(out, &c->exacts, d.arg); break;
                 case 'c': fprintf(out, "%u", d.arg); break;
                 case 'C': fprintf(out, "%u", d.arg2); break;
@@ -3311,6 +4083,32 @@ check_dump(FILE *out, const Checker *c)
 }
 
 static void
+print_bits(FILE *out, const Checker *c, u32 type, u64 bits)
+{
+    if (type == TYPE_ID_BOOL) {
+        fputs(bits ? "true" : "false", out);
+        return;
+    }
+    if (c->types.kinds[type] == TYPE_ENUM) {
+        u32 decl = c->types.arg0[type];
+        u32 first = c->decls.members[decl];
+        for (u32 i = 0; i < c->decls.member_counts[decl]; i++) {
+            Member m = c->members[first + i];
+            if (m.value < MEMBER_NONE && exact_bits(&c->exacts, m.value) == bits) {
+                fputc('.', out);
+                print_name(out, c, m.name);
+                return;
+            }
+        }
+    }
+    if (signed_type(c, type)) {
+        fprintf(out, "%lld", (long long)bits);
+    } else {
+        fprintf(out, "%llu", (unsigned long long)bits);
+    }
+}
+
+static void
 print_operand(FILE *out, const Checker *c, const IrFunc *fn, u32 operand)
 {
     if (!(operand & IR_CONST)) {
@@ -3319,15 +4117,10 @@ print_operand(FILE *out, const Checker *c, const IrFunc *fn, u32 operand)
     }
 
     IrConst k = c->ir.code.consts[fn->first_const + (operand & ~IR_CONST)];
-    u8 kind = c->types.kinds[k.type];
-    if (k.type == TYPE_ID_BOOL) {
-        fputs(k.bits ? "true" : "false", out);
-    } else if (kind == TYPE_FLOAT) {
+    if (c->types.kinds[k.type] == TYPE_FLOAT) {
         print_float(out, k.bits, c->types.arg0[k.type]);
-    } else if (c->types.arg1[k.type]) {
-        fprintf(out, "%lld", (long long)k.bits);
     } else {
-        fprintf(out, "%llu", (unsigned long long)k.bits);
+        print_bits(out, c, k.type, k.bits);
     }
 }
 
@@ -3363,7 +4156,7 @@ print_function(FILE *out, const Checker *c, const IrFunc *fn)
         u32 type = code->types[at];
         u32 a = code->as[at];
         u32 b = code->bs[at];
-        depth -= kind == IR_END || kind == IR_ELSE;
+        depth -= kind == IR_END || kind == IR_ELSE || kind == IR_CASE;
         assert(depth < sizeof openers);
         fprintf(out, "%*s", 4 * depth, "");
 
@@ -3459,6 +4252,31 @@ print_function(FILE *out, const Checker *c, const IrFunc *fn)
                 break;
             case IR_REPEAT: fprintf(out, " @%u", a); break;
             case IR_NOP: break;
+            case IR_SWITCH: {
+                fprintf(out, " @%u ", i);
+                print_type(out, c, type);
+                fputc(' ', out);
+                print_operand(out, c, fn, a);
+                const u32 *x = code->extra + fn->first_extra + b;
+                fputs(" [", out);
+                for (u32 k = 0; k < x[0]; k++) {
+                    const u32 *e = x + 2 + 5 * k;
+                    u64 lo = e[0] | (u64)e[1] << 32, hi = e[2] | (u64)e[3] << 32;
+                    fputs(k ? ", " : "", out);
+                    print_bits(out, c, type, lo);
+                    if (hi != lo) {
+                        fputs("..=", out);
+                        print_bits(out, c, type, hi);
+                    }
+                    fprintf(out, " => %u", e[4]);
+                }
+                if (x[1] != NO_SLOT) {
+                    fprintf(out, "%s_ => %u", x[0] ? ", " : "", x[1]);
+                }
+                fputc(']', out);
+                break;
+            }
+            case IR_CASE: fprintf(out, " %u", a); break;
             default:
                 fputc(' ', out);
                 print_type(out, c, type);
@@ -3468,10 +4286,11 @@ print_function(FILE *out, const Checker *c, const IrFunc *fn)
                 print_operand(out, c, fn, b);
         }
         fputc('\n', out);
-        if (kind == IR_BLOCK || kind == IR_LOOP || kind == IR_IF) {
+        if (kind == IR_BLOCK || kind == IR_LOOP || kind == IR_IF || kind == IR_SWITCH) {
             openers[depth] = kind;
         }
-        depth += kind == IR_BLOCK || kind == IR_LOOP || kind == IR_IF || kind == IR_ELSE;
+        depth += kind == IR_BLOCK || kind == IR_LOOP || kind == IR_IF ||
+                 kind == IR_ELSE || kind == IR_SWITCH || kind == IR_CASE;
     }
 }
 
@@ -3536,6 +4355,10 @@ check_free(Checker *c)
     free(c->scope);
     free(c->loops);
     free(c->breaks);
+    free(c->cases);
+    free(c->switches);
+    free(c->member_keys);
+    free(c->member_slots);
     free(c->members);
     free(c->scratch);
     free(c->lists);

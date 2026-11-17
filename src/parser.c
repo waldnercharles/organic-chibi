@@ -111,7 +111,7 @@ starts_line(Parser *p)
 
 static void parse_binary(Parser *p, int min_prec);
 static void parse_block(Parser *p);
-static void parse_switch(Parser *p);
+static void parse_switch(Parser *p, bool value);
 
 static ALWAYS_INLINE void
 parse_items(Parser *p, TokenKind close)
@@ -128,8 +128,11 @@ parse_items(Parser *p, TokenKind close)
             emit(p, NODE_NAMED_ARG, at);
         } else {
             parse_binary(p, PREC_OR);
-            if (p->out.kinds[p->count - 1] == NODE_LABELED_VALUE) {
-                p->out.kinds[p->count - 1] = NODE_LABELED_ITEM;
+            u8 *last = &p->out.kinds[p->count - 1];
+            if (*last == NODE_LABELED_VALUE) {
+                *last = NODE_LABELED_ITEM;
+            } else if (*last == NODE_VALUE_SWITCH) {
+                *last = NODE_SWITCH_ITEM;
             }
         }
 
@@ -418,7 +421,7 @@ parse_operand(Parser *p)
             return;
         }
         if (kind == TK_SWITCH) {
-            parse_switch(p);
+            parse_switch(p, true);
             return;
         }
 
@@ -918,15 +921,22 @@ next_member(Parser *p)
     return false;
 }
 
+static bool
+leaves_arm(TokenKind kind)
+{
+    return kind == TK_LBRACE || kind == TK_RETURN || kind == TK_BREAK ||
+           kind == TK_CONTINUE;
+}
+
 static void
-parse_switch(Parser *p)
+parse_switch(Parser *p, bool value)
 {
     if (!descend(p)) {
         return;
     }
 
     int at = p->pos;
-    emit(p, NODE_SWITCH_START, p->pos++);
+    emit(p, value ? NODE_VALUE_SWITCH_START : NODE_SWITCH_START, p->pos++);
 
     bool by_pointer = p->tokens.kinds[p->pos] == TK_AMP;
     int name = p->pos + by_pointer;
@@ -959,7 +969,11 @@ parse_switch(Parser *p)
         emit(p, NODE_CASE_BODY, p->pos++);
         bool in_arm = p->in_arm;
         p->in_arm = true;
-        parse_statement(p);
+        if (value && !leaves_arm(p->tokens.kinds[p->pos])) {
+            parse_binary(p, PREC_OR);
+        } else {
+            parse_statement(p);
+        }
         p->in_arm = in_arm;
         emit(p, NODE_CASE, arrow);
 
@@ -975,7 +989,7 @@ parse_switch(Parser *p)
         return;
     }
     p->pos++;
-    emit(p, NODE_SWITCH, at);
+    emit(p, value ? NODE_VALUE_SWITCH : NODE_SWITCH, at);
 }
 
 static void
@@ -1393,7 +1407,7 @@ parse_statement(Parser *p)
         case TK_IF: parse_if(p); return;
         case TK_WHILE: parse_while(p); return;
         case TK_FOR: parse_for(p); return;
-        case TK_SWITCH: parse_switch(p); return;
+        case TK_SWITCH: parse_switch(p, false); return;
         case TK_RETURN: parse_return(p); return;
         case TK_BREAK: parse_jump(p, NODE_BREAK); return;
         case TK_CONTINUE: parse_jump(p, NODE_CONTINUE); return;

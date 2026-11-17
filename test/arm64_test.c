@@ -893,6 +893,192 @@ TEST_CASE(differential)
     return true;
 }
 
+static const char SWITCHES
+    [] = "enum Dir { north, east, south, west }\n"
+         "enum Sparse { a = 1, b = 5, c = 9, d = 200, e = 1000, f = -7 }\n"
+         "enum Wide: int { low = -2, a, b, c, far = 30 }\n"
+         "fn s0(a: int, b: int) -> int {\n"
+         "    switch a {\n"
+         "        0 => return 10\n"
+         "        1, 2 => return 20\n"
+         "        5..=9 => return 30\n"
+         "        _ => return b\n"
+         "    }\n"
+         "}\n"
+         "fn s1(a: int, b: int) -> int {\n"
+         "    x := switch a {\n"
+         "        0 => 1\n"
+         "        1 => 2\n"
+         "        2 => 3\n"
+         "        4 => 5\n"
+         "        5..=7 => b\n"
+         "        9 => 11\n"
+         "        _ => -1\n"
+         "    }\n"
+         "    return x * 2\n"
+         "}\n"
+         "fn s2(a: int, b: int) -> int {\n"
+         "    switch a {\n"
+         "        -1000 => return 1\n"
+         "        -5 => return 2\n"
+         "        3 => return 3\n"
+         "        100..=200 => return 4\n"
+         "        1000 => return 5\n"
+         "        5000 => return 6\n"
+         "        70000 => return 7\n"
+         "        1 << 40 => return 8\n"
+         "        _ => return b\n"
+         "    }\n"
+         "}\n"
+         "fn s3(a: int, b: int) -> int {\n"
+         "    x: i8 = i8(a & 0x7F) - 64\n"
+         "    switch x {\n"
+         "        -128..=-60 => return 1\n"
+         "        -3..=3 => return 2\n"
+         "        10, 20, 30, 40, 50 => return 3\n"
+         "        _ => return int(x) + b\n"
+         "    }\n"
+         "}\n"
+         "fn s4(a: int, b: int) -> int {\n"
+         "    d := Dir(a & 3)\n"
+         "    return switch d {\n"
+         "        .north => 1\n"
+         "        .east => 2\n"
+         "        .south => b\n"
+         "        .west => 4\n"
+         "    }\n"
+         "}\n"
+         "fn s5(a: int, b: int) -> int {\n"
+         "    s := Sparse(a)\n"
+         "    v := switch s {\n"
+         "        .a, .b => 1\n"
+         "        .c => 2\n"
+         "        _ => int(s)\n"
+         "    }\n"
+         "    return v + b\n"
+         "}\n"
+         "fn s6(a: int, b: int) -> int {\n"
+         "    total := 0\n"
+         "    i := 0\n"
+         "    while i < 10 {\n"
+         "        sw: switch (a + i) % 4 {\n"
+         "            0 => total += 1\n"
+         "            1 => {\n"
+         "                if b > 0 {\n"
+         "                    break sw\n"
+         "                }\n"
+         "                total += 100\n"
+         "            }\n"
+         "            2 => break\n"
+         "            _ => {}\n"
+         "        }\n"
+         "        i += 1\n"
+         "    }\n"
+         "    return total\n"
+         "}\n"
+         "fn s7(a: int, b: int) -> int {\n"
+         "    c := a > b\n"
+         "    n := switch c { true => 1, false => 2 }\n"
+         "    d := Dir(b & 3)\n"
+         "    return n * 10 + int(u8(d)) + int(i8(Sparse.f))\n"
+         "}\n"
+         "fn s8(a: int, b: int) -> int {\n"
+         "    x: u8 = u8(a & 0xFF)\n"
+         "    y: i16 = i16(b & 0x7FF)\n"
+         "    v := switch a & 3 {\n"
+         "        0 => x\n"
+         "        1 => y\n"
+         "        2 => 7\n"
+         "        _ => i32(a & 0xFFFF)\n"
+         "    }\n"
+         "    return int(v)\n"
+         "}\n"
+         "fn s9(a: int, b: int) -> int {\n"
+         "    x := u8(a & 0xFF)\n"
+         "    switch x {\n"
+         "        0..=99 => return 1 + b\n"
+         "        100..=199 => return 2\n"
+         "        200..=255 => return 3\n"
+         "    }\n"
+         "}\n"
+         "fn s10(a: int, b: int) -> int {\n"
+         "    x := u64(a & 0x7FFFFFFFFFFFFFFF) | 0x8000000000000000\n"
+         "    switch x {\n"
+         "        0x8000000000000000 => return 1\n"
+         "        0x8000000000000001..=0x80000000000000FF => return 2\n"
+         "        0xFFFFFFFFFFFFFFFF => return 3\n"
+         "        _ => return 4 + b\n"
+         "    }\n"
+         "}\n"
+         "fn s12(a: int, b: int) -> int {\n"
+         "    v: i16 = i16((a & 63)) - 32\n"
+         "    return int(Wide(v)) + b\n"
+         "}\n"
+         "fn s11(a: int, b: int) -> int {\n"
+         "    d := Sparse(i16(a))\n"
+         "    return int(d) + b\n"
+         "}\n";
+
+static const int64_t SWITCH_EDGES[] = { INT64_MIN, INT64_MIN + 1, -1000,
+                                        -129,      -128,          -7,
+                                        1000,      4999,          5000,
+                                        70000,     1ll << 40,     INT64_MAX };
+
+TEST_CASE(switches)
+{
+    Program p;
+    REQUIRE(build(&p, SWITCHES));
+    catch_traps();
+    int64_t got = 0;
+    REQUIRE(call_i2((I2 *)fn(&p, "s0"), 2, 0, &got) == 0 && got == 20);
+    REQUIRE(call_i2((I2 *)fn(&p, "s1"), 3, 0, &got) == 0 && got == -2);
+    REQUIRE(call_i2((I2 *)fn(&p, "s1"), 6, 21, &got) == 0 && got == 42);
+    REQUIRE(call_i2((I2 *)fn(&p, "s4"), 2, 9, &got) == 0 && got == 9);
+    REQUIRE(call_i2((I2 *)fn(&p, "s5"), 200, 0, &got) == 0 && got == 200);
+    REQUIRE(call_i2((I2 *)fn(&p, "s5"), 2, 0, &got) == TRAP_RANGE);
+    REQUIRE(call_i2((I2 *)fn(&p, "s6"), 0, 1, &got) == 0 && got == 1);
+    REQUIRE(call_i2((I2 *)fn(&p, "s7"), 1, 0, &got) == 0 && got == 3);
+
+    IrReference ref;
+    ir_reference_init(&ref, &p.c);
+    static const int64_t bs[] = { -1, 0, 5 };
+    for (int f = 0; f <= 12; f++) {
+        char name[8];
+        snprintf(name, sizeof name, "s%d", f);
+        u32 decl = decl_named(&p, name);
+        I2 *native = (I2 *)native_entry(&p.n, decl);
+        for (int k = -300;
+             k < 300 + (int)(sizeof SWITCH_EDGES / sizeof SWITCH_EDGES[0]);
+             k++) {
+            int64_t a = k < 300 ? k : SWITCH_EDGES[k - 300];
+            for (int j = 0; j < 3; j++) {
+                u64 slots[2] = { (u64)a, (u64)bs[j] };
+                u64 want = 0;
+                int want_trap = ir_reference_run(&ref, decl, slots, &want);
+                int got_trap = call_i2(native, a, bs[j], &got);
+                if (want_trap != got_trap || (!want_trap && (int64_t)want != got)) {
+                    fprintf(
+                        stderr,
+                        "switches: %s(%lld, %lld): reference %lld (trap %d), "
+                        "native %lld (trap %d)\n",
+                        name,
+                        (long long)a,
+                        (long long)bs[j],
+                        (long long)want,
+                        want_trap,
+                        (long long)got,
+                        got_trap
+                    );
+                    REQUIRE(false);
+                }
+            }
+        }
+    }
+    ir_reference_free(&ref);
+    release_program(&p);
+    return true;
+}
+
 TEST_CASE(store_while_loaded)
 {
     Program p;
@@ -1180,6 +1366,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(small_integers);
     RUN_TEST_CASE(wide_integers);
     RUN_TEST_CASE(control_flow);
+    RUN_TEST_CASE(switches);
 }
 
 #else
