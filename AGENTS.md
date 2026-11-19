@@ -8,7 +8,9 @@ Write plainly in active voice. Minimize hedging, padding, and grand claims. Favo
 
 2. Write imperative, procedural code.
 
-3. Never commit or push unless explicitly told to do so.
+3. On the `claude-research` branch, commit and push directly to the branch,
+   with no pull request and without asking first. Anywhere else, never
+   commit or push unless explicitly told to do so.
 
 ## Code Conventions
 
