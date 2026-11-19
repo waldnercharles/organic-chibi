@@ -87,12 +87,12 @@ Measure cycles per IR instruction, and swap one slot while the program runs. Tha
 
 Updated 2026-11-18. The owner's answers are in [../decisions.md](../decisions.md). This list holds what is still open, in the order of the next step above. Points that a decision row marks "proposed, not yet decided" are open too, and are not repeated here. The compiler's own C (`src/`) shows what the translator meets first: it uses `++`, `--`, `?:` and character literals throughout, calls C's `printf` family and `qsort`, uses `vector_size` types, the bit-scan and overflow builtins, and the `noinline`, `always_inline` and `noreturn` attributes, and has no bitfields and no `goto`.
 
-1. **Step 3d.** Questions 12–14 of [checker-and-ir.md](checker-and-ir.md) section 9 are decided. How a call passes a struct is not: the 2026-11-15 row on structs in the IR leaves it to the calling convention (rank 7, [adopt-or-settle.md](adopt-or-settle.md) 2.7), and rank 8 (2.8) decides when a large parameter is copied and when it travels by pointer. Read-only parameters are decided.
+1. **Step 3d.** Questions 12–14 of [checker-and-ir.md](checker-and-ir.md) section 9 are decided, and so is the hidden context of rank 7 (the Language row of 2026-11-18). How a call passes a struct still needs rank 8 ([adopt-or-settle.md](adopt-or-settle.md) 2.8): whether parameters behave as copies, with large structs passed by pointer. It also needs where the context travels; the proposal is a register that C preserves, so arguments follow the C convention. Read-only parameters are decided.
 2. **Globals and constant tables.**
    - Initialization, the rest of rank 6 (2.6): memory zeroed by default, field defaults, and globals built at compile time. `undefined` is decided.
    - Whether a library's global may run code at startup, as in `score := load_score()` ([top-level-code.md](top-level-code.md) 5).
 3. **Calling C, and being called from C.**
-   - The calling convention (rank 7): whether every function uses the platform's C convention, and whether the implicit context lives in a thread-local, as recommended.
+   - The details of the hidden context (rank 7, decided 2026-11-18): what it holds, how a callback for C is spelled, and where an adapter finds a default context.
    - C imports: where defines, include paths and libraries are given, and `extern fn` for C declarations without bodies ([syntax-options-effects.md](syntax-options-effects.md) 10a).
    - `export fn`: C names, slices in exported signatures, and `export` on globals (10b).
    - Variadic functions: `..` for C's variadic tail, which calls to `printf` need, and `xs: ..T` for chibi functions (4e).
