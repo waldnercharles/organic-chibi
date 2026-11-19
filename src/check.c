@@ -906,6 +906,20 @@ load_local(Checker *c, u32 slot)
     return emit_value(c, IR_LOAD, type, slot, 0);
 }
 
+static Operand
+read_local(Checker *c, u32 slot)
+{
+    u32 type = slot_at(c, slot)->type;
+    if (is_indexable(c, type)) {
+        return (Operand){ OPERAND_LOCAL, slot };
+    }
+    if (type == TYPE_ID_NONE) {
+        return poison;
+    }
+    weigh(c, slot);
+    return emit_value(c, IR_LOAD, type, slot, 0);
+}
+
 static NOINLINE Operand
 load_pair(Checker *c, u32 slot)
 {
@@ -3996,11 +4010,10 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                     u64 binding = c->bindings[id];
                     if ((u32)(binding >> 32) == c->body.owner) {
                         u32 slot = (u32)binding;
-                        if (kinds[i + 1] == NODE_VALUE || kinds[i + 1] == NODE_ADDR ||
-                            is_indexable(c, slot_at(c, slot)->type)) {
+                        if (kinds[i + 1] == NODE_VALUE || kinds[i + 1] == NODE_ADDR) {
                             push(c, token, OPERAND_LOCAL, slot);
                         } else {
-                            push_operand(c, token, load_local(c, slot));
+                            push_operand(c, token, read_local(c, slot));
                         }
                         break;
                     }
