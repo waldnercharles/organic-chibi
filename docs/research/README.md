@@ -71,6 +71,7 @@ Updated 2026-11-19. Built so far:
 - step 3d.4, structs: locals laid out as C lays them out, field access through values and pointers, copies, zeroing with field defaults, typed and anonymous literals, and `*S` parameters.
 - step 3d.5, slices in memory: slice fields, arrays and slices of slices, `&s` and `*[]T`.
 - step 3d.6, small structs by value: parameters and results of up to 16 bytes, and float-only structs of up to 32, in registers as C passes them.
+- step 3d.7, arrays and structs read left to right as items of literals and as struct arguments, as slices already were (rank 3, option A, decided 2026-11-19).
 
 [checker-and-ir.md](checker-and-ir.md) section 8 has the details and the measurements.
 
@@ -91,7 +92,7 @@ Measure cycles per IR instruction, and swap one slot while the program runs. Tha
 
 ## Open decisions, ordered by what they block
 
-Updated 2026-11-18. The owner's answers are in [../decisions.md](../decisions.md). This list holds what is still open, in the order of the next step above. Points that a decision row marks "proposed, not yet decided" are open too, and are not repeated here. The compiler's own C (`src/`) shows what the translator meets first: it uses `++`, `--`, `?:` and character literals throughout, calls C's `printf` family and `qsort`, uses `vector_size` types, the bit-scan and overflow builtins, and the `noinline`, `always_inline` and `noreturn` attributes, and has no bitfields and no `goto`.
+Updated 2026-11-19. The owner's answers are in [../decisions.md](../decisions.md). This list holds what is still open, in the order of the next step above. Points that a decision row marks "proposed, not yet decided" are open too, and are not repeated here. The compiler's own C (`src/`) shows what the translator meets first: it uses `++`, `--`, `?:` and character literals throughout, calls C's `printf` family and `qsort`, uses `vector_size` types, the bit-scan and overflow builtins, and the `noinline`, `always_inline` and `noreturn` attributes, and has no bitfields and no `goto`.
 
 1. **Step 3d.** Questions 12–14 of [checker-and-ir.md](checker-and-ir.md) section 9 are decided, and so is the hidden context of rank 7 (the Language row of 2026-11-18). Step 3d.6 passes structs of up to 16 bytes, and float-only structs of up to 32, in registers as C does; its rules open to review are in [checker-and-ir.md](checker-and-ir.md) section 8. Larger structs still need rank 8 ([adopt-or-settle.md](adopt-or-settle.md) 2.8): whether parameters behave as copies, with large structs passed by pointer. It also needs where the context travels; the proposal is a register that C preserves, so arguments follow the C convention. Read-only parameters are decided.
 2. **Globals and constant tables.**
@@ -107,7 +108,7 @@ Updated 2026-11-18. The owner's answers are in [../decisions.md](../decisions.md
    - Vector math beyond the matrix row: element-wise operators and swizzles (rank 14, 2.14).
    - How builtins are named. Sheets 3 and 8 recommend plain predeclared names for type queries, such as `size_of` and `type_of` ([syntax-options-data.md](syntax-options-data.md) 3), and no sheet covers the bit-scan and overflow builtins yet.
    - The attribute design (adopt-or-settle 3.8), of which only `@tail` is decided. The compiler's C needs `noinline`, `always_inline` and `noreturn`.
-5. **The C backend.** Rank 3 (2.3), one contract for every backend: left-to-right evaluation, no FMA contraction, and `==` on structs comparing fields, as recommended. No strict aliasing is decided (the Casts row). [shader-languages.md](shader-languages.md) proposes narrowing the contract to the CPU backends.
+5. **The C backend.** Rank 3 (2.3), one contract for every backend: left-to-right evaluation, no FMA contraction, and `==` on structs comparing fields, as recommended. The part for arrays and structs in literals and struct arguments is decided: they read left to right (the Language row of 2026-11-19). The rest of rank 3 is still open. No strict aliasing is decided (the Casts row). [shader-languages.md](shader-languages.md) proposes narrowing the contract to the CPU backends.
 6. **The C-to-chibi translator.**
    - `++` and `--` (sheet 4a), a conditional expression (4b) and character literals (4c).
    - Strings and read-only data (rank 10, 2.10), which the `const` row also leaves open.

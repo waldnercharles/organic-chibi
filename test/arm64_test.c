@@ -2376,7 +2376,7 @@ TEST_CASE(passed_structs)
         14
     );
     REQUIRE(m == 955);
-    REQUIRE(((I2 *)fn(&p, "late"))(5, 6) == 100);
+    REQUIRE(((I2 *)fn(&p, "late"))(5, 6) == 5);
 
     REQUIRE(agree_on_grid(
         &p,
@@ -2397,6 +2397,260 @@ TEST_CASE(passed_structs)
     ));
     REQUIRE(!arm64_compile(&q.n, &q.c) && strstr(q.n.error, "more than 8 integer"));
     release_program(&q);
+    return true;
+}
+
+static const char LEFT_TO_RIGHT[] =
+    "struct P { x: i32, y: i32 }\n"
+    "struct Q { p: P, n: int }\n"
+    "struct L { p: P, q: P }\n"
+    "struct Z { p: P, n: int, m: int }\n"
+    "struct PB { p: P, ok: bool }\n"
+    "struct WZ { a: [3]i32, n: int, m: int }\n"
+    "struct Y { n: i32, p: P, m: int }\n"
+    "\n"
+    "fn bump(q: *P) -> i32 {\n"
+    "    q.x += 100\n"
+    "    return 1\n"
+    "}\n"
+    "\n"
+    "fn grow(r: *[3]i32) -> i32 {\n"
+    "    r.*[0] += 1000\n"
+    "    r.*[2] += 2000\n"
+    "    return 2\n"
+    "}\n"
+    "\n"
+    "fn twice(m: *[2][2]i32) -> int {\n"
+    "    m.*[0][1] += 50\n"
+    "    return 1\n"
+    "}\n"
+    "\n"
+    "fn first(s: P, z: i32) -> i32 {\n"
+    "    return s.x + z\n"
+    "}\n"
+    "\n"
+    "fn total(s: []i32, z: i32) -> int {\n"
+    "    return int(s[0]) + int(z)\n"
+    "}\n"
+    "\n"
+    "fn kept(s: P, b: int) -> int {\n"
+    "    l := L.{ s, P.{ i32(b & 0xFF), 0 } }\n"
+    "    return int(l.p.x) * 1000 + int(l.q.x)\n"
+    "}\n"
+    "\n"
+    "fn arrays(a: int, b: int) -> int {\n"
+    "    r := i32.[i32(a & 0xFF), i32(b & 0xFF), 3]\n"
+    "    m := [3]i32.[r, .[0, 0, grow(&r)]]\n"
+    "    return int(m[0][0]) * 1000000 + int(m[0][2]) * 100000 + int(r[0]) * 10 + int(m[1][2])\n"
+    "}\n"
+    "\n"
+    "fn structs(a: int, b: int) -> int {\n"
+    "    p := P.{ i32(a & 0xFF), 3 }\n"
+    "    xs := P.[p, .{ bump(&p), 0 }]\n"
+    "    return int(xs[0].x) * 10000 + int(p.x) * 10 + int(xs[1].x)\n"
+    "}\n"
+    "\n"
+    "fn fields(a: int, b: int) -> int {\n"
+    "    p := P.{ i32(a & 0xFF), i32(b & 0xFF) }\n"
+    "    l := L.{ p, P.{ bump(&p), 0 } }\n"
+    "    return int(l.p.x) * 10000 + int(p.x) * 10 + int(l.q.x)\n"
+    "}\n"
+    "\n"
+    "fn named(a: int, b: int) -> int {\n"
+    "    p := P.{ i32(a & 0xFF), 7 }\n"
+    "    z := Z.{ .p = p, .n = int(bump(&p)) }\n"
+    "    return int(z.p.x) * 1000 + z.n * 100 + z.m + int(p.x) * 100000\n"
+    "}\n"
+    "\n"
+    "fn zeroed(a: int, b: int) -> int {\n"
+    "    r := i32.[i32(a & 0xFF), 1, 2]\n"
+    "    w := WZ.{ .a = r, .n = int(grow(&r)) }\n"
+    "    return int(w.a[0]) * 100000 + int(r[0]) * 10 + w.n + w.m\n"
+    "}\n"
+    "\n"
+    "fn branch(a: int, b: int) -> int {\n"
+    "    p := P.{ i32(a & 0xFF), 0 }\n"
+    "    t := PB.{ p, b > 3 and bump(&p) > 0 }\n"
+    "    k := 0\n"
+    "    if t.ok {\n"
+    "        k = 1\n"
+    "    }\n"
+    "    return int(t.p.x) * 1000 + int(p.x) * 10 + k\n"
+    "}\n"
+    "\n"
+    "fn either(a: int, b: int) -> int {\n"
+    "    p := P.{ i32(a & 0xFF), 0 }\n"
+    "    t := PB.{ p, b > 5 or bump(&p) > 0 }\n"
+    "    u := PB.{ p, b > 2 and a > 1 }\n"
+    "    k := 0\n"
+    "    if t.ok and !u.ok {\n"
+    "        k = 1\n"
+    "    }\n"
+    "    return int(t.p.x) * 1000000 + int(u.p.x) * 1000 + int(p.x) * 2 + k\n"
+    "}\n"
+    "\n"
+    "fn block(a: int, b: int) -> int {\n"
+    "    p := P.{ i32(a & 0xFF), 0 }\n"
+    "    l := L.{ p, P.{ v: { p.x = 9; break v i32(b & 0xFF) }, 0 } }\n"
+    "    return int(l.p.x) * 100000 + int(p.x) * 1000 + int(l.q.x)\n"
+    "}\n"
+    "\n"
+    "fn chosen(a: int, b: int) -> int {\n"
+    "    p := P.{ i32(a & 0xFF), 0 }\n"
+    "    l := L.{ p, P.{ switch b & 3 { 0 => bump(&p), 1 => 5, _ => 6 }, 0 } }\n"
+    "    return int(l.p.x) * 100000 + int(p.x) * 100 + int(l.q.x)\n"
+    "}\n"
+    "\n"
+    "fn pass(a: int, b: int) -> int {\n"
+    "    p := P.{ i32(a & 0xFF), i32(b & 0xFF) }\n"
+    "    q := &p\n"
+    "    l := L.{ q.*, P.{ first(q.*, bump(q)), 0 } }\n"
+    "    return int(l.p.x) * 1000000 + int(l.q.x) * 1000 + int(p.x)\n"
+    "}\n"
+    "\n"
+    "fn base(a: int, b: int) -> int {\n"
+    "    r := i32.[i32(a & 0xFF), 0, 0]\n"
+    "    l := P.{ r[grow(&r)], r[0] }\n"
+    "    return int(l.x) * 100000 + int(l.y)\n"
+    "}\n"
+    "\n"
+    "fn rows(a: int, b: int) -> int {\n"
+    "    m := [2]i32.[.[i32(a & 0xFF), 0], .[0, 0]]\n"
+    "    v := P.{ m[0][twice(&m)], m[0][0] }\n"
+    "    return int(v.x) * 100000 + int(v.y)\n"
+    "}\n"
+    "\n"
+    "fn slices(a: int, b: int) -> int {\n"
+    "    r := i32.[i32(a & 0xFF), 0, 0]\n"
+    "    return total(r, grow(&r))\n"
+    "}\n"
+    "\n"
+    "fn elems(a: int, b: int) -> int {\n"
+    "    xs: [3]P\n"
+    "    xs[1] = P.{ i32(a & 0xFF), 0 }\n"
+    "    l := L.{ xs[1], P.{ bump(&xs[1]), 0 } }\n"
+    "    return int(l.p.x) * 10000 + int(xs[1].x)\n"
+    "}\n"
+    "\n"
+    "fn inner(a: int, b: int) -> int {\n"
+    "    q := Q.{ P.{ i32(a & 0xFF), 0 }, b }\n"
+    "    l := L.{ q.p, P.{ bump(&q.p), 0 } }\n"
+    "    return int(l.p.x) * 10000 + int(q.p.x)\n"
+    "}\n"
+    "\n"
+    "fn loops(a: int, b: int) -> int {\n"
+    "    xs := P.[.{ i32(a & 0xFF), 0 }, .{ 1, 2 }]\n"
+    "    sum := 0\n"
+    "    for v in xs {\n"
+    "        l := L.{ v, P.{ bump(&xs[0]), 0 } }\n"
+    "        sum = sum * 1000 + int(l.p.x)\n"
+    "    }\n"
+    "    return sum + int(xs[0].x) * 1000000\n"
+    "}\n"
+    "\n"
+    "fn params(a: int, b: int) -> int {\n"
+    "    return kept(P.{ i32(a & 0xFF), 0 }, b)\n"
+    "}\n"
+    "\n"
+    "fn under(a: int, b: int) -> int {\n"
+    "    m := [2]i32.[.[1, 2], .[3, 4]]\n"
+    "    k := [2]i32.[.[0, 1], .[0, 0]]\n"
+    "    p := P.{ i32(a & 0xFF), 0 }\n"
+    "    y := Y.{ .n = m[0][k[0][twice(&k)] & 1], .p = p, .m = int(bump(&p)) }\n"
+    "    return int(y.p.x) * 10000 + int(p.x) * 10 + int(y.n)\n"
+    "}\n";
+
+static const char *const LEFT_TO_RIGHT_FUNCTIONS[] = {
+    "arrays", "structs", "fields", "named", "zeroed", "branch", "either", "block", "chosen",
+    "pass",   "base",    "rows",   "slices", "elems", "inner",  "loops",  "params", "under",
+};
+
+static int64_t
+left_to_right_want(const char *name, int64_t a, int64_t b)
+{
+    int64_t x = a & 0xFF;
+    int64_t y = b & 0xFF;
+    if (strcmp(name, "arrays") == 0) {
+        return x * 1000000 + 3 * 100000 + (x + 1000) * 10 + 2;
+    }
+    if (strcmp(name, "structs") == 0) {
+        return x * 10000 + (x + 100) * 10 + 1;
+    }
+    if (strcmp(name, "fields") == 0) {
+        return x * 10000 + (x + 100) * 10 + 1;
+    }
+    if (strcmp(name, "named") == 0) {
+        return x * 1000 + 100 + (x + 100) * 100000;
+    }
+    if (strcmp(name, "zeroed") == 0) {
+        return x * 100000 + (x + 1000) * 10 + 2;
+    }
+    if (strcmp(name, "branch") == 0) {
+        return x * 1000 + (x + (b > 3 ? 100 : 0)) * 10 + (b > 3);
+    }
+    if (strcmp(name, "either") == 0) {
+        int64_t px = x + (b > 5 ? 0 : 100);
+        return x * 1000000 + px * 1000 + px * 2 + !(b > 2 && a > 1);
+    }
+    if (strcmp(name, "block") == 0) {
+        return x * 100000 + 9 * 1000 + y;
+    }
+    if (strcmp(name, "chosen") == 0) {
+        int64_t k = b & 3;
+        return x * 100000 + (x + (k == 0 ? 100 : 0)) * 100 + (k == 0 ? 1 : k == 1 ? 5 : 6);
+    }
+    if (strcmp(name, "pass") == 0) {
+        return x * 1000000 + (x + 1) * 1000 + x + 100;
+    }
+    if (strcmp(name, "base") == 0) {
+        return 2000 * 100000 + x + 1000;
+    }
+    if (strcmp(name, "rows") == 0) {
+        return 50 * 100000 + x;
+    }
+    if (strcmp(name, "slices") == 0) {
+        return x + 1002;
+    }
+    if (strcmp(name, "elems") == 0 || strcmp(name, "inner") == 0) {
+        return x * 10000 + x + 100;
+    }
+    if (strcmp(name, "loops") == 0) {
+        return x * 1000 + 1 + (x + 200) * 1000000;
+    }
+    if (strcmp(name, "under") == 0) {
+        return x * 10000 + (x + 100) * 10 + 2;
+    }
+    return x * 1000 + y;
+}
+
+TEST_CASE(left_to_right)
+{
+    Program p;
+    REQUIRE(build(&p, LEFT_TO_RIGHT));
+    size_t count = sizeof LEFT_TO_RIGHT_FUNCTIONS / sizeof LEFT_TO_RIGHT_FUNCTIONS[0];
+    for (size_t f = 0; f < count; f++) {
+        for (int64_t a = -3; a < 300; a += 37) {
+            for (int64_t b = -3; b < 9; b++) {
+                const char *name = LEFT_TO_RIGHT_FUNCTIONS[f];
+                int64_t got = ((I2 *)fn(&p, name))(a, b);
+                int64_t want = left_to_right_want(name, a, b);
+                if (got != want) {
+                    fprintf(
+                        stderr,
+                        "arm64 test: %s(%lld, %lld) = %lld, want %lld\n",
+                        name,
+                        (long long)a,
+                        (long long)b,
+                        (long long)got,
+                        (long long)want
+                    );
+                    return false;
+                }
+            }
+        }
+    }
+    REQUIRE(agree_on_grid(&p, LEFT_TO_RIGHT_FUNCTIONS, count));
+    release_program(&p);
     return true;
 }
 
@@ -3054,6 +3308,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(slices);
     RUN_TEST_CASE(stored_slices);
     RUN_TEST_CASE(passed_structs);
+    RUN_TEST_CASE(left_to_right);
     RUN_TEST_CASE(constant_conditions);
     RUN_TEST_CASE(deep_logic);
     RUN_TEST_CASE(small_integers);

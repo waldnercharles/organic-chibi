@@ -1047,22 +1047,45 @@ read_slice(Checker *c, Operand o)
     return make_pair(c, type, first, second);
 }
 
+static NOINLINE void
+note_unread(Checker *c, Operand place)
+{
+    u32 n = c->nunread;
+    while (n > 0 && c->unread[n - 1].at >= c->sp) {
+        n--;
+    }
+    if (n == c->unread_cap) {
+        c->unread_cap = c->unread_cap ? c->unread_cap * 2 : 16;
+        c->unread = resize(c->unread, c->unread_cap, sizeof *c->unread);
+    }
+    c->unread[n] = (Unread){ c->sp, place, NO_SLOT, 0 };
+    c->nunread = n + 1;
+    c->unread_done = c->unread_done < n ? c->unread_done : n;
+}
+
 static NOINLINE Operand
-read_compound(Checker *c, u32 slot, u8 next)
+read_compound(Checker *c, u32 slot, u32 token, u8 next)
 {
     Operand o = { OPERAND_LOCAL, slot };
     u32 file = c->decls.files[c->body.decl];
-    bool now = is_slice(c, slot_at(c, slot)->type) && next != NODE_FIELD &&
-               binding_kind(c, file, slot) == NODE_NONE;
-    return now ? read_slice(c, o) : o;
+    if (next == NODE_FIELD || binding_kind(c, file, slot) != NODE_NONE) {
+        return o;
+    }
+    if (is_slice(c, slot_at(c, slot)->type)) {
+        return read_slice(c, o);
+    }
+    if (c->files[file].tokens.kinds[token + 1] != TK_LBRACK) {
+        note_unread(c, o);
+    }
+    return o;
 }
 
 static Operand
-read_local(Checker *c, u32 slot, u8 next)
+read_local(Checker *c, u32 slot, u32 token, u8 next)
 {
     u32 type = slot_at(c, slot)->type;
     if (is_compound(c, type)) {
-        return read_compound(c, slot, next);
+        return read_compound(c, slot, token, next);
     }
     if (type == TYPE_ID_NONE) {
         return poison;
@@ -2479,6 +2502,104 @@ condition(Checker *c, u32 file, u32 token, Operand cond)
     return operand_ir(c, cond);
 }
 
+static u32
+early_block(const Checker *c, u32 at, Operand place)
+{
+    u32 lo = 0;
+    u32 hi = c->nunread;
+    while (lo < hi) {
+        u32 mid = (lo + hi) / 2;
+        if (c->unread[mid].at < at) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    if (lo == c->nunread) {
+        return NO_SLOT;
+    }
+
+    Unread u = c->unread[lo];
+    bool same = u.at == at && u.place.type == place.type && u.place.ref == place.ref;
+    bool written = u.block != NO_SLOT && u.writes != c->body.calls + c->body.blocks;
+    return same && written ? u.block : NO_SLOT;
+}
+
+static void
+fill_block(Checker *c, u32 block, u32 slot, u8 kind, u32 b, u32 type, Operand from)
+{
+    IrCode *code = c->body.code;
+    u32 at = c->body.first + block;
+    weigh(c, slot);
+    code->kinds[at] = IR_ADDR;
+    code->types[at] = pointer_type(c, slot_at(c, slot)->type);
+    code->as[at] = slot;
+
+    u32 to = block;
+    if (kind != IR_NOP) {
+        code->kinds[at + 1] = kind;
+        code->types[at + 1] = pointer_type(c, type);
+        code->as[at + 1] = block;
+        code->bs[at + 1] = b;
+        to = block + 1;
+    }
+
+    u32 source = value_of(from);
+    if (from.type == OPERAND_LOCAL) {
+        weigh(c, from.ref);
+        code->kinds[at + 2] = IR_ADDR;
+        code->types[at + 2] = pointer_type(c, type);
+        code->as[at + 2] = from.ref;
+        source = block + 2;
+    }
+
+    code->kinds[at + 3] = IR_COPY;
+    code->types[at + 3] = type;
+    code->as[at + 3] = to;
+    code->bs[at + 3] = source;
+}
+
+static void
+drop_unread(Checker *c, u32 at)
+{
+    while (c->nunread > 0 && c->unread[c->nunread - 1].at >= at) {
+        c->nunread--;
+    }
+    c->unread_done = c->unread_done < c->nunread ? c->unread_done : c->nunread;
+}
+
+static bool
+may_change(Checker *c, Operand o)
+{
+    u32 slot = place_root(c, o);
+    if (slot == NO_SLOT) {
+        return true;
+    }
+    u32 file = c->decls.files[c->body.decl];
+    return slot_at(c, slot)->name != 0 && binding_kind(c, file, slot) == NODE_NONE;
+}
+
+static NOINLINE void
+reserve_copies(Checker *c, u32 below)
+{
+    drop_unread(c, c->sp);
+    u32 writes = c->body.calls + c->body.blocks;
+    u32 k = c->unread_done;
+    for (; k < c->nunread && c->unread[k].at < below; k++) {
+        Unread *u = &c->unread[k];
+        Operand o = c->stack[u->at];
+        if (o.type != u->place.type || o.ref != u->place.ref || !may_change(c, o)) {
+            continue;
+        }
+        u->block = emit(c, IR_NOP, 0, 0, 0);
+        emit(c, IR_NOP, 0, 0, 0);
+        emit(c, IR_NOP, 0, 0, 0);
+        emit(c, IR_NOP, 0, 0, 0);
+        u->writes = writes;
+    }
+    c->unread_done = k;
+}
+
 static NOINLINE Operand
 call_compound(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg, u32 nargs)
 {
@@ -2522,7 +2643,15 @@ call_compound(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg
             code->extra[w++] = p.first;
             code->extra[w++] = p.second;
         } else if (is_struct(c, type)) {
-            code->extra[w++] = emit(c, IR_LOAD_AT, type, place_address(c, v), 0);
+            u32 block = c->nunread && i < nargs ? early_block(c, first_arg + i, c->stack[first_arg + i])
+                                                : NO_SLOT;
+            if (block != NO_SLOT) {
+                u32 copy = add_slot(c, 0, type, node);
+                fill_block(c, block, copy, IR_NOP, 0, type, v);
+                v = (Operand){ OPERAND_LOCAL, copy };
+            }
+            u32 address = place_address(c, v);
+            code->extra[w++] = emit(c, IR_LOAD_AT, type, address, 0);
         } else {
             code->extra[w++] = operand_ir(c, v);
         }
@@ -2542,8 +2671,12 @@ call_compound(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg
         code->nextra = w;
     }
 
+    if (c->nunread != c->unread_done) {
+        reserve_copies(c, first_arg - 2);
+    }
     u32 i = emit(c, IR_CALL, ret, decl, relative);
     c->body.calls++;
+    drop_unread(c, first_arg - 2);
     if (is_slice(c, ret)) {
         return make_pair(c, ret, i, emit(c, IR_SECOND, TYPE_ID_I64, 0, 0));
     }
@@ -2603,6 +2736,9 @@ call_fn(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg, u32 
         return poison;
     }
 
+    if (c->nunread != c->unread_done) {
+        reserve_copies(c, first_arg - 2);
+    }
     u32 i = emit(c, IR_CALL, ret, decl, relative);
     c->body.calls++;
     return ret == TYPE_ID_VOID ? (Operand){ TYPE_ID_VOID, 0 }
@@ -2905,10 +3041,18 @@ deref(Checker *c, u32 file, u32 token, Operand p, bool place)
         report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
         return poison;
     }
-    if (place || is_aggregate(c, type)) {
-        return (Operand){ OPERAND_ADDRESS, p.ref };
+    Operand r = { OPERAND_ADDRESS, p.ref };
+    if (place) {
+        return r;
     }
-    return load_at(c, type, value_of(p));
+    if (!is_aggregate(c, type)) {
+        return load_at(c, type, value_of(p));
+    }
+    u8 after = c->files[file].tokens.kinds[token + 1];
+    if (after != TK_LBRACK && after != TK_PERIOD) {
+        note_unread(c, r);
+    }
+    return r;
 }
 
 static u64
@@ -2939,7 +3083,7 @@ slice_pair(Checker *c, Operand o)
 }
 
 static NOINLINE Operand
-index_place(Checker *c, u32 file, u32 token, Operand base, Operand index, u32 index_token, bool place)
+index_place(Checker *c, u32 file, u32 token, Operand base, Operand index, u32 index_token, u8 next)
 {
     if (base.type == TYPE_ID_NONE || index.type == TYPE_ID_NONE) {
         return poison;
@@ -2985,10 +3129,17 @@ index_place(Checker *c, u32 file, u32 token, Operand base, Operand index, u32 in
         u32 words[2] = { p.second, at };
         address = emit_extra(c, IR_INDEX_LEN, pointer, p.first, words, 2);
     }
-    if (place || is_aggregate(c, elem)) {
-        return (Operand){ OPERAND_ADDRESS, REF_VALUE | address };
+    Operand r = { OPERAND_ADDRESS, REF_VALUE | address };
+    if (next == NODE_VALUE || next == NODE_ADDR) {
+        return r;
     }
-    return load_at(c, elem, address);
+    if (!is_aggregate(c, elem)) {
+        return load_at(c, elem, address);
+    }
+    if (next != NODE_FIELD) {
+        note_unread(c, r);
+    }
+    return r;
 }
 
 static u32
@@ -3179,10 +3330,18 @@ struct_field(Checker *c, u32 file, u32 token, Operand o, bool place)
         place_address(c, o),
         field_layout(c, decl, member)
     );
-    if (place || is_aggregate(c, field)) {
-        return (Operand){ OPERAND_ADDRESS, REF_VALUE | address };
+    Operand r = { OPERAND_ADDRESS, REF_VALUE | address };
+    if (place) {
+        return r;
     }
-    return load_at(c, field, address);
+    if (!is_aggregate(c, field)) {
+        return load_at(c, field, address);
+    }
+    u8 after = c->files[file].tokens.kinds[token + 1];
+    if (after != TK_LBRACK && after != TK_PERIOD) {
+        note_unread(c, r);
+    }
+    return r;
 }
 
 static NOINLINE Operand
@@ -3265,11 +3424,19 @@ array_literal(Checker *c, u32 file, u32 node, u8 kind)
         }
 
         u32 index = ir_const(c, TYPE_ID_I64, k);
+        u32 block = c->nunread && is_place(x) && is_aggregate(c, elem)
+                      ? early_block(c, m + 1 + k, x)
+                      : NO_SLOT;
+        if (block != NO_SLOT) {
+            fill_block(c, block, array.ref, IR_INDEX, index, elem, x);
+            continue;
+        }
         u32 address = emit(c, IR_INDEX, pointer_type(c, elem), place_address(c, array), index);
         store_at(c, elem, address, x);
     }
 
     c->sp = base;
+    drop_unread(c, base);
     push_operand(c, token, ok ? array : poison);
 }
 
@@ -3431,6 +3598,12 @@ named_item(Checker *c, u32 file)
     u32 kind = c->stack[m].type - OPERAND_MARKER;
     if ((kind == NODE_LITERAL_START || kind == NODE_ANON_LITERAL_START) &&
         !array_marker(c, m)) {
+        Unread u = c->nunread > 0 ? c->unread[c->nunread - 1] : (Unread){ 0 };
+        drop_unread(c, c->sp);
+        if (u.at == c->sp + 1 && u.place.type == v.type && u.place.ref == v.ref) {
+            u.at = c->sp;
+            c->unread[c->nunread++] = u;
+        }
         push_operand(c, token, v);
         return;
     }
@@ -3504,6 +3677,7 @@ struct_literal(Checker *c, u32 file, u32 node, u8 kind)
     }
 
     u32 slot = ok ? add_slot(c, 0, type, node) : 0;
+    bool zeroed = false;
     if (ok && items < count) {
         for (u32 i = first; i < first + count; i++) {
             Member mem = c->members[i];
@@ -3519,6 +3693,7 @@ struct_literal(Checker *c, u32 file, u32 node, u8 kind)
             if (c->decls.flags[decl] & DECL_DEFAULTS) {
                 fill_defaults(c, node, slot, false, type);
             }
+            zeroed = true;
         }
     }
 
@@ -3540,6 +3715,17 @@ struct_literal(Checker *c, u32 file, u32 node, u8 kind)
             ok = false;
             continue;
         }
+        u32 block = c->nunread && is_place(v) && is_aggregate(c, field) ? early_block(c, k, v)
+                                                                       : NO_SLOT;
+        if (block != NO_SLOT && !zeroed) {
+            fill_block(c, block, slot, IR_FIELD, field_layout(c, decl, member), field, v);
+            continue;
+        }
+        if (block != NO_SLOT) {
+            u32 copy = add_slot(c, 0, field, node);
+            fill_block(c, block, copy, IR_NOP, 0, field, v);
+            v = (Operand){ OPERAND_LOCAL, copy };
+        }
         u32 at = emit(
             c,
             IR_FIELD,
@@ -3551,6 +3737,7 @@ struct_literal(Checker *c, u32 file, u32 node, u8 kind)
     }
 
     c->sp = base;
+    drop_unread(c, base);
     push_operand(c, token, ok ? (Operand){ OPERAND_LOCAL, slot } : poison);
 }
 
@@ -4581,12 +4768,23 @@ body_marker(Checker *c, u32 file, u32 node, u8 kind, u32 token)
             push_loop(c, (Loop){ loop, loop, NO_SLOT, .label = pending_label(c, c->sp) });
             break;
         }
-        case NODE_LABEL_START:
         case NODE_VALUE_LABEL_START:
+            if (c->nunread != c->unread_done) {
+                reserve_copies(c, c->sp);
+            }
+            c->body.blocks++;
             push(c, token, OPERAND_MARKER + kind, c->files[file].tokens.ids[token]);
             return;
-        case NODE_SWITCH_START:
+        case NODE_LABEL_START:
+            push(c, token, OPERAND_MARKER + kind, c->files[file].tokens.ids[token]);
+            return;
         case NODE_VALUE_SWITCH_START:
+            if (c->nunread != c->unread_done) {
+                reserve_copies(c, c->sp);
+            }
+            begin_switch(c, file, node, kind, token);
+            return;
+        case NODE_SWITCH_START:
             begin_switch(c, file, node, kind, token);
             return;
         case NODE_CASE_START:
@@ -4617,7 +4815,12 @@ body_marker(Checker *c, u32 file, u32 node, u8 kind, u32 token)
             return;
         }
         case NODE_AND_LEFT:
-        case NODE_OR_LEFT: logical_left(c, file, token, kind); return;
+        case NODE_OR_LEFT:
+            if (c->nunread != c->unread_done) {
+                reserve_copies(c, c->sp);
+            }
+            logical_left(c, file, token, kind);
+            return;
         default: break;
     }
     push(c, token, OPERAND_MARKER + kind, c->nscratch);
@@ -4676,7 +4879,7 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                         if (kinds[i + 1] == NODE_VALUE || kinds[i + 1] == NODE_ADDR) {
                             push(c, token, OPERAND_LOCAL, slot);
                         } else {
-                            push_operand(c, token, read_local(c, slot, kinds[i + 1]));
+                            push_operand(c, token, read_local(c, slot, token, kinds[i + 1]));
                         }
                         break;
                     }
@@ -4711,11 +4914,10 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                     Operand index = pop(c);
                     u32 base_token = c->stack_tokens[c->sp - 1];
                     Operand base = pop(c);
-                    bool place = kinds[i + 1] == NODE_VALUE || kinds[i + 1] == NODE_ADDR;
                     push_operand(
                         c,
                         base_token,
-                        index_place(c, file, base_token, base, index, index_token, place)
+                        index_place(c, file, base_token, base, index, index_token, kinds[i + 1])
                     );
                 } else {
                     unsupported(c, file, i);
@@ -5279,6 +5481,14 @@ check_body(Checker *c, u32 decl)
     };
     u32 scope = c->nscope;
     u32 pairs = c->npairs;
+    u32 unread = 0;
+    u32 unread_done = 0;
+    if (c->nunread > 0) {
+        drop_unread(c, c->sp);
+        unread = c->nunread;
+        unread_done = c->unread_done;
+        c->unread_done = unread;
+    }
 
     const u32 *tokens = c->files[file].nodes.tokens;
     if (!is_passed(c, c->body.ret)) {
@@ -5336,6 +5546,8 @@ check_body(Checker *c, u32 decl)
     c->nloops = c->body.loops;
     c->nbreaks = c->body.breaks;
     c->npairs = pairs;
+    c->nunread = unread;
+    c->unread_done = unread_done;
     d->funcs[decl] = finish_ir(c, decl, param_slots);
     c->body = outer;
     c->nbodies--;
@@ -6119,6 +6331,7 @@ check_free(Checker *c)
     free(c->diags);
     free(c->stack);
     free(c->stack_tokens);
+    free(c->unread);
     free(c->pairs);
     free(c->claims);
 }

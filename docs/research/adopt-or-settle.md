@@ -238,6 +238,8 @@ C3's post explains its reversal. Unsigned counters break countdown loops, and mi
 
 **Cost of deciding late.** The change would be silent, because a later change to evaluation order, aliasing or contraction alters results without an error, sometimes by one bit.
 
+**Decided in part 2026-11-19** (option A): an array or struct in a literal, and a struct argument, is read where it is written, left to right, as a slice already was; checker step 3d.7 builds it. The rest of the recommendation below is still open. See [../decisions.md](../decisions.md).
+
 **Recommendation.**
 - **Order.** Every operand and argument is evaluated left to right. An assignment evaluates its target's subexpressions before the value. The C backend writes calls with side effects into temporaries in that order, which costs nothing after optimization (my analysis).
 - **Aliasing.** chibi has no type-based aliasing rule, and reinterpreting bytes goes through an explicit bit cast (casts sheet). The C backend compiles with `-fno-strict-aliasing`, or emits `memcpy` for each reinterpretation.

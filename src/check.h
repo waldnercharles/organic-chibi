@@ -235,6 +235,14 @@ typedef struct
 
 typedef struct
 {
+    u32 at;
+    Operand place;
+    u32 block;
+    u32 writes;
+} Unread;
+
+typedef struct
+{
     u32 loop;
     u32 next;
     u32 slot;
@@ -299,6 +307,7 @@ typedef struct
     u32 breaks;
     u32 depth;
     u32 calls;
+    u32 blocks;
     bool reachable;
     bool returns_value;
 } Body;
@@ -363,6 +372,10 @@ typedef struct
     u32 *stack_tokens;
     u32 sp;
     u32 stack_cap;
+    Unread *unread;
+    u32 nunread;
+    u32 unread_cap;
+    u32 unread_done;
     Pair *pairs;
     u32 npairs;
     u32 pairs_cap;
