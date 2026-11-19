@@ -1,0 +1,9 @@
+Example :: library {
+    Run :: () {
+        score := 0
+        speed := 120.0
+        title := "My Game"
+        // a comment
+        lives: int = 3
+    }
+}

@@ -1,0 +1,2 @@
+load 0x10051c000
+parse   nfiles 64 bytes 340302  1.624 cyc/B  7.213 ins/B  IPC 4.44  9.15 cyc/tok  40.65 ins/tok

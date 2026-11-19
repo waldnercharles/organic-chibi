@@ -1,0 +1,2 @@
+load 0x104418000
+lex       1446 MB/s  2.711 cyc/B  12.109 ins/B  IPC 4.47  113.3 cyc/line  15.23 cyc/tok  17.55 cyc/node  3.92 GHz

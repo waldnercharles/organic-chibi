@@ -1,0 +1,2 @@
+load 0x1009ac000
+parse     1185 MB/s  3.322 cyc/B  7.262 ins/B  IPC 2.19  138.8 cyc/line  18.67 cyc/tok  21.51 cyc/node  3.94 GHz

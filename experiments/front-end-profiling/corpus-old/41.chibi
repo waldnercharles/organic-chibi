@@ -1,0 +1,5 @@
+Beat :: library {
+    Pulse :: () {
+        return scene_rhythm().Pulse
+    }
+}
