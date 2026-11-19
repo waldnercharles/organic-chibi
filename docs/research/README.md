@@ -18,6 +18,7 @@ Written 2026-11-09 from primary sources: official docs, the projects' own code a
 | [shader-languages.md](shader-languages.md) | Compiling chibi for the GPU: what shader languages have, what GPUs forbid, the changes to adopt-or-settle ranks 1–3, types narrower than 32 bits, and emitting SPIR-V for SDL3 and Cute Framework. Updated 2026-11-19 to match the decisions made since |
 | [shader-backends.md](shader-backends.md) | How 16 compilers and engine pipelines produce GPU code, their published speeds, what the IR must keep for GPU writers, and whether shader-languages.md section 6 holds |
 | [checker-and-ir.md](checker-and-ir.md) | The checker and IR design sheet: what the checker reads, names, checking on many threads, constants and literals, the typed IR, and guaranteed tail calls and computed `goto` for fast interpreters, with measurements on the owner's M4 Pro |
+| [top-level-code.md](top-level-code.md) | The details that the 2026-11-12 decision on top-level code left open: which file is the entry, top-level code beside a `fn main`, `name := value` among the entry file's code, `return`, `defer` and `try` there, and library globals that run code at startup |
 
 ## The shape the four notes agree on
 
@@ -57,54 +58,74 @@ The points below are hypotheses until they are measured on chibi-v2. Testable ve
 - **Parallelism is the lever.** v2's lexer scaled 10.8x on 14 threads (1,356 to 14,673 MB/s, measured). If every phase scales like that, each core needs only about 93k lines/s, about 42,000 cycles per line at the 3.9 GHz the lexer benchmark implies. Single-threaded, the budget is about 3,900 cycles per line.
 - **The risk is serial phases.** Zig's semantic analysis and Go's type checking are serial, and so is linking unless it is designed otherwise.
 
-## Decisions, merged from the four notes and ordered by what they block
-
-The owner's answers so far are in [../decisions.md](../decisions.md).
-
-1. **The metric.**
-   - Does it count unique physical lines?
-   - Is it a cold or a warm build?
-   - Does it include linking or reaching runnable code?
-   - On which machine?
-2. **Memory.**
-   - May long-lived data (pools, globals, coroutine frames) refer to other data only through handles or offsets? That choice decides between design A and design C.
-   - Must use-after-free be impossible in release builds, or only detected in debug builds?
-   - Will C code (Cute Framework, SDL3) hold pointers into memory the language owns?
-3. **Tasks.**
-   - Stackless or stackful? Only stackless frames can be migrated, and only they work on wasm.
-   - Do tasks run in parallel on job threads, or cooperatively on one thread?
-   - When a suspended task's code changes, does it migrate, finish in the old code, or restart?
-4. **Compile-time reach.**
-   - Pure computation only, or also I/O and C calls?
-   - May it generate declarations, and into other packages?
-   - Is the build itself a program in the language?
-5. **Generics.** Is each instance checked separately (Zig, Jai, Odin), or are constraints checked once at the definition (Carbon)?
-6. **Reflection in shipped builds.** Full, IDs only, or off?
-7. **Hot reload.**
-   - Which edits must patch live: function bodies, new functions, layout changes, or coroutine bodies with live frames?
-   - What is the policy for layout changes: match fields by name, zero new fields, and run a user hook?
-   - On which platforms must it work?
-8. **Packages.**
-   - Is a package exactly one directory?
-   - Are import cycles between packages forbidden?
-   - Is unused code checked, or only what the roots reach?
-   - Is the default visibility private, with `pub` to export?
-   - Is the standard library compiled from source on every build, or loaded from a cache?
-9. **Targets.** Is WebAssembly a target? Must the game run on platforms that forbid writable code?
-
 ## Next step
 
-Updated 2026-11-11. The lexer and parser exist. Between them and an interpreter, nothing exists yet: name scopes, the checker and the typed IR. No open syntax question blocks a core subset (integers, floats, structs, arrays, pointers, functions, control flow, errors, optionals, unions).
-1. **The checker and IR design sheet**, [checker-and-ir.md](checker-and-ir.md), written 2026-11-12, which the owner reads before any checker code. The research thread wrote it, and then writes the checker in new files (see the Process rows of [../decisions.md](../decisions.md)). Its section 9 lists the questions to answer first.
-2. **Inputs to the IR**, because the owner wants speed features considered early: guaranteed tail calls and computed `goto`, for fast interpreters. Section 6 of the sheet covers both, with H9's interpreter measured under four dispatch styles.
-3. **Then:** the checker on the core subset, the typed IR, and bytecode lowered from it for the interpreter (H9 tested that design on small loops).
+Updated 2026-11-18. Built so far:
+- the lexer and parser;
+- checker steps 1 and 2: declarations, function bodies, exact constants and the typed IR;
+- step 2b, a one-pass arm64 backend that writes into executable memory and calls through a table of function addresses;
+- step 3a, labels and value blocks, and step 3b, enums and `switch`.
 
-The 2026-11-09 plan, kept for reference: read items 1–8 of the reading list in [fast-compilers.md](fast-compilers.md#9-code-to-read-first), the whole of tcc's design ending in `arm64-gen.c`, then build a spike:
+[checker-and-ir.md](checker-and-ir.md) section 8 has the details and the measurements.
+
+The goal now is self-hosting: translate the compiler into chibi, then use the compiler as the benchmark that chibi improves against (the Compiler rows of 2026-11-16 and 2026-11-17). The order:
+1. **Step 3d:** pointers, structs, arrays, slices and literals. Before it is built, options A and C of question 14 are prototyped on a slice loop and timed. The arm64 backend's tests and timings run only on arm64, so they run on the owner's M4 Pro. A cloud session's container is x86-64, and there the IR can only be checked against the reference interpreter.
+2. Global variables and constant tables.
+3. Calling C and being called from C.
+4. SIMD types, and the bit-scan and overflow builtins.
+5. The C backend, the C-to-chibi translator and the bootstrap check.
+6. Then steps 3c, 3e, 3f, 4 and 5.
+
+The 2026-11-09 plan, kept for reference; step 2b built its spike: read items 1–8 of the reading list in [fast-compilers.md](fast-compilers.md#9-code-to-read-first), the whole of tcc's design ending in `arm64-gen.c`, then build a spike:
 - a per-function IR for integers, branches and calls;
 - a one-pass arm64 emitter writing into `MAP_JIT` memory;
 - calls through a slot table.
 
 Measure cycles per IR instruction, and swap one slot while the program runs. That one spike tests the backend budget and the hot reload design together.
+
+## Open decisions, ordered by what they block
+
+Updated 2026-11-18. The owner's answers are in [../decisions.md](../decisions.md). This list holds what is still open, in the order of the next step above. Points that a decision row marks "proposed, not yet decided" are open too, and are not repeated here. The compiler's own C (`src/`) shows what the translator meets first: it uses `++`, `--`, `?:` and character literals throughout, calls C's `printf` family and `qsort`, uses `vector_size` types, the bit-scan and overflow builtins, and the `noinline`, `always_inline` and `noreturn` attributes, and has no bitfields and no `goto`.
+
+1. **Step 3d.** Questions 12–14 of [checker-and-ir.md](checker-and-ir.md) section 9 are decided. How a call passes a struct is not: the 2026-11-15 row on structs in the IR leaves it to the calling convention (rank 7, [adopt-or-settle.md](adopt-or-settle.md) 2.7), and rank 8 (2.8) decides when a large parameter is copied and when it travels by pointer. Read-only parameters are decided.
+2. **Globals and constant tables.**
+   - Initialization, the rest of rank 6 (2.6): memory zeroed by default, field defaults, and globals built at compile time. `undefined` is decided.
+   - Whether a library's global may run code at startup, as in `score := load_score()` ([top-level-code.md](top-level-code.md) 5).
+3. **Calling C, and being called from C.**
+   - The calling convention (rank 7): whether every function uses the platform's C convention, and whether the implicit context lives in a thread-local, as recommended.
+   - C imports: where defines, include paths and libraries are given, and `extern fn` for C declarations without bodies ([syntax-options-effects.md](syntax-options-effects.md) 10a).
+   - `export fn`: C names, slices in exported signatures, and `export` on globals (10b).
+   - Variadic functions: `..` for C's variadic tail, which calls to `printf` need, and `xs: ..T` for chibi functions (4e).
+   - Function values, which callbacks such as `qsort`'s need (rank 13, 2.13).
+4. **SIMD types and builtins.**
+   - Vector math beyond the matrix row: element-wise operators and swizzles (rank 14, 2.14).
+   - How builtins are named. Sheets 3 and 8 recommend plain predeclared names for type queries, such as `size_of` and `type_of` ([syntax-options-data.md](syntax-options-data.md) 3), and no sheet covers the bit-scan and overflow builtins yet.
+   - The attribute design (adopt-or-settle 3.8), of which only `@tail` is decided. The compiler's C needs `noinline`, `always_inline` and `noreturn`.
+5. **The C backend.** Rank 3 (2.3), one contract for every backend: left-to-right evaluation, no FMA contraction, and `==` on structs comparing fields, as recommended. No strict aliasing is decided (the Casts row). [shader-languages.md](shader-languages.md) proposes narrowing the contract to the CPU backends.
+6. **The C-to-chibi translator.**
+   - `++` and `--` (sheet 4a), a conditional expression (4b) and character literals (4c).
+   - Strings and read-only data (rank 10, 2.10), which the `const` row also leaves open.
+7. **After self-hosting.**
+   - **Generics** (sheet 6 in [syntax-options-abstraction.md](syntax-options-abstraction.md)): the syntax, how generics meet overloading, and whether each instance is checked separately (Zig, Jai, Odin) or constraints are checked once at the definition (Carbon).
+   - **Compile-time code** (sheet 7): the syntax, whether generated names must be written in source before checking ([comptime-generics-reflection.md](comptime-generics-reflection.md) 7.2), and whether code may generate declarations in other packages. It may call C, and chibi is its own build system (decided 2026-11-09).
+   - **Reflection** (sheet 8): the syntax, and whether shipped builds keep full reflection, IDs only, or none.
+   - **Tasks** (sheet 9 in [syntax-options-effects.md](syntax-options-effects.md)), which are required: the syntax; stackless or stackful (only stackless frames can be migrated, and only they work on wasm); parallel on job threads or cooperative on one thread; and whether a suspended task whose code changes migrates, finishes in the old code or restarts.
+   - **Memory** ([memory-models.md](memory-models.md)): whether long-lived data (pools, globals, coroutine frames) may refer to other data only through handles or offsets, which decides between design A and design C; whether use-after-free must be impossible in release builds or only detected in debug builds; and whether C code such as Cute Framework and SDL3 will hold pointers into memory the language owns.
+   - **Hot reload:** which edits patch live (function bodies, new functions, layout changes, coroutine bodies with live frames), the policy for layout changes (match fields by name, zero new fields, run a user hook), and on which platforms it must work.
+   - **Packages:** whether import cycles are forbidden, whether unused code is checked or only what the roots reach, and whether the standard library is compiled from source on every build or loaded from a cache. A package is one directory, and its names are private unless marked `pub` (the Modules row of the syntax table).
+   - **Targets:** whether WebAssembly is a target, and whether the game must run on platforms that forbid writable code.
+   - **The metric:** whether it counts unique physical lines, whether the build is cold or warm, whether it includes linking or reaching runnable code, and on which machine.
+   - Bitfields (sheet 4f), which the compiler's C doesn't use.
+   - Tail-call rules and computed `goto` (checker-and-ir.md section 9, questions 8 and 9), the rest of rank 9 (no failed check becomes an assumption of the optimizer), rank 12 (multiple returns and tuples), and open enums (rank 15).
+   - Top-level code in the entry file ([top-level-code.md](top-level-code.md) 1–4).
+   - The GPU recommendations that [shader-languages.md](shader-languages.md) section 1.1 marks open.
+
+Built by the research thread and open to the owner's review, as their rows in decisions.md say:
+- the development backend's register allocation by use count (Compiler, 2026-11-15);
+- the `nop` reserved before a value that may widen (Compiler, 2026-11-15);
+- the IR `switch` layout, and `Color(n)` as a `narrow` (Compiler, 2026-11-16);
+- the arm64 jump-table thresholds (Compiler, 2026-11-16);
+- three points of step 3b: an enum used without a value needs a member whose value is 0, a range label needs an integer switch, and `continue sw value` is an error until question 9 is decided (Language, 2026-11-16).
 
 ## Syntax option sheets: how they fit together (2026-11-10)
 
