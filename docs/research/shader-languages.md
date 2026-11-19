@@ -13,20 +13,23 @@ Research note, 2026-11-10. Question: what must chibi-v2 adopt so that it also co
 
 I read the WGSL, SPIR-V, Vulkan, GLSL, DXIL, D3D11, Microsoft Learn and Apple sources myself. Two research agents read the rest through the pinned links given where they are cited: Slang, CUDA, Rust-GPU, Zig, Mojo, Circle, ISPC, Odin and Jai, SDL's backend sources, SDL_shadercross, CF's documentation and sources, and the converters. Of their findings, I re-read SDL's format flags, binding table and std140 rule, its Metal compile call, cute_spirv's header, and the Slang, Rust-GPU and Circle passages quoted in section 3. Claims that nobody read directly are marked "(unverified)" and listed in section 8. Jai facts are "(community source)".
 
+**Updated 2026-11-18** to match [../decisions.md](../decisions.md) and [shader-backends.md](shader-backends.md). Each recommendation now says whether it is decided. Decided spellings replace the earlier ones: postfix `x!!`, `undefined`, the `.len` field, and no `uint`. Section 5.1 adds GPU fallbacks for the checks decided since: narrowing conversions, enum conversions and `switch`. Section 6 takes shader-backends.md section 6's corrections, and a DXIL writer moves from rejected to later. A new section 5.6 covers 8- and 16-bit integers, `bool`, enums, optionals and error unions, which decisions from 2026-11-11 to 2026-11-16 put into ordinary types. For this update I read WGSL, Vulkan's `features.adoc`, `spirvenv.adoc` and `VP_KHR_roadmap.json`, and SDL's `SDL_gpu.h` and `SDL_gpu_vulkan.c` at the commits above. SDL's default Vulkan device enables neither `robustBufferAccess` nor any 8-, 16- or 64-bit shader feature (5.1, 5.6).
+
 ## 1. Summary
 
 ### 1.1 Recommendations, ranked by the cost of deciding late
 
-1. **Rank 2 changes for GPU code.** `int` stays 64-bit on every CPU target, but GPU code can't use it. In GPU code an untyped integer defaults to `i32`, `len` returns `i32`, and `i64`, `u64` and `f64` need a target that has them. WGSL has no 64-bit integer type, Vulkan's `shaderInt64` is optional in every version and roadmap profile, and D3D12 reports 64-bit integer support as a capability bit (5.2).
-2. **Rank 3 narrows to the CPU backends.** The interpreter, the development backend and the C backend give one result. A GPU result is only within the target's documented error bounds, so lockstep and replay math stays on the CPU. WGSL may fuse, reassociate, round either way and flush subnormals; Vulkan assumes contraction unless an operation is marked `NoContraction`; HLSL is "fast" by default; Metal defaults to relaxed or fast math (5.3).
-3. **Ranks 1 and 9 get one GPU rule, because a GPU can't stop on a failed check.** Every GPU build takes a defined fallback. `+` wraps, `x / 0` is `x` and `x % 0` is 0 (WGSL's rule), a shift uses its count modulo the width, an out-of-bounds load gives zero, an out-of-bounds store is skipped, and `x!` on `nil` gives zero. Debug GPU builds also record the first failure in a buffer, and the CPU reports it as a trap after the frame (5.1).
-4. **Structs that reach a GPU buffer get a layout check.** [decisions.md](../decisions.md) says that with C layout a GPU buffer "needs no annotation". That holds only where C layout equals the GPU's layout. A `[3]f32` aligns to 4 bytes in C, a WGSL `vec3<f32>` to 16, and SDL requires std140 for uniform data. The compiler checks each such struct and names the padding to add (2.1).
-5. **A matrix's first index selects a column.** Then `[4, 4]f32` has the bytes of GLSL's `mat4` and WGSL's `mat4x4<f32>`, with no transpose. `==` on arrays returns one `bool`, as in GLSL, and ordering comparisons on arrays are functions (2.1).
-6. **GPU code is ordinary chibi, chosen by reachability.** A function is compiled for the GPU when a GPU entry point (`@vertex`, `@fragment`, `@compute(64)`) calls it, as in Circle and Slang. There are no CUDA-style `__host__ __device__` marks. `$if target.gpu` picks target-specific code, as Mojo's `comptime if` does. Each target gets its own instance of a function, checked separately, as generics already are (3).
-7. **The typed IR keeps structured control flow, and GPU code has no cycles in its call graph.** SPIR-V needs merge blocks, and WGSL, MSL and HLSL text are structured. Recursion, and function values not known at compile time, are errors in GPU code (4).
-8. **An entry point's signature states its binding kinds.** Parameters say `@uniform` or `@read_write`, so a signature never depends on its body. The compiler assigns SDL's set and binding numbers (2.3).
-9. **Emit SPIR-V first, straight from the typed IR, then add MSL and WGSL printers.** SDL's Vulkan backend takes SPIR-V, and SDL_shadercross can turn it into MSL, DXBC or DXIL meanwhile. CF's cute_spirv prints SPIR-V, GLSL ES, HLSL, MSL and WGSL from one checked syntax tree, in 13,667 lines of C with no dependencies (6).
-10. **Most shader features are a `gpu` package, not syntax.** The core language adds attributes for entry points, bindings, built-ins and interpolation, the GPU checks, and the vector rules. Textures, samplers, derivatives, `discard`, barriers, atomics and subgroup operations are intrinsic functions and opaque types (2.8).
+1. **Rank 2 changes for GPU code.** `int` stays 64-bit on every CPU target, but GPU code can't use it. In GPU code an untyped integer defaults to `i32`, `.len` is an `i32`, and `i64`, `u64` and `f64` need a target that has them. WGSL has no 64-bit integer type, Vulkan's `shaderInt64` is optional in every version and roadmap profile, and D3D12 reports 64-bit integer support as a capability bit (5.2). **Decided 2026-11-11.**
+2. **Rank 3 narrows to the CPU backends.** The interpreter, the development backend and the C backend give one result. A GPU result is only within the target's documented error bounds, so lockstep and replay math stays on the CPU. WGSL may fuse, reassociate, round either way and flush subnormals; Vulkan assumes contraction unless an operation is marked `NoContraction`; HLSL is "fast" by default; Metal defaults to relaxed or fast math (5.3). Open.
+3. **Ranks 1 and 9 get one GPU rule, because a GPU can't stop on a failed check.** Every GPU build takes a defined fallback. `+` wraps, `x / 0` is `x` and `x % 0` is 0 (WGSL's rule), a shift uses its count modulo the width, an out-of-bounds load gives zero, an out-of-bounds store is skipped, and `x!!` on `nil` gives zero. Debug GPU builds also record the first failure in a buffer, and the CPU reports it as a trap after the frame (5.1). Open: the rank 1 decision row says GPU results are not yet decided.
+4. **Structs that reach a GPU buffer get a layout check.** [decisions.md](../decisions.md) says that with C layout a GPU buffer "needs no annotation". That holds only where C layout equals the GPU's layout. A `[3]f32` aligns to 4 bytes in C, a WGSL `vec3<f32>` to 16, and SDL requires std140 for uniform data. The compiler checks each such struct and names the padding to add (2.1). **Decided 2026-11-10.**
+5. **A matrix's first index selects a column.** Then `[4, 4]f32` has the bytes of GLSL's `mat4` and WGSL's `mat4x4<f32>`, with no transpose. `==` on arrays returns one `bool`, as in GLSL, and ordering comparisons on arrays are functions (2.1). **Decided 2026-11-10,** except the ordering comparisons, which are still proposed.
+6. **GPU code is ordinary chibi, chosen by reachability.** A function is compiled for the GPU when a GPU entry point (`@vertex`, `@fragment`, `@compute(64)`) calls it, as in Circle and Slang. There are no CUDA-style `__host__ __device__` marks. `$if target.gpu` picks target-specific code, as Mojo's `comptime if` does. Each target gets its own instance of a function, checked separately, as generics already are (3). Open.
+7. **The typed IR keeps structured control flow, and GPU code has no cycles in its call graph.** SPIR-V needs merge blocks, and WGSL, MSL and HLSL text are structured. Recursion, and function values not known at compile time, are errors in GPU code (4). **The IR part is decided:** the GPU output row (2026-11-10) and the typed IR row (2026-11-12) keep `block`, `loop`, `if` and `end` inline, with join points marked. The GPU call-graph rules are open.
+8. **An entry point's signature states its binding kinds.** Parameters say `@uniform` or `@read_write`, so a signature never depends on its body. The compiler assigns SDL's set and binding numbers (2.3). Open, with the rest of the attribute design (decision row of 2026-11-12).
+9. **Emit SPIR-V first, from the typed IR, then add MSL and WGSL printers.** SDL's Vulkan backend takes SPIR-V, and SDL_shadercross can turn it into MSL, DXBC or DXIL meanwhile. CF's cute_spirv prints SPIR-V, GLSL ES, HLSL, MSL and WGSL from one checked syntax tree, in 13,667 lines of C with no dependencies (6). **Decided 2026-11-10,** after [shader-backends.md](shader-backends.md) found the same shape in Slang, Naga and Tint.
+10. **Most shader features are a `gpu` package, not syntax.** The core language adds attributes for entry points, bindings, built-ins and interpolation, the GPU checks, and the vector rules. Textures, samplers, derivatives, `discard`, barriers, atomics and subgroup operations are intrinsic functions and opaque types (2.8). Open.
+11. **Types narrower than 32 bits are computed in 32 bits on the GPU, and buffers check them.** `bool` is one byte, enums take the smallest type that fits, `?T` holds a `bool` and `E!T` a `u16` code, but WGSL has no 8- or 16-bit integers and can't put a `bool` in a buffer, and SDL's default Vulkan device enables no 8- or 16-bit feature. GPU writers wrap each narrow result to its width, read narrow buffer fields from their 32-bit word, and reject narrow writes to `@read_write` buffers and narrow stage inputs and outputs unless the target has the feature (5.6). Open.
 
 ### 1.2 Terms
 
@@ -88,6 +91,8 @@ SDL adds a rule for uniform data: "The data being pushed must respect std140 lay
 - **Comparisons.** `==` and `!=` on arrays return one `bool`, as in GLSL. `<`, `<=`, `>` and `>=` on arrays are errors. Component-wise comparisons are functions that return `[N]bool`, used with `any`, `all` and `select`.
 - **Layout check.** Keep C layout. When a struct reaches a GPU binding or vertex input, the compiler computes its layout under the target's rules, such as std140 for SDL uniforms and WGSL's table for storage buffers. Where an offset differs from C, it names the field and the padding to insert. Reflection already has every number this needs.
 - **Swizzle writes** (`v.xy = p`) can wait. WGSL only gained them as a language extension ([L7935](https://github.com/gpuweb/gpuweb/blob/6bf1c35fffaae37cf9db16c88e7d5d03382b5c52/wgsl/index.bs#L7933-L7937)).
+
+**Decided 2026-11-10:** the matrix convention, `==` and `!=` on arrays returning one `bool`, and the layout check, as recommended ([../decisions.md](../decisions.md)). The ordering-comparison rule is still proposed. Fields narrower than 32 bits add a second part to the layout check (5.6).
 
 ### 2.2 Small floats: `f16` and minimum precision
 
@@ -160,7 +165,7 @@ SDL fixes the numbers. For SPIR-V vertex shaders it uses "Set 0 for samplers, st
 
 HLSL's `precise` keeps "Separate operations ... separate" (no fused multiply-add), keeps the written order, and respects NaN and infinity rules ([Variable syntax](https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/dx-graphics-hlsl-variable-syntax)). SPIR-V's `NoContraction` decoration means "if applied to an OpFMul, that multiply can't be combined with an addition to yield a fused multiply-add" ([SPIR-V, Decoration](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html#Decoration)). WGSL has no `precise`. Its `@invariant` "maps to the `precise` qualifier in HLSL, and the `invariant` qualifier in GLSL".
 
-**Why it matters for chibi.** Entry points and built-ins must be visible to the declaration pass, because they decide which functions become GPU code. Attributes already exist for this purpose (adopt-or-settle 3.8), so nothing new is needed in the parser.
+**Why it matters for chibi.** Entry points and built-ins must be visible to the declaration pass, because they decide which functions become GPU code. Attributes already exist for this purpose (adopt-or-settle 3.8), so nothing new is needed in the parser. Only `@tail` is decided so far; the rest of the attribute design is open (decision row of 2026-11-12), and the GPU attributes below will be its largest user.
 
 **Recommendation.** Mark entry points with `@vertex`, `@fragment` and `@compute(x, y, z)` on ordinary functions. A built-in is a parameter or struct field marked `@builtin(.position)`, with names from an enum in `gpu`. Locations follow declaration order unless `@location(n)` overrides them. Add `@flat`, `@linear` and `@invariant` later. `precise` belongs to rank 3 (5.3).
 
@@ -193,7 +198,7 @@ HLSL's `precise` keeps "Separate operations ... separate" (no fused multiply-add
 
 **Why it matters for chibi.** These are the tools of compute work such as particles, culling and prefix sums. Only workgroup memory needs a declaration form; the rest are calls.
 
-**Recommendation.** `@workgroup` marks a package-level declaration that only compute code may use: `@workgroup tile: [256]f32 = ---`. Here the decided `---` skips the zeroing on SPIR-V, MSL and HLSL; WGSL zeroes anyway. Barriers and subgroup operations are `gpu` intrinsics. Atomics are one `atomic` package that lowers to C11 atomics on the CPU and to atomic instructions on the GPU.
+**Recommendation.** `@workgroup` marks a package-level declaration that only compute code may use: `@workgroup tile: [256]f32 = undefined`. Here the decided `undefined` skips the zeroing on SPIR-V, MSL and HLSL; WGSL zeroes anyway. Barriers and subgroup operations are `gpu` intrinsics. Atomics are one `atomic` package that lowers to C11 atomics on the CPU and to atomic instructions on the GPU.
 
 ### 2.8 Core language or library
 
@@ -315,7 +320,7 @@ fn sprite_fs(v: Varyings, @uniform frame: Frame, tex: gpu.Texture2D, smp: gpu.Sa
 @compute(64)
 fn scale(@builtin(.global_id) id: [3]i32, @read_write data: []f32, @uniform k: f32) {
     i := id.x
-    if i < len(data) {
+    if i < data.len {
         data[i] = data[i] * k
     }
 }
@@ -356,32 +361,35 @@ fn scale(@builtin(.global_id) id: [3]i32, @read_write data: []f32, @uniform k: f
 1. The call graph is acyclic: one strongly-connected-components pass over GPU-reachable functions.
 2. Function values must be known at compile time, so each call becomes direct. Dispatch goes through a `switch` on a tagged union.
 3. Pointers: `*T` may point at a local, a binding element or workgroup memory. It may be passed to functions, but not stored, returned, compared or converted. `?*T`, `[*]T` and pointer arithmetic are errors.
-4. Types: no `int`, `uint`, `i64`, `u64` or `f64` unless the target has them (5.2). No `string` values at run time.
-5. No allocation, no context reads (rank 7), no `task fn`, `yield` or `await`, and no `export fn`.
-6. Control flow is structured. chibi already removed `goto`. WGSL's `break` takes no label ([syntax](https://github.com/gpuweb/gpuweb/blob/6bf1c35fffaae37cf9db16c88e7d5d03382b5c52/wgsl/syntax/break_statement.syntax.bs.include)), so the backend lowers `break outer` with a flag variable (my analysis).
+4. Types: no `int`, `i64`, `u64` or `f64` unless the target has them (5.2). Types narrower than 32 bits follow 5.6. No `string` values at run time.
+5. No allocation, no context reads (rank 7), no tasks or coroutine suspension (their keywords wait for the coroutines sheet), and no `export fn`.
+6. Control flow is structured. `goto` is no longer a keyword (token audit, 2026-11-11). The decided labels are `break name`, `continue name`, `break name value` out of a labeled block, and `continue name value` into another arm of a labeled `switch`. WGSL's `break` takes no label ([syntax](https://github.com/gpuweb/gpuweb/blob/6bf1c35fffaae37cf9db16c88e7d5d03382b5c52/wgsl/syntax/break_statement.syntax.bs.include)), so the backend lowers `break outer` with a flag variable, and a `break` with a value stores the value in a local first. `continue name value` becomes a loop around the `switch`, with the next value in a local. The checker rejects `continue name value` for now (decision row of 2026-11-16). All of this is my analysis.
+7. Textures and samplers can't be struct fields and can't be copied into locals; they reach a function only as parameters. DXC and glslang need SPIRV-Tools' legalization passes mainly for HLSL that does both, so this rule lets the SPIR-V writer run with no legalization ([shader-backends.md](shader-backends.md) 1.1, item 3).
+8. `@tail return` is an error. This was proposed with the tail-call decision of 2026-11-12 ([checker-and-ir.md](checker-and-ir.md) 6.2, rule 4).
 
 ## 5. Effect on adopt-or-settle ranks 1–10 and the other sheets (question 4)
 
 | Item | What a GPU target needs | Change? |
 |---|---|---|
 | 1. Overflow (decided: option C) | a result without a trap; WGSL wraps and defines `x / 0` | **Add a GPU rule** (5.1) |
-| 2. `int` is 64-bit; literal types | no 64-bit integers on WGSL; optional elsewhere | **Yes** (5.2) |
+| 2. `int` is 64-bit; literal types (decided 2026-11-11) | no 64-bit integers on WGSL; optional elsewhere | **Yes** (5.2) |
 | 3. One contract for every backend | GPUs can't give bit-identical floats | **Yes: narrowed to CPU backends** (5.3) |
-| 4. Errors (no exceptions; propagation open) | values only; no unwinding | No. An error union is a plain struct and works on the GPU. Mojo's typed errors "work on GPUs ... as long as you avoid heap-allocated types like `String`" ([errors.mdx](https://github.com/modular/modular/blob/f364f26cd29207a9501625f566527354bb5dac4f/Mojo/docs/site/manual/errors.mdx#L242-L246)). Entry points can't return errors. |
-| 5. Pointers | no stored pointers, no arithmetic, no null | No. The split between `*T` and `[*]T` is what lets GPU code keep `*T` and reject `[*]T`. |
-| 6. Initialization (`---` decided) | WGSL always zeroes; SPIR-V needn't | No. `---` on workgroup arrays saves the zeroing on SPIR-V, MSL and HLSL. |
+| 4. Errors (no exceptions; `try` and `catch` decided) | values only; no unwinding | No. An error union is a plain struct and works on the GPU; its `u16` code follows 5.6. Mojo's typed errors "work on GPUs ... as long as you avoid heap-allocated types like `String`" ([errors.mdx](https://github.com/modular/modular/blob/f364f26cd29207a9501625f566527354bb5dac4f/Mojo/docs/site/manual/errors.mdx#L242-L246)). Entry points can't return errors. |
+| 5. Pointers (decided 2026-11-15) | no stored pointers, no arithmetic, no null | No. The split between `*T` and `[*]T` is what lets GPU code keep `*T` and reject `[*]T`. |
+| 6. Initialization (`undefined` decided) | WGSL always zeroes; SPIR-V needn't | No. `undefined` on workgroup arrays saves the zeroing on SPIR-V, MSL and HLSL. |
 | 7. C ABI, thread-local context | no ABI and no thread-local storage on the GPU | No. Option B is the GPU-friendly one: GPU code simply can't read the context, while a hidden parameter (option A) would have to be stripped from every GPU function. |
 | 8. Parameters | GPU functions are mostly inlined | No. A printer must not lower a `*T` parameter to HLSL's copy-in, copy-out `inout` when arguments may alias (unverified). |
-| 9. Safety modes | no trap; robustness varies | **Add the same GPU rule** (5.1) |
+| 9. Safety modes (bounds checks decided 2026-11-15) | no trap; robustness varies | **Add the same GPU rule** (5.1) |
 | 10. Strings (no const correctness decided) | no strings | No. Strings stay CPU-only; failure reports carry source IDs, not text. |
 | Generics | monomorphic code only | No. Per-instance checking fits, and a target is one more key. |
 | Compile-time code | variants and bindings | No. It gains two uses (5.4). |
 | Tasks | no coroutines | No. Tasks stay CPU-only; a task can `await` a GPU fence. |
 | Context | none on the GPU | No (rank 7). |
+| `bool`, enums, `?T`, `E!T` (decided 2026-11-11 to 2026-11-16) | no 8- or 16-bit integers on WGSL, optional on Vulkan; no `bool` in buffers or between stages | **Yes** (5.6) |
 
 ### 5.1 Ranks 1 and 9 on the GPU: checks that can't stop the program
 
-**What it is.** The rank 1 decision says `+`, `-` and `*` trap in debug and release builds, and that a zero divisor traps in every build. Its decision row adds: "What shaders do, since they can't trap, waits for shader-languages.md". Rank 9 keeps bounds checks in every mode. On a GPU:
+**What it is.** The rank 1 decision says `+`, `-` and `*` trap in debug and release builds, and that a zero divisor traps in every build. Its decision row now says: "Shaders can't trap; shader-languages.md 5.1 proposes fixed GPU results instead, not yet decided". Rank 9's bounds checks were decided on 2026-11-15: indexing and slicing check bounds in every build, and a block can opt out with an attribute. Narrowing conversions, enum conversions and `switch` add checks of their own (decision rows of 2026-11-10 and 2026-11-16). On a GPU:
 - A WGSL program has no way to request a trap, and SDL exposes none.
 - Vulkan's new `VK_KHR_shader_abort` aborts by "triggering device loss in the API". It is optional, and SDL doesn't expose it.
 - WGSL warns that ending one invocation early breaks group operations: "a call to workgroupBarrier may hang the shader" ([L4211](https://github.com/gpuweb/gpuweb/blob/6bf1c35fffaae37cf9db16c88e7d5d03382b5c52/wgsl/index.bs#L4208-L4212)).
@@ -393,32 +401,35 @@ fn scale(@builtin(.global_id) id: [3]i32, @read_write data: []f32, @uniform k: f
 
 **Recommendation.** Option A, with these fallbacks:
 
-| Check | CPU (decided; bounds checks recommended by rank 9) | GPU fallback, every build |
+| Check | CPU (decided) | GPU fallback, every build |
 |---|---|---|
 | `+`, `-`, `*`, negation | trap; wrap in release-fast | wrap |
 | `x / 0`, `MIN / -1` | trap in every build | `x`, as in WGSL |
 | `x % 0`, `MIN % -1` | trap in every build | `0`, as in WGSL |
 | shift ≥ width | trap; count modulo width in release-fast | count modulo width, as in WGSL |
 | index out of bounds | trap | the load gives zero; the store is skipped |
-| `x!` on `nil` | trap in every build | the zero value of the type |
+| `x!!` on `nil` | trap in every build | the zero value of the type |
+| narrowing `T(x)` out of range | trap in debug and release builds | the low bits, as `T(x & mask)` gives |
+| `Color(n)` when no member has the value `n` | trap in checked builds | `n`, unchanged |
+| `switch` with no arm for its value, which only an invalid enum value reaches | trap | no arm runs; a `switch` used as a value gives the zero value |
 
-The fallbacks cost little. WGSL notes that its division rule "may require an implementation to perform more operations", and its source sketches the fix as one `select` on the divisor ([L7077](https://github.com/gpuweb/gpuweb/blob/6bf1c35fffaae37cf9db16c88e7d5d03382b5c52/wgsl/index.bs#L7077-L7084)). chibi emits that `select` itself for SPIR-V, MSL and HLSL. A bounds check is one unsigned compare and a `select` per dynamic index. Constant indices into fixed arrays need no check. This is my estimate, not a measurement. The CPU and GPU differ only for programs that already have a bug, which is how rank 1 already separated options B and C. `@no_bounds_check` keeps its meaning: no check, and the platform's behavior, which is undefined on SPIR-V without robustness.
+The fallbacks cost little. WGSL notes that its division rule "may require an implementation to perform more operations", and its source sketches the fix as one `select` on the divisor ([L7077](https://github.com/gpuweb/gpuweb/blob/6bf1c35fffaae37cf9db16c88e7d5d03382b5c52/wgsl/index.bs#L7077-L7084)). chibi emits that `select` itself for SPIR-V, MSL and HLSL. A bounds check is one unsigned compare and a `select` per dynamic index. Constant indices into fixed arrays need no check. This is my estimate, not a measurement. The CPU and GPU differ only for programs that already have a bug, which is how rank 1 already separated options B and C. The opt-out attribute for bounds checks (decided 2026-11-15; its spelling waits for the attribute syntax) keeps its meaning on the GPU: no check, and the platform's behavior. On SDL's Vulkan backend that behavior is undefined by default: SDL's default device enables only a short list of features, and `robustBufferAccess` only when the app requests it through `SDL_GPUVulkanOptions` ([defaults](https://github.com/libsdl-org/SDL/blob/8b6ae5d72496c04723fd3016ea7a5c138a156422/src/gpu/vulkan/SDL_gpu_vulkan.c#L12785-L12799), [opt-in](https://github.com/libsdl-org/SDL/blob/8b6ae5d72496c04723fd3016ea7a5c138a156422/src/gpu/vulkan/SDL_gpu_vulkan.c#L11872-L11898)).
 
 ### 5.2 Rank 2 on the GPU: there is no 64-bit `int`
 
 **What it is.** Rank 2 makes `int` 64-bit everywhere and makes it the type of lengths, so results match on wasm and desktop. No portable GPU target has 64-bit integers (section 4). WGSL's `arrayLength` returns `u32` ([L16112](https://github.com/gpuweb/gpuweb/blob/6bf1c35fffaae37cf9db16c88e7d5d03382b5c52/wgsl/index.bs#L16112)), and its built-in indices are `u32` or `vec3<u32>` ([L10578](https://github.com/gpuweb/gpuweb/blob/6bf1c35fffaae37cf9db16c88e7d5d03382b5c52/wgsl/index.bs#L10578-L10617)).
 
 **Options.**
-- **A. GPU code has no `int`.** Naming `int` or `uint` in GPU code is an error. An untyped integer with no other type becomes `i32` there. WGSL does the same: when nothing forces a type, "an integer literal is interpreted as an i32 value" ([L2818](https://github.com/gpuweb/gpuweb/blob/6bf1c35fffaae37cf9db16c88e7d5d03382b5c52/wgsl/index.bs#L2818-L2823)), and GLSL and HLSL do too (unverified). `len` returns `i32` there. Built-in indices may be declared `i32`, and the compiler converts them; a dispatch never comes near 2^31 invocations (my analysis).
+- **A. GPU code has no `int`.** Naming `int` or `uint` in GPU code is an error. An untyped integer with no other type becomes `i32` there. WGSL does the same: when nothing forces a type, "an integer literal is interpreted as an i32 value" ([L2818](https://github.com/gpuweb/gpuweb/blob/6bf1c35fffaae37cf9db16c88e7d5d03382b5c52/wgsl/index.bs#L2818-L2823)), and GLSL and HLSL do too (unverified). `.len` is an `i32` there. Built-in indices may be declared `i32`, and the compiler converts them; a dispatch never comes near 2^31 invocations (my analysis).
 - **B. `int` means `i32` in GPU code.** No error, but a struct with an `int` field would have different layouts on the two sides. That is the pointer-sized-`int` problem that rank 2 rejected.
 - **C. Emulate 64-bit integers on the GPU.** Every add and compare would become several 32-bit operations (unverified cost), in the hottest loops of shader code.
-- **D. Make GPU code `u32`-first,** with `len` returning `u32`. That matches WGSL, but it brings back the unsigned-length bugs that made C3 reverse its sizes.
+- **D. Make GPU code `u32`-first,** with `.len` a `u32`. That matches WGSL, but it brings back the unsigned-length bugs that made C3 reverse its sizes.
 
-**Decided 2026-11-11:** option A, together with rank 2 ([../decisions.md](../decisions.md)). chibi has no `uint`, so the list below loses it.
+**Decided 2026-11-11:** option A, together with rank 2 ([../decisions.md](../decisions.md)). chibi has no `uint`, so the list below no longer names it, and lengths became the `.len` field on 2026-11-12.
 
 **Recommendation.** Option A. On the CPU, rank 2 is unchanged. In GPU code:
-- `int`, `uint`, `i64`, `u64` and `f64` are errors unless the target declares them (`$if target.has_int64`);
-- untyped integers default to `i32`, and lengths are `i32`;
+- `int`, `i64`, `u64` and `f64` are errors unless the target declares them (`$if target.has_int64`). On SDL's Vulkan backend the app can request `shaderInt64` and `shaderFloat64` through `SDL_GPUVulkanOptions`, and SDL's default device enables neither ([SDL_gpu_vulkan.c](https://github.com/libsdl-org/SDL/blob/8b6ae5d72496c04723fd3016ea7a5c138a156422/src/gpu/vulkan/SDL_gpu_vulkan.c#L12785-L12799));
+- untyped integers default to `i32`, and `.len` is an `i32`;
 - shared code that writes no integer type compiles on both sides with the same results below 2^31;
 - a struct shared with the GPU uses `i32`, `u32` and `f32`, which the layout check (2.1) enforces anyway.
 
@@ -474,6 +485,23 @@ A `@precise` block attribute that emits `NoContraction` and `precise` can come l
 
 **Recommendation.** GPU code also compiles for the CPU through the development backend, with 5.1's fallbacks and reports instead of traps. Compute shaders and pure functions come first, with barriers lowered like coroutines. Draw shaders that sample textures run on SwiftShader until chibi needs its own sampler. RenderDoc and Xcode remain the tools for a pixel on the real GPU.
 
+### 5.6 Types narrower than 32 bits: `bool`, small integers, enums, optionals and error unions (2026-11-18)
+
+**What it is.** Decisions made after this note put types narrower than 32 bits into ordinary code. `bool` is one byte (rank 2, 2026-11-11). An enum without `: T` takes the smallest of `u8`, `u16`, `u32` and `u64` that holds its values (2026-11-16), so most enums are `u8`. `?T` is `{ T value; bool present }`, and `E!T` is `{ T value; u16 code }` (2026-11-15). GPU targets support these types less well than `i32`:
+- **WGSL** has no 8- or 16-bit integers: "The integer scalar types are AbstractInt, i32, and u32" ([L2981](https://github.com/gpuweb/gpuweb/blob/6bf1c35fffaae37cf9db16c88e7d5d03382b5c52/wgsl/index.bs#L2981-L2982)). Its `bool` "is not host-shareable" ([L12104](https://github.com/gpuweb/gpuweb/blob/6bf1c35fffaae37cf9db16c88e7d5d03382b5c52/wgsl/index.bs#L12104-L12106)), and uniform and storage buffers must hold host-shareable types ([L3709](https://github.com/gpuweb/gpuweb/blob/6bf1c35fffaae37cf9db16c88e7d5d03382b5c52/wgsl/index.bs#L3709-L3711)). Each user-defined stage input and output must "be of numeric scalar type or numeric vector type" ([L11221](https://github.com/gpuweb/gpuweb/blob/6bf1c35fffaae37cf9db16c88e7d5d03382b5c52/wgsl/index.bs#L11221-L11224)), which leaves out `bool`, and integer ones must use `flat` interpolation ([L11393](https://github.com/gpuweb/gpuweb/blob/6bf1c35fffaae37cf9db16c88e7d5d03382b5c52/wgsl/index.bs#L11393-L11394)).
+- **Vulkan** makes each use a separate optional feature. `shaderInt8` and `shaderInt16` allow the types in shader code ([features.adoc](https://github.com/KhronosGroup/Vulkan-Docs/blob/fa30d4e312e843193601be7cb926c7e25d9ec885/chapters/features.adoc#L697-L700), [L1608](https://github.com/KhronosGroup/Vulkan-Docs/blob/fa30d4e312e843193601be7cb926c7e25d9ec885/chapters/features.adoc#L1608-L1612)). `storageBuffer8BitAccess` and `storageBuffer16BitAccess` allow them as members of storage buffers, and two more features cover uniform buffers ([L1403](https://github.com/KhronosGroup/Vulkan-Docs/blob/fa30d4e312e843193601be7cb926c7e25d9ec885/chapters/features.adoc#L1403-L1430), [L1491](https://github.com/KhronosGroup/Vulkan-Docs/blob/fa30d4e312e843193601be7cb926c7e25d9ec885/chapters/features.adoc#L1491-L1520)). The 2024 and 2026 roadmap profiles require `shaderInt8`, `shaderInt16` and both storage-buffer features; the 2022 profile requires none of them ([VP_KHR_roadmap.json](https://github.com/KhronosGroup/Vulkan-Docs/blob/fa30d4e312e843193601be7cb926c7e25d9ec885/xml/profiles/VP_KHR_roadmap.json#L340-L372)). A `bool` stage input or output must be a built-in ([VUID-StandaloneSpirv-Input-07290](https://github.com/KhronosGroup/Vulkan-Docs/blob/fa30d4e312e843193601be7cb926c7e25d9ec885/appendices/spirvenv.adoc#L832-L833)).
+- **SDL:** "When no such structure is provided, SDL will use Vulkan API version 1.0 and a minimal set of features" ([SDL_gpu.h](https://github.com/libsdl-org/SDL/blob/8b6ae5d72496c04723fd3016ea7a5c138a156422/include/SDL3/SDL_gpu.h#L2436-L2440)). The structure is `SDL_GPUVulkanOptions`, through which an app can request each feature above ([SDL_gpu_vulkan.c](https://github.com/libsdl-org/SDL/blob/8b6ae5d72496c04723fd3016ea7a5c138a156422/src/gpu/vulkan/SDL_gpu_vulkan.c#L11872-L11898)). It applies to the Vulkan backend only.
+- **HLSL and Metal:** HLSL's 16-bit integers need Shader Model 6.2 (unverified). MSL's 8- and 16-bit types, and whether a `bool` may sit in a buffer, were not checked (unverified).
+
+**Why it matters for chibi.** Without a rule, a `u8` counter, a three-member enum or an optional `f32` makes a GPU function fail to compile for WGSL and for SDL's default Vulkan device, and a struct with such a field can't be shared with the GPU at all. Dense component tables use exactly these types, so shared structs will hold them.
+
+**Options.**
+- **A. Compute in 32 bits, and check buffers and stage interfaces.** Values of 8- and 16-bit types are 32-bit values in GPU code. After each arithmetic operation the writer wraps the result to the declared width: an `and` for unsigned types, a sign extension for signed ones. So `250 +% 10` on `u8` values is 4 on both sides, and a plain `+` gives the same 4 as 5.1's GPU fallback. A shift takes its count modulo the declared width. A buffer field narrower than 32 bits is read by loading the 32-bit word that holds it and extracting its bits, and the writer declares the buffer as those words. Writing such a field through a `@read_write` binding is an error unless the target has 8- or 16-bit storage, because a read, modify and write of the whole word would race with invocations that write its other bytes. A `bool` field is one byte in C layout and is read as a `u8`, nonzero for `true`. Stage inputs and outputs can't be `bool` or narrower than 32 bits; the check suggests `u32` or `i32` with `@flat`.
+- **B. Forbid types narrower than 32 bits in GPU code** unless the target has them, as rank 2 does for 64-bit types. This is simple, but it rejects enums, `?T` and `E!T` in every portable shader, because their tags are narrow.
+- **C. Give GPU instances 32-bit members.** A `bool` or an enum would take 4 bytes in GPU code. A struct shared between the CPU and the GPU would then have two layouts, which C layout and the layout check exist to prevent (2.1).
+
+**Recommendation.** Option A. On a target with `shaderInt8` or `shaderInt16` and the matching storage features, the SPIR-V writer uses the native types and drops the wrapping and the write restriction. The costs are my analysis, not measured: one `and` or sign extension per arithmetic result of a narrow type, and one load plus a bit extraction per narrow field read. Comparisons and widening conversions cost nothing extra, because every narrow value stays wrapped. The `present` flag of `?T` and the code of `E!T` are mostly locals, so they cost only the wrapping. Where a shader writes an enum field of a buffer, the layout check suggests `: u32` on the enum. That also fixes the enum's size, which the enum decision row says the 257th member would otherwise change.
+
 ## 6. Output format (question 5)
 
 **What each consumer takes.**
@@ -505,14 +533,14 @@ A `@precise` block attribute that emits `NoContraction` and `precise` can come l
 | C. SPIR-V plus text printers (CF's path) | everywhere, with no converters | d3dcompiler_47 on Windows for DXBC | chibi | one binary backend plus printers |
 
 **Why it matters for chibi.**
-- SPIR-V is binary and SSA, with types declared up front. That is the shape of chibi's own development backend: one pass per function from the typed IR, no text, no parser on the other side (my analysis).
+- SPIR-V is binary, with types declared up front. That is the shape of chibi's own development backend: one pass per function from the typed IR, no text, no parser on the other side (my analysis). SPIR-V's values are SSA, but chibi's IR keeps locals in numbered slots (decided 2026-11-12). The writer gives each slot a `Function` variable and leaves promotion to the driver, as CF does ([shader-backends.md](shader-backends.md) section 6, item 4).
 - SPIR-V is also the hub format. SDL's Vulkan path, every converter above, and future DirectX all read it.
 - Text formats are easier to debug and let each platform's compiler optimize. MSL is needed on macOS, where SDL's GPU API uses Metal (whether its Vulkan backend runs over MoltenVK is unverified).
-- DXIL is LLVM bitcode, and "The LLVM bitcode version is currently fixed at LLVM 3.7 for all DXIL versions" ([DXIL.rst](https://github.com/microsoft/DirectXShaderCompiler/blob/823a3dadf981b70cec3285faa979dcbd4be94aa4/docs/DXIL.rst#L81)). Emitting it directly would tie chibi to that format for years.
+- DXIL is LLVM bitcode, and "The LLVM bitcode version is currently fixed at LLVM 3.7 for all DXIL versions" ([DXIL.rst](https://github.com/microsoft/DirectXShaderCompiler/blob/823a3dadf981b70cec3285faa979dcbd4be94aa4/docs/DXIL.rst#L81)). Emitting it directly would tie chibi to that format for years. [shader-backends.md](shader-backends.md) section 6 found that Mesa and gogpu/naga write DXIL without LLVM, so a DXIL writer is now listed as later, not rejected (7.2).
 - The no-C-compiler goal favors option C. Converters are large C++ or Rust tools, while CF fits its front end plus five outputs in 13,667 lines of C.
 
 **Recommendation.** Option C, in stages:
-1. **SPIR-V 1.0** with Logical addressing, straight from the typed IR. For now, SDL_shadercross makes MSL, DXBC and DXIL from it at build time. Use SPIR-V 1.3 only when subgroup operations are used and the app requests Vulkan 1.1. Validate the output with SPIRV-Tools' validator in tests.
+1. **SPIR-V 1.0** with Logical addressing, from the typed IR after generics and compile-time code have run for the target, with no optimizer and no legalization pass ([shader-backends.md](shader-backends.md) 1.1, items 1 and 3). For now, SDL_shadercross makes MSL, DXBC and DXIL from it at build time. In SPIR-V 1.0, storage buffers use the `Uniform` storage class with the `BufferBlock` decoration, because the `StorageBuffer` class does not exist yet. Use SPIR-V 1.3 only when subgroup operations are used and the app requests Vulkan 1.1. Names, and in debug builds `NonSemantic.Shader.DebugInfo.100`, come with the first module, and tests run SPIRV-Tools' validator on every module ([shader-backends.md](shader-backends.md) 1.1, items 4 and 5).
 2. **An MSL printer,** because the owner develops on macOS, where Metal is SDL's native backend.
 3. **A WGSL printer** when chibi targets the web, through CF's WebGPU backend or SDL's once it merges. The uniformity analysis (2.6) must come first.
 4. **HLSL 5.1 for DXBC** only if Windows builds need D3D12 rather than Vulkan. When Shader Model 7 ships, SPIR-V may cover D3D12 too.
@@ -520,22 +548,26 @@ A `@precise` block attribute that emits `NoContraction` and `precise` can come l
 
 Shipped games get compiled shader bytes, never a run-time cross-compiler.
 
+**Decided 2026-11-10:** chibi's own writers, all reading one typed IR that keeps structured control flow, with join points marked, typed values and field indices; SPIR-V first, then MSL and WGSL ([../decisions.md](../decisions.md)). The owner decided after [shader-backends.md](shader-backends.md) surveyed 16 compilers and pipelines and found that section 6 holds, with the corrections folded in above.
+
 ## 7. Lists
 
 ### 7.1 Adopt now, because it affects decisions being made now
 
-| Item | Decision it affects | Section |
-|---|---|---|
-| GPU fallbacks for failed checks, with first-failure reports in debug GPU builds | rank 1 (its row waits for this note), rank 9, postfix `!` | 5.1 |
-| No `int` in GPU code; untyped integers and `len` are `i32` there; 64-bit types need the target | rank 2 | 5.2 |
-| The float contract covers CPU backends; GPUs give error bounds | rank 3 | 5.3 |
-| A layout check for structs that reach GPU bindings | C layout (the decision row says GPU buffers need no annotation) | 2.1 |
-| A matrix's first index selects the column; `==` on arrays returns one `bool`; ordering comparisons are functions | rank 14, before vector code exists | 2.1 |
-| GPU code chosen by reachability from `@vertex`, `@fragment` and `@compute`; `$if target.gpu`; one instance per target | sheets 6 and 7, the declaration pass | 3 |
-| Structured control flow in the typed IR; an acyclic GPU call graph; function values known at compile time | the IR design, rank 13 | 4 |
-| Binding kinds in entry-point signatures (`@uniform`, `@read_write`) | no const correctness (decided); signatures independent of bodies | 2.3 |
-| `*T` only, never stored, in GPU code | rank 5 (confirmed) | 4 |
-| No context reads in GPU code | rank 7, option B (confirmed) | 5.4 |
+| Item | Decision it affects | Section | Status |
+|---|---|---|---|
+| GPU fallbacks for failed checks, with first-failure reports in debug GPU builds | rank 1 (its row says GPU results are not yet decided), rank 9, postfix `!!`, narrowing and enum conversions, `switch` | 5.1 | open |
+| No `int` in GPU code; untyped integers and `.len` are `i32` there; 64-bit types need the target | rank 2 | 5.2 | decided 2026-11-11 |
+| The float contract covers CPU backends; GPUs give error bounds | rank 3 | 5.3 | open |
+| A layout check for structs that reach GPU bindings | C layout (the decision row said GPU buffers need no annotation) | 2.1 | decided 2026-11-10 |
+| A matrix's first index selects the column; `==` on arrays returns one `bool`; ordering comparisons are functions | rank 14, before vector code exists | 2.1 | decided 2026-11-10, except ordering comparisons |
+| GPU code chosen by reachability from `@vertex`, `@fragment` and `@compute`; `$if target.gpu`; one instance per target | sheets 6 and 7, the declaration pass | 3 | open |
+| Structured control flow in the typed IR; an acyclic GPU call graph; function values known at compile time | the IR design, rank 13 | 4 | IR decided 2026-11-10 and 2026-11-12; GPU rules open |
+| Binding kinds in entry-point signatures (`@uniform`, `@read_write`) | no const correctness (decided); signatures independent of bodies; the attribute design | 2.3 | open |
+| `*T` only, never stored, in GPU code | rank 5 (pointer kinds decided 2026-11-15) | 4 | open |
+| No textures or samplers in structs or locals, so the SPIR-V writer needs no legalization | the GPU writers | 4 | open |
+| No context reads in GPU code | rank 7, option B (confirmed) | 5.4 | open |
+| Types narrower than 32 bits computed in 32 bits; narrow buffer fields read from their word; narrow writes and stage interfaces checked | `bool`, enums, `?T` and `E!T` layouts (decided 2026-11-11 to 2026-11-16), the layout check | 5.6 | open |
 
 ### 7.2 Adopt later: additive
 
@@ -554,6 +586,8 @@ Shipped games get compiled shader bytes, never a run-time cross-compiler.
 | `VK_KHR_shader_abort` in Vulkan debug builds | Vulkan 2026 | drivers that ship it |
 | Running compute functions on the CPU for tests | Slang's CPU target, ISPC | testing kernels as pure transforms; the owner wants it for debugging (5.5) |
 | CF draw shaders from chibi | CF's `cf_make_draw_shader` | games that use CF's draw API |
+| Native 8- and 16-bit integers in GPU code | Vulkan `shaderInt8` and `shaderInt16`, required by the 2024 roadmap profile | a target that enables them through `SDL_GPUVulkanOptions` (5.6) |
+| A DXIL writer | Mesa, gogpu/naga | D3D12 without DXC ([shader-backends.md](shader-backends.md) section 6, item 8) |
 
 ### 7.3 Rejected
 
@@ -569,14 +603,14 @@ Shipped games get compiled shader bytes, never a run-time cross-compiler.
 | Address spaces in pointer types | Zig, Mojo, Slang, WGSL | A version of every helper per space; inference does the job (2.4) |
 | Dynamic dispatch through interface values on the GPU | Slang | Tagged unions and `switch` do the job (5.4) |
 | Recursion or coroutines on the GPU through emulated stacks | — | No target supports them portably (4) |
-| Emitting DXIL directly | DXC | LLVM 3.7 bitcode; SPIR-V is DirectX's announced future (6) |
 | Shipping a run-time cross-compiler | SDL_shadercross as a library | SDL prefers offline compilation, and DXC is large (6) |
 | Preprocessor permutations | GLSL, HLSL | `$` parameters and `$if` do the job (5.4) |
 | Silently padding shared structs | — | It would break C layout; the check names the padding instead (2.1) |
+| 32-bit `bool` and enum members in GPU instances | — | One struct would have two layouts (5.6) |
 
 ## 8. Not verified
 
-**Metal.** The MSL specification is a 14.5 MB PDF that the fetch tool refused, and no PDF reader was available. Only Apple's API documentation was read: math modes, function constants, `setBytes`, visible function tables and call-stack depth. Every MSL language rule in this note is unverified: address space names, `half`, 64-bit integers, division by zero, out-of-bounds behavior, subnormals, the size of `float3`, direct recursion and pointers.
+**Metal.** The MSL specification is a 14.5 MB PDF that the fetch tool refused, and no PDF reader was available. Only Apple's API documentation was read: math modes, function constants, `setBytes`, visible function tables and call-stack depth. Every MSL language rule in this note is unverified: address space names, `half`, 64-bit integers, 8- and 16-bit integers, `bool` in buffers, division by zero, out-of-bounds behavior, subnormals, the size of `float3`, direct recursion and pointers.
 
 **HLSL and D3D12.** Not read for this note:
 - HLSL's lack of pointers, `==` on vectors, integer wrapping, shifts, and the copy-in, copy-out semantics of `inout`;
@@ -586,7 +620,8 @@ Shipped games get compiled shader bytes, never a run-time cross-compiler.
 **Other targets.**
 - CUDA's default float contraction, its overflow, division and shift rules, and whether device code supports coroutines.
 - HLSL's and Metal's lack of strings, heaps and traps.
-- Whether SDL's Vulkan backend runs on macOS over MoltenVK, and whether SDL enables `robustBufferAccess`.
+- Whether SDL's Vulkan backend runs on macOS over MoltenVK. (Whether SDL enables `robustBufferAccess` was checked on 2026-11-18: not by default, 5.1.)
+- The SPIR-V specification's own rule on storing `OpTypeBool`: its page refused the fetch tool on 2026-11-18, so 5.6 rests on WGSL's rule and Vulkan's interface rule.
 
 **Read by the research agents, not by me.** Facts about the other languages, SDL's backend sources, SDL_shadercross, CF and the converters rest on their reading of the pinned links, except the items I re-read (listed under Sources). They could not verify these:
 - whether Slang supports derivatives on its CPU target, and its rules on function pointers;
@@ -609,6 +644,7 @@ Also unverified:
 - That SPIR-V suits one-pass emission from the typed IR (6).
 - That GPU reload needs only pipeline recreation (5.4).
 - That built-in indices fit in `i32` (5.2).
-- That labeled `break` lowers to a flag (4).
+- That labeled `break`, `break name value` and `continue name value` lower to flags and locals for WGSL (4).
 - The cost of emulated 64-bit integers (5.2).
 - That 16-bit floats run faster (2.2).
+- The cost of wrapping narrow values and of extracting narrow buffer fields, and that comparisons on wrapped values need nothing extra (5.6).
