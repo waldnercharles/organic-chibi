@@ -2643,8 +2643,9 @@ call_compound(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg
             code->extra[w++] = p.first;
             code->extra[w++] = p.second;
         } else if (is_struct(c, type)) {
-            u32 block = c->nunread && i < nargs ? early_block(c, first_arg + i, c->stack[first_arg + i])
-                                                : NO_SLOT;
+            u32 block = c->nunread && i < nargs
+                          ? early_block(c, first_arg + i, c->stack[first_arg + i])
+                          : NO_SLOT;
             if (block != NO_SLOT) {
                 u32 copy = add_slot(c, 0, type, node);
                 fill_block(c, block, copy, IR_NOP, 0, type, v);
@@ -2880,6 +2881,16 @@ assign_at(Checker *c, u32 file, u32 node, u32 token, u8 kind, Operand target, Op
     store_at(c, type, address, converted);
 }
 
+static NOINLINE bool
+check_hidden_target(Checker *c, u32 file, u32 token, u32 slot)
+{
+    if (c->files[file].nodes.kinds[slot_at(c, slot)->node] != NODE_CALL) {
+        return true;
+    }
+    report(c, file, token, DIAG_ASSIGN_RESULT, 0, 0);
+    return false;
+}
+
 static void
 assign(Checker *c, u32 file, u32 node, u32 token, u8 kind)
 {
@@ -2907,16 +2918,21 @@ assign(Checker *c, u32 file, u32 node, u32 token, u8 kind)
         return;
     }
     if (is_place(target)) {
-        u8 binding = place_binding(c, file, target);
+        u32 root = place_root(c, target);
+        u8 binding = root != NO_SLOT ? binding_kind(c, file, root) : NODE_NONE;
         if (binding != NODE_NONE) {
             report(
                 c,
                 file,
                 target_token,
                 binding == NODE_PARAM ? DIAG_ASSIGN_PARAM : DIAG_ASSIGN_LOOP_VARIABLE,
-                slot_at(c, place_root(c, target))->name,
+                slot_at(c, root)->name,
                 0
             );
+            return;
+        }
+        if (root != NO_SLOT && slot_at(c, root)->name == 0 &&
+            !check_hidden_target(c, file, target_token, root)) {
             return;
         }
     }
@@ -3715,8 +3731,9 @@ struct_literal(Checker *c, u32 file, u32 node, u8 kind)
             ok = false;
             continue;
         }
-        u32 block = c->nunread && is_place(v) && is_aggregate(c, field) ? early_block(c, k, v)
-                                                                       : NO_SLOT;
+        u32 block = c->nunread && is_place(v) && is_aggregate(c, field)
+                      ? early_block(c, k, v)
+                      : NO_SLOT;
         if (block != NO_SLOT && !zeroed) {
             fill_block(c, block, slot, IR_FIELD, field_layout(c, decl, member), field, v);
             continue;

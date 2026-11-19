@@ -136,6 +136,7 @@ enum
     X(DIAG_NOT_ASSIGNABLE, "only a local, a field, an element or `p.*` can be assigned to")         \
     X(DIAG_ASSIGN_PARAM, "`%n` is a parameter, so it can't be assigned")                            \
     X(DIAG_ASSIGN_LOOP_VARIABLE, "`%n` is a loop variable, so it can't be assigned")                \
+    X(DIAG_ASSIGN_RESULT, "a call's result can't be assigned; copy it to a local to change it")     \
     X(DIAG_NOT_ADDRESSABLE, "only a local, a field, an element or `p.*` has an address")            \
     X(DIAG_ADDRESS_PARAM, "`%n` is a parameter, so `&` can't take its address")                     \
     X(DIAG_ADDRESS_LOOP_VARIABLE, "`%n` is a loop variable, so `&` can't take its address")         \

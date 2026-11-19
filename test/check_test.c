@@ -572,6 +572,39 @@ static const Case ERRORS[] = {
         "fn wide(k: int) -> ?\n"
         "fn untyped() -> ?\n",
     },
+    {
+        "struct P { x: i32, y: i32 }\n"
+        "struct L { p: P, q: P }\n"
+        "\n"
+        "fn ok(p: P) -> P {\n"
+        "    return p\n"
+        "}\n"
+        "\n"
+        "fn two(p: P) -> L {\n"
+        "    return .{ p, p }\n"
+        "}\n"
+        "\n"
+        "fn errs(p: P, q: *P) -> i32 {\n"
+        "    ok(p).x = 5\n"
+        "    ok(p).y += 1\n"
+        "    ok(p) = p\n"
+        "    two(p).q.x = 3\n"
+        "    o := ok(p)\n"
+        "    o.x = 5\n"
+        "    q.* = ok(p)\n"
+        "    _ = &ok(p)\n"
+        "    return ok(p).x + o.x\n"
+        "}\n",
+        "a:13:11: a call's result can't be assigned; copy it to a local to change it\n"
+        "a:14:11: a call's result can't be assigned; copy it to a local to change it\n"
+        "a:15:5: a call's result can't be assigned; copy it to a local to change it\n"
+        "a:16:14: a call's result can't be assigned; copy it to a local to change it\n"
+        "struct P { x: i32, y: i32 }\n"
+        "struct L { p: P, q: P }\n"
+        "fn ok(p: P) -> P\n"
+        "fn two(p: P) -> L\n"
+        "fn errs(p: P, q: *P) -> i32\n",
+    },
 };
 
 static const Case BODIES[] = {
