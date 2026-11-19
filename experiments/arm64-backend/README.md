@@ -21,6 +21,7 @@
 - **Loads of a register-held local** make no copy: the value names the local's register. A store to the local while such a value is still live copies the value out first. The checker never emits that order today; one test makes it by reordering IR.
 - **Pointers** (step 3d.1, 2026-11-19): a local whose address is taken stays in its stack slot for the whole function, and `&x` is one `add` from `sp` (two beyond 4 KB). `p.*` loads and stores with the pointee's size and sign.
 - **Arrays** (step 3d.2, 2026-11-19) live in the frame after the scalar slots, largest alignment first, and never in registers. `index` with a constant is one `add`; otherwise the index is sign- or zero-extended, compared unsigned with the length, and scaled with `add ..., lsl #k`, or with `madd` when the element size is not a power of two. A failed bounds check is `brk #6`. `copy` and `zero` are unrolled up to 64 bytes with `q` registers and `stp xzr`, and loop over 32-byte chunks beyond that.
+- **Slices** (step 3d.3, 2026-11-19) are two values, a pointer and a length, each in its own register, and a slice local is two slots that can each be pinned to a register. A slice parameter takes two integer argument registers, and a slice result comes back in `x0` and `x1`, as C passes a 16-byte `struct { T *ptr; int64_t len; }`. `index-len` compares the index with the length, unsigned. `slice` compares `hi` with the length and `lo` with `hi`, unsigned, and skips a compare whose two sides are constants or whose lower side is 0. A failed check is `brk #6`. When the result goes straight into a local or a return, each half is computed into that register, unless a live value still names it.
 - **Stack probes:** a frame of 4 KB or more is reserved one page at a time by a stub after the traps, which stores zero at each new page, so a large frame cannot step over the guard page. The prologue branches to the stub and the stub branches back. A frame of 16 MB or more is an error.
 - **Values** each get a register when they are made, and free it at their one use. Integer values use `x9`–`x15` and floats `v16`–`v28`. When none is free, the oldest value is spilled to the stack, because it will be used last. A value about to be stored to a register-held local, returned, or passed as the last argument of a call is computed straight into that register.
 - **Calls** go through a table of function addresses at the start of the mapping, using `adrp`, `ldr` and `blr`. Replacing one entry redirects every call to that function, and a test does so while the program is loaded. Values still needed after a call move to free callee-saved registers, and are spilled only when none is left. Calling directly with `bl` instead measured the same on `fib` (7.7 against 7.8 ms), so the table stays.
@@ -37,7 +38,7 @@
 - arm64 only;
 - at most 8 integer and 8 float arguments;
 - a local keeps one register for the whole function, so a function with more hot locals than registers keeps the lighter ones in memory even where they are hot;
-- only integers, floats, `bool`, enums, pointers and arrays of those: an optional, slice, error union or struct is rejected with an error.
+- only integers, floats, `bool`, enums, pointers, and arrays and slices of those: an optional, error union or struct is rejected with an error. A slice argument counts as two integer arguments.
 
 ## Prediction and result
 

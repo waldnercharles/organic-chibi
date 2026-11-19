@@ -708,7 +708,7 @@ TEST_CASE(unsupported_types)
 {
     REQUIRE(rejects("fn b(a: int) -> !void {\n    if a > 0 {\n        return\n    }\n}\n"));
     REQUIRE(rejects("fn o(p: ?int) -> ?int {\n    return p\n}\n"));
-    REQUIRE(rejects("fn s(p: []u8) -> int {\n    return 0\n}\n"));
+    REQUIRE(rejects("fn s(p: ?[]u8) -> int {\n    return 0\n}\n"));
     return true;
 }
 
@@ -1018,6 +1018,511 @@ TEST_CASE(arrays)
     REQUIRE(call_i2((I2 *)fn(&p, "kinds"), 0, -1, &r) == TRAP_BOUNDS);
     REQUIRE(((I2 *)fn(&p, "swap_rows"))(1, 2) == 21);
     REQUIRE(((I2 *)fn(&p, "swap_rows"))(5, -3) == -25);
+    release_program(&p);
+    return true;
+}
+
+static const char
+    SLICES[] = "fn sum(xs: []int) -> int {\n"
+               "    total := 0\n"
+               "    for i in 0..xs.len {\n"
+               "        total += xs[i]\n"
+               "    }\n"
+               "    return total\n"
+               "}\n"
+               "fn count(s: []u8, c: u8) -> int {\n"
+               "    n := 0\n"
+               "    rest := s\n"
+               "    while rest.len > 0 {\n"
+               "        if rest[0] == c {\n"
+               "            n += 1\n"
+               "        }\n"
+               "        rest = rest[1..]\n"
+               "    }\n"
+               "    return n\n"
+               "}\n"
+               "fn first(s: []u8) -> int {\n"
+               "    return int(s[0])\n"
+               "}\n"
+               "fn total(s: []u8) -> int {\n"
+               "    n := 0\n"
+               "    rest := s\n"
+               "    while rest.len > 0 {\n"
+               "        n += first(rest)\n"
+               "        rest = rest[1..]\n"
+               "    }\n"
+               "    return n\n"
+               "}\n"
+               "fn tail(s: []int) -> []int {\n"
+               "    return s[1..]\n"
+               "}\n"
+               "fn choose(x: []int, y: []int, left: bool) -> []int {\n"
+               "    if left {\n"
+               "        return x\n"
+               "    }\n"
+               "    return y\n"
+               "}\n"
+               "fn flip(n: int, x: []int) -> []int {\n"
+               "    return x[n..]\n"
+               "}\n"
+               "fn fsum(xs: []f32) -> f32 {\n"
+               "    t: f32 = 0.0\n"
+               "    for v in xs {\n"
+               "        t += v\n"
+               "    }\n"
+               "    return t\n"
+               "}\n"
+               "fn mix(a: int, s: []int, b: int, t: []u8) -> int {\n"
+               "    return a * s[0] + b * int(t[t.len - 1]) + s.len * 100 + "
+               "t.len * 10000\n"
+               "}\n"
+               "fn kernels(a: int, b: int) -> int {\n"
+               "    x: [5]int = .[1, 2, 3, 4, 5]\n"
+               "    bytes := u8.[1, 2, 32, 3]\n"
+               "    t := tail(x)\n"
+               "    for v, i in t {\n"
+               "        x[i] += v\n"
+               "    }\n"
+               "    return sum(x) + count(bytes, u8(a)) * 1000 + "
+               "total(bytes[1..=2]) + sum(x[1..3]) + t.len * b\n"
+               "}\n"
+               "fn window(a: int, b: int) -> int {\n"
+               "    x: [10]int\n"
+               "    for i in 0..x.len {\n"
+               "        x[i] = i * i\n"
+               "    }\n"
+               "    s := x[a..b]\n"
+               "    return sum(s) * 100 + s.len\n"
+               "}\n"
+               "fn ends(a: int, b: int) -> int {\n"
+               "    x: [10]int\n"
+               "    for i in 0..x.len {\n"
+               "        x[i] = i + 1\n"
+               "    }\n"
+               "    s := x[a..=b]\n"
+               "    t := x[a..]\n"
+               "    u := x[..b]\n"
+               "    v := x[..=b]\n"
+               "    return s.len * 1000000 + t.len * 10000 + u.len * 100 + "
+               "v.len + sum(s)\n"
+               "}\n"
+               "fn nested(a: int, b: int) -> int {\n"
+               "    x: [10]u8\n"
+               "    for i in 0..x.len {\n"
+               "        x[i] = u8(i * 3)\n"
+               "    }\n"
+               "    s := x[1..9]\n"
+               "    t := s[a..]\n"
+               "    u := t[..b]\n"
+               "    n := 0\n"
+               "    for v in u {\n"
+               "        n += int(v)\n"
+               "    }\n"
+               "    return u.len * 1000 + n\n"
+               "}\n"
+               "fn known(a: int, b: int) -> int {\n"
+               "    x: [6]int = .[10, 20, 30, 40, 50, 60]\n"
+               "    m := x[1..5][2] + x[1..5].len * 1000\n"
+               "    return m + x[1..5][a] * b + x[2..][1..3][a]\n"
+               "}\n"
+               "fn sizes(a: int, b: int) -> int {\n"
+               "    h: [6]i16 = .[1, -2, 3, -4, 5, -6]\n"
+               "    w: [4]i32 = .[100, 200, 300, 400]\n"
+               "    f: [3]f64 = .[0.5, 1.5, 2.5]\n"
+               "    g: [4]bool\n"
+               "    g[b & 3] = true\n"
+               "    hs := h[a..]\n"
+               "    ws := w[b..]\n"
+               "    fs := f[a..]\n"
+               "    gs := g[a..]\n"
+               "    n := 0\n"
+               "    for v in hs {\n"
+               "        n += int(v)\n"
+               "    }\n"
+               "    for v in ws {\n"
+               "        n += int(v)\n"
+               "    }\n"
+               "    d: f64 = 0.0\n"
+               "    for v in fs {\n"
+               "        d += v\n"
+               "    }\n"
+               "    for v, i in gs {\n"
+               "        if v {\n"
+               "            n += 1000 * (i + 1)\n"
+               "        }\n"
+               "    }\n"
+               "    return n + int(d * 10.0)\n"
+               "}\n"
+               "fn rows(a: int, b: int) -> int {\n"
+               "    m: [4][3]u8\n"
+               "    for i in 0..m.len {\n"
+               "        for j in 0..3 {\n"
+               "            m[i][j] = u8(i * 10 + j)\n"
+               "        }\n"
+               "    }\n"
+               "    s := m[a..]\n"
+               "    r := s[b]\n"
+               "    t := s[b..]\n"
+               "    return int(r[2]) * 1000 + t.len * 100 + int(s[0][1])\n"
+               "}\n"
+               "fn through(p: *[4]int, a: int) -> int {\n"
+               "    s := p.*[a..]\n"
+               "    s[0] = 99\n"
+               "    return s.len\n"
+               "}\n"
+               "fn pointed(a: int, b: int) -> int {\n"
+               "    x: [4]int = .[1, 2, 3, 4]\n"
+               "    n := through(&x, a)\n"
+               "    return n * 1000 + x[0] + x[1] + x[2] + x[3] + b\n"
+               "}\n"
+               "fn empty(a: int, b: int) -> int {\n"
+               "    s: []int\n"
+               "    n := s.len\n"
+               "    for v in s {\n"
+               "        n += v\n"
+               "    }\n"
+               "    if a > 0 {\n"
+               "        return s[b]\n"
+               "    }\n"
+               "    return n + b\n"
+               "}\n"
+               "fn swap(a: int, b: int) -> int {\n"
+               "    x: [6]int = .[1, 2, 3, 4, 5, 6]\n"
+               "    s := x[..a]\n"
+               "    t := x[a..]\n"
+               "    for k in 0..b {\n"
+               "        u := s\n"
+               "        s = t\n"
+               "        t = u\n"
+               "    }\n"
+               "    return sum(s) * 100 + t.len\n"
+               "}\n"
+               "fn picks(a: int, b: int) -> int {\n"
+               "    x: [3]int = .[1, 2, 3]\n"
+               "    y: [4]int = .[10, 20, 30, 40]\n"
+               "    s := choose(x, y, a > b)\n"
+               "    t := flip(a, s)\n"
+               "    return sum(t) * 10 + t.len\n"
+               "}\n"
+               "fn mixer(a: int, b: int) -> int {\n"
+               "    x: [3]int = .[5, 6, 7]\n"
+               "    y := u8.[1, 2, 9]\n"
+               "    return mix(a, x[1..], b, y[..b])\n"
+               "}\n"
+               "fn scan(a: int, b: int) -> int {\n"
+               "    x: [8]int = .[3, 1, 4, 1, 5, 9, 2, 6]\n"
+               "    s := x[a..]\n"
+               "    n := 0\n"
+               "    for v, i in s {\n"
+               "        if v == b {\n"
+               "            break\n"
+               "        }\n"
+               "        if (v & 1) == 0 {\n"
+               "            continue\n"
+               "        }\n"
+               "        n += v * (i + 1)\n"
+               "    }\n"
+               "    return n\n"
+               "}\n"
+               "fn literal(a: int, b: int) -> int {\n"
+               "    return sum(.[a, b, 3]) + count(u8.[7, 7, 1], u8(b))\n"
+               "}\n"
+               "fn narrow(a: int, b: int) -> int {\n"
+               "    x: [5]int = .[10, 20, 30, 40, 50]\n"
+               "    s := x[1..]\n"
+               "    k := i8(a)\n"
+               "    j := u8(b)\n"
+               "    return s[k] + s[j] * 100 + x[j..][k]\n"
+               "}\n"
+               "fn tails(a: int, b: int) -> int {\n"
+               "    x: [4]int = .[1, 2, 3, 4]\n"
+               "    s := x[..a]\n"
+               "    n := 0\n"
+               "    for v in tail(s) {\n"
+               "        n += v\n"
+               "    }\n"
+               "    return n * 10 + tail(s).len + b\n"
+               "}\n"
+               "fn floats(a: int, b: int) -> int {\n"
+               "    f := f32.[0.5, 1.0, 2.0, 4.0]\n"
+               "    return int(fsum(f[a..b]) * 2.0)\n"
+               "}\n"
+               "fn many(a: int, b: int) -> int {\n"
+               "    x: [12]int\n"
+               "    for i in 0..x.len {\n"
+               "        x[i] = i * b\n"
+               "    }\n"
+               "    s0 := x[a..]\n"
+               "    s1 := x[a..a + 1]\n"
+               "    s2 := x[a..a + 2]\n"
+               "    s3 := x[a..a + 3]\n"
+               "    s4 := x[a..a + 4]\n"
+               "    s5 := x[a..a + 5]\n"
+               "    s6 := x[a..a + 6]\n"
+               "    s7 := x[a..a + 7]\n"
+               "    n := 0\n"
+               "    for k in 0..3 {\n"
+               "        n += sum(s0) + sum(s1) + sum(s2) + sum(s3) + sum(s4) + "
+               "sum(s5) + sum(s6) + sum(s7)\n"
+               "        s0 = s0[1..]\n"
+               "        s7 = s7[..s7.len - 1]\n"
+               "    }\n"
+               "    return n + s0.len * 1000 + s7.len * 100000\n"
+               "}\n"
+               "fn measure(n: int, s: []int) -> int {\n"
+               "    return n * 100 + s.len * 10 + s[0]\n"
+               "}\n"
+               "fn chain(a: int, b: int) -> int {\n"
+               "    x: [4]int = .[a, b, 3, 4]\n"
+               "    return measure(a, tail(x)) + measure(b, tail(tail(x)))\n"
+               "}\n"
+               "fn rebase(a: int, b: int) -> int {\n"
+               "    x: [6]int = .[10, 20, 30, 40, 50, 60]\n"
+               "    s := x[0..a]\n"
+               "    t := x[b..]\n"
+               "    s = t[s.len..]\n"
+               "    return s[0] * 10 + s.len\n"
+               "}\n"
+               "fn skip2(s: []int) -> []int {\n"
+               "    return tail(tail(s))\n"
+               "}\n"
+               "fn swapped(u0: int, u1: int, s: []int) -> []int {\n"
+               "    t := s[1..]\n"
+               "    a0 := 1\n"
+               "    a1 := 2\n"
+               "    a2 := 3\n"
+               "    a3 := 4\n"
+               "    a4 := 5\n"
+               "    a5 := 6\n"
+               "    a6 := 7\n"
+               "    a7 := 8\n"
+               "    a8 := 9\n"
+               "    a9 := 10\n"
+               "    a10 := 11\n"
+               "    a11 := 12\n"
+               "    a12 := 13\n"
+               "    a13 := 14\n"
+               "    a14 := 15\n"
+               "    a15 := 16\n"
+               "    a16 := 17\n"
+               "    a17 := 18\n"
+               "    m := 0\n"
+               "    for k in 0..3 {\n"
+               "        m += t[0] + t[1] + t[2] + t[3] + t[4] + t.len\n"
+               "        a0 += 1\n"
+               "        a1 += 1\n"
+               "        a2 += 1\n"
+               "        a3 += 1\n"
+               "        a4 += 1\n"
+               "        a5 += 1\n"
+               "        a6 += 1\n"
+               "        a7 += 1\n"
+               "        a8 += 1\n"
+               "        a9 += 1\n"
+               "        a10 += 1\n"
+               "        a11 += 1\n"
+               "        a12 += 1\n"
+               "        a13 += 1\n"
+               "        a14 += 1\n"
+               "        a15 += 1\n"
+               "        a16 += 1\n"
+               "        a17 += 1\n"
+               "    }\n"
+               "    if m == a0 + a1 + a2 + a3 + a4 + a5 + a6 + a7 + a8 + a9 + "
+               "a10 + a11 + a12 + a13 + a14 + a15 + a16 + a17 {\n"
+               "        return t[1..]\n"
+               "    }\n"
+               "    return t\n"
+               "}\n"
+               "fn lone(u0: int, u1: int, s: []int) -> []int {\n"
+               "    t := s[1..]\n"
+               "    a0 := 1\n"
+               "    a1 := 2\n"
+               "    a2 := 3\n"
+               "    a3 := 4\n"
+               "    a4 := 5\n"
+               "    a5 := 6\n"
+               "    a6 := 7\n"
+               "    a7 := 8\n"
+               "    a8 := 9\n"
+               "    a9 := 10\n"
+               "    a10 := 11\n"
+               "    a11 := 12\n"
+               "    a12 := 13\n"
+               "    a13 := 14\n"
+               "    a14 := 15\n"
+               "    a15 := 16\n"
+               "    a16 := 17\n"
+               "    a17 := 18\n"
+               "    m := 0\n"
+               "    for k in 0..3 {\n"
+               "        m += t[0] + t.len + t.len + t.len + t.len + t.len\n"
+               "        a0 += 1\n"
+               "        a1 += 1\n"
+               "        a2 += 1\n"
+               "        a3 += 1\n"
+               "        a4 += 1\n"
+               "        a5 += 1\n"
+               "        a6 += 1\n"
+               "        a7 += 1\n"
+               "        a8 += 1\n"
+               "        a9 += 1\n"
+               "        a10 += 1\n"
+               "        a11 += 1\n"
+               "        a12 += 1\n"
+               "        a13 += 1\n"
+               "        a14 += 1\n"
+               "        a15 += 1\n"
+               "        a16 += 1\n"
+               "        a17 += 1\n"
+               "    }\n"
+               "    if m == a0 + a1 + a2 + a3 + a4 + a5 + a6 + a7 + a8 + a9 + "
+               "a10 + a11 + a12 + a13 + a14 + a15 + a16 + a17 {\n"
+               "        return t[1..]\n"
+               "    }\n"
+               "    return t\n"
+               "}\n";
+
+typedef struct
+{
+    const void *ptr;
+    int64_t len;
+} Slice;
+
+typedef int64_t SI(Slice);
+typedef int64_t SU8(Slice, uint8_t);
+typedef Slice SS(Slice);
+typedef float SF(Slice);
+typedef int64_t ISIS(int64_t, Slice, int64_t, Slice);
+typedef Slice IIS(int64_t, int64_t, Slice);
+
+static const char *const SLICE_FUNCTIONS[] = {
+    "kernels", "window", "ends",   "nested", "known", "sizes",  "rows",
+    "pointed", "empty",  "swap",   "picks",  "mixer", "scan",   "literal",
+    "narrow",  "tails",  "floats", "many",   "chain", "rebase",
+};
+
+TEST_CASE(slices)
+{
+    catch_traps();
+    Program p;
+    REQUIRE(build(&p, SLICES));
+    int64_t r = 0;
+    REQUIRE(call_i2((I2 *)fn(&p, "kernels"), 32, 1, &r) == 0 && r == 1079);
+    REQUIRE(call_i2((I2 *)fn(&p, "kernels"), 7, 0, &r) == 0 && r == 75);
+    REQUIRE(call_i2((I2 *)fn(&p, "window"), 2, 5, &r) == 0 && r == 2903);
+    REQUIRE(call_i2((I2 *)fn(&p, "window"), 0, 10, &r) == 0 && r == 28510);
+    REQUIRE(call_i2((I2 *)fn(&p, "window"), 10, 10, &r) == 0 && r == 0);
+    REQUIRE(call_i2((I2 *)fn(&p, "window"), 4, 3, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "window"), 0, 11, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "window"), -1, 2, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "ends"), 2, 5, &r) == 0 && r == 4080524);
+    REQUIRE(call_i2((I2 *)fn(&p, "ends"), 0, 9, &r) == 0 && r == 10100965);
+    REQUIRE(call_i2((I2 *)fn(&p, "ends"), 3, 2, &r) == 0 && r == 70203);
+    REQUIRE(call_i2((I2 *)fn(&p, "ends"), 0, 10, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "ends"), 1, INT64_MAX, &r) == TRAP_OVERFLOW);
+    REQUIRE(call_i2((I2 *)fn(&p, "nested"), 2, 3, &r) == 0 && r == 3036);
+    REQUIRE(call_i2((I2 *)fn(&p, "nested"), 0, 8, &r) == 0 && r == 8108);
+    REQUIRE(call_i2((I2 *)fn(&p, "nested"), 8, 0, &r) == 0 && r == 0);
+    REQUIRE(call_i2((I2 *)fn(&p, "nested"), 9, 0, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "nested"), 2, 7, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "known"), 0, 1, &r) == 0 && r == 4100);
+    REQUIRE(call_i2((I2 *)fn(&p, "known"), 1, 2, &r) == 0 && r == 4150);
+    REQUIRE(call_i2((I2 *)fn(&p, "known"), 2, 1, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "known"), -1, 1, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "sizes"), 0, 0, &r) == 0 && r == 2042);
+    REQUIRE(call_i2((I2 *)fn(&p, "sizes"), 2, 1, &r) == 0 && r == 923);
+    REQUIRE(call_i2((I2 *)fn(&p, "sizes"), 1, 3, &r) == 0 && r == 3436);
+    REQUIRE(call_i2((I2 *)fn(&p, "sizes"), 4, 0, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "rows"), 1, 2, &r) == 0 && r == 32111);
+    REQUIRE(call_i2((I2 *)fn(&p, "rows"), 0, 0, &r) == 0 && r == 2401);
+    REQUIRE(call_i2((I2 *)fn(&p, "rows"), 2, 2, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "pointed"), 1, 0, &r) == 0 && r == 3107);
+    REQUIRE(call_i2((I2 *)fn(&p, "pointed"), 0, 5, &r) == 0 && r == 4113);
+    REQUIRE(call_i2((I2 *)fn(&p, "pointed"), 4, 0, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "empty"), 0, 7, &r) == 0 && r == 7);
+    REQUIRE(call_i2((I2 *)fn(&p, "empty"), 1, 0, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "swap"), 2, 0, &r) == 0 && r == 304);
+    REQUIRE(call_i2((I2 *)fn(&p, "swap"), 2, 3, &r) == 0 && r == 1802);
+    REQUIRE(call_i2((I2 *)fn(&p, "picks"), 2, 1, &r) == 0 && r == 31);
+    REQUIRE(call_i2((I2 *)fn(&p, "picks"), 1, 2, &r) == 0 && r == 903);
+    REQUIRE(call_i2((I2 *)fn(&p, "picks"), 5, 2, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "mixer"), 2, 3, &r) == 0 && r == 30239);
+    REQUIRE(call_i2((I2 *)fn(&p, "mixer"), 1, 0, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "scan"), 0, 9, &r) == 0 && r == 34);
+    REQUIRE(call_i2((I2 *)fn(&p, "scan"), 2, 100, &r) == 0 && r == 53);
+    REQUIRE(call_i2((I2 *)fn(&p, "literal"), 1, 7, &r) == 0 && r == 13);
+    REQUIRE(call_i2((I2 *)fn(&p, "narrow"), 1, 2, &r) == 0 && r == 4070);
+    REQUIRE(call_i2((I2 *)fn(&p, "narrow"), -1, 0, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "tails"), 4, 0, &r) == 0 && r == 93);
+    REQUIRE(call_i2((I2 *)fn(&p, "tails"), 0, 0, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "floats"), 0, 4, &r) == 0 && r == 15);
+    REQUIRE(call_i2((I2 *)fn(&p, "floats"), 2, 1, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "many"), 0, 1, &r) == 0 && r == 409348);
+    REQUIRE(call_i2((I2 *)fn(&p, "many"), 5, 1, &r) == 0 && r == 404708);
+    REQUIRE(call_i2((I2 *)fn(&p, "many"), 6, 1, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "chain"), 1, 2, &r) == 0 && r == 355);
+    REQUIRE(call_i2((I2 *)fn(&p, "chain"), 5, -1, &r) == 0 && r == 452);
+    REQUIRE(call_i2((I2 *)fn(&p, "rebase"), 2, 0, &r) == 0 && r == 304);
+    REQUIRE(call_i2((I2 *)fn(&p, "rebase"), 3, 1, &r) == 0 && r == 502);
+    REQUIRE(call_i2((I2 *)fn(&p, "rebase"), 0, 0, &r) == 0 && r == 106);
+
+    int64_t xs[3] = { 4, 5, 6 };
+    float fs[3] = { 1.5f, 2.0f, 4.0f };
+    REQUIRE(((SI *)fn(&p, "sum"))((Slice){ xs, 3 }) == 15);
+    REQUIRE(((SU8 *)fn(&p, "count"))((Slice){ "a,b,,c", 6 }, ',') == 3);
+    Slice t = ((SS *)fn(&p, "tail"))((Slice){ xs, 3 });
+    REQUIRE(t.ptr == xs + 1 && t.len == 2);
+    REQUIRE(((SF *)fn(&p, "fsum"))((Slice){ fs, 3 }) == 7.5f);
+    REQUIRE(((ISIS *)fn(&p, "mix"))(2, (Slice){ xs, 3 }, 3, (Slice){ "xyz", 2 }) == 20671);
+    t = ((SS *)fn(&p, "skip2"))((Slice){ xs, 3 });
+    REQUIRE(t.ptr == xs + 2 && t.len == 1);
+
+    int64_t ws[8] = { 0, 10, 20, 30, 40, 50, 60, 70 };
+    int64_t vs[8] = { 0, 10, 12, 14, 16, 16, 0, 0 };
+    int64_t us[8] = { 0, 40, 0, 0, 0, 0, 0, 0 };
+    IIS *swapped = (IIS *)fn(&p, "swapped");
+    IIS *lone = (IIS *)fn(&p, "lone");
+    t = swapped(0, 0, (Slice){ ws, 8 });
+    REQUIRE(t.ptr == ws + 1 && t.len == 7);
+    t = swapped(0, 0, (Slice){ vs, 8 });
+    REQUIRE(t.ptr == vs + 2 && t.len == 6);
+    t = lone(0, 0, (Slice){ ws, 8 });
+    REQUIRE(t.ptr == ws + 1 && t.len == 7);
+    t = lone(0, 0, (Slice){ us, 8 });
+    REQUIRE(t.ptr == us + 2 && t.len == 6);
+
+    IrReference ref;
+    ir_reference_init(&ref, &p.c);
+    for (size_t f = 0; f < sizeof SLICE_FUNCTIONS / sizeof SLICE_FUNCTIONS[0]; f++) {
+        u32 decl = decl_named(&p, SLICE_FUNCTIONS[f]);
+        I2 *native = (I2 *)native_entry(&p.n, decl);
+        for (int64_t a = -3; a <= 14; a++) {
+            for (int64_t b = -3; b <= 12; b++) {
+                int64_t x = a < 14 ? a : INT64_MIN;
+                u64 slots[2] = { (u64)x, (u64)b };
+                u64 want = 0;
+                int want_trap = ir_reference_run(&ref, decl, slots, &want);
+                int got_trap = call_i2(native, x, b, &r);
+                if (want_trap != got_trap || (!want_trap && (int64_t)want != r)) {
+                    fprintf(
+                        stderr,
+                        "slices: %s(%lld, %lld): reference %lld (trap %d), "
+                        "native %lld (trap %d)\n",
+                        SLICE_FUNCTIONS[f],
+                        (long long)x,
+                        (long long)b,
+                        (long long)want,
+                        want_trap,
+                        (long long)r,
+                        got_trap
+                    );
+                    REQUIRE(false);
+                }
+            }
+        }
+    }
+    ir_reference_free(&ref);
     release_program(&p);
     return true;
 }
@@ -1672,6 +2177,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(unsupported_types);
     RUN_TEST_CASE(pointers);
     RUN_TEST_CASE(arrays);
+    RUN_TEST_CASE(slices);
     RUN_TEST_CASE(constant_conditions);
     RUN_TEST_CASE(deep_logic);
     RUN_TEST_CASE(small_integers);

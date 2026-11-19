@@ -9,6 +9,10 @@
     X(IR_LOAD_AT, "load-at")                                                   \
     X(IR_ADDR, "addr")                                                         \
     X(IR_INDEX, "index")                                                       \
+    X(IR_INDEX_LEN, "index-len")                                               \
+    X(IR_SLICE, "slice")                                                       \
+    X(IR_SLICE_FROM, "slice-from")                                             \
+    X(IR_SECOND, "second")                                                     \
     X(IR_ADD, "add")                                                           \
     X(IR_SUB, "sub")                                                           \
     X(IR_MUL, "mul")                                                           \

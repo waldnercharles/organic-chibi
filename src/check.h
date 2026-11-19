@@ -91,6 +91,7 @@ enum
     DECL_PUB = 1,
     DECL_EXPORT = 2,
     DECL_CYCLE = 4,
+    DECL_PAIRS = 8,
 };
 
 enum
@@ -140,6 +141,8 @@ enum
     X(DIAG_NOT_INDEXABLE, "`%T` can't be indexed")                                                  \
     X(DIAG_NOT_INDEX, "an index must be an integer, found `%T`")                                    \
     X(DIAG_INDEX_RANGE, "index %v is out of range for `%U`")                                        \
+    X(DIAG_SLICE_ORDER, "this slice starts at %v, after its end")                                   \
+    X(DIAG_SLICE_LOOP_VARIABLE, "`%t` is a loop variable, so a slice can't point into it")          \
     X(DIAG_LITERAL_TYPE, "the type of this literal isn't known here; write it, as in `u8.[1, 2]`")  \
     X(DIAG_LITERAL_COUNT, "expected the length of `%U`, found %c elements")                         \
     X(DIAG_NOT_ARRAY, "`%U` is not an array, so an array literal can't build it")                   \
@@ -204,6 +207,12 @@ typedef struct
     u32 name;
     u64 previous;
 } Binding;
+
+typedef struct
+{
+    u32 first;
+    u32 second;
+} Pair;
 
 typedef struct
 {
@@ -343,6 +352,9 @@ typedef struct
     u32 *stack_tokens;
     u32 sp;
     u32 stack_cap;
+    Pair *pairs;
+    u32 npairs;
+    u32 pairs_cap;
     u32 *claims;
     u32 nclaims;
     Ir ir;

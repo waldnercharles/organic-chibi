@@ -73,6 +73,8 @@ typedef struct
     u8 type;
     bool assignable;
     bool pointer;
+    bool slice;
+    bool escapes;
     u8 inner;
     u16 length;
 } Var;
@@ -86,9 +88,12 @@ typedef struct
 typedef struct
 {
     u8 ret;
+    bool ret_slice;
+    u16 ret_length;
     u8 nparams;
     u8 params[MAX_PARAMS];
     bool pointers[MAX_PARAMS];
+    bool slices[MAX_PARAMS];
     u16 lengths[MAX_PARAMS];
     u8 level;
 } Helper;
@@ -105,6 +110,9 @@ typedef struct
     u32 nhelpers;
     u32 level;
     u8 ret;
+    bool ret_slice;
+    u16 ret_length;
+    u32 nesting;
     Label result;
     u32 loops;
     u32 max_loops;
@@ -179,7 +187,7 @@ static bool
 matches(const Var *v, u8 t, bool assignable, bool pointer)
 {
     return (t == NTYPES || v->type == t) && v->pointer == pointer &&
-           !v->length && (!assignable || v->assignable);
+           !v->slice && !v->length && (!assignable || v->assignable);
 }
 
 static u32
@@ -225,13 +233,14 @@ pick_numeric_var(Gen *g)
 {
     u32 n = 0;
     for (u32 i = 0; i < g->nvars; i++) {
-        n += g->vars[i].type != T_BOOL && !g->vars[i].pointer && !g->vars[i].length;
+        n += g->vars[i].type != T_BOOL && !g->vars[i].pointer &&
+             !g->vars[i].slice && !g->vars[i].length;
     }
     assert(n > 0);
     u32 k = (u32)random_below(g->rng, (int)n);
     for (u32 i = 0; i < g->nvars; i++) {
         if (g->vars[i].type != T_BOOL && !g->vars[i].pointer &&
-            !g->vars[i].length && k-- == 0) {
+            !g->vars[i].slice && !g->vars[i].length && k-- == 0) {
             return &g->vars[i];
         }
     }
@@ -247,6 +256,8 @@ declare_as(Gen *g, char prefix, u32 number, u8 t, bool assignable)
     v->type = t;
     v->assignable = assignable;
     v->pointer = false;
+    v->slice = false;
+    v->escapes = false;
     v->inner = 0;
     v->length = 0;
     return v;
@@ -261,7 +272,7 @@ declare(Gen *g, char prefix, u8 t, bool assignable)
 static bool
 holds(const Var *v, u8 t, u16 length, u16 inner, bool writable)
 {
-    return v->length && (t == NTYPES || v->type == t) &&
+    return v->length && !v->slice && (t == NTYPES || v->type == t) &&
            (length == ANY || v->length == length) &&
            (inner == ANY || v->inner == inner) &&
            (!writable || v->assignable || v->pointer);
@@ -298,6 +309,101 @@ can_shape(const Gen *g, u8 t, u16 length, u16 inner, bool writable)
 {
     return count_arrays(g, t, length, inner, writable) > 0 ||
            (inner == 0 && count_arrays(g, t, ANY, length, writable) > 0);
+}
+
+static int
+sliceable(const Var *v, u8 t, u16 inner)
+{
+    bool whole = v->slice || (v->length && (v->assignable || v->pointer));
+    if (v->type != t || !whole) {
+        return -1;
+    }
+    if (v->inner == inner) {
+        return v->length;
+    }
+    return inner == 0 && v->length ? v->inner : -1;
+}
+
+static bool
+is_source(const Var *v, bool escaping, u8 t, u16 inner, u16 length)
+{
+    return (!escaping || v->escapes) && sliceable(v, t, inner) >= (int)length;
+}
+
+static u32
+count_sources(const Gen *g, u32 limit, bool escaping, u8 t, u16 inner, u16 length)
+{
+    u32 n = 0;
+    for (u32 i = 0; i < limit; i++) {
+        n += is_source(&g->vars[i], escaping, t, inner, length);
+    }
+    return n;
+}
+
+static Var *
+pick_source(Gen *g, u32 limit, bool escaping, u8 t, u16 inner, u16 length)
+{
+    u32 n = count_sources(g, limit, escaping, t, inner, length);
+    if (n == 0) {
+        return NULL;
+    }
+    u32 k = (u32)random_below(g->rng, (int)n);
+    for (u32 i = 0; i < limit; i++) {
+        if (is_source(&g->vars[i], escaping, t, inner, length) && k-- == 0) {
+            return &g->vars[i];
+        }
+    }
+    return NULL;
+}
+
+static bool
+viewable(const Var *v, u16 max_length)
+{
+    return sliceable(v, v->type, v->inner) >= 0 && v->length <= max_length;
+}
+
+static Var *
+pick_view(Gen *g, u16 max_length)
+{
+    u32 n = 0;
+    for (u32 i = 0; i < g->nvars; i++) {
+        n += viewable(&g->vars[i], max_length);
+    }
+    if (n == 0) {
+        return NULL;
+    }
+    u32 k = (u32)random_below(g->rng, (int)n);
+    for (u32 i = 0; i < g->nvars; i++) {
+        if (viewable(&g->vars[i], max_length) && k-- == 0) {
+            return &g->vars[i];
+        }
+    }
+    return NULL;
+}
+
+static bool
+is_view(const Var *v, u8 t, u16 length)
+{
+    return v->slice && (t == NTYPES || v->type == t) && v->length >= length;
+}
+
+static Var *
+pick_slice(Gen *g, u8 t, u16 length)
+{
+    u32 n = 0;
+    for (u32 i = 0; i < g->nvars; i++) {
+        n += is_view(&g->vars[i], t, length);
+    }
+    if (n == 0) {
+        return NULL;
+    }
+    u32 k = (u32)random_below(g->rng, (int)n);
+    for (u32 i = 0; i < g->nvars; i++) {
+        if (is_view(&g->vars[i], t, length) && k-- == 0) {
+            return &g->vars[i];
+        }
+    }
+    return NULL;
 }
 
 static const Bound *
@@ -513,14 +619,98 @@ shaped(Gen *g, u8 t, u16 length, u16 inner, bool writable)
     subscript(g, rows->length, 0);
 }
 
-static bool
-can_call(const Gen *g, const Helper *h, u8 t)
+static u8
+index_type(Gen *g, u64 limit)
 {
-    if (h->level >= g->level || (t != NTYPES && h->ret != t)) {
+    u8 u = (u8)(T_U8 + random_below(g->rng, 4));
+    while (max_of(u) < limit) {
+        u++;
+    }
+    return u;
+}
+
+static u16
+slice_base(Gen *g, const Var *v, u16 inner)
+{
+    array_base(g, v);
+    if (v->inner == inner) {
+        return v->length;
+    }
+    subscript(g, v->length, 0);
+    return v->inner;
+}
+
+static void
+dyn_slice(Gen *g, const Var *v, u16 inner)
+{
+    u16 n = slice_base(g, v, inner);
+    u16 h = n / 2;
+    u8 u = index_type(g, n + 1u);
+    emit(g, "[(");
+    nonliteral(g, u, 0);
+    emit(g, " %% %u)..", h + 1u);
+
+    bool inclusive = n && chance(g, 50);
+    emit(g, inclusive ? "=(%u + (" : "(%u + (", h);
+    nonliteral(g, u, 0);
+    emit(g, " %% %u))]", n - h + !inclusive);
+}
+
+static void
+literal_items(Gen *g, u8 t, u16 length, u16 inner)
+{
+    emit(g, "[");
+    for (u16 k = 0; k < length; k++) {
+        if (k) {
+            emit(g, ", ");
+        }
+        if (!inner) {
+            typed_expr(g, t, chance(g, 20) ? 2 : 1);
+        } else if (chance(g, 25) && can_shape(g, t, inner, 0, false)) {
+            shaped(g, t, inner, 0, false);
+        } else {
+            if (chance(g, 30)) {
+                emit(g, "%s", type_names[t]);
+            }
+            emit(g, ".");
+            literal_items(g, t, inner, 0);
+        }
+    }
+    emit(g, "]");
+}
+
+static bool slice_value(Gen *g, u32 limit, bool escaping, u8 t, u16 inner, u16 length, bool convert);
+
+static void
+slice_argument(Gen *g, u8 t, u16 length, bool keep)
+{
+    if (!keep && length &&
+        (count_sources(g, g->nvars, false, t, 0, length) == 0 || chance(g, 20))) {
+        if (chance(g, 30)) {
+            emit(g, "%s", type_names[t]);
+        }
+        emit(g, ".");
+        literal_items(g, t, length, 0);
+        return;
+    }
+    slice_value(g, g->nvars, false, t, 0, length, true);
+}
+
+static bool
+can_call(const Gen *g, const Helper *h, u8 t, bool keep)
+{
+    if (h->level >= g->level || (t != NTYPES && (h->ret != t || h->ret_slice))) {
         return false;
     }
     for (u32 p = 0; p < h->nparams; p++) {
         u8 u = h->params[p];
+        if (h->slices[p]) {
+            if ((keep || !h->lengths[p]) &&
+                count_sources(g, g->nvars, false, u, 0, h->lengths[p]) == 0) {
+                return false;
+            }
+            continue;
+        }
         if (h->lengths[p] && !can_shape(g, u, h->lengths[p], 0, true)) {
             return false;
         }
@@ -538,7 +728,7 @@ callable(const Gen *g, u8 t)
 {
     u32 n = 0;
     for (u32 k = 0; k < g->nhelpers; k++) {
-        n += can_call(g, &g->helpers[k], t);
+        n += can_call(g, &g->helpers[k], t, false);
     }
     return n;
 }
@@ -564,6 +754,26 @@ pointer_argument(Gen *g, u8 t, u16 length)
     }
 }
 
+static void
+call_args(Gen *g, u32 k, int depth, bool keep)
+{
+    const Helper *h = &g->helpers[k];
+    emit(g, "h%u(", k);
+    for (u32 p = 0; p < h->nparams; p++) {
+        if (p) {
+            emit(g, ", ");
+        }
+        if (h->slices[p]) {
+            slice_argument(g, h->params[p], h->lengths[p], keep);
+        } else if (h->pointers[p]) {
+            pointer_argument(g, h->params[p], h->lengths[p]);
+        } else {
+            typed_expr(g, h->params[p], depth - 1);
+        }
+    }
+    emit(g, ")");
+}
+
 static bool
 call_helper(Gen *g, u8 t, int depth)
 {
@@ -573,24 +783,88 @@ call_helper(Gen *g, u8 t, int depth)
     }
     u32 pick = (u32)random_below(g->rng, (int)n);
     for (u32 k = 0; k < g->nhelpers; k++) {
-        const Helper *h = &g->helpers[k];
-        if (can_call(g, h, t) && pick-- == 0) {
-            emit(g, "h%u(", k);
-            for (u32 p = 0; p < h->nparams; p++) {
-                if (p) {
-                    emit(g, ", ");
-                }
-                if (h->pointers[p]) {
-                    pointer_argument(g, h->params[p], h->lengths[p]);
-                } else {
-                    typed_expr(g, h->params[p], depth - 1);
-                }
-            }
-            emit(g, ")");
+        if (can_call(g, &g->helpers[k], t, false) && pick-- == 0) {
+            call_args(g, k, depth, false);
             return true;
         }
     }
     return false;
+}
+
+static bool
+returns_view(const Gen *g, const Helper *h, u8 t, u16 length)
+{
+    return h->ret_slice && h->ret == t && h->ret_length >= length &&
+           can_call(g, h, NTYPES, true);
+}
+
+static int
+pick_returning(Gen *g, u8 t, u16 length)
+{
+    u32 n = 0;
+    for (u32 k = 0; k < g->nhelpers; k++) {
+        n += returns_view(g, &g->helpers[k], t, length);
+    }
+    if (n == 0) {
+        return -1;
+    }
+    u32 pick = (u32)random_below(g->rng, (int)n);
+    for (u32 k = 0; k < g->nhelpers; k++) {
+        if (returns_view(g, &g->helpers[k], t, length) && pick-- == 0) {
+            return (int)k;
+        }
+    }
+    return -1;
+}
+
+static bool
+slice_value(Gen *g, u32 limit, bool escaping, u8 t, u16 inner, u16 length, bool convert)
+{
+    u32 sources = count_sources(g, limit, escaping, t, inner, length);
+    int k = limit == g->nvars && !escaping && !inner && g->nesting < 2 &&
+                    (!sources || chance(g, 15))
+              ? pick_returning(g, t, length)
+              : -1;
+    bool view = true;
+    bool escapes = false;
+    u16 n;
+    if (k >= 0) {
+        g->nesting++;
+        call_args(g, (u32)k, 2, true);
+        g->nesting--;
+        n = g->helpers[k].ret_length;
+    } else {
+        Var *v = pick_source(g, limit, escaping, t, inner, length);
+        assert(v);
+        view = v->slice && v->inner == inner;
+        escapes = v->escapes;
+        n = slice_base(g, v, inner);
+    }
+    if (n == length && chance(g, view ? 25 : convert ? 40 : 0)) {
+        return escapes;
+    }
+
+    u16 room = (u16)(n - length);
+    int form = random_below(g->rng, 10);
+    if (form < 2) {
+        int k = random_below(g->rng, room + 1);
+        emit(g, "[%d..%d]", k, k + length);
+    } else if (form < 3 && length) {
+        int k = random_below(g->rng, room + 1);
+        emit(g, "[%d..=%d]", k, k + length - 1);
+    } else if (form < 4) {
+        emit(g, "[%u..]", room);
+    } else if (form < 5 && length) {
+        emit(g, "[..=%d]", length - 1);
+    } else if (form < 6) {
+        emit(g, "[..%u]", length);
+    } else {
+        u32 m = room + 1u + chance(g, 3);
+        emit(g, "[(");
+        nonliteral(g, index_type(g, m), 0);
+        emit(g, " %% %u)..][..%u]", m, length);
+    }
+    return escapes;
 }
 
 static void
@@ -641,6 +915,21 @@ nonliteral(Gen *g, u8 t, int depth)
     Var *a = chance(g, 20) ? pick_array(g, t, ANY, ANY, false) : NULL;
     if (a) {
         element(g, a, 0);
+        return;
+    }
+    Var *s = chance(g, 15) ? pick_slice(g, t, 1) : NULL;
+    if (s) {
+        element(g, s, 0);
+        return;
+    }
+    Var *w = t == T_INT && chance(g, 6) ? pick_view(g, ANY) : NULL;
+    if (w && w->slice && chance(g, 50)) {
+        emit(g, "%s.len", w->name);
+        return;
+    }
+    if (w) {
+        dyn_slice(g, w, w->inner && w->length && chance(g, 40) ? 0 : w->inner);
+        emit(g, ".len");
         return;
     }
     Var *v = pick_var(g, t, false);
@@ -1037,6 +1326,17 @@ switch_value(Gen *g, u8 t, int depth, bool typed)
 }
 
 static void
+return_value(Gen *g, int depth)
+{
+    emit(g, "return ");
+    if (g->ret_slice) {
+        slice_value(g, g->nvars, true, g->ret, 0, g->ret_length, g->result.typed);
+    } else {
+        break_value(g, &g->result, depth);
+    }
+}
+
+static void
 switch_statement(Gen *g, int depth)
 {
     line(g);
@@ -1075,8 +1375,7 @@ switch_statement(Gen *g, int depth)
         }
         emit(g, " => ");
         if (chance(g, 25)) {
-            emit(g, "return ");
-            break_value(g, &g->result, 2);
+            return_value(g, 2);
         } else {
             emit(g, "{");
             g->indent++;
@@ -1355,29 +1654,6 @@ print_shape(Gen *g, u8 t, u16 length, u16 inner)
 }
 
 static void
-literal_items(Gen *g, u8 t, u16 length, u16 inner)
-{
-    emit(g, "[");
-    for (u16 k = 0; k < length; k++) {
-        if (k) {
-            emit(g, ", ");
-        }
-        if (!inner) {
-            typed_expr(g, t, chance(g, 20) ? 2 : 1);
-        } else if (chance(g, 25) && can_shape(g, t, inner, 0, false)) {
-            shaped(g, t, inner, 0, false);
-        } else {
-            if (chance(g, 30)) {
-                emit(g, "%s", type_names[t]);
-            }
-            emit(g, ".");
-            literal_items(g, t, inner, 0);
-        }
-    }
-    emit(g, "]");
-}
-
-static void
 typed_literal(Gen *g, u8 t, u16 length, u16 inner)
 {
     if (inner) {
@@ -1492,9 +1768,8 @@ array_value(Gen *g, u8 t, u16 length, u16 inner)
 }
 
 static void
-array_loop(Gen *g, int depth)
+array_loop(Gen *g, const Var *a, int depth)
 {
-    Var *a = pick_array(g, NTYPES, ANY, ANY, false);
     if (g->nvars + 2 > MAX_VARS || a->length > MAX_ITERATED) {
         return;
     }
@@ -1514,7 +1789,7 @@ array_loop(Gen *g, int depth)
     }
     emit(g, " in ");
     array_base(g, a);
-    if (inner && chance(g, 40)) {
+    if (inner && length && chance(g, 40)) {
         subscript(g, length, 0);
         length = inner;
         inner = 0;
@@ -1561,6 +1836,7 @@ array_pointer(Gen *g, const Var *a)
     }
     Var *r = declare_as(g, 'r', n, a->type, false);
     r->pointer = true;
+    r->escapes = a->escapes;
     r->length = length;
     r->inner = (u8)inner;
 }
@@ -1604,7 +1880,7 @@ array_statement(Gen *g, int depth)
         return;
     }
     if (pick < 5 && depth > 0 && g->loops < g->max_loops) {
-        array_loop(g, depth);
+        array_loop(g, pick_array(g, NTYPES, ANY, ANY, false), depth);
         return;
     }
     if (pick < 6 && g->nvars < MAX_VARS) {
@@ -1634,6 +1910,199 @@ array_statement(Gen *g, int depth)
     array_value(g, a->type, length, inner);
 }
 
+static Var *
+view_shape(Gen *g, u16 max_length, u8 *t, u16 *inner, u16 *length)
+{
+    Var *v = pick_view(g, max_length);
+    if (!v) {
+        return NULL;
+    }
+    *t = v->type;
+    *inner = v->inner && v->length && chance(g, 40) ? 0 : v->inner;
+    *length = (u16)random_below(g->rng, sliceable(v, *t, *inner) + 1);
+    return v;
+}
+
+static bool
+call_shape(Gen *g, u8 *t, u16 *inner, u16 *length)
+{
+    if (g->nesting || !chance(g, 30)) {
+        return false;
+    }
+    u32 n = 0;
+    for (u32 k = 0; k < g->nhelpers; k++) {
+        const Helper *h = &g->helpers[k];
+        n += h->ret_slice && can_call(g, h, NTYPES, true);
+    }
+    if (n == 0) {
+        return false;
+    }
+    u32 pick = (u32)random_below(g->rng, (int)n);
+    for (u32 k = 0; k < g->nhelpers; k++) {
+        const Helper *h = &g->helpers[k];
+        if (h->ret_slice && can_call(g, h, NTYPES, true) && pick-- == 0) {
+            *t = h->ret;
+            *inner = 0;
+            *length = (u16)random_below(g->rng, h->ret_length + 1);
+            return true;
+        }
+    }
+    return false;
+}
+
+static void
+declare_slice(Gen *g)
+{
+    u8 t;
+    u16 inner;
+    u16 length;
+    if (g->nvars == MAX_VARS || (!call_shape(g, &t, &inner, &length) &&
+                                 !view_shape(g, ANY, &t, &inner, &length))) {
+        return;
+    }
+
+    line(g);
+    u32 n = g->names++;
+    bool typed = chance(g, 50);
+    if (typed) {
+        emit(g, "s%u: []", n);
+        if (inner) {
+            emit(g, "[%u]", inner);
+        }
+        emit(g, "%s = ", type_names[t]);
+    } else {
+        emit(g, "s%u := ", n);
+    }
+    bool escapes = slice_value(g, g->nvars, false, t, inner, length, typed);
+    Var *s = declare_as(g, 's', n, t, true);
+    s->slice = true;
+    s->escapes = escapes;
+    s->inner = (u8)inner;
+    s->length = length;
+}
+
+static void
+shrink_loop(Gen *g, int depth)
+{
+    u8 t;
+    u16 inner;
+    u16 length;
+    if (g->nvars == MAX_VARS || !view_shape(g, MAX_ITERATED, &t, &inner, &length)) {
+        return;
+    }
+
+    u32 w = g->names++;
+    u32 x = g->names++;
+    line(g);
+    emit(g, "w%u := ", w);
+    slice_value(g, g->nvars, false, t, inner, length, false);
+    line(g);
+    loop_label(g);
+    emit(g, "while w%u.len > 0 {", w);
+    g->indent++;
+    line(g);
+    emit(g, "x%u := w%u[0]", x, w);
+    line(g);
+    emit(g, "w%u = w%u[1..]", w, w);
+    g->indent--;
+
+    u32 saved = g->nvars;
+    declare_as(g, 'x', x, t, false)->length = inner;
+    g->loops++;
+    block(g, depth - 1, 1 + random_below(g->rng, 3));
+    g->loops--;
+    g->nvars = saved;
+    line(g);
+    emit(g, "}");
+}
+
+static void
+dyn_loop(Gen *g, int depth)
+{
+    u8 t;
+    u16 inner;
+    u16 length;
+    bool call = call_shape(g, &t, &inner, &length);
+    Var *v = call ? NULL : pick_view(g, MAX_ITERATED);
+    if ((!call && !v) || g->nvars + 2 > MAX_VARS) {
+        return;
+    }
+
+    if (v) {
+        t = v->type;
+        inner = v->inner && v->length && chance(g, 40) ? 0 : v->inner;
+    }
+    u32 x = g->names++;
+    u32 i = g->names++;
+    bool indexed = chance(g, 30);
+    line(g);
+    loop_label(g);
+    emit(g, "for x%u", x);
+    if (indexed) {
+        emit(g, ", j%u", i);
+    }
+    emit(g, " in ");
+    if (call) {
+        slice_value(g, g->nvars, false, t, 0, length, false);
+    } else {
+        dyn_slice(g, v, inner);
+    }
+    emit(g, " {");
+
+    u32 saved = g->nvars;
+    declare_as(g, 'x', x, t, false)->length = inner;
+    if (indexed) {
+        declare_as(g, 'j', i, T_INT, false);
+    }
+    g->loops++;
+    block(g, depth - 1, 1 + random_below(g->rng, 3));
+    g->loops--;
+    g->nvars = saved;
+    line(g);
+    emit(g, "}");
+}
+
+static void
+slice_statement(Gen *g, int depth)
+{
+    Var *s = pick_slice(g, NTYPES, 0);
+    int pick = random_below(g->rng, 12);
+    bool loop = depth > 0 && g->loops < g->max_loops;
+    if (!s || pick < 3) {
+        declare_slice(g);
+        return;
+    }
+    if (pick < 5 && loop) {
+        array_loop(g, s, depth);
+        return;
+    }
+    if (pick < 6 && loop) {
+        shrink_loop(g, depth);
+        return;
+    }
+    if (pick < 7 && loop) {
+        dyn_loop(g, depth);
+        return;
+    }
+    if (pick < 8 && s->assignable) {
+        line(g);
+        emit(g, "%s = ", s->name);
+        u32 limit = (u32)(s - g->vars) + 1;
+        slice_value(g, limit, s->escapes, s->type, s->inner, s->length, true);
+        return;
+    }
+    if (pick < 9 && !s->inner) {
+        line(g);
+        array_fill(g, s);
+        return;
+    }
+    if (s->length) {
+        line(g);
+        element(g, s, 1);
+        assignment(g, s->type);
+    }
+}
+
 static void
 statement(Gen *g, int depth)
 {
@@ -1643,6 +2112,10 @@ statement(Gen *g, int depth)
     }
     if (chance(g, 15)) {
         array_statement(g, depth);
+        return;
+    }
+    if (chance(g, 10)) {
+        slice_statement(g, depth);
         return;
     }
     int pick = random_below(g->rng, 22);
@@ -1813,8 +2286,7 @@ statement(Gen *g, int depth)
         emit(g, " {");
         g->indent++;
         line(g);
-        emit(g, "return ");
-        break_value(g, &g->result, 3);
+        return_value(g, 3);
         g->indent--;
         line(g);
         emit(g, "}");
@@ -1867,7 +2339,7 @@ digest_arrays(Gen *g)
 {
     u32 n = 0;
     for (u32 i = 0; i < g->nvars; i++) {
-        n += g->vars[i].length && !g->vars[i].pointer;
+        n += g->vars[i].length && !g->vars[i].pointer && !g->vars[i].slice;
     }
     if (n == 0 || !chance(g, 50)) {
         return false;
@@ -1877,7 +2349,7 @@ digest_arrays(Gen *g)
     line(g);
     emit(g, "s%u: int = 0", sum);
     for (u32 i = 0; i < g->nvars; i++) {
-        if (g->vars[i].length && !g->vars[i].pointer) {
+        if (g->vars[i].length && !g->vars[i].pointer && !g->vars[i].slice) {
             digest(g, sum, &g->vars[i]);
         }
     }
@@ -1900,7 +2372,11 @@ function(Gen *g, int count, bool entry)
     if (!entry || !digest_arrays(g)) {
         line(g);
         emit(g, "return ");
-        last_value(g, &g->result, 4);
+        if (g->ret_slice) {
+            slice_value(g, g->nvars, true, g->ret, 0, g->ret_length, g->result.typed);
+        } else {
+            last_value(g, &g->result, 4);
+        }
     }
     emit(g, "\n}\n");
     g->indent = 0;
@@ -1915,30 +2391,51 @@ random_typed_program(u64 *rng, char *buf)
         Helper *h = &g.helpers[k];
         h->level = (u8)(k / 2);
         h->ret = random_type(&g, false);
+        h->ret_slice = chance(&g, 20);
+        h->ret_length = (u16)random_below(rng, 5);
         h->nparams = (u8)(1 + random_below(rng, MAX_PARAMS));
+        if (h->ret_slice && h->nparams < 2) {
+            h->nparams = 2;
+        }
         g.nvars = 0;
         g.names = 0;
         g.level = h->level;
         g.ret = h->ret;
+        g.ret_slice = h->ret_slice;
+        g.ret_length = h->ret_length;
         g.result = (Label){ .type = h->ret, .typed = chance(&g, 50) };
         g.max_loops = 1;
         emit(&g, "fn h%u(", k);
         for (u32 p = 0; p < h->nparams; p++) {
-            h->params[p] = random_type(&g, p == 0);
-            h->pointers[p] = p > 0 && chance(&g, 30);
+            bool source = h->ret_slice && p == 1;
+            h->params[p] = source ? h->ret : random_type(&g, p == 0);
+            h->pointers[p] = !source && p > 0 && chance(&g, 30);
+            h->slices[p] = source || (p > 0 && !h->pointers[p] && chance(&g, 25));
             h->lengths[p] = h->pointers[p] && chance(&g, 40)
                               ? (u16)(1 + random_below(rng, 6))
-                              : 0;
+                          : source ? (u16)(h->ret_length + random_below(rng, 3))
+                          : h->slices[p] ? (u16)random_below(rng, 7)
+                                         : 0;
             Var *v = declare(&g, 'p', h->params[p], false);
             v->pointer = h->pointers[p];
+            v->slice = h->slices[p];
+            v->escapes = h->pointers[p] || h->slices[p];
             v->length = h->lengths[p];
             emit(&g, "%s%s: %s", p ? ", " : "", v->name, h->pointers[p] ? "*" : "");
-            if (h->lengths[p]) {
+            if (h->slices[p]) {
+                emit(&g, "[]");
+            } else if (h->lengths[p]) {
                 emit(&g, "[%u]", h->lengths[p]);
             }
             emit(&g, "%s", type_names[h->params[p]]);
         }
-        emit(&g, g.result.typed ? ") -> %s {" : ") {", type_names[h->ret]);
+        emit(
+            &g,
+            !g.result.typed ? ") {"
+            : h->ret_slice  ? ") -> []%s {"
+                            : ") -> %s {",
+            type_names[h->ret]
+        );
         g.nhelpers = k;
         function(&g, 2 + random_below(rng, 4), false);
     }
@@ -1949,6 +2446,7 @@ random_typed_program(u64 *rng, char *buf)
         g.names = 0;
         g.level = MAX_HELPERS;
         g.ret = T_INT;
+        g.ret_slice = false;
         g.result = (Label){ .type = T_INT, .typed = true };
         g.max_loops = 2;
         emit(&g, "fn e%u(a: int, b: int, c: int, d: f64) -> int {", k);
@@ -1980,6 +2478,9 @@ random_typed_program(u64 *rng, char *buf)
         }
         if (chance(&g, 50)) {
             declare_array(&g);
+        }
+        if (chance(&g, 40)) {
+            declare_slice(&g);
         }
         function(&g, 3 + random_below(rng, 6), true);
     }

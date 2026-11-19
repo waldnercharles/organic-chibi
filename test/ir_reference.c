@@ -29,7 +29,7 @@ ty(const Checker *c, u32 type)
     if (kind == TYPE_BOOL) {
         return (Ty){ false, false, 8 };
     }
-    if (kind == TYPE_POINTER) {
+    if (kind == TYPE_POINTER || kind == TYPE_SLICE) {
         return (Ty){ false, false, 64 };
     }
     return (Ty){ kind == TYPE_FLOAT,
@@ -257,6 +257,7 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                       : value_type(ir, fn->first + (x)))
 
     int trap = TRAP_UNREACHABLE;
+    u64 second = 0;
     for (u32 i = 0; i < fn->count;) {
         if (++r->steps > STEP_LIMIT) {
             trap = TRAP_HANG;
@@ -291,15 +292,45 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
             }
             case IR_ADDR: v = (u64)(uintptr_t)(frame + offsets[a]); break;
             case IR_INDEX: {
-                u32 array = c->types.arg0[OPERAND_TYPE(a)];
+                u32 base = OPERAND_TYPE(a);
                 __int128 k = wide(OPERAND(b), ty(c, OPERAND_TYPE(b)));
-                if (k < 0 || k >= (__int128)c->types.arg1[array]) {
+                bool checked = !(b & IR_CONST) && c->types.kinds[base] == TYPE_POINTER;
+                if (checked &&
+                    (k < 0 || k >= (__int128)c->types.arg1[c->types.arg0[base]])) {
                     fail = TRAP_BOUNDS;
                     break;
                 }
                 v = OPERAND(a) + (u64)k * check_type_size(c, c->types.arg0[type]);
                 break;
             }
+            case IR_INDEX_LEN: {
+                const u32 *x = ir->extra + fn->first_extra + b;
+                __int128 n = (int64_t)OPERAND(x[0]);
+                __int128 k = wide(OPERAND(x[1]), ty(c, OPERAND_TYPE(x[1])));
+                if (k < 0 || k >= n) {
+                    fail = TRAP_BOUNDS;
+                    break;
+                }
+                v = OPERAND(a) + (u64)k * check_type_size(c, c->types.arg0[type]);
+                break;
+            }
+            case IR_SLICE:
+            case IR_SLICE_FROM: {
+                const u32 *x = ir->extra + fn->first_extra + b;
+                __int128 n = (int64_t)OPERAND(x[0]);
+                __int128 lo = wide(OPERAND(x[1]), ty(c, OPERAND_TYPE(x[1])));
+                __int128 hi = kind == IR_SLICE
+                                ? wide(OPERAND(x[2]), ty(c, OPERAND_TYPE(x[2])))
+                                : n;
+                if (lo < 0 || lo > hi || hi > n) {
+                    fail = TRAP_BOUNDS;
+                    break;
+                }
+                v = OPERAND(a) + (u64)lo * check_type_size(c, c->types.arg0[type]);
+                second = (u64)(hi - lo);
+                break;
+            }
+            case IR_SECOND: v = second; break;
             case IR_COPY:
                 memmove(
                     (void *)(uintptr_t)OPERAND(a),
@@ -446,13 +477,17 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                 for (u32 k = 0; k < list[0]; k++) {
                     call_args[k] = OPERAND(list[1 + k]);
                 }
-                fail = run(r, c->decls.funcs[a] - 1, call_args, &v);
+                u64 out[2] = { 0, 0 };
+                fail = run(r, c->decls.funcs[a] - 1, call_args, out);
+                v = out[0];
+                second = out[1];
                 free(call_args);
                 break;
             }
             case IR_DROP: break;
             case IR_RET:
-                *result = type == TYPE_ID_VOID ? 0 : OPERAND(a);
+                result[0] = type == TYPE_ID_VOID ? 0 : OPERAND(a);
+                result[1] = c->types.kinds[type] == TYPE_SLICE ? OPERAND(b) : 0;
                 trap = 0;
                 goto done;
             case IR_BLOCK:
@@ -528,5 +563,8 @@ int
 ir_reference_run(IrReference *r, u32 decl, const u64 *args, u64 *result)
 {
     r->steps = 0;
-    return run(r, r->c->decls.funcs[decl] - 1, args, result);
+    u64 out[2] = { 0, 0 };
+    int trap = run(r, r->c->decls.funcs[decl] - 1, args, out);
+    *result = out[0];
+    return trap;
 }

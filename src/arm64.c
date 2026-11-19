@@ -179,6 +179,7 @@ enum
     INFO_SMALL = 0x10,
     INFO_UNSUPPORTED = 0x20,
     INFO_MEMORY = 0x40,
+    INFO_PAIR = 0x80,
 };
 
 typedef struct
@@ -345,6 +346,9 @@ type_info(const Checker *c, u32 type)
     }
     if (kind == TYPE_POINTER) {
         return 3;
+    }
+    if (kind == TYPE_SLICE) {
+        return 3 | INFO_PAIR;
     }
     if (kind == TYPE_ARRAY) {
         return INFO_MEMORY;
@@ -762,6 +766,23 @@ fetch(Emit *e, u32 x, u32 scratch)
     bool fl = is_float(e->vinfo[x]);
     memory(e, fl ? OP_LDRD : OP_LDRX, 3, scratch, e->spills[x], fl ? X8 : scratch);
     return scratch;
+}
+
+static u32
+take_over(Emit *e, u32 from, u32 v, u8 info)
+{
+    u8 h = e->regs[from];
+    e->regs[from] = NO_REG;
+    e->regs[v] = h;
+    e->vinfo[v] = info;
+    if (h >= ALIAS) {
+        u32 k = e->alias_at[from];
+        e->aliases[k] = v;
+        e->alias_at[v] = k;
+        return (h - ALIAS) & 31u;
+    }
+    e->holders[h] = v;
+    return h & 31u;
 }
 
 static void
@@ -1751,32 +1772,47 @@ add_offset(Emit *e, u32 d, u32 n, u64 offset)
     }
 }
 
-static void
-index_address(Emit *e, u32 i, u32 type, u32 a, u32 b)
+static u32
+fetch_index(Emit *e, u32 x, u32 scratch)
 {
-    const Types *t = &e->c->types;
-    u64 size = check_type_size(e->c, t->arg0[type]);
-    u64 n = t->arg1[t->arg0[e->ir->types[e->fn->first + a]]];
+    u8 t = operand_info(e, x);
+    u32 r = fetch(e, x, scratch);
+    if (bits_of(t) < 64) {
+        put(e,
+            is_signed(t) ? OP_SXTW | r << 5 | scratch
+                         : OP_ORR | r << 16 | ZR << 5 | scratch);
+        r = scratch;
+    }
+    return r;
+}
+
+static bool
+consumed_next(const Emit *e, u32 v)
+{
+    if (v + 1 >= e->fn->count) {
+        return false;
+    }
+    u8 kind = e->ir->kinds[e->fn->first + v + 1];
+    return kind == IR_STORE || kind == IR_RET || kind == IR_CALL;
+}
+
+static u32
+offset_address(Emit *e, u32 i, u8 info, u32 a, u64 offset)
+{
+    if (offset == 0 && !(a & IR_CONST) && e->regs[a] != NO_REG &&
+        !consumed_next(e, i)) {
+        return take_over(e, a, i, info);
+    }
     u32 p = fetch(e, a, X16);
-    if (b & IR_CONST) {
-        release(e, a);
-        u32 d = result(e, i, e->info[type]);
-        add_offset(e, d, p, constant_bits(e, b) * size);
-        return;
-    }
-
-    u8 it = operand_info(e, b);
-    u32 r = fetch(e, b, X17);
-    if (bits_of(it) < 64) {
-        put(e, is_signed(it) ? OP_SXTW | r << 5 | X17 : OP_ORR | r << 16 | ZR << 5 | X17);
-        r = X17;
-    }
-    compare_imm(e, r, n, SF, false);
-    trap_if(e, COND_HS, TRAP_BOUNDS);
     release(e, a);
-    release(e, b);
+    u32 d = result(e, i, info);
+    add_offset(e, d, p, offset);
+    return d;
+}
 
-    u32 d = result(e, i, e->info[type]);
+static void
+scaled_address(Emit *e, u32 d, u32 p, u32 r, u64 size)
+{
     if (size == 0) {
         mov(e, SF, d, p);
     } else if ((size & (size - 1)) == 0) {
@@ -1786,6 +1822,204 @@ index_address(Emit *e, u32 i, u32 type, u32 a, u32 b)
         mov_imm(e, X8, size, SF);
         put(e, OP_MADD | SF | X8 << 16 | p << 10 | r << 5 | d);
     }
+}
+
+static void
+index_address(Emit *e, u32 i, u32 type, u32 a, u32 b)
+{
+    const Types *t = &e->c->types;
+    u64 size = check_type_size(e->c, t->arg0[type]);
+    if (b & IR_CONST) {
+        offset_address(e, i, e->info[type], a, constant_bits(e, b) * size);
+        return;
+    }
+
+    u32 base = e->ir->types[e->fn->first + a];
+    u32 p = fetch(e, a, X16);
+    u32 r = fetch_index(e, b, X17);
+    if (t->kinds[base] == TYPE_POINTER) {
+        compare_imm(e, r, t->arg1[t->arg0[base]], SF, false);
+        trap_if(e, COND_HS, TRAP_BOUNDS);
+    }
+    release(e, a);
+    release(e, b);
+
+    u32 d = result(e, i, e->info[type]);
+    scaled_address(e, d, p, r, size);
+}
+
+static void
+index_len(Emit *e, u32 i, u32 type, u32 a, u32 b)
+{
+    const u32 *x = e->ir->extra + e->fn->first_extra + b;
+    u32 len = x[0];
+    u32 at = x[1];
+    u64 size = check_type_size(e->c, e->c->types.arg0[type]);
+    if (at & IR_CONST) {
+        u64 k = constant_bits(e, at);
+        u32 n = fetch(e, len, X17);
+        compare_imm(e, n, k, SF, false);
+        trap_if(e, COND_LS, TRAP_BOUNDS);
+        release(e, len);
+        offset_address(e, i, e->info[type], a, k * size);
+        return;
+    }
+
+    u32 r = fetch_index(e, at, X17);
+    if (len & IR_CONST) {
+        compare_imm(e, r, constant_bits(e, len), SF, false);
+    } else {
+        u32 n = fetch(e, len, X16);
+        put(e, OP_SUBS | SF | n << 16 | r << 5 | ZR);
+        release(e, len);
+    }
+    trap_if(e, COND_HS, TRAP_BOUNDS);
+
+    u32 p = fetch(e, a, X16);
+    release(e, a);
+    release(e, at);
+    u32 d = result(e, i, e->info[type]);
+    scaled_address(e, d, p, r, size);
+}
+
+static u8
+half_target(const Emit *e, u32 i, u32 half)
+{
+    u32 v = i + half;
+    u32 at = i + 2;
+    if (at >= e->fn->count) {
+        return NO_REG;
+    }
+    u32 g = e->fn->first + at;
+    switch (e->ir->kinds[g]) {
+        case IR_STORE: {
+            u32 s = g + half;
+            if (at + half >= e->fn->count || e->ir->kinds[s] != IR_STORE ||
+                e->ir->bs[s] != v) {
+                return NO_REG;
+            }
+            u8 h = e->slot_regs[e->ir->as[s]];
+            return h != NO_REG && !aliased(e, h) ? h : NO_REG;
+        }
+        case IR_RET:
+            return e->ir->as[g] == i && e->ir->bs[g] == i + 1 && !aliased(e, half)
+                     ? (u8)half
+                     : NO_REG;
+        case IR_CALL: {
+            const u32 *args = e->ir->extra + e->fn->first_extra + e->ir->bs[g];
+            u32 same = 0;
+            for (u32 j = 1; j <= args[0] && same < 8; j++) {
+                if (args[j] == v) {
+                    return (u8)same;
+                }
+                same += args[j] == i || !is_float(operand_info(e, args[j]));
+            }
+            return NO_REG;
+        }
+        default: return NO_REG;
+    }
+}
+
+static u32
+half_result(Emit *e, u32 i, u32 half, u8 info)
+{
+    u8 h = half_target(e, i, half);
+    if (h == NO_REG) {
+        return alloc(e, i + half, info);
+    }
+    add_alias(e, i + half, h, info);
+    return h & 31u;
+}
+
+static void
+move_half(Emit *e, u32 i, u32 half, u8 info, u32 x)
+{
+    u8 h = half_target(e, i, half);
+    if (h == NO_REG && !(x & IR_CONST) && e->regs[x] != NO_REG) {
+        take_over(e, x, i + half, info);
+        return;
+    }
+    u32 r = fetch(e, x, X16);
+    release(e, x);
+    u32 d = half_result(e, i, half, info);
+    mov(e, SF, d, r);
+}
+
+static void
+check_order(Emit *e, u32 x, u32 y)
+{
+    if ((x & IR_CONST) && ((y & IR_CONST) || constant_bits(e, x) == 0)) {
+        return;
+    }
+    if (x & IR_CONST) {
+        u32 r = fetch_index(e, y, X16);
+        compare_imm(e, r, constant_bits(e, x), SF, false);
+        trap_if(e, COND_LO, TRAP_BOUNDS);
+        return;
+    }
+    u32 r = fetch_index(e, x, X16);
+    if (y & IR_CONST) {
+        compare_imm(e, r, constant_bits(e, y), SF, false);
+    } else {
+        u32 q = fetch_index(e, y, X17);
+        put(e, OP_SUBS | SF | q << 16 | r << 5 | ZR);
+    }
+    trap_if(e, COND_HI, TRAP_BOUNDS);
+}
+
+static void
+slice(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
+{
+    const u32 *x = e->ir->extra + e->fn->first_extra + b;
+    u32 len = x[0];
+    u32 lo = x[1];
+    u32 hi = kind == IR_SLICE ? x[2] : len;
+    u64 size = check_type_size(e->c, e->c->types.arg0[type]);
+    u8 t = e->info[type];
+    u8 n = e->info[TYPE_ID_I64];
+    if (kind == IR_SLICE) {
+        check_order(e, hi, len);
+        release(e, len);
+    }
+    check_order(e, lo, hi);
+
+    if (lo & IR_CONST) {
+        u64 k = constant_bits(e, lo);
+        if (hi & IR_CONST) {
+            u32 d = half_result(e, i, 1, n);
+            mov_imm(e, d, constant_bits(e, hi) - k, SF);
+        } else if (k == 0) {
+            move_half(e, i, 1, n, hi);
+        } else {
+            u32 r = fetch_index(e, hi, X17);
+            release(e, hi);
+            u32 d = half_result(e, i, 1, n);
+            subtract_imm(e, d, r, k, SF);
+        }
+        if (k == 0) {
+            move_half(e, i, 0, t, a);
+        } else {
+            u32 p = fetch(e, a, X16);
+            release(e, a);
+            u32 d = half_result(e, i, 0, t);
+            add_offset(e, d, p, k * size);
+        }
+        return;
+    }
+
+    u32 d0 = half_result(e, i, 0, t);
+    u32 d1 = half_result(e, i, 1, n);
+    u32 r = fetch_index(e, lo, X17);
+    u32 q = (hi & IR_CONST) ? X16 : fetch_index(e, hi, X16);
+    if (hi & IR_CONST) {
+        mov_imm(e, X16, constant_bits(e, hi), SF);
+    }
+    put(e, OP_SUB | SF | r << 16 | q << 5 | d1);
+    u32 p = fetch(e, a, X16);
+    scaled_address(e, d0, p, r, size);
+    release(e, a);
+    release(e, lo);
+    release(e, hi);
 }
 
 static void
@@ -1937,7 +2171,18 @@ call(Emit *e, u32 i, u32 type, u32 decl, u32 b, const Native *n)
     put(e, OP_LDR_X16_X16 | (u32)((entry & 0xFFF) >> 3) << 10);
     put(e, OP_BLR_X16);
 
-    if (type != TYPE_ID_VOID) {
+    if (t & INFO_PAIR) {
+        u32 d0 = half_result(e, i, 0, t);
+        u32 d1 = half_result(e, i, 1, e->info[TYPE_ID_I64]);
+        assert(d1 != 0);
+        if (d0 == 1) {
+            mov(e, SF, d1, 1);
+            mov(e, SF, d0, 0);
+        } else {
+            mov(e, SF, d0, 0);
+            mov(e, SF, d1, 1);
+        }
+    } else if (type != TYPE_ID_VOID) {
         bool fl = is_float(t);
         u32 d = result(e, i, e->info[type]);
         if (fl) {
@@ -1945,6 +2190,34 @@ call(Emit *e, u32 i, u32 type, u32 decl, u32 b, const Native *n)
         } else {
             mov(e, SF, d, 0);
         }
+    }
+}
+
+static bool
+in_register(const Emit *e, u32 x, u32 r)
+{
+    if (x & IR_CONST) {
+        return false;
+    }
+    u8 h = e->regs[x];
+    return h != NO_REG && (h >= ALIAS ? h - ALIAS : h) == r;
+}
+
+static void
+return_pair(Emit *e, u32 a, u32 b)
+{
+    if (in_register(e, a, 1) && in_register(e, b, 0)) {
+        mov(e, SF, X16, 0);
+        mov(e, SF, 0, 1);
+        mov(e, SF, 1, X16);
+        release(e, a);
+        release(e, b);
+    } else if (in_register(e, b, 0)) {
+        move_into(e, 1, b, false);
+        move_into(e, 0, a, false);
+    } else {
+        move_into(e, 0, a, false);
+        move_into(e, 1, b, false);
     }
 }
 
@@ -2068,9 +2341,9 @@ find_open(Emit *e, u32 target)
     return NULL;
 }
 
-static const char
-    UNSUPPORTED_TYPE[] = "the arm64 backend supports only "
-                         "integers, floats, bool, pointers and arrays so far";
+static const char UNSUPPORTED_TYPE[] = "the arm64 backend supports only "
+                                       "integers, floats, bool, pointers, "
+                                       "arrays and slices so far";
 
 static u32
 arm_end(const Emit *e, u32 i)
@@ -2449,6 +2722,10 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                 break;
             }
             case IR_INDEX: index_address(e, i, type, a, b); break;
+            case IR_INDEX_LEN: index_len(e, i, type, a, b); break;
+            case IR_SLICE:
+            case IR_SLICE_FROM: slice(e, i, kind, type, a, b); break;
+            case IR_SECOND: break;
             case IR_COPY: copy_memory(e, type, a, b); break;
             case IR_ZERO: zero_memory(e, type, a); break;
             case IR_STORE_AT: {
@@ -2491,7 +2768,9 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
             case IR_CALL: call(e, i, type, a, b, n); break;
             case IR_DROP: release(e, a); break;
             case IR_RET:
-                if (type != TYPE_ID_VOID) {
+                if (e->info[type] & INFO_PAIR) {
+                    return_pair(e, a, b);
+                } else if (type != TYPE_ID_VOID) {
                     move_into(e, 0, a, is_float(e->info[type]));
                 }
                 if (i + 1 < fn->count) {
