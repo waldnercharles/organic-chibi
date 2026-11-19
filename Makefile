@@ -1,4 +1,6 @@
-CC    ?= cc
+ifeq ($(origin CC),default)
+CC    := clang
+endif
 OS    := $(shell uname -s)
 ARCH  := $(shell uname -m)
 
@@ -9,6 +11,7 @@ PROFDATA ?= xcrun llvm-profdata
 else ifeq ($(ARCH),x86_64)
 CPU      := -march=x86-64-v2
 HOST     := $(CPU)
+QEMU     := $(shell command -v qemu-aarch64-static)
 endif
 PROFDATA ?= llvm-profdata
 
@@ -16,6 +19,7 @@ WARN  := -std=c23 -Wall -Wextra -Werror
 FAST  := $(WARN) -O3 -flto -falign-functions=64 $(HOST)
 BENCH := $(FAST) -DNDEBUG -pthread
 SAFE  := $(WARN) -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer $(CPU)
+ARM64 := $(WARN) -g -O1 -fsanitize=undefined -fsanitize-trap=all -fno-omit-frame-pointer --target=aarch64-linux-gnu
 
 SRC       := $(filter-out src/main.c, $(wildcard src/*.c vendor/*/*.c))
 TEST_SRC  := test/*.c test/random/*.c $(SRC)
@@ -37,6 +41,10 @@ test:
 ifeq ($(OS) $(ARCH),Darwin arm64)
 	@arch -x86_64 build/test
 	@arch -x86_64 build/test-bulk
+endif
+ifneq ($(QEMU),)
+	@$(CC) $(ARM64) -o build/test-arm64 $(TEST_SRC)
+	@QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU) build/test-arm64
 endif
 
 bench:
