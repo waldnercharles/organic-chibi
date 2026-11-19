@@ -29,6 +29,9 @@ ty(const Checker *c, u32 type)
     if (kind == TYPE_BOOL) {
         return (Ty){ false, false, 8 };
     }
+    if (kind == TYPE_POINTER) {
+        return (Ty){ false, false, 64 };
+    }
     return (Ty){ kind == TYPE_FLOAT,
                  kind == TYPE_INT && c->types.arg1[type],
                  c->types.arg0[type] };
@@ -254,8 +257,20 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
         int fail = 0;
         u64 v = 0;
         switch (kind) {
-            case IR_LOAD: v = slots[a]; break;
+            case IR_LOAD: v = canon(slots[a], t); break;
             case IR_STORE: slots[a] = OPERAND(b); break;
+            case IR_ADDR: v = (u64)(uintptr_t)&slots[a]; break;
+            case IR_LOAD_AT: {
+                u64 raw = 0;
+                memcpy(&raw, (const void *)(uintptr_t)OPERAND(a), t.bits / 8);
+                v = canon(raw, t);
+                break;
+            }
+            case IR_STORE_AT: {
+                u64 raw = OPERAND(b);
+                memcpy((void *)(uintptr_t)OPERAND(a), &raw, t.bits / 8);
+                break;
+            }
             case IR_ADD:
             case IR_SUB:
             case IR_MUL: {

@@ -6,6 +6,8 @@
 // clang-format off
 #define CHIBI_IR(X)                                                            \
     X(IR_LOAD, "load")                                                         \
+    X(IR_LOAD_AT, "load-at")                                                   \
+    X(IR_ADDR, "addr")                                                         \
     X(IR_ADD, "add")                                                           \
     X(IR_SUB, "sub")                                                           \
     X(IR_MUL, "mul")                                                           \
@@ -34,6 +36,7 @@
     X(IR_TRUNCATE, "truncate")                                                 \
     X(IR_CALL, "call")                                                         \
     X(IR_STORE, "store")                                                       \
+    X(IR_STORE_AT, "store-at")                                                 \
     X(IR_DROP, "drop")                                                         \
     X(IR_RET, "ret")                                                           \
     X(IR_BLOCK, "block")                                                       \
@@ -57,6 +60,11 @@ typedef enum
 enum
 {
     IR_CONST = 1u << 31,
+};
+
+enum
+{
+    WEIGHT_ADDRESSED = UINT32_MAX,
 };
 
 typedef struct

@@ -69,6 +69,7 @@ typedef struct
     char name[NAME_LEN];
     u8 type;
     bool assignable;
+    bool pointer;
 } Var;
 
 typedef struct
@@ -76,6 +77,7 @@ typedef struct
     u8 ret;
     u8 nparams;
     u8 params[MAX_PARAMS];
+    bool pointers[MAX_PARAMS];
     u8 level;
 } Helper;
 
@@ -159,19 +161,33 @@ random_int_type(Gen *g)
     return (u8)random_below(g->rng, T_U64 + 1);
 }
 
-static Var *
-pick_var(Gen *g, u8 t, bool assignable)
+static bool
+matches(const Var *v, u8 t, bool assignable, bool pointer)
+{
+    return (t == NTYPES || v->type == t) && v->pointer == pointer &&
+           (!assignable || v->assignable);
+}
+
+static u32
+count_vars(const Gen *g, u8 t, bool assignable, bool pointer)
 {
     u32 n = 0;
     for (u32 i = 0; i < g->nvars; i++) {
-        n += g->vars[i].type == t && (!assignable || g->vars[i].assignable);
+        n += matches(&g->vars[i], t, assignable, pointer);
     }
+    return n;
+}
+
+static Var *
+pick_matching(Gen *g, u8 t, bool assignable, bool pointer)
+{
+    u32 n = count_vars(g, t, assignable, pointer);
     if (n == 0) {
         return NULL;
     }
     u32 k = (u32)random_below(g->rng, (int)n);
     for (u32 i = 0; i < g->nvars; i++) {
-        if (g->vars[i].type == t && (!assignable || g->vars[i].assignable) && k-- == 0) {
+        if (matches(&g->vars[i], t, assignable, pointer) && k-- == 0) {
             return &g->vars[i];
         }
     }
@@ -179,16 +195,28 @@ pick_var(Gen *g, u8 t, bool assignable)
 }
 
 static Var *
+pick_var(Gen *g, u8 t, bool assignable)
+{
+    return pick_matching(g, t, assignable, false);
+}
+
+static Var *
+pick_pointer(Gen *g, u8 t)
+{
+    return pick_matching(g, t, false, true);
+}
+
+static Var *
 pick_numeric_var(Gen *g)
 {
     u32 n = 0;
     for (u32 i = 0; i < g->nvars; i++) {
-        n += g->vars[i].type != T_BOOL;
+        n += g->vars[i].type != T_BOOL && !g->vars[i].pointer;
     }
     assert(n > 0);
     u32 k = (u32)random_below(g->rng, (int)n);
     for (u32 i = 0; i < g->nvars; i++) {
-        if (g->vars[i].type != T_BOOL && k-- == 0) {
+        if (g->vars[i].type != T_BOOL && !g->vars[i].pointer && k-- == 0) {
             return &g->vars[i];
         }
     }
@@ -203,6 +231,7 @@ declare_as(Gen *g, char prefix, u32 number, u8 t, bool assignable)
     snprintf(v->name, NAME_LEN, "%c%u", prefix, number);
     v->type = t;
     v->assignable = assignable;
+    v->pointer = false;
     return v;
 }
 
@@ -330,15 +359,41 @@ conversion(Gen *g, u8 t, int depth)
     convert_from(g, t, u, operand);
 }
 
+static bool
+can_call(const Gen *g, const Helper *h, u8 t)
+{
+    if (h->level >= g->level || (t != NTYPES && h->ret != t)) {
+        return false;
+    }
+    for (u32 p = 0; p < h->nparams; p++) {
+        if (h->pointers[p] && count_vars(g, h->params[p], true, false) == 0 &&
+            count_vars(g, h->params[p], false, true) == 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static u32
 callable(const Gen *g, u8 t)
 {
     u32 n = 0;
     for (u32 k = 0; k < g->nhelpers; k++) {
-        n += g->helpers[k].level < g->level &&
-             (t == NTYPES || g->helpers[k].ret == t);
+        n += can_call(g, &g->helpers[k], t);
     }
     return n;
+}
+
+static void
+pointer_argument(Gen *g, u8 t)
+{
+    Var *q = pick_pointer(g, t);
+    Var *v = pick_var(g, t, true);
+    if (q && (!v || chance(g, 50))) {
+        emit(g, "%s", q->name);
+    } else {
+        emit(g, "&%s", v->name);
+    }
 }
 
 static bool
@@ -351,13 +406,17 @@ call_helper(Gen *g, u8 t, int depth)
     u32 pick = (u32)random_below(g->rng, (int)n);
     for (u32 k = 0; k < g->nhelpers; k++) {
         const Helper *h = &g->helpers[k];
-        if (h->level < g->level && (t == NTYPES || h->ret == t) && pick-- == 0) {
+        if (can_call(g, h, t) && pick-- == 0) {
             emit(g, "h%u(", k);
             for (u32 p = 0; p < h->nparams; p++) {
                 if (p) {
                     emit(g, ", ");
                 }
-                typed_expr(g, h->params[p], depth - 1);
+                if (h->pointers[p]) {
+                    pointer_argument(g, h->params[p]);
+                } else {
+                    typed_expr(g, h->params[p], depth - 1);
+                }
             }
             emit(g, ")");
             return true;
@@ -406,6 +465,11 @@ nonliteral(Gen *g, u8 t, int depth)
         return;
     }
 
+    Var *q = chance(g, 25) ? pick_pointer(g, t) : NULL;
+    if (q) {
+        emit(g, "%s.*", q->name);
+        return;
+    }
     Var *v = pick_var(g, t, false);
     if (v) {
         emit(g, "%s", v->name);
@@ -1043,8 +1107,66 @@ loop_label(Gen *g)
 }
 
 static void
+assignment(Gen *g, const Var *v, const char *suffix)
+{
+    u8 t = v->type;
+    if (t == T_BOOL || chance(g, 40)) {
+        emit(g, "%s%s = ", v->name, suffix);
+        expr(g, t, 3);
+        return;
+    }
+    if (is_float(t)) {
+        static const char *const ops[] = { "+=", "-=", "*=", "/=" };
+        emit(g, "%s%s %s ", v->name, suffix, ops[random_below(g->rng, 4)]);
+        expr(g, t, 2);
+        return;
+    }
+    static const char *const ops[] = { "+=",  "-=",  "*=", "+%=", "-%=",
+                                       "*%=", "/=",  "%=", "&=",  "|=",
+                                       "^=",  "<<=", ">>=" };
+    int op = random_below(g->rng, 13);
+    emit(g, "%s%s %s ", v->name, suffix, ops[op]);
+    if (op >= 11) {
+        emit(g, "(");
+        nonliteral(g, random_int_type(g), 1);
+        emit(g, " & %u)", type_bits[t] - 1);
+    } else if (op == 6 || op == 7) {
+        if (chance(g, 50)) {
+            literal(g, t, true);
+        } else {
+            nonliteral(g, t, 2);
+        }
+    } else {
+        expr(g, t, 2);
+    }
+}
+
+static void
+pointer_statement(Gen *g)
+{
+    Var *q = pick_pointer(g, NTYPES);
+    if (!q || chance(g, 25)) {
+        Var *v = pick_var(g, NTYPES, true);
+        if (!v || g->nvars == MAX_VARS) {
+            return;
+        }
+        line(g);
+        u32 n = g->names++;
+        emit(g, "q%u := &%s", n, v->name);
+        declare_as(g, 'q', n, v->type, false)->pointer = true;
+        return;
+    }
+    line(g);
+    assignment(g, q, ".*");
+}
+
+static void
 statement(Gen *g, int depth)
 {
+    if (chance(g, 12)) {
+        pointer_statement(g);
+        return;
+    }
     int pick = random_below(g->rng, 22);
     if (pick < 5) {
         u8 t = random_type(g, false);
@@ -1062,35 +1184,7 @@ statement(Gen *g, int depth)
             return;
         }
         line(g);
-        if (t == T_BOOL || chance(g, 40)) {
-            emit(g, "%s = ", v->name);
-            expr(g, t, 3);
-            return;
-        }
-        if (is_float(t)) {
-            static const char *const ops[] = { "+=", "-=", "*=", "/=" };
-            emit(g, "%s %s ", v->name, ops[random_below(g->rng, 4)]);
-            expr(g, t, 2);
-            return;
-        }
-        static const char *const ops[] = { "+=",  "-=",  "*=", "+%=", "-%=",
-                                           "*%=", "/=",  "%=", "&=",  "|=",
-                                           "^=",  "<<=", ">>=" };
-        int op = random_below(g->rng, 13);
-        emit(g, "%s %s ", v->name, ops[op]);
-        if (op >= 11) {
-            emit(g, "(");
-            nonliteral(g, random_int_type(g), 1);
-            emit(g, " & %u)", type_bits[t] - 1);
-        } else if (op == 6 || op == 7) {
-            if (chance(g, 50)) {
-                literal(g, t, true);
-            } else {
-                nonliteral(g, t, 2);
-            }
-        } else {
-            expr(g, t, 2);
-        }
+        assignment(g, v, "");
         return;
     }
     if (pick < 13 && depth > 0) {
@@ -1283,8 +1377,17 @@ random_typed_program(u64 *rng, char *buf)
         emit(&g, "fn h%u(", k);
         for (u32 p = 0; p < h->nparams; p++) {
             h->params[p] = random_type(&g, p == 0);
+            h->pointers[p] = p > 0 && chance(&g, 30);
             Var *v = declare(&g, 'p', h->params[p], false);
-            emit(&g, "%s%s: %s", p ? ", " : "", v->name, type_names[h->params[p]]);
+            v->pointer = h->pointers[p];
+            emit(
+                &g,
+                "%s%s: %s%s",
+                p ? ", " : "",
+                v->name,
+                h->pointers[p] ? "*" : "",
+                type_names[h->params[p]]
+            );
         }
         emit(&g, g.result.typed ? ") -> %s {" : ") {", type_names[h->ret]);
         g.nhelpers = k;

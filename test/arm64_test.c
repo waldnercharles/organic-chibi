@@ -707,9 +707,155 @@ rejects(const char *text)
 TEST_CASE(unsupported_types)
 {
     REQUIRE(rejects("fn b(a: int) -> !void {\n    if a > 0 {\n        return\n    }\n}\n"));
-    REQUIRE(rejects("fn id(p: *int) -> *int {\n    return p\n}\n"));
     REQUIRE(rejects("fn o(p: ?int) -> ?int {\n    return p\n}\n"));
     REQUIRE(rejects("fn s(p: []u8) -> int {\n    return 0\n}\n"));
+    return true;
+}
+
+static const char POINTERS[] = "fn bump(p: *int, by: int) {\n"
+                               "    p.* += by\n"
+                               "}\n"
+                               "fn swap(a: *i32, b: *i32) {\n"
+                               "    t := a.*\n"
+                               "    a.* = b.*\n"
+                               "    b.* = t\n"
+                               "}\n"
+                               "fn set(p: *int, v: int) {\n"
+                               "    p.* = v\n"
+                               "}\n"
+                               "fn pick(a: *int, b: *int, first: bool) -> *int {\n"
+                               "    if first {\n"
+                               "        return a\n"
+                               "    }\n"
+                               "    return b\n"
+                               "}\n"
+                               "fn run(x: int, y: int) -> int {\n"
+                               "    n := x\n"
+                               "    q := &n\n"
+                               "    bump(q, 5)\n"
+                               "    bump(&n, y)\n"
+                               "    r := &q\n"
+                               "    r.*.* = q.* * 2\n"
+                               "    return n\n"
+                               "}\n"
+                               "fn over(a: int, b: int) -> int {\n"
+                               "    n := a\n"
+                               "    bump(&n, b)\n"
+                               "    return n\n"
+                               "}\n"
+                               "fn reload(a: int, b: int) -> int {\n"
+                               "    n := a\n"
+                               "    set(&n, n + b)\n"
+                               "    m := n\n"
+                               "    set(&n, m * 3)\n"
+                               "    return n + m\n"
+                               "}\n"
+                               "fn alias(a: int, b: int) -> int {\n"
+                               "    n := a\n"
+                               "    p := &n\n"
+                               "    q := &n\n"
+                               "    p.* += b\n"
+                               "    q.* *= 2\n"
+                               "    return n + p.* + q.*\n"
+                               "}\n"
+                               "fn narrow(a: int, b: int) -> int {\n"
+                               "    x: i32 = i32(a & 0xFFFF)\n"
+                               "    y: i32 = i32(b & 0xFFFF)\n"
+                               "    swap(&x, &y)\n"
+                               "    c: u8 = u8(a & 0xFF)\n"
+                               "    p := &c\n"
+                               "    p.* +%= 100\n"
+                               "    s: i16 = -5\n"
+                               "    ps := &s\n"
+                               "    ps.* -= 1\n"
+                               "    f: f32 = 1.5\n"
+                               "    g := &f\n"
+                               "    g.* *= 2\n"
+                               "    t := a > b\n"
+                               "    h := &t\n"
+                               "    h.* = !h.*\n"
+                               "    r := int(x) * 1000000 + int(y)\n"
+                               "    r += int(c) * 10\n"
+                               "    r += int(s)\n"
+                               "    if t {\n"
+                               "        r += 7\n"
+                               "    }\n"
+                               "    return r + int(f)\n"
+                               "}\n"
+                               "fn choose(a: int, b: int) -> int {\n"
+                               "    x := a\n"
+                               "    y := b\n"
+                               "    pick(&x, &y, a < b).* += 100\n"
+                               "    return x * 1000 + y\n"
+                               "}\n"
+                               "fn same(a: int, b: int) -> int {\n"
+                               "    x := a\n"
+                               "    y := b\n"
+                               "    p := &x\n"
+                               "    q := &x\n"
+                               "    r := &y\n"
+                               "    n := 0\n"
+                               "    if p == q {\n"
+                               "        n += 1\n"
+                               "    }\n"
+                               "    if p != r {\n"
+                               "        n += 10\n"
+                               "    }\n"
+                               "    if p == r {\n"
+                               "        n += 100\n"
+                               "    }\n"
+                               "    return n\n"
+                               "}\n"
+                               "fn accumulate(a: int, b: int) -> int {\n"
+                               "    total := b\n"
+                               "    p := &total\n"
+                               "    for i in 0..a {\n"
+                               "        p.* += i\n"
+                               "    }\n"
+                               "    return total\n"
+                               "}\n";
+
+static const char *
+large_frame(char *text, size_t cap)
+{
+    size_t len = (size_t)snprintf(text, cap, "fn big(a: int, b: int) -> int {\n    total := b\n");
+    for (u32 k = 0; k < 600; k++) {
+        len += (size_t)snprintf(text + len, cap - len, "    v%u := a + %u\n    total +%%= v%u\n", k, k, k);
+    }
+    snprintf(text + len, cap - len, "    p := &v599\n    p.* += 1\n    return v599 + total\n}\n");
+    return text;
+}
+
+TEST_CASE(pointers)
+{
+    Program p;
+    REQUIRE(build(&p, POINTERS));
+    int64_t r = 0;
+    REQUIRE(((I2 *)fn(&p, "run"))(1, 1) == 14);
+    REQUIRE(((I2 *)fn(&p, "run"))(7, -3) == 18);
+    REQUIRE(call_i2((I2 *)fn(&p, "over"), 5, 6, &r) == 0 && r == 11);
+    REQUIRE(call_i2((I2 *)fn(&p, "over"), INT64_MAX, 1, &r) == TRAP_OVERFLOW);
+    REQUIRE(((I2 *)fn(&p, "reload"))(4, 1) == 20);
+    REQUIRE(((I2 *)fn(&p, "reload"))(-2, 0) == -8);
+    REQUIRE(((I2 *)fn(&p, "alias"))(3, 1) == 24);
+    REQUIRE(((I2 *)fn(&p, "alias"))(-5, 2) == -18);
+    REQUIRE(((I2 *)fn(&p, "narrow"))(1, 2) == 2001015);
+    REQUIRE(((I2 *)fn(&p, "narrow"))(300, 70000) == 4464001744);
+    REQUIRE(((I2 *)fn(&p, "narrow"))(200, 0) == 637);
+    REQUIRE(((I2 *)fn(&p, "choose"))(1, 2) == 101002);
+    REQUIRE(((I2 *)fn(&p, "choose"))(5, 3) == 5103);
+    REQUIRE(((I2 *)fn(&p, "same"))(1, 2) == 11);
+    REQUIRE(((I2 *)fn(&p, "same"))(4, 4) == 11);
+    REQUIRE(((I2 *)fn(&p, "accumulate"))(10, 0) == 45);
+    REQUIRE(((I2 *)fn(&p, "accumulate"))(0, 7) == 7);
+    release_program(&p);
+
+    char *text = malloc(64 * 1024);
+    REQUIRE(build(&p, large_frame(text, 64 * 1024)));
+    free(text);
+    REQUIRE(((I2 *)fn(&p, "big"))(1, 0) == 180901);
+    REQUIRE(((I2 *)fn(&p, "big"))(-7, 3) == 176096);
+    release_program(&p);
     return true;
 }
 
@@ -1361,6 +1507,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(differential);
     RUN_TEST_CASE(store_while_loaded);
     RUN_TEST_CASE(unsupported_types);
+    RUN_TEST_CASE(pointers);
     RUN_TEST_CASE(constant_conditions);
     RUN_TEST_CASE(deep_logic);
     RUN_TEST_CASE(small_integers);

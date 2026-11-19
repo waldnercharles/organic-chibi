@@ -330,6 +330,9 @@ type_info(const Checker *c, u32 type)
         u32 backing = (u32)c->types.arg1[type];
         return backing ? type_info(c, backing) : INFO_UNSUPPORTED;
     }
+    if (kind == TYPE_POINTER) {
+        return 3;
+    }
     u32 bits = c->types.arg0[type];
     u8 scale = bits == 64 ? 3 : bits == 32 ? 2 : bits == 16 ? 1 : 0;
     bool integer = kind == TYPE_INT;
@@ -520,6 +523,35 @@ store_typed(Emit *e, u32 type, u32 rt, u32 offset)
         case 16: memory(e, OP_STRH, 1, rt, offset, X8); break;
         case 32: memory(e, OP_STRW, 2, rt, offset, X8); break;
         default: memory(e, OP_STRX, 3, rt, offset, X8); break;
+    }
+}
+
+static u32
+load_op(u8 t)
+{
+    if (is_float(t)) {
+        return bits_of(t) == 64 ? OP_LDRD : OP_LDRS;
+    }
+    bool s = is_signed(t);
+    switch (bits_of(t)) {
+        case 8: return s ? OP_LDRSB : OP_LDRB;
+        case 16: return s ? OP_LDRSH : OP_LDRH;
+        case 32: return OP_LDRW;
+        default: return OP_LDRX;
+    }
+}
+
+static u32
+store_op(u8 t, u32 rt)
+{
+    if (is_float(t) && rt != ZR) {
+        return bits_of(t) == 64 ? OP_STRD : OP_STRS;
+    }
+    switch (bits_of(t)) {
+        case 8: return OP_STRB;
+        case 16: return OP_STRH;
+        case 32: return OP_STRW;
+        default: return OP_STRX;
     }
 }
 
@@ -1869,8 +1901,9 @@ find_open(Emit *e, u32 target)
     return NULL;
 }
 
-static const char UNSUPPORTED_TYPE[] = "the arm64 backend supports only "
-                                       "integers, floats and bool so far";
+static const char
+    UNSUPPORTED_TYPE[] = "the arm64 backend supports only "
+                         "integers, floats, bool and pointers so far";
 
 static u32
 arm_end(const Emit *e, u32 i)
@@ -1949,7 +1982,7 @@ pin_by_weight(Emit *e, bool fl, u32 first, u32 cheap, u32 callee)
         u8 info = e->info[slots[s].type];
         u32 w = slots[s].weight;
         if (!w || is_float(info) != fl || e->slot_regs[s] != NO_REG ||
-            (info & INFO_UNSUPPORTED) ||
+            (info & INFO_UNSUPPORTED) || w == WEIGHT_ADDRESSED ||
             (ntop == room && w <= slots[top[room - 1]].weight)) {
             continue;
         }
@@ -2010,7 +2043,8 @@ pin_locals(Emit *e)
 
     u32 wanted[2] = { 0, 0 };
     for (u32 s = first; s < fn->nslots; s++) {
-        wanted[is_float(e->info[slots[s].type])] += slots[s].weight != 0 &&
+        u32 w = slots[s].weight;
+        wanted[is_float(e->info[slots[s].type])] += w != 0 && w != WEIGHT_ADDRESSED &&
                                                     e->slot_regs[s] == NO_REG;
     }
     u32 callee[2] = { CALLEE_INT, CALLEE_FLOAT };
@@ -2024,7 +2058,7 @@ pin_locals(Emit *e)
             u8 info = e->info[slots[s].type];
             u32 w = slots[s].weight;
             if (is_float(info) != c || !w || e->slot_regs[s] != NO_REG ||
-                (info & INFO_UNSUPPORTED)) {
+                (info & INFO_UNSUPPORTED) || w == WEIGHT_ADDRESSED) {
                 continue;
             }
             wanted[c]--;
@@ -2201,6 +2235,38 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                     release(e, b);
                 }
                 store_typed(e, type, r, e->slot_offsets[a]);
+                break;
+            }
+            case IR_ADDR: {
+                u32 d = result(e, i, e->info[type]);
+                u32 offset = e->slot_offsets[a];
+                if (offset >= (1u << 24)) {
+                    e->error = "a function's frame is larger than 16 MB";
+                    break;
+                }
+                put(e, OP_ADD_FROM_SP | (offset & 0xFFF) << 10 | d);
+                if (offset >> 12) {
+                    put(e, OP_ADD_HIGH | (offset >> 12) << 10 | d << 5 | d);
+                }
+                break;
+            }
+            case IR_LOAD_AT: {
+                u32 p = fetch(e, a, X16);
+                release(e, a);
+                u8 t = e->info[type];
+                u32 d = result(e, i, t);
+                put(e, load_op(t) | p << 5 | d);
+                break;
+            }
+            case IR_STORE_AT: {
+                u8 t = e->info[type];
+                u32 p = fetch(e, a, X16);
+                u32 r = (b & IR_CONST) && constant_bits(e, b) == 0
+                          ? ZR
+                          : fetch(e, b, is_float(t) ? V30 : X17);
+                put(e, store_op(t, r) | p << 5 | r);
+                release(e, a);
+                release(e, b);
                 break;
             }
             case IR_ADD:

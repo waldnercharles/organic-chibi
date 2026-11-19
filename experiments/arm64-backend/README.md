@@ -19,6 +19,7 @@
   - When there are more such locals than registers, the heaviest win. The rest live in stack slots at fixed offsets from `sp`, grouped by size, and locals never used get no slot.
   - Parameters of 32 bits or less are zero- or sign-extended on entry, because C callers may leave the upper bits set.
 - **Loads of a register-held local** make no copy: the value names the local's register. A store to the local while such a value is still live copies the value out first. The checker never emits that order today; one test makes it by reordering IR.
+- **Pointers** (step 3d.1, 2026-11-19): a local whose address is taken stays in its stack slot for the whole function, and `&x` is one `add` from `sp` (two beyond 4 KB). `p.*` loads and stores with the pointee's size and sign.
 - **Values** each get a register when they are made, and free it at their one use. Integer values use `x9`–`x15` and floats `v16`–`v28`. When none is free, the oldest value is spilled to the stack, because it will be used last. A value about to be stored to a register-held local, returned, or passed as the last argument of a call is computed straight into that register.
 - **Calls** go through a table of function addresses at the start of the mapping, using `adrp`, `ldr` and `blr`. Replacing one entry redirects every call to that function, and a test does so while the program is loaded. Values still needed after a call move to free callee-saved registers, and are spilled only when none is left. Calling directly with `bl` instead measured the same on `fib` (7.7 against 7.8 ms), so the table stays.
 - **Frames:** each function reserves 13 words before its body. When the body is done, the prologue it needs is written at the end of those words and the function's entry skips the rest. A function without calls, stack slots or callee-saved registers has no prologue. Every `return` jumps to one shared epilogue.
@@ -34,7 +35,7 @@
 - arm64 only;
 - at most 8 integer and 8 float arguments;
 - a local keeps one register for the whole function, so a function with more hot locals than registers keeps the lighter ones in memory even where they are hot;
-- only integers, floats and `bool`: a pointer, optional, slice, error union or struct is rejected with an error. When step 3 adds `&x`, a local whose address is taken has to stay in memory.
+- only integers, floats, `bool`, enums and pointers: an optional, slice, error union or struct is rejected with an error.
 
 ## Prediction and result
 

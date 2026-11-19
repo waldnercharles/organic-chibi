@@ -22,6 +22,7 @@ enum
     OPERAND_RETURN,
     OPERAND_BACKING,
     OPERAND_LOCAL,
+    OPERAND_ADDRESS,
     OPERAND_FN,
     OPERAND_STMT,
     OPERAND_RANGE,
@@ -557,6 +558,13 @@ is_number(const Checker *c, u32 type)
 }
 
 static bool
+is_scalar(const Checker *c, u32 type)
+{
+    u8 k = c->types.kinds[type];
+    return is_number(c, type) || k == TYPE_BOOL || k == TYPE_ENUM || k == TYPE_POINTER;
+}
+
+static bool
 is_untyped(u32 type)
 {
     return type == TYPE_ID_UNTYPED_INT || type == TYPE_ID_UNTYPED_FLOAT;
@@ -715,13 +723,38 @@ slot_at(const Checker *c, u32 slot)
     return &c->body.code->slots[c->body.first_slot + slot];
 }
 
+static u32
+place_type(const Checker *c, Operand o)
+{
+    if (o.type == OPERAND_LOCAL) {
+        return slot_at(c, o.ref)->type;
+    }
+    return c->types.arg0[c->body.code->types[c->body.first + value_of(o)]];
+}
+
+static u8
+binding_kind(const Checker *c, u32 file, u32 slot)
+{
+    switch (c->files[file].nodes.kinds[slot_at(c, slot)->node]) {
+        case NODE_PARAM:
+        case NODE_PARAM_INIT:
+        case NODE_PARAM_TYPE:
+        case NODE_PARAM_TYPE_INIT: return NODE_PARAM;
+        case NODE_FOR_VALUE: return NODE_FOR_VALUE;
+        default: return NODE_NONE;
+    }
+}
+
 static void
 weigh(Checker *c, u32 slot)
 {
     IrSlot *s = slot_at(c, slot);
+    if (s->weight == WEIGHT_ADDRESSED) {
+        return;
+    }
     u32 depth = c->body.depth < 6 ? c->body.depth : 6;
-    u32 w = s->weight + (1u << (3 * depth));
-    s->weight = w < s->weight ? UINT32_MAX : w;
+    u64 w = (u64)s->weight + (1u << (3 * depth));
+    s->weight = w < WEIGHT_ADDRESSED ? (u32)w : WEIGHT_ADDRESSED - 1;
 }
 
 static Operand
@@ -1189,9 +1222,7 @@ applies(const Checker *c, u8 cls, u32 type)
         case OP_COMPARE: return is_number(c, type);
         case OP_INT:
         case OP_SHIFT: return is_int(c, type);
-        case OP_EQUALITY:
-            return is_number(c, type) || type == TYPE_ID_BOOL ||
-                   c->types.kinds[type] == TYPE_ENUM;
+        case OP_EQUALITY: return is_scalar(c, type);
         default: assert(false && "unknown operator class"); return false;
     }
 }
@@ -1280,8 +1311,9 @@ expected_type(const Checker *c, u32 own)
         if (below.type == TYPE_ID_TYPE) {
             return below.ref;
         }
-        if (kind == NODE_VALUE && below.type == OPERAND_LOCAL) {
-            return slot_at(c, below.ref)->type;
+        if (kind == NODE_VALUE &&
+            (below.type == OPERAND_LOCAL || below.type == OPERAND_ADDRESS)) {
+            return place_type(c, below);
         }
         if (kind == NODE_CALL_ARGS && below.type == OPERAND_FN) {
             u32 fn = c->decls.types[below.ref];
@@ -2043,7 +2075,37 @@ logical(Checker *c, u32 file, u8 kind)
 }
 
 static void
-assign(Checker *c, u32 file, u32 token, u8 kind)
+assign_at(Checker *c, u32 file, u32 node, u32 token, u8 kind, Operand target, Operand v, u32 v_token)
+{
+    u32 type = place_type(c, target);
+    u32 address = value_of(target);
+    u32 hidden = 0;
+    if (kind != NODE_ASSIGN) {
+        u8 op = assign_ops[kind];
+        if (op == NODE_NONE) {
+            report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
+            return;
+        }
+        u32 pointer = pointer_type(c, type);
+        hidden = add_slot(c, 0, pointer, node);
+        store_local(c, hidden, (Operand){ pointer, target.ref });
+        Operand old = emit_value(c, IR_LOAD_AT, type, value_of(load_local(c, hidden)), 0);
+        v = binary(c, file, token, op, old, v);
+        v_token = token;
+    }
+
+    Operand converted = convert(c, file, v_token, v, type);
+    if (converted.type == TYPE_ID_NONE) {
+        return;
+    }
+    if (kind != NODE_ASSIGN) {
+        address = value_of(load_local(c, hidden));
+    }
+    emit(c, IR_STORE_AT, type, address, operand_ir(c, converted));
+}
+
+static void
+assign(Checker *c, u32 file, u32 node, u32 token, u8 kind)
 {
     u32 v_token = c->stack_tokens[c->sp - 1];
     Operand v = pop(c);
@@ -2062,6 +2124,10 @@ assign(Checker *c, u32 file, u32 token, u8 kind)
         }
         return;
     }
+    if (target.type == OPERAND_ADDRESS) {
+        assign_at(c, file, node, token, kind, target, v, v_token);
+        return;
+    }
     if (target.type != OPERAND_LOCAL) {
         if (target.type != TYPE_ID_NONE) {
             report(c, file, target_token, DIAG_NOT_ASSIGNABLE, 0, 0);
@@ -2070,21 +2136,13 @@ assign(Checker *c, u32 file, u32 token, u8 kind)
     }
 
     u32 slot = target.ref;
-    const IrSlot *s = slot_at(c, slot);
-    switch (c->files[file].nodes.kinds[s->node]) {
-        case NODE_PARAM:
-        case NODE_PARAM_INIT:
-        case NODE_PARAM_TYPE:
-        case NODE_PARAM_TYPE_INIT:
-            report(c, file, target_token, DIAG_ASSIGN_PARAM, 0, 0);
-            return;
-        case NODE_FOR_VALUE:
-            report(c, file, target_token, DIAG_ASSIGN_LOOP_VARIABLE, 0, 0);
-            return;
-        default: break;
+    u8 binding = binding_kind(c, file, slot);
+    if (binding != NODE_NONE) {
+        report(c, file, target_token, binding == NODE_PARAM ? DIAG_ASSIGN_PARAM : DIAG_ASSIGN_LOOP_VARIABLE, 0, 0);
+        return;
     }
 
-    u32 type = s->type;
+    u32 type = slot_at(c, slot)->type;
     if (kind != NODE_ASSIGN) {
         u8 op = assign_ops[kind];
         if (op == NODE_NONE) {
@@ -2106,6 +2164,61 @@ expression_statement(Checker *c, u32 file, u32 token)
     if (v.type != TYPE_ID_NONE && v.type != TYPE_ID_VOID) {
         report(c, file, v_token, DIAG_UNUSED, 0, 0);
     }
+}
+
+static Operand
+address_of(Checker *c, u32 file, u32 token, Operand target)
+{
+    if (target.type == TYPE_ID_NONE) {
+        return poison;
+    }
+    if (target.type == OPERAND_ADDRESS) {
+        return (Operand){ pointer_type(c, place_type(c, target)), target.ref };
+    }
+    if (target.type != OPERAND_LOCAL) {
+        report(c, file, token, DIAG_NOT_ADDRESSABLE, 0, 0);
+        return poison;
+    }
+
+    u32 slot = target.ref;
+    u8 binding = binding_kind(c, file, slot);
+    if (binding != NODE_NONE) {
+        report(c, file, token, binding == NODE_PARAM ? DIAG_ADDRESS_PARAM : DIAG_ADDRESS_LOOP_VARIABLE, 0, 0);
+        return poison;
+    }
+
+    u32 type = slot_at(c, slot)->type;
+    if (type == TYPE_ID_NONE) {
+        return poison;
+    }
+    slot_at(c, slot)->weight = WEIGHT_ADDRESSED;
+    return emit_value(c, IR_ADDR, pointer_type(c, type), slot, 0);
+}
+
+static Operand
+deref(Checker *c, u32 file, u32 token, Operand p, bool place)
+{
+    if (p.type == TYPE_ID_NONE) {
+        return poison;
+    }
+    if (!is_value_type(p.type)) {
+        report(c, file, token, DIAG_NOT_VALUE, 0, 0);
+        return poison;
+    }
+    if (c->types.kinds[p.type] != TYPE_POINTER) {
+        report(c, file, token, DIAG_NOT_POINTER, p.type, 0);
+        return poison;
+    }
+
+    u32 type = c->types.arg0[p.type];
+    if (!is_scalar(c, type)) {
+        report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
+        return poison;
+    }
+    if (place) {
+        return (Operand){ OPERAND_ADDRESS, p.ref };
+    }
+    return emit_value(c, IR_LOAD_AT, type, value_of(p), 0);
 }
 
 static bool
@@ -3044,7 +3157,7 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                 if (in_body) {
                     u64 binding = c->bindings[id];
                     if ((u32)(binding >> 32) == c->body.owner) {
-                        if (kinds[i + 1] == NODE_VALUE) {
+                        if (kinds[i + 1] == NODE_VALUE || kinds[i + 1] == NODE_ADDR) {
                             push(c, token, OPERAND_LOCAL, (u32)binding);
                         } else {
                             push_operand(c, token, load_local(c, (u32)binding));
@@ -3094,6 +3207,23 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
             case NODE_NOT:
             case NODE_BIT_NOT:
                 push_operand(c, token, unary(c, file, token, kind, pop(c)));
+                break;
+            case NODE_ADDR:
+                if (in_body) {
+                    u32 target_token = c->stack_tokens[c->sp - 1];
+                    Operand target = pop(c);
+                    push_operand(c, token, address_of(c, file, target_token, target));
+                } else {
+                    unsupported(c, file, i);
+                }
+                break;
+            case NODE_DEREF:
+                if (in_body) {
+                    bool place = kinds[i + 1] == NODE_VALUE || kinds[i + 1] == NODE_ADDR;
+                    push_operand(c, token, deref(c, file, token, pop(c), place));
+                } else {
+                    unsupported(c, file, i);
+                }
                 break;
             case NODE_MUL:
             case NODE_MUL_WRAP:
@@ -3258,6 +3388,8 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                     if (!scalar) {
                         report(c, file, token, DIAG_NO_ZERO_MEMBER, 0, t);
                     }
+                } else if (t && c->types.kinds[t] == TYPE_POINTER) {
+                    report(c, file, token, DIAG_NEVER_NIL, 0, t);
                 } else if (t && !scalar) {
                     report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
                 }
@@ -3295,7 +3427,7 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
             case NODE_BIT_XOR_ASSIGN:
             case NODE_SHL_ASSIGN:
             case NODE_SHR_ASSIGN:
-            case NODE_OR_ELSE_ASSIGN: assign(c, file, token, kind); break;
+            case NODE_OR_ELSE_ASSIGN: assign(c, file, i, token, kind); break;
             case NODE_EXPR_STMT: expression_statement(c, file, token); break;
             case NODE_RETURN:
             case NODE_RETURN_VALUE:
@@ -4169,6 +4301,7 @@ print_function(FILE *out, const Checker *c, const IrFunc *fn)
 
         switch (kind) {
             case IR_LOAD:
+            case IR_ADDR:
                 fputc(' ', out);
                 print_type(out, c, type);
                 fputc(' ', out);
@@ -4182,6 +4315,7 @@ print_function(FILE *out, const Checker *c, const IrFunc *fn)
                 fputs(", ", out);
                 print_operand(out, c, fn, b);
                 break;
+            case IR_LOAD_AT:
             case IR_NEG:
             case IR_NEG_WRAP:
             case IR_NOT:

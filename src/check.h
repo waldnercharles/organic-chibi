@@ -129,9 +129,14 @@ enum
     X(DIAG_NOT_VALUE, "expected a value")                                                           \
     X(DIAG_NOT_BOOL, "expected `bool`, found `%T`")                                                 \
     X(DIAG_BAD_OPERATOR, "`%T` doesn't support `%t`")                                               \
-    X(DIAG_NOT_ASSIGNABLE, "only a local can be assigned to")                                       \
+    X(DIAG_NOT_ASSIGNABLE, "only a local or `p.*` can be assigned to")                              \
     X(DIAG_ASSIGN_PARAM, "`%t` is a parameter, so it can't be assigned")                            \
     X(DIAG_ASSIGN_LOOP_VARIABLE, "`%t` is a loop variable, so it can't be assigned")                \
+    X(DIAG_NOT_ADDRESSABLE, "only a local or `p.*` has an address")                                 \
+    X(DIAG_ADDRESS_PARAM, "`%t` is a parameter, so `&` can't take its address")                     \
+    X(DIAG_ADDRESS_LOOP_VARIABLE, "`%t` is a loop variable, so `&` can't take its address")         \
+    X(DIAG_NOT_POINTER, "`%T` is not a pointer, so `.*` can't follow it")                           \
+    X(DIAG_NEVER_NIL, "`%U` is never nil, so this needs a value")                                   \
     X(DIAG_UNUSED, "this value is not used; discard it with `_ = ...`")                             \
     X(DIAG_DISCARD, "`_` can only discard a value, as in `_ = f()`")                                \
     X(DIAG_NOT_CALLABLE, "expected a function or a type")                                           \
