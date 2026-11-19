@@ -325,7 +325,7 @@ The chibi row is from [experiments/arm64-backend](../../experiments/arm64-backen
 
 ## 8. Questions for the owner
 
-1. **The release backend after the C backend.** Spike cppgm's LowIR (recommended), keep LLVM's C API as the next step, or plan chibi's own optimizing backend straight after the C backend? This changes the Release row of 2026-11-09, which names LLVM.
+1. **The release backend after the C backend.** Decided 2026-11-19: spike cppgm's LowIR after the C backend, then plan chibi's own optimizing backend if it is still worth it (the Compiler row of 2026-11-19 in [../decisions.md](../decisions.md)).
 2. **Whether depending on an LLM-written backend is acceptable at all.** cppgm's 138,000 lines have one author and agents behind them, and it is the only option here that reaches parity. The alternatives are LLVM (large, slow, well tested) and chibi's own backend at about 0.9. Your rule that you must understand every part of chibi applies to chibi's code; whether it extends to a dependency is your call.
 3. **How close "good enough" is.** If 0.9 of clang is enough for shipped games, chibi's own MIR-sized backend can be the long-term answer and no external optimizer is needed. If parity matters, a library stays in the picture.
 

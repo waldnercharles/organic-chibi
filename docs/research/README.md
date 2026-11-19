@@ -82,7 +82,7 @@ The goal now is self-hosting: translate the compiler into chibi, then use the co
 3. Calling C and being called from C.
 4. SIMD types, and the bit-scan and overflow builtins.
 5. The C backend, the C-to-chibi translator and the bootstrap check.
-6. Then steps 3c, 3e, 3f, 4 and 5.
+6. Then steps 3c, 3e, 3f, 4 and 5, and the spike of cppgm's LowIR as the release backend (the Compiler row of 2026-11-19).
 
 The 2026-11-09 plan, kept for reference; step 2b built its spike: read items 1–8 of the reading list in [fast-compilers.md](fast-compilers.md#9-code-to-read-first), the whole of tcc's design ending in `arm64-gen.c`, then build a spike:
 - a per-function IR for integers, branches and calls;
@@ -124,7 +124,7 @@ Updated 2026-11-19. The owner's answers are in [../decisions.md](../decisions.md
    - **Targets:** whether WebAssembly is a target, and whether the game must run on platforms that forbid writable code.
    - **The metric:** whether it counts unique physical lines, whether the build is cold or warm, whether it includes linking or reaching runnable code, and on which machine.
    - Bitfields (sheet 4f), which the compiler's C doesn't use.
-   - **The release backend after the C backend** ([optimizing-backends.md](optimizing-backends.md) section 8): spike cppgm's LowIR, as recommended, keep LLVM's C API as the Release row of 2026-11-09 says, or plan chibi's own optimizing backend, and how close to clang "good enough" is.
+   - **After the LowIR spike** (the Compiler row of 2026-11-19; [optimizing-backends.md](optimizing-backends.md) section 8, questions 2 and 3): whether chibi may depend on an LLM-written backend, and how close to clang is good enough for chibi's own optimizing backend.
    - Tail-call rules and computed `goto` (checker-and-ir.md section 9, questions 8 and 9), the rest of rank 9 (no failed check becomes an assumption of the optimizer), rank 12 (multiple returns and tuples), and open enums (rank 15).
    - Top-level code in the entry file ([top-level-code.md](top-level-code.md) 1–4).
    - The GPU recommendations that [shader-languages.md](shader-languages.md) section 1.1 marks open.
