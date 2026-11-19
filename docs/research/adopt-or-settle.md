@@ -525,6 +525,8 @@ Old Chibi paid the cost from the other side. When its analysis couldn't prove th
 
 **Cost of deciding late.** The change would be silent wherever aliasing exists, and structural for the ABI.
 
+**Decided 2026-11-19** as recommended below: parameters behave as copies, and a large struct goes by pointer to a copy that the caller skips when nothing the callee can reach is able to write the original. Checker step 3d.8 builds it. See [../decisions.md](../decisions.md).
+
 **Recommendation.**
 - **Copy semantics.** Parameters are immutable bindings with copy semantics, so the callee always sees the values as they were at the call.
 - **How large structs travel.** They go by pointer, as the C ABI already does. The caller copies first, unless it proves that nothing the callee can reach writes the original during the call; this is the rule Zig adopted.
