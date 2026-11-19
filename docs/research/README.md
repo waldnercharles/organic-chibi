@@ -60,7 +60,7 @@ The points below are hypotheses until they are measured on chibi-v2. Testable ve
 
 ## Next step
 
-Updated 2026-11-18. Built so far:
+Updated 2026-11-19. Built so far:
 - the lexer and parser;
 - checker steps 1 and 2: declarations, function bodies, exact constants and the typed IR;
 - step 2b, a one-pass arm64 backend that writes into executable memory and calls through a table of function addresses;
@@ -69,7 +69,7 @@ Updated 2026-11-18. Built so far:
 [checker-and-ir.md](checker-and-ir.md) section 8 has the details and the measurements.
 
 The goal now is self-hosting: translate the compiler into chibi, then use the compiler as the benchmark that chibi improves against (the Compiler rows of 2026-11-16 and 2026-11-17). The order:
-1. **Step 3d:** pointers, structs, arrays, slices and literals. Before it is built, options A and C of question 14 are prototyped on a slice loop and timed. The arm64 backend's tests and timings run only on arm64, so they run on the owner's M4 Pro. A cloud session's container is x86-64, and there the IR can only be checked against the reference interpreter.
+1. **Step 3d:** pointers, structs, arrays, slices and literals. Options A and C of question 14 were timed on 2026-11-19, on x86-64 ([experiments/slice-lowering](../../experiments/slice-lowering/README.md)): C was at least as fast as A on every kernel, and 21–28% faster on a loop that re-slices as a lexer does, so 3d builds C. The same kernels still need timing on the owner's M4 Pro. A cloud container runs the arm64 backend's tests under qemu (`make test`), but can't time arm64 code.
 2. Global variables and constant tables.
 3. Calling C and being called from C.
 4. SIMD types, and the bit-scan and overflow builtins.
