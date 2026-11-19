@@ -43,6 +43,7 @@
     X(IR_CALL, "call")                                                         \
     X(IR_STORE, "store")                                                       \
     X(IR_STORE_AT, "store-at")                                                 \
+    X(IR_STORE_PAIR, "store-pair")                                             \
     X(IR_COPY, "copy")                                                         \
     X(IR_ZERO, "zero")                                                         \
     X(IR_DROP, "drop")                                                         \

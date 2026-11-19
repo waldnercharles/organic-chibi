@@ -346,13 +346,23 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                 break;
             case IR_LOAD_AT: {
                 u64 raw = 0;
-                memcpy(&raw, (const void *)(uintptr_t)OPERAND(a), t.bits / 8);
+                const u8 *p = (const u8 *)(uintptr_t)OPERAND(a);
+                memcpy(&raw, p, t.bits / 8);
                 v = canon(raw, t);
+                if (c->types.kinds[type] == TYPE_SLICE) {
+                    memcpy(&second, p + 8, sizeof second);
+                }
                 break;
             }
             case IR_STORE_AT: {
                 u64 raw = OPERAND(b);
                 memcpy((void *)(uintptr_t)OPERAND(a), &raw, t.bits / 8);
+                break;
+            }
+            case IR_STORE_PAIR: {
+                const u32 *x = ir->extra + fn->first_extra + b;
+                u64 words[2] = { OPERAND(x[0]), OPERAND(x[1]) };
+                memcpy((void *)(uintptr_t)OPERAND(a), words, sizeof words);
                 break;
             }
             case IR_ADD:

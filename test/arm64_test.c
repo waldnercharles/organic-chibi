@@ -1535,6 +1535,45 @@ typedef float SF(Slice);
 typedef int64_t ISIS(int64_t, Slice, int64_t, Slice);
 typedef Slice IIS(int64_t, int64_t, Slice);
 
+static bool
+agree_on_grid(Program *p, const char *const *names, size_t count)
+{
+    IrReference ref;
+    ir_reference_init(&ref, &p->c);
+    bool ok = true;
+    for (size_t f = 0; f < count && ok; f++) {
+        u32 decl = decl_named(p, names[f]);
+        I2 *native = (I2 *)native_entry(&p->n, decl);
+        for (int64_t a = -3; a <= 14 && ok; a++) {
+            for (int64_t b = -3; b <= 12 && ok; b++) {
+                int64_t x = a < 14 ? a : INT64_MIN;
+                u64 slots[2] = { (u64)x, (u64)b };
+                u64 want = 0;
+                int64_t got = 0;
+                int want_trap = ir_reference_run(&ref, decl, slots, &want);
+                int got_trap = call_i2(native, x, b, &got);
+                if (want_trap != got_trap || (!want_trap && (int64_t)want != got)) {
+                    fprintf(
+                        stderr,
+                        "arm64 test: %s(%lld, %lld): reference %lld (trap %d), "
+                        "native %lld (trap %d)\n",
+                        names[f],
+                        (long long)x,
+                        (long long)b,
+                        (long long)want,
+                        want_trap,
+                        (long long)got,
+                        got_trap
+                    );
+                    ok = false;
+                }
+            }
+        }
+    }
+    ir_reference_free(&ref);
+    return ok;
+}
+
 static const char *const SLICE_FUNCTIONS[] = {
     "kernels", "window", "ends",   "nested", "known", "sizes",  "rows",
     "pointed", "empty",  "swap",   "picks",  "mixer", "scan",   "literal",
@@ -1631,37 +1670,210 @@ TEST_CASE(slices)
     t = lone(0, 0, (Slice){ us, 8 });
     REQUIRE(t.ptr == us + 2 && t.len == 6);
 
-    IrReference ref;
-    ir_reference_init(&ref, &p.c);
-    for (size_t f = 0; f < sizeof SLICE_FUNCTIONS / sizeof SLICE_FUNCTIONS[0]; f++) {
-        u32 decl = decl_named(&p, SLICE_FUNCTIONS[f]);
-        I2 *native = (I2 *)native_entry(&p.n, decl);
-        for (int64_t a = -3; a <= 14; a++) {
-            for (int64_t b = -3; b <= 12; b++) {
-                int64_t x = a < 14 ? a : INT64_MIN;
-                u64 slots[2] = { (u64)x, (u64)b };
-                u64 want = 0;
-                int want_trap = ir_reference_run(&ref, decl, slots, &want);
-                int got_trap = call_i2(native, x, b, &r);
-                if (want_trap != got_trap || (!want_trap && (int64_t)want != r)) {
-                    fprintf(
-                        stderr,
-                        "slices: %s(%lld, %lld): reference %lld (trap %d), "
-                        "native %lld (trap %d)\n",
-                        SLICE_FUNCTIONS[f],
-                        (long long)x,
-                        (long long)b,
-                        (long long)want,
-                        want_trap,
-                        (long long)r,
-                        got_trap
-                    );
-                    REQUIRE(false);
-                }
-            }
-        }
-    }
-    ir_reference_free(&ref);
+    REQUIRE(agree_on_grid(&p, SLICE_FUNCTIONS, sizeof SLICE_FUNCTIONS / sizeof SLICE_FUNCTIONS[0])
+    );
+    release_program(&p);
+    return true;
+}
+
+static const char
+    STORED_SLICES[] = "struct Text { data: []u8, n: int, tag: u8 }\n"
+                      "struct Grid { rows: [][]int, w: int }\n"
+                      "struct Span { s: []int, k: int }\n"
+                      "struct Node { kids: []Node, v: int }\n"
+                      "\n"
+                      "fn measure(t: *Text) -> int {\n"
+                      "    n := 0\n"
+                      "    for c in t.data {\n"
+                      "        if c == 44 {\n"
+                      "            n += 1\n"
+                      "        }\n"
+                      "    }\n"
+                      "    t.n = n\n"
+                      "    t.tag = t.data[0]\n"
+                      "    t.data = t.data[1..]\n"
+                      "    return n * 100 + t.data.len\n"
+                      "}\n"
+                      "\n"
+                      "fn total(g: *Grid) -> int {\n"
+                      "    s := 0\n"
+                      "    for row, i in g.rows {\n"
+                      "        for x in row {\n"
+                      "            s += x * (i + 1)\n"
+                      "        }\n"
+                      "    }\n"
+                      "    g.w = g.rows[0].len\n"
+                      "    return s\n"
+                      "}\n"
+                      "\n"
+                      "fn get(g: *Grid, i: int) -> []int {\n"
+                      "    return g.rows[i]\n"
+                      "}\n"
+                      "\n"
+                      "fn put(g: *Grid, i: int, s: []int) {\n"
+                      "    g.rows[i] = s\n"
+                      "}\n"
+                      "\n"
+                      "fn spans(a: int, b: int) -> int {\n"
+                      "    xs := int.[1, 2, 3, 4, 5, 6]\n"
+                      "    p := Span.{ xs[a..], b }\n"
+                      "    q := p\n"
+                      "    q.s = q.s[..b]\n"
+                      "    ps := Span.[p, q, .{ .k = 7 }]\n"
+                      "    t := 0\n"
+                      "    for e in ps {\n"
+                      "        t = t * 10 + e.s.len\n"
+                      "        t = t * 10 + e.k\n"
+                      "    }\n"
+                      "    return t\n"
+                      "}\n"
+                      "\n"
+                      "fn table(a: int, b: int) -> int {\n"
+                      "    x := int.[1, 2, 3]\n"
+                      "    y := int.[10, 20]\n"
+                      "    z: [4]int\n"
+                      "    m := []int.[x, y[1..], z[a..]]\n"
+                      "    m[b % 3] = x[..b]\n"
+                      "    t := 0\n"
+                      "    for r, i in m {\n"
+                      "        for v in r {\n"
+                      "            t += v * (i + 1)\n"
+                      "        }\n"
+                      "        t = t * 10 + r.len\n"
+                      "    }\n"
+                      "    return t\n"
+                      "}\n"
+                      "\n"
+                      "fn deep(a: int, b: int) -> int {\n"
+                      "    x := int.[1, 2, 3, 4]\n"
+                      "    rows := []int.[x[..a], x[a..]]\n"
+                      "    all: [][]int = rows\n"
+                      "    two := all[1..]\n"
+                      "    pick := two[0]\n"
+                      "    return pick.len * 100 + all[0].len * 10 + pick[b]\n"
+                      "}\n"
+                      "\n"
+                      "fn next(p: *[]int) -> int {\n"
+                      "    v := p.*[0]\n"
+                      "    p.* = p.*[1..]\n"
+                      "    return v\n"
+                      "}\n"
+                      "\n"
+                      "fn walk(a: int, b: int) -> int {\n"
+                      "    x := int.[1, 2, 3, 4, 5]\n"
+                      "    s: []int = x\n"
+                      "    p := &s\n"
+                      "    t := 0\n"
+                      "    for _ in 0..a {\n"
+                      "        t = t * 10 + next(p)\n"
+                      "    }\n"
+                      "    return t * 10 + s.len + p.len * 100 + b\n"
+                      "}\n"
+                      "\n"
+                      "fn cut(p: *[]int, k: int) -> int {\n"
+                      "    p.* = p.*[k..]\n"
+                      "    return k\n"
+                      "}\n"
+                      "\n"
+                      "fn mix(s: []int, k: int, t: []int, b: int) -> int {\n"
+                      "    return s.len * 1000 + k * 100 + t.len * 10 + t[b]\n"
+                      "}\n"
+                      "\n"
+                      "fn order(a: int, b: int) -> int {\n"
+                      "    x := int.[1, 2, 3, 4, 5]\n"
+                      "    s: []int = x\n"
+                      "    return mix(s, cut(&s, a), s, b)\n"
+                      "}\n"
+                      "\n"
+                      "fn chain(a: int, b: int) -> int {\n"
+                      "    n0 := Node.{ .v = a }\n"
+                      "    leaves := Node.[n0, .{ .v = b }]\n"
+                      "    mid := Node.{ leaves, 10 }\n"
+                      "    tops := Node.[mid, mid]\n"
+                      "    root := Node.{ tops[..1], 100 }\n"
+                      "    t := root.v\n"
+                      "    for m in root.kids {\n"
+                      "        t += m.v\n"
+                      "        for l in m.kids {\n"
+                      "            t = t * 10 + l.v + l.kids.len\n"
+                      "        }\n"
+                      "    }\n"
+                      "    return t\n"
+                      "}\n";
+
+typedef struct
+{
+    Slice data;
+    int64_t n;
+    uint8_t tag;
+} Text;
+
+typedef struct
+{
+    Slice rows;
+    int64_t w;
+} Grid;
+
+typedef int64_t TI(Text *);
+typedef int64_t GI(Grid *);
+typedef Slice GS(Grid *, int64_t);
+typedef void GP(Grid *, int64_t, Slice);
+
+static const char *const STORED_SLICE_FUNCTIONS[] = {
+    "spans", "table", "deep", "walk", "order", "chain",
+};
+
+TEST_CASE(stored_slices)
+{
+    catch_traps();
+    Program p;
+    REQUIRE(build(&p, STORED_SLICES));
+    int64_t r = 0;
+    REQUIRE(call_i2((I2 *)fn(&p, "spans"), 1, 2, &r) == 0 && r == 522207);
+    REQUIRE(call_i2((I2 *)fn(&p, "spans"), 6, 0, &r) == 0 && r == 7);
+    REQUIRE(call_i2((I2 *)fn(&p, "spans"), 7, 0, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "spans"), 1, 6, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "table"), 1, 2, &r) == 0 && r == 10402);
+    REQUIRE(call_i2((I2 *)fn(&p, "table"), 4, 3, &r) == 0 && r == 10310);
+    REQUIRE(call_i2((I2 *)fn(&p, "table"), 1, 4, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "table"), 0, -1, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "deep"), 1, 2, &r) == 0 && r == 314);
+    REQUIRE(call_i2((I2 *)fn(&p, "deep"), 0, 0, &r) == 0 && r == 401);
+    REQUIRE(call_i2((I2 *)fn(&p, "deep"), 4, 0, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "deep"), 5, 0, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "walk"), 2, 7, &r) == 0 && r == 430);
+    REQUIRE(call_i2((I2 *)fn(&p, "walk"), 0, 0, &r) == 0 && r == 505);
+    REQUIRE(call_i2((I2 *)fn(&p, "walk"), 5, 1, &r) == 0 && r == 123451);
+    REQUIRE(call_i2((I2 *)fn(&p, "walk"), -2, 0, &r) == 0 && r == 505);
+    REQUIRE(call_i2((I2 *)fn(&p, "walk"), 6, 0, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "order"), 2, 1, &r) == 0 && r == 5234);
+    REQUIRE(call_i2((I2 *)fn(&p, "order"), 0, 4, &r) == 0 && r == 5055);
+    REQUIRE(call_i2((I2 *)fn(&p, "order"), 5, 0, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "order"), 6, 0, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "chain"), 3, 4, &r) == 0 && r == 11034);
+    REQUIRE(call_i2((I2 *)fn(&p, "chain"), -5, 0, &r) == 0 && r == 10950);
+
+    char text[] = "x,y,,z";
+    Text t = { { text, 6 }, -1, 0 };
+    REQUIRE(((TI *)fn(&p, "measure"))(&t) == 305);
+    REQUIRE(t.n == 3 && t.tag == 'x' && t.data.ptr == text + 1 && t.data.len == 5);
+
+    int64_t r0[2] = { 1, 2 };
+    int64_t r1[3] = { 3, 4, 5 };
+    Slice rows[2] = { { r0, 2 }, { r1, 3 } };
+    Grid g = { { rows, 2 }, 0 };
+    REQUIRE(((GI *)fn(&p, "total"))(&g) == 27 && g.w == 2);
+    Slice row = ((GS *)fn(&p, "get"))(&g, 1);
+    REQUIRE(row.ptr == r1 && row.len == 3);
+    ((GP *)fn(&p, "put"))(&g, 0, (Slice){ r1 + 1, 2 });
+    REQUIRE(rows[0].ptr == r1 + 1 && rows[0].len == 2);
+    REQUIRE(((GI *)fn(&p, "total"))(&g) == 33 && g.w == 2);
+
+    REQUIRE(agree_on_grid(
+        &p,
+        STORED_SLICE_FUNCTIONS,
+        sizeof STORED_SLICE_FUNCTIONS / sizeof STORED_SLICE_FUNCTIONS[0]
+    ));
     release_program(&p);
     return true;
 }
@@ -2318,6 +2530,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(arrays);
     RUN_TEST_CASE(structs);
     RUN_TEST_CASE(slices);
+    RUN_TEST_CASE(stored_slices);
     RUN_TEST_CASE(constant_conditions);
     RUN_TEST_CASE(deep_logic);
     RUN_TEST_CASE(small_integers);

@@ -69,11 +69,12 @@ Updated 2026-11-19. Built so far:
 - step 3d.2, arrays: `[N]T` locals, literals, indexing with bounds checks, copies, `.len`, `for` over arrays and `*[N]T` parameters.
 - step 3d.3, slices: `[]T` locals, parameters and results held in two registers, slicing with bounds checks, `.len`, `for` over slices, and arrays converting to slices.
 - step 3d.4, structs: locals laid out as C lays them out, field access through values and pointers, copies, zeroing with field defaults, typed and anonymous literals, and `*S` parameters.
+- step 3d.5, slices in memory: slice fields, arrays and slices of slices, `&s` and `*[]T`.
 
 [checker-and-ir.md](checker-and-ir.md) section 8 has the details and the measurements.
 
 The goal now is self-hosting: translate the compiler into chibi, then use the compiler as the benchmark that chibi improves against (the Compiler rows of 2026-11-16 and 2026-11-17). The order:
-1. **The rest of step 3d:** step 3d.5 stores slices in memory (slice fields, arrays of slices) and passes structs up to 16 bytes by value in registers, as C does. Options A and C of question 14 were timed on 2026-11-19, on x86-64 ([experiments/slice-lowering](../../experiments/slice-lowering/README.md)): C was at least as fast as A on every kernel, and 21–28% faster on a loop that re-slices as a lexer does, so 3d builds C, and step 3d.3 built slices that way. The same kernels still need timing on the owner's M4 Pro. A cloud container runs the arm64 backend's tests under qemu (`make test`), but can't time arm64 code.
+1. **The rest of step 3d:** step 3d.6 passes structs up to 16 bytes by value in registers, as C does. Options A and C of question 14 were timed on 2026-11-19, on x86-64 ([experiments/slice-lowering](../../experiments/slice-lowering/README.md)): C was at least as fast as A on every kernel, and 21–28% faster on a loop that re-slices as a lexer does, so 3d builds C, and step 3d.3 built slices that way. The same kernels still need timing on the owner's M4 Pro. A cloud container runs the arm64 backend's tests under qemu (`make test`), but can't time arm64 code.
 2. Global variables and constant tables.
 3. Calling C and being called from C.
 4. SIMD types, and the bit-scan and overflow builtins.

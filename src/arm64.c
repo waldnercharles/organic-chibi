@@ -2203,6 +2203,29 @@ in_register(const Emit *e, u32 x, u32 r)
     return h != NO_REG && (h >= ALIAS ? h - ALIAS : h) == r;
 }
 
+static NOINLINE void
+load_pair(Emit *e, u32 i, u32 p, u8 t)
+{
+    u32 d0 = half_result(e, i, 0, t);
+    u32 d1 = half_result(e, i, 1, e->info[TYPE_ID_I64]);
+    put(e, OP_LDP_X | d1 << 10 | p << 5 | d0);
+}
+
+static NOINLINE void
+store_pair(Emit *e, u32 a, u32 b)
+{
+    const u32 *x = e->ir->extra + e->fn->first_extra + b;
+    u32 p = fetch(e, a, X16);
+    u32 r0 = (x[0] & IR_CONST) && constant_bits(e, x[0]) == 0 ? ZR
+                                                              : fetch(e, x[0], X17);
+    u32 r1 = (x[1] & IR_CONST) && constant_bits(e, x[1]) == 0 ? ZR
+                                                              : fetch(e, x[1], X8);
+    put(e, OP_STP_X | r1 << 10 | p << 5 | r0);
+    release(e, a);
+    release(e, x[0]);
+    release(e, x[1]);
+}
+
 static void
 return_pair(Emit *e, u32 a, u32 b)
 {
@@ -2717,6 +2740,10 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                 u32 p = fetch(e, a, X16);
                 release(e, a);
                 u8 t = e->info[type];
+                if (t & INFO_PAIR) {
+                    load_pair(e, i, p, t);
+                    break;
+                }
                 u32 d = result(e, i, t);
                 put(e, load_op(t) | p << 5 | d);
                 break;
@@ -2742,6 +2769,7 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                 release(e, b);
                 break;
             }
+            case IR_STORE_PAIR: store_pair(e, a, b); break;
             case IR_ADD:
             case IR_SUB:
             case IR_ADD_WRAP:
