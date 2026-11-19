@@ -38,9 +38,9 @@ typedef enum
     TYPE_OPTIONAL,
     TYPE_SLICE,
     TYPE_ARRAY,
+    TYPE_STRUCT,
     TYPE_ERROR_UNION,
     TYPE_FN,
-    TYPE_STRUCT,
     TYPE_ENUM,
     TYPE_UNION,
 } TypeKind;
@@ -92,6 +92,9 @@ enum
     DECL_EXPORT = 2,
     DECL_CYCLE = 4,
     DECL_PAIRS = 8,
+    DECL_STORED = 16,
+    DECL_DEFAULTS = 32,
+    DECL_NO_ZERO = 64,
 };
 
 enum
@@ -146,6 +149,13 @@ enum
     X(DIAG_LITERAL_TYPE, "the type of this literal isn't known here; write it, as in `u8.[1, 2]`")  \
     X(DIAG_LITERAL_COUNT, "expected the length of `%U`, found %c elements")                         \
     X(DIAG_NOT_ARRAY, "`%U` is not an array, so an array literal can't build it")                   \
+    X(DIAG_STRUCT_LITERAL_TYPE, "the type of this literal isn't known here; write it, as in `Point.{ 1, 2 }`") \
+    X(DIAG_NOT_STRUCT, "`%U` is not a struct, so a struct literal can't build it")                  \
+    X(DIAG_FIELD_COUNT, "wrong number of fields: expected %c, found %C")                            \
+    X(DIAG_MIXED_FIELDS, "name every field of this literal, or none")                               \
+    X(DIAG_FIELD_TWICE, "`%n` is already set at %l")                                                \
+    X(DIAG_MISSING_FIELD, "`%n` has no zero value, so this literal needs a value for it")          \
+    X(DIAG_NO_ZERO_FIELD, "`%U` has no zero value because of its field `%n`, so this needs a value") \
     X(DIAG_UNUSED, "this value is not used; discard it with `_ = ...`")                             \
     X(DIAG_DISCARD, "`_` can only discard a value, as in `_ = f()`")                                \
     X(DIAG_NOT_CALLABLE, "expected a function or a type")                                           \
@@ -399,6 +409,8 @@ void check_dump_ir(FILE *out, const Checker *c);
 u64 check_type_size(const Checker *c, u32 type);
 
 u32 check_type_align(const Checker *c, u32 type);
+
+u64 check_field_offset(const Checker *c, u32 field);
 
 void check_free(Checker *c);
 

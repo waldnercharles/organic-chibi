@@ -27,6 +27,7 @@ enum
     OPERAND_STMT,
     OPERAND_RANGE,
     OPERAND_DISCARD,
+    OPERAND_FIELD,
     OPERAND_MARKER = 0xFFFFFF00u,
 };
 
@@ -366,6 +367,12 @@ reserve_list(Checker *c, u32 n)
     return list;
 }
 
+static u64
+list_u64(const Checker *c, u32 at)
+{
+    return c->lists[at] | (u64)c->lists[at + 1] << 32;
+}
+
 static void
 reserve_members(Checker *c, u32 n)
 {
@@ -571,16 +578,32 @@ is_untyped(u32 type)
 }
 
 static bool
-is_aggregate(const Checker *c, u32 type)
+is_array(const Checker *c, u32 type)
 {
     return c->types.kinds[type] == TYPE_ARRAY;
 }
 
 static bool
+is_struct(const Checker *c, u32 type)
+{
+    return c->types.kinds[type] == TYPE_STRUCT;
+}
+
+static bool
+is_aggregate(const Checker *c, u32 type)
+{
+    static_assert(TYPE_STRUCT == TYPE_ARRAY + 1, "arrays and structs must be adjacent kinds");
+    return (u8)(c->types.kinds[type] - TYPE_ARRAY) <= 1;
+}
+
+static bool
 is_storable(const Checker *c, u32 type)
 {
-    while (is_aggregate(c, type)) {
+    while (is_array(c, type)) {
         type = c->types.arg0[type];
+    }
+    if (is_struct(c, type)) {
+        return c->decls.flags[c->types.arg0[type]] & DECL_STORED;
     }
     return is_scalar(c, type) && !is_untyped(type);
 }
@@ -599,6 +622,12 @@ is_indexable(const Checker *c, u32 type)
 }
 
 static bool
+is_compound(const Checker *c, u32 type)
+{
+    return (u8)(c->types.kinds[type] - TYPE_SLICE) <= 2;
+}
+
+static bool
 is_held(const Checker *c, u32 type)
 {
     if (is_slice(c, type)) {
@@ -610,7 +639,7 @@ is_held(const Checker *c, u32 type)
 static bool
 is_passed(const Checker *c, u32 type)
 {
-    return !is_indexable(c, type) ||
+    return !is_compound(c, type) ||
            (is_slice(c, type) && is_storable(c, c->types.arg0[type]));
 }
 
@@ -630,6 +659,7 @@ check_type_size(const Checker *c, u32 type)
             u64 size = check_type_size(c, t->arg0[type]);
             return size && n > UINT64_MAX / size ? UINT64_MAX : n * size;
         }
+        case TYPE_STRUCT: return t->arg1[type];
         default: return 0;
     }
 }
@@ -637,10 +667,20 @@ check_type_size(const Checker *c, u32 type)
 u32
 check_type_align(const Checker *c, u32 type)
 {
-    while (is_aggregate(c, type)) {
+    while (is_array(c, type)) {
         type = c->types.arg0[type];
     }
+    if (is_struct(c, type)) {
+        u32 layout = c->decls.values[c->types.arg0[type]];
+        return layout ? c->lists[layout + 1] : 1;
+    }
     return (u32)check_type_size(c, type);
+}
+
+u64
+check_field_offset(const Checker *c, u32 field)
+{
+    return list_u64(c, field);
 }
 
 static bool
@@ -857,7 +897,7 @@ place_binding(const Checker *c, u32 file, Operand o)
 
     const IrCode *code = c->body.code;
     u32 v = c->body.first + value_of(o);
-    while (code->kinds[v] == IR_INDEX) {
+    while (code->kinds[v] == IR_INDEX || code->kinds[v] == IR_FIELD) {
         v = c->body.first + code->as[v];
     }
     return code->kinds[v] == IR_ADDR ? binding_kind(c, file, code->as[v]) : NODE_NONE;
@@ -910,7 +950,7 @@ static Operand
 read_local(Checker *c, u32 slot)
 {
     u32 type = slot_at(c, slot)->type;
-    if (is_indexable(c, type)) {
+    if (is_compound(c, type)) {
         return (Operand){ OPERAND_LOCAL, slot };
     }
     if (type == TYPE_ID_NONE) {
@@ -1074,12 +1114,6 @@ compare_keys(const void *a, const void *b)
     return (x > y) - (x < y);
 }
 
-static u64
-list_u64(const Checker *c, u32 at)
-{
-    return c->lists[at] | (u64)c->lists[at + 1] << 32;
-}
-
 static void
 enum_runs(Checker *c, u32 decl)
 {
@@ -1175,7 +1209,7 @@ slice_of_place(Checker *c, u32 file, u32 token, Operand o, u32 to)
         assert(o.type == OPERAND_LOCAL);
         return load_pair(c, o.ref);
     }
-    if (!is_aggregate(c, from) || c->types.arg0[from] != c->types.arg0[to]) {
+    if (!is_array(c, from) || c->types.arg0[from] != c->types.arg0[to]) {
         report(c, file, token, DIAG_MISMATCH, from, to);
         return poison;
     }
@@ -1536,10 +1570,11 @@ element_of(const Checker *c, u32 type, u32 depth)
     return type;
 }
 
+static u32 field_expected(const Checker *c, u32 m, u32 top);
+
 static ALWAYS_INLINE u32
-expected_type(const Checker *c, u32 own)
+expected_at(const Checker *c, u32 top)
 {
-    u32 top = c->sp - own;
     u32 depth = 0;
     for (u32 m = top; m-- > 0;) {
         Operand o = c->stack[m];
@@ -1548,21 +1583,23 @@ expected_type(const Checker *c, u32 own)
         }
 
         u8 kind = (u8)(o.type - OPERAND_MARKER);
-        if (kind == NODE_ANON_LITERAL_START && array_marker(c, m)) {
+        bool literal = kind == NODE_LITERAL_START || kind == NODE_ANON_LITERAL_START;
+        bool array = literal && array_marker(c, m);
+        if (kind == NODE_ANON_LITERAL_START && array) {
             depth++;
             top = m;
             continue;
         }
-        if (m == 0 || (kind != NODE_VALUE && kind != NODE_CALL_ARGS &&
-                       kind != NODE_LITERAL_START)) {
+        if (m == 0 || (kind != NODE_VALUE && kind != NODE_CALL_ARGS && !literal)) {
             return TYPE_ID_NONE;
         }
 
         Operand below = c->stack[m - 1];
         u32 type = TYPE_ID_NONE;
-        if (kind == NODE_LITERAL_START) {
-            type = below.type == TYPE_ID_TYPE && array_marker(c, m) ? below.ref
-                                                                    : TYPE_ID_NONE;
+        if ((literal && !array) || below.type == OPERAND_FIELD) {
+            type = field_expected(c, m, top);
+        } else if (kind == NODE_LITERAL_START) {
+            type = below.type == TYPE_ID_TYPE ? below.ref : TYPE_ID_NONE;
         } else if (below.type == TYPE_ID_TYPE) {
             type = below.ref;
         } else if (kind == NODE_VALUE && is_place(below)) {
@@ -1576,6 +1613,41 @@ expected_type(const Checker *c, u32 own)
         return depth ? element_of(c, type, depth) : type;
     }
     return TYPE_ID_NONE;
+}
+
+static NOINLINE u32
+field_expected(const Checker *c, u32 m, u32 top)
+{
+    u32 name = NO_SLOT;
+    if (c->stack[m].type == OPERAND_MARKER + NODE_VALUE) {
+        name = c->stack[m - 1].ref;
+        m--;
+        while (c->stack[--m].type < OPERAND_MARKER) {
+        }
+    }
+
+    u32 type = TYPE_ID_NONE;
+    if (c->stack[m].type == OPERAND_MARKER + NODE_LITERAL_START) {
+        type = c->stack[m - 1].type == TYPE_ID_TYPE ? c->stack[m - 1].ref : TYPE_ID_NONE;
+    } else if (c->stack[m].type == OPERAND_MARKER + NODE_ANON_LITERAL_START) {
+        type = expected_at(c, m);
+    }
+    if (!is_struct(c, type) || array_marker(c, m)) {
+        return TYPE_ID_NONE;
+    }
+
+    u32 decl = c->types.arg0[type];
+    u32 member = name != NO_SLOT ? find_member(c, decl, name)
+               : top - m - 1 < c->decls.member_counts[decl]
+                   ? c->decls.members[decl] + top - m - 1
+                   : NO_SLOT;
+    return member != NO_SLOT ? c->members[member].type : TYPE_ID_NONE;
+}
+
+static ALWAYS_INLINE u32
+expected_type(const Checker *c, u32 own)
+{
+    return expected_at(c, c->sp - own);
 }
 
 static Operand
@@ -1779,7 +1851,8 @@ claim_contained(Checker *c, u32 type, u32 file, u32 token)
            t->kinds[type] == TYPE_ERROR_UNION) {
         type = t->arg0[type];
     }
-    if (t->kinds[type] == TYPE_STRUCT || t->kinds[type] == TYPE_UNION) {
+    if (t->kinds[type] == TYPE_STRUCT || t->kinds[type] == TYPE_UNION ||
+        t->kinds[type] == TYPE_ENUM) {
         need(c, t->arg0[type], file, token);
     }
 }
@@ -1881,6 +1954,74 @@ collect_members(Checker *c, u32 file, u32 from, u32 kind)
     return first;
 }
 
+static bool
+has_zero(const Checker *c, u32 type)
+{
+    while (is_array(c, type)) {
+        type = c->types.arg0[type];
+    }
+    switch (c->types.kinds[type]) {
+        case TYPE_POINTER: return false;
+        case TYPE_ENUM: return enum_has(c, type, order_key(c, type, 0));
+        case TYPE_STRUCT:
+            return !(c->decls.flags[c->types.arg0[type]] & DECL_NO_ZERO);
+        default: return true;
+    }
+}
+
+static bool
+has_defaults(const Checker *c, u32 type)
+{
+    while (is_array(c, type)) {
+        type = c->types.arg0[type];
+    }
+    return is_struct(c, type) && (c->decls.flags[c->types.arg0[type]] & DECL_DEFAULTS);
+}
+
+static bool
+sets_default(const Checker *c, Member m)
+{
+    return m.value < MEMBER_NONE
+             ? exact_sign(&c->exacts, m.value) != 0
+             : m.value == MEMBER_NONE && has_defaults(c, m.type);
+}
+
+static void
+lay_out_struct(Checker *c, u32 decl)
+{
+    u32 first = c->decls.members[decl];
+    u32 end = first + c->decls.member_counts[decl];
+    u32 layout = reserve_list(c, 1 + 2 * (end - first));
+    u64 size = 0;
+    u32 align = 1;
+    u8 flags = DECL_STORED;
+    for (u32 i = first; i < end; i++) {
+        Member m = c->members[i];
+        if (!is_storable(c, m.type)) {
+            flags &= (u8)~DECL_STORED;
+        }
+        flags |= sets_default(c, m) ? DECL_DEFAULTS : 0;
+        flags |= m.value == MEMBER_NONE && !has_zero(c, m.type) ? DECL_NO_ZERO : 0;
+
+        u32 a = check_type_align(c, m.type);
+        a = a ? a : 1;
+        align = a > align ? a : align;
+        size = size > UINT64_MAX - a ? UINT64_MAX : (size + a - 1) & ~(u64)(a - 1);
+        u32 at = layout + 2 + 2 * (i - first);
+        c->lists[at] = (u32)size;
+        c->lists[at + 1] = (u32)(size >> 32);
+        u64 n = check_type_size(c, m.type);
+        size = n > UINT64_MAX - size ? UINT64_MAX : size + n;
+    }
+
+    size = size > UINT64_MAX - align ? UINT64_MAX
+                                     : (size + align - 1) & ~(u64)(align - 1);
+    c->types.arg1[c->decls.types[decl]] = size;
+    c->lists[layout + 1] = align;
+    c->decls.values[decl] = layout;
+    c->decls.flags[decl] |= flags;
+}
+
 static void
 close_struct(Checker *c, u32 decl, u32 file)
 {
@@ -1890,6 +2031,8 @@ close_struct(Checker *c, u32 decl, u32 file)
     c->decls.member_counts[decl] = c->nmembers - first;
     c->nscratch = c->stack[m].ref;
     c->sp = m;
+    index_members(c, decl, first);
+    lay_out_struct(c, decl);
 }
 
 static void
@@ -2094,7 +2237,7 @@ unbind_to(Checker *c, u32 n)
     }
 }
 
-static u32
+static ALWAYS_INLINE u32
 local_type(Checker *c, u32 file, u32 token, u32 type)
 {
     if (!is_held(c, type)) {
@@ -2759,7 +2902,7 @@ slice_range(Checker *c, u32 file, u8 kind)
     if (!check_index(c, file, lo_token, lo) || !check_index(c, file, hi_token, hi)) {
         return poison;
     }
-    bool array = is_aggregate(c, type);
+    bool array = is_array(c, type);
     if (array && place_binding(c, file, base) != NODE_NONE) {
         report(c, file, token, DIAG_SLICE_LOOP_VARIABLE, 0, 0);
         return poison;
@@ -2871,6 +3014,79 @@ array_field(Checker *c, u32 file, u32 token, Operand o)
                       exact_int(&c->exacts, (int64_t)c->types.arg1[type]) };
 }
 
+static u32
+field_layout(const Checker *c, u32 decl, u32 member)
+{
+    return c->decls.values[decl] + 2 + 2 * (member - c->decls.members[decl]);
+}
+
+static Operand
+struct_field(Checker *c, u32 file, u32 token, Operand o, bool place)
+{
+    u32 type = place_type(c, o);
+    u32 name = c->files[file].tokens.ids[token];
+    u32 decl = c->types.arg0[type];
+    u32 member = find_member(c, decl, name);
+    u32 field = member != NO_SLOT ? c->members[member].type : TYPE_ID_NONE;
+    if (member == NO_SLOT || !is_storable(c, field)) {
+        if (o.type == OPERAND_ADDRESS) {
+            emit(c, IR_DROP, 0, value_of(o), 0);
+        }
+        if (member == NO_SLOT) {
+            report(c, file, token, DIAG_NO_MEMBER, name, type);
+        } else {
+            report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
+        }
+        return poison;
+    }
+
+    u32 address = emit(
+        c,
+        IR_FIELD,
+        pointer_type(c, field),
+        place_address(c, o),
+        field_layout(c, decl, member)
+    );
+    if (place || is_aggregate(c, field)) {
+        return (Operand){ OPERAND_ADDRESS, REF_VALUE | address };
+    }
+    return emit_value(c, IR_LOAD_AT, field, address, 0);
+}
+
+static NOINLINE Operand
+member_access(Checker *c, u32 file, u32 token, Operand o, bool place)
+{
+    if (o.type == TYPE_ID_TYPE && c->types.kinds[o.ref] == TYPE_ENUM) {
+        return enum_member(c, file, token, o.ref, c->files[file].tokens.ids[token]);
+    }
+    if (is_value_type(o.type) && c->types.kinds[o.type] == TYPE_POINTER &&
+        is_aggregate(c, c->types.arg0[o.type])) {
+        o = (Operand){ OPERAND_ADDRESS, o.ref };
+    }
+
+    u32 type = is_place(o) ? place_type(c, o) : TYPE_ID_NONE;
+    if (is_array(c, type)) {
+        return array_field(c, file, token, o);
+    }
+    if (is_struct(c, type)) {
+        return struct_field(c, file, token, o, place);
+    }
+    if ((is_place(o) && is_slice(c, type)) || is_pair(c, o)) {
+        return slice_field(c, file, token, o);
+    }
+
+    u32 t = is_place(o) ? type : is_value_type(o.type) ? o.type : TYPE_ID_NONE;
+    if (is_scalar(c, t)) {
+        if (o.type == OPERAND_ADDRESS) {
+            emit(c, IR_DROP, 0, value_of(o), 0);
+        }
+        report(c, file, token, DIAG_NO_MEMBER, c->files[file].tokens.ids[token], t);
+    } else if (o.type != TYPE_ID_NONE) {
+        report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
+    }
+    return poison;
+}
+
 static NOINLINE void
 array_literal(Checker *c, u32 file, u32 node, u8 kind)
 {
@@ -2895,7 +3111,7 @@ array_literal(Checker *c, u32 file, u32 node, u8 kind)
         }
         if (type == TYPE_ID_NONE) {
             report(c, file, token, DIAG_LITERAL_TYPE, 0, 0);
-        } else if (!is_aggregate(c, type)) {
+        } else if (!is_array(c, type)) {
             report(c, file, token, DIAG_NOT_ARRAY, 0, type);
             type = TYPE_ID_NONE;
         } else if (c->types.arg1[type] != n) {
@@ -2927,6 +3143,291 @@ array_literal(Checker *c, u32 file, u32 node, u8 kind)
 
     c->sp = base;
     push_operand(c, token, ok ? array : poison);
+}
+
+static u32
+base_address(Checker *c, u32 base, bool indirect)
+{
+    if (indirect) {
+        return value_of(load_local(c, base));
+    }
+    return place_address(c, (Operand){ OPERAND_LOCAL, base });
+}
+
+static u32
+hold_address(Checker *c, u32 node, u32 type, u32 address)
+{
+    u32 pointer = pointer_type(c, type);
+    u32 slot = add_slot(c, 0, pointer, node);
+    store_local(c, slot, (Operand){ pointer, REF_VALUE | address });
+    return slot;
+}
+
+static void
+fill_defaults(Checker *c, u32 node, u32 base, bool indirect, u32 type)
+{
+    if (is_array(c, type)) {
+        u32 elem = c->types.arg0[type];
+        u32 index = add_slot(c, 0, TYPE_ID_I64, node);
+        store_local(c, index, (Operand){ TYPE_ID_I64, EXACT_ZERO });
+
+        u32 loop = emit(c, IR_LOOP, 0, 0, 0);
+        c->body.depth++;
+        u32 i = value_of(load_local(c, index));
+        u32 n = ir_const(c, TYPE_ID_I64, c->types.arg1[type]);
+        emit(c, IR_IF, 0, emit(c, IR_LT, TYPE_ID_I64, i, n), 0);
+        u32 at = emit(
+            c,
+            IR_INDEX,
+            pointer_type(c, elem),
+            base_address(c, base, indirect),
+            value_of(load_local(c, index))
+        );
+        fill_defaults(c, node, hold_address(c, node, elem, at), true, elem);
+
+        i = value_of(load_local(c, index));
+        u32 next = emit(c, IR_ADD_WRAP, TYPE_ID_I64, i, ir_const(c, TYPE_ID_I64, 1));
+        weigh(c, index);
+        emit(c, IR_STORE, TYPE_ID_I64, index, next);
+        emit(c, IR_REPEAT, 0, loop, 0);
+        emit(c, IR_END, 0, 0, 0);
+        emit(c, IR_END, 0, 0, 0);
+        c->body.depth--;
+        return;
+    }
+
+    u32 decl = c->types.arg0[type];
+    u32 first = c->decls.members[decl];
+    u32 end = first + c->decls.member_counts[decl];
+    for (u32 k = first; k < end; k++) {
+        Member m = c->members[k];
+        if (!sets_default(c, m)) {
+            continue;
+        }
+        u32 at = emit(
+            c,
+            IR_FIELD,
+            pointer_type(c, m.type),
+            base_address(c, base, indirect),
+            field_layout(c, decl, k)
+        );
+        if (m.value < MEMBER_NONE) {
+            emit(c, IR_STORE_AT, m.type, at, operand_ir(c, (Operand){ m.type, m.value }));
+        } else {
+            fill_defaults(c, node, hold_address(c, node, m.type, at), true, m.type);
+        }
+    }
+}
+
+static u32
+zeroless_member(const Checker *c, u32 type)
+{
+    u32 decl = c->types.arg0[type];
+    u32 first = c->decls.members[decl];
+    u32 end = first + c->decls.member_counts[decl];
+    for (u32 i = first; i < end; i++) {
+        if (c->members[i].value == MEMBER_NONE && !has_zero(c, c->members[i].type)) {
+            return i;
+        }
+    }
+    assert(false && "a struct without a zero value has a field without one");
+    return first;
+}
+
+static bool
+can_zero(Checker *c, u32 file, u32 token, u32 type)
+{
+    switch (c->types.kinds[type]) {
+        case TYPE_NONE: return false;
+        case TYPE_ENUM:
+            if (!has_zero(c, type)) {
+                report(c, file, token, DIAG_NO_ZERO_MEMBER, 0, type);
+                return false;
+            }
+            return true;
+        case TYPE_POINTER:
+            report(c, file, token, DIAG_NEVER_NIL, 0, type);
+            return false;
+        case TYPE_STRUCT:
+            if (!has_zero(c, type)) {
+                u32 name = c->members[zeroless_member(c, type)].name;
+                report(c, file, token, DIAG_NO_ZERO_FIELD, name, type);
+                return false;
+            }
+            return true;
+        default:
+            if (is_number(c, type) || type == TYPE_ID_BOOL || is_slice(c, type)) {
+                return true;
+            }
+            report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
+            return false;
+    }
+}
+
+static NOINLINE void
+declare_zeroed(Checker *c, u32 file, u32 node, u32 token, u32 type_token)
+{
+    u32 t = local_type(c, file, type_token, type_operand(c, file, type_token, pop(c)));
+    u32 elem = t;
+    while (is_array(c, elem)) {
+        elem = c->types.arg0[elem];
+    }
+    bool zero = can_zero(c, file, token, elem);
+
+    bool aggregate = is_aggregate(c, t);
+    Operand v = !zero     ? poison
+              : aggregate ? (Operand){ TYPE_ID_UNDEFINED, 0 }
+              : is_slice(c, t)
+                  ? make_pair(c, t, ir_const(c, t, 0), ir_const(c, TYPE_ID_I64, 0))
+                  : (Operand){ t, EXACT_ZERO };
+    u32 slot = declare_local(c, file, node, t, v);
+    if (!zero || !aggregate) {
+        return;
+    }
+    emit(c, IR_ZERO, t, place_address(c, (Operand){ OPERAND_LOCAL, slot }), 0);
+    if (has_defaults(c, elem)) {
+        fill_defaults(c, node, slot, false, t);
+    }
+}
+
+static NOINLINE void
+named_item(Checker *c, u32 file)
+{
+    u32 token = c->stack_tokens[c->sp - 1];
+    Operand v = pop(c);
+    pop(c);
+    u32 m = c->sp - 1;
+    while (c->stack[--m].type < OPERAND_MARKER) {
+    }
+
+    u32 kind = c->stack[m].type - OPERAND_MARKER;
+    if ((kind == NODE_LITERAL_START || kind == NODE_ANON_LITERAL_START) &&
+        !array_marker(c, m)) {
+        push_operand(c, token, v);
+        return;
+    }
+    report(c, file, c->stack_tokens[c->sp - 1], DIAG_UNSUPPORTED, 0, 0);
+    c->sp--;
+    push_operand(c, token, poison);
+}
+
+static u32
+literal_struct(Checker *c, u32 file, u32 token, u32 m, bool typed)
+{
+    u32 type;
+    if (typed) {
+        type = type_operand(c, file, token, c->stack[m - 1]);
+    } else {
+        type = expected_type(c, c->sp - m);
+        if (type == TYPE_ID_NONE) {
+            report(c, file, token, DIAG_STRUCT_LITERAL_TYPE, 0, 0);
+        }
+    }
+    if (type != TYPE_ID_NONE && !is_struct(c, type)) {
+        report(c, file, token, DIAG_NOT_STRUCT, 0, type);
+        return TYPE_ID_NONE;
+    }
+    if (type != TYPE_ID_NONE && !is_storable(c, type)) {
+        report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
+        return TYPE_ID_NONE;
+    }
+    return type;
+}
+
+static NOINLINE void
+struct_literal(Checker *c, u32 file, u32 node, u8 kind)
+{
+    bool typed = kind == NODE_LITERAL;
+    u32 m = list_start(c, typed ? NODE_LITERAL_START : NODE_ANON_LITERAL_START);
+    u32 base = typed ? m - 1 : m;
+    u32 token = c->stack_tokens[base];
+    u32 type = literal_struct(c, file, token, m, typed);
+
+    u32 decl = c->types.arg0[type];
+    u32 first = c->decls.members[decl];
+    u32 count = c->decls.member_counts[decl];
+    u32 items = 0, named = 0;
+    bool ok = type != TYPE_ID_NONE;
+    for (u32 k = m + 1; ok && k < c->sp; k++) {
+        items++;
+        if (c->stack[k].type != OPERAND_FIELD) {
+            continue;
+        }
+        named++;
+        u32 name = c->stack[k].ref;
+        u32 name_token = c->stack_tokens[k];
+        if (find_member(c, decl, name) == NO_SLOT) {
+            report(c, file, name_token, DIAG_NO_MEMBER, name, type);
+            ok = false;
+        } else if (c->bound[name]) {
+            report(c, file, name_token, DIAG_FIELD_TWICE, name, c->bound[name] - 1);
+            ok = false;
+        } else {
+            c->bound[name] = name_token + 1;
+        }
+        k++;
+    }
+    if (ok && named && named != items) {
+        report(c, file, token, DIAG_MIXED_FIELDS, 0, 0);
+        ok = false;
+    } else if (ok && !named && items && items != count) {
+        report(c, file, token, DIAG_FIELD_COUNT, count, items);
+        ok = false;
+    }
+
+    u32 slot = ok ? add_slot(c, 0, type, node) : 0;
+    if (ok && items < count) {
+        for (u32 i = first; i < first + count; i++) {
+            Member mem = c->members[i];
+            if (!c->bound[mem.name] && mem.value == MEMBER_NONE &&
+                !has_zero(c, mem.type)) {
+                report(c, file, token, DIAG_MISSING_FIELD, mem.name, 0);
+                ok = false;
+                break;
+            }
+        }
+        if (ok) {
+            emit(c, IR_ZERO, type, place_address(c, (Operand){ OPERAND_LOCAL, slot }), 0);
+            if (c->decls.flags[decl] & DECL_DEFAULTS) {
+                fill_defaults(c, node, slot, false, type);
+            }
+        }
+    }
+
+    u32 next = first;
+    for (u32 k = m + 1; type != TYPE_ID_NONE && k < c->sp; k++) {
+        u32 member = next++;
+        if (c->stack[k].type == OPERAND_FIELD) {
+            u32 name = c->stack[k++].ref;
+            c->bound[name] = 0;
+            member = find_member(c, decl, name);
+        }
+        if (!ok || member == NO_SLOT) {
+            continue;
+        }
+
+        u32 field = c->members[member].type;
+        Operand v = convert(c, file, c->stack_tokens[k], c->stack[k], field);
+        if (v.type == TYPE_ID_NONE) {
+            ok = false;
+            continue;
+        }
+        u32 at = emit(
+            c,
+            IR_FIELD,
+            pointer_type(c, field),
+            place_address(c, (Operand){ OPERAND_LOCAL, slot }),
+            field_layout(c, decl, member)
+        );
+        if (is_place(v)) {
+            emit(c, IR_COPY, field, at, place_address(c, v));
+        } else {
+            emit(c, IR_STORE_AT, field, at, operand_ir(c, v));
+        }
+    }
+
+    c->sp = base;
+    push_operand(c, token, ok ? (Operand){ OPERAND_LOCAL, slot } : poison);
 }
 
 static bool
@@ -3794,7 +4295,7 @@ for_value(Checker *c, u32 file, u32 node, u32 token, bool inclusive)
     push(c, token, OPERAND_STMT, 0);
     const ParsedFile *f = &c->files[file];
     bool indexed = f->nodes.kinds[node + 1] == NODE_FOR_INDEX;
-    if (is_place(range) && is_aggregate(c, place_type(c, range))) {
+    if (is_place(range) && is_array(c, place_type(c, range))) {
         for_array(c, file, node, label, range, indexed);
         return;
     }
@@ -4038,20 +4539,8 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                 push(c, token, TYPE_ID_ENUM_LITERAL, ids[token]);
                 break;
             case NODE_FIELD: {
-                Operand o = c->stack[c->sp - 1];
-                if (o.type == TYPE_ID_TYPE && c->types.kinds[o.ref] == TYPE_ENUM) {
-                    pop(c);
-                    push_operand(c, token, enum_member(c, file, token, o.ref, ids[token]));
-                } else if (is_place(o) && is_aggregate(c, place_type(c, o))) {
-                    pop(c);
-                    push_operand(c, token, array_field(c, file, token, o));
-                } else if ((is_place(o) && is_slice(c, place_type(c, o))) ||
-                           is_pair(c, o)) {
-                    pop(c);
-                    push_operand(c, token, slice_field(c, file, token, o));
-                } else {
-                    unsupported(c, file, i);
-                }
+                bool place = kinds[i + 1] == NODE_VALUE || kinds[i + 1] == NODE_ADDR;
+                push_operand(c, token, member_access(c, file, token, pop(c), place));
                 break;
             }
             case NODE_INDEX:
@@ -4090,6 +4579,18 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                     unsupported(c, file, i);
                 }
                 break;
+            case NODE_LITERAL:
+            case NODE_ANON_LITERAL:
+                if (in_body) {
+                    struct_literal(c, file, i, kind);
+                } else {
+                    unsupported(c, file, i);
+                }
+                break;
+            case NODE_ARG_NAME:
+                push(c, token, OPERAND_FIELD, ids[token]);
+                break;
+            case NODE_NAMED_ARG: named_item(c, file); break;
             case NODE_FLOAT:
                 push_operand(c, token, number_literal(c, file, i, TYPE_ID_UNTYPED_FLOAT));
                 break;
@@ -4277,38 +4778,10 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                 push(c, token, OPERAND_STMT, 0);
                 break;
             }
-            case NODE_VAR_TYPE: {
-                u32 t = local_type(c, file, child, type_operand(c, file, child, pop(c)));
-                u32 elem = t;
-                while (is_aggregate(c, elem)) {
-                    elem = c->types.arg0[elem];
-                }
-                bool zero = is_number(c, elem) || elem == TYPE_ID_BOOL ||
-                            is_slice(c, elem);
-                if (elem && c->types.kinds[elem] == TYPE_ENUM) {
-                    zero = enum_has(c, elem, order_key(c, elem, 0));
-                    if (!zero) {
-                        report(c, file, token, DIAG_NO_ZERO_MEMBER, 0, elem);
-                    }
-                } else if (elem && c->types.kinds[elem] == TYPE_POINTER) {
-                    report(c, file, token, DIAG_NEVER_NIL, 0, elem);
-                } else if (elem && !zero) {
-                    report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
-                }
-
-                bool aggregate = is_aggregate(c, t);
-                Operand v = !zero     ? poison
-                          : aggregate ? (Operand){ TYPE_ID_UNDEFINED, 0 }
-                          : is_slice(c, t)
-                              ? make_pair(c, t, ir_const(c, t, 0), ir_const(c, TYPE_ID_I64, 0))
-                              : (Operand){ t, EXACT_ZERO };
-                u32 slot = declare_local(c, file, i, t, v);
-                if (zero && aggregate) {
-                    emit(c, IR_ZERO, t, place_address(c, (Operand){ OPERAND_LOCAL, slot }), 0);
-                }
+            case NODE_VAR_TYPE:
+                declare_zeroed(c, file, i, token, child);
                 push(c, token, OPERAND_STMT, 0);
                 break;
-            }
             case NODE_VAR_TYPE_INIT: {
                 u32 v_token = c->stack_tokens[c->sp - 1];
                 Operand v = pop(c);
@@ -5305,6 +5778,18 @@ print_function(FILE *out, const Checker *c, const IrFunc *fn)
                 fputc(' ', out);
                 print_type(out, c, type);
                 break;
+            case IR_FIELD: {
+                u32 decl = c->types.arg0[c->types.arg0[code->types[fn->first + a]]];
+                u32 member = c->decls.members[decl] +
+                             (b - c->decls.values[decl] - 2) / 2;
+                fputc(' ', out);
+                print_type(out, c, type);
+                fputc(' ', out);
+                print_operand(out, c, fn, a);
+                fputs(", .", out);
+                print_name(out, c, c->members[member].name);
+                break;
+            }
             case IR_DROP:
                 fputc(' ', out);
                 print_operand(out, c, fn, a);

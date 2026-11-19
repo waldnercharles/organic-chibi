@@ -350,7 +350,7 @@ type_info(const Checker *c, u32 type)
     if (kind == TYPE_SLICE) {
         return 3 | INFO_PAIR;
     }
-    if (kind == TYPE_ARRAY) {
+    if (kind == TYPE_ARRAY || kind == TYPE_STRUCT) {
         return INFO_MEMORY;
     }
     u32 bits = c->types.arg0[type];
@@ -2722,6 +2722,9 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                 break;
             }
             case IR_INDEX: index_address(e, i, type, a, b); break;
+            case IR_FIELD:
+                offset_address(e, i, e->info[type], a, check_field_offset(e->c, b));
+                break;
             case IR_INDEX_LEN: index_len(e, i, type, a, b); break;
             case IR_SLICE:
             case IR_SLICE_FROM: slice(e, i, kind, type, a, b); break;

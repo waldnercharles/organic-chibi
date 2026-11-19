@@ -41,8 +41,13 @@ enum
     MAX_MEMBERS = 8,
     MAX_LITERAL = 8,
     MAX_ITERATED = 100,
+    MAX_RECORDS = 3,
+    MAX_FIELDS = 5,
+    MAX_RECORD_VARS = 32,
+    PATH_LEN = 64,
     ANY = 0xFFFF,
     NO_ENUM = 0xFFFFFFFFu,
+    NO_RECORD = 0xFF,
 };
 
 typedef struct
@@ -87,6 +92,29 @@ typedef struct
 
 typedef struct
 {
+    u8 type;
+    u8 record;
+    u8 length;
+    bool given;
+} Field;
+
+typedef struct
+{
+    Field fields[MAX_FIELDS];
+    u8 count;
+} Record;
+
+typedef struct
+{
+    char name[NAME_LEN];
+    u8 record;
+    u8 length;
+    bool pointer;
+    bool assignable;
+} RecordVar;
+
+typedef struct
+{
     u8 ret;
     bool ret_slice;
     u16 ret_length;
@@ -95,6 +123,7 @@ typedef struct
     bool pointers[MAX_PARAMS];
     bool slices[MAX_PARAMS];
     u16 lengths[MAX_PARAMS];
+    u8 records[MAX_PARAMS];
     u8 level;
 } Helper;
 
@@ -128,6 +157,11 @@ typedef struct
     u32 nspans;
     Bound bounds[MAX_LABELS];
     u32 nbounds;
+    Record records[MAX_RECORDS];
+    u32 nrecords;
+    RecordVar rvars[MAX_RECORD_VARS];
+    u32 nrvars;
+    u32 in_path;
 } Gen;
 
 static bool
@@ -619,6 +653,178 @@ shaped(Gen *g, u8 t, u16 length, u16 inner, bool writable)
     subscript(g, rows->length, 0);
 }
 
+static bool
+has_leaf(const Gen *g, u8 r, u8 t)
+{
+    const Record *rec = &g->records[r];
+    for (u8 k = 0; k < rec->count; k++) {
+        const Field *f = &rec->fields[k];
+        if (f->record != NO_RECORD ? has_leaf(g, f->record, t) : f->type == t) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool
+leads_to(const Gen *g, const Field *f, u8 t)
+{
+    return f->record != NO_RECORD ? has_leaf(g, f->record, t) : f->type == t;
+}
+
+static void
+leaf_path(Gen *g, u8 r, u8 t)
+{
+    const Record *rec = &g->records[r];
+    u32 n = 0;
+    for (u8 k = 0; k < rec->count; k++) {
+        n += leads_to(g, &rec->fields[k], t);
+    }
+    u32 pick = (u32)random_below(g->rng, (int)n);
+    for (u8 k = 0; k < rec->count; k++) {
+        const Field *f = &rec->fields[k];
+        if (!leads_to(g, f, t) || pick-- != 0) {
+            continue;
+        }
+        emit(g, ".f%u", k);
+        if (f->length) {
+            subscript(g, f->length, 0);
+        }
+        if (f->record != NO_RECORD) {
+            leaf_path(g, f->record, t);
+        }
+        return;
+    }
+}
+
+static bool
+reads_leaf(const Gen *g, const RecordVar *v, u8 t, bool writable)
+{
+    return has_leaf(g, v->record, t) && (!writable || v->assignable || v->pointer);
+}
+
+static RecordVar *
+pick_record_var(Gen *g, u8 t, bool writable)
+{
+    u32 n = 0;
+    for (u32 i = 0; i < g->nrvars; i++) {
+        n += reads_leaf(g, &g->rvars[i], t, writable);
+    }
+    if (n == 0) {
+        return NULL;
+    }
+    u32 k = (u32)random_below(g->rng, (int)n);
+    for (u32 i = 0; i < g->nrvars; i++) {
+        if (reads_leaf(g, &g->rvars[i], t, writable) && k-- == 0) {
+            return &g->rvars[i];
+        }
+    }
+    return NULL;
+}
+
+static void
+record_leaf(Gen *g, const RecordVar *v, u8 t)
+{
+    g->in_path++;
+    emit(g, "%s", v->name);
+    if (v->length) {
+        subscript(g, v->length, 0);
+    }
+    leaf_path(g, v->record, t);
+    g->in_path--;
+}
+
+static bool
+has_record(const Gen *g, u8 outer, u8 r)
+{
+    const Record *rec = &g->records[outer];
+    for (u8 k = 0; k < rec->count; k++) {
+        u8 inner = rec->fields[k].record;
+        if (inner != NO_RECORD && (inner == r || has_record(g, inner, r))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool
+reaches(const Gen *g, const Field *f, u8 r)
+{
+    return f->record != NO_RECORD && (f->record == r || has_record(g, f->record, r));
+}
+
+static void
+record_path(Gen *g, u8 outer, u8 r)
+{
+    const Record *rec = &g->records[outer];
+    u32 n = 0;
+    for (u8 k = 0; k < rec->count; k++) {
+        n += reaches(g, &rec->fields[k], r);
+    }
+    u32 pick = (u32)random_below(g->rng, (int)n);
+    for (u8 k = 0; k < rec->count; k++) {
+        const Field *f = &rec->fields[k];
+        if (!reaches(g, f, r) || pick-- != 0) {
+            continue;
+        }
+        emit(g, ".f%u", k);
+        if (f->length) {
+            subscript(g, f->length, 0);
+        }
+        if (f->record != r || (has_record(g, f->record, r) && chance(g, 50))) {
+            record_path(g, f->record, r);
+        }
+        return;
+    }
+}
+
+static bool
+holds_record(const Gen *g, const RecordVar *v, u8 r, bool writable)
+{
+    return (v->record == r || has_record(g, v->record, r)) &&
+           (!writable || v->assignable || v->pointer);
+}
+
+static u32
+count_record_places(const Gen *g, u8 r, bool writable)
+{
+    u32 n = 0;
+    for (u32 i = 0; i < g->nrvars; i++) {
+        n += holds_record(g, &g->rvars[i], r, writable);
+    }
+    return n;
+}
+
+static void
+record_place_in(Gen *g, const RecordVar *v, u8 r)
+{
+    g->in_path++;
+    emit(g, "%s", v->name);
+    if (v->length) {
+        subscript(g, v->length, 0);
+    }
+    if (v->record != r) {
+        record_path(g, v->record, r);
+    } else if (v->pointer) {
+        emit(g, ".*");
+    }
+    g->in_path--;
+}
+
+static void
+record_place(Gen *g, u8 r, bool writable)
+{
+    u32 n = count_record_places(g, r, writable);
+    assert(n > 0);
+    u32 k = (u32)random_below(g->rng, (int)n);
+    for (u32 i = 0; i < g->nrvars; i++) {
+        if (holds_record(g, &g->rvars[i], r, writable) && k-- == 0) {
+            record_place_in(g, &g->rvars[i], r);
+            return;
+        }
+    }
+}
+
 static u8
 index_type(Gen *g, u64 limit)
 {
@@ -665,7 +871,7 @@ literal_items(Gen *g, u8 t, u16 length, u16 inner)
             emit(g, ", ");
         }
         if (!inner) {
-            typed_expr(g, t, chance(g, 20) ? 2 : 1);
+            typed_expr(g, t, g->nesting ? 0 : chance(g, 20) ? 2 : 1);
         } else if (chance(g, 25) && can_shape(g, t, inner, 0, false)) {
             shaped(g, t, inner, 0, false);
         } else {
@@ -690,7 +896,9 @@ slice_argument(Gen *g, u8 t, u16 length, bool keep)
             emit(g, "%s", type_names[t]);
         }
         emit(g, ".");
+        g->nesting++;
         literal_items(g, t, length, 0);
+        g->nesting--;
         return;
     }
     slice_value(g, g->nvars, false, t, 0, length, true);
@@ -707,6 +915,12 @@ can_call(const Gen *g, const Helper *h, u8 t, bool keep)
         if (h->slices[p]) {
             if ((keep || !h->lengths[p]) &&
                 count_sources(g, g->nvars, false, u, 0, h->lengths[p]) == 0) {
+                return false;
+            }
+            continue;
+        }
+        if (h->records[p] != NO_RECORD) {
+            if (count_record_places(g, h->records[p], true) == 0) {
                 return false;
             }
             continue;
@@ -763,7 +977,10 @@ call_args(Gen *g, u32 k, int depth, bool keep)
         if (p) {
             emit(g, ", ");
         }
-        if (h->slices[p]) {
+        if (h->records[p] != NO_RECORD) {
+            emit(g, "&");
+            record_place(g, h->records[p], true);
+        } else if (h->slices[p]) {
             slice_argument(g, h->params[p], h->lengths[p], keep);
         } else if (h->pointers[p]) {
             pointer_argument(g, h->params[p], h->lengths[p]);
@@ -930,6 +1147,11 @@ nonliteral(Gen *g, u8 t, int depth)
     if (w) {
         dyn_slice(g, w, w->inner && w->length && chance(g, 40) ? 0 : w->inner);
         emit(g, ".len");
+        return;
+    }
+    RecordVar *o = !g->in_path && chance(g, 20) ? pick_record_var(g, t, false) : NULL;
+    if (o) {
+        record_leaf(g, o, t);
         return;
     }
     Var *v = pick_var(g, t, false);
@@ -1432,6 +1654,41 @@ enum_declarations(Gen *g)
         if (en->count == 0) {
             emit(g, " m0 = 0");
             en->values[en->count++] = 0;
+        }
+        emit(g, " }\n");
+    }
+}
+
+static void
+record_declarations(Gen *g)
+{
+    g->nrecords = chance(g, 60) ? 1 + (u32)random_below(g->rng, MAX_RECORDS) : 0;
+    for (u32 r = 0; r < g->nrecords; r++) {
+        Record *rec = &g->records[r];
+        rec->count = (u8)(1 + random_below(g->rng, MAX_FIELDS));
+        emit(g, "struct R%u {", r);
+        for (u8 k = 0; k < rec->count; k++) {
+            Field *f = &rec->fields[k];
+            int form = random_below(g->rng, 100);
+            f->type = random_type(g, false);
+            f->record = r && form >= 70 ? (u8)random_below(g->rng, (int)r) : NO_RECORD;
+            f->length = (form >= 55 && form < 70) || form >= 90
+                          ? (u8)(1 + random_below(g->rng, 4))
+                          : 0;
+            f->given = f->record == NO_RECORD && !f->length && chance(g, 35);
+            emit(g, "%s f%u: ", k ? "," : "", k);
+            if (f->length) {
+                emit(g, "[%u]", f->length);
+            }
+            if (f->record != NO_RECORD) {
+                emit(g, "R%u", f->record);
+            } else {
+                emit(g, "%s", type_names[f->type]);
+            }
+            if (f->given) {
+                emit(g, " = ");
+                literal(g, f->type, false);
+            }
         }
         emit(g, " }\n");
     }
@@ -2103,9 +2360,259 @@ slice_statement(Gen *g, int depth)
     }
 }
 
+static void record_literal(Gen *g, u8 r);
+
+static void
+record_value(Gen *g, u8 r)
+{
+    if (count_record_places(g, r, false) && chance(g, 30)) {
+        record_place(g, r, false);
+        return;
+    }
+    if (chance(g, 30)) {
+        emit(g, "R%u", r);
+    }
+    emit(g, ".");
+    record_literal(g, r);
+}
+
+static void
+record_items(Gen *g, u8 r, u8 length)
+{
+    emit(g, "[");
+    for (u8 k = 0; k < length; k++) {
+        emit(g, k ? ", " : "");
+        record_value(g, r);
+    }
+    emit(g, "]");
+}
+
+static void
+field_value(Gen *g, const Field *f)
+{
+    if (f->record == NO_RECORD && !f->length) {
+        expr(g, f->type, 1);
+    } else if (f->record == NO_RECORD) {
+        if (chance(g, 30)) {
+            emit(g, "%s", type_names[f->type]);
+        }
+        emit(g, ".");
+        literal_items(g, f->type, f->length, 0);
+    } else if (f->length) {
+        if (chance(g, 30)) {
+            emit(g, "R%u", f->record);
+        }
+        emit(g, ".");
+        record_items(g, f->record, f->length);
+    } else {
+        record_value(g, f->record);
+    }
+}
+
+static void
+record_literal(Gen *g, u8 r)
+{
+    const Record *rec = &g->records[r];
+    if (chance(g, 50)) {
+        emit(g, "{ ");
+        for (u8 k = 0; k < rec->count; k++) {
+            emit(g, k ? ", " : "");
+            field_value(g, &rec->fields[k]);
+        }
+        emit(g, " }");
+        return;
+    }
+
+    u8 order[MAX_FIELDS];
+    for (u8 k = 0; k < rec->count; k++) {
+        order[k] = k;
+    }
+    for (u8 k = rec->count; k > 1; k--) {
+        u8 j = (u8)random_below(g->rng, k);
+        u8 swap = order[k - 1];
+        order[k - 1] = order[j];
+        order[j] = swap;
+    }
+    u8 n = (u8)random_below(g->rng, rec->count + 1);
+    if (n == 0) {
+        emit(g, "{}");
+        return;
+    }
+    emit(g, "{ ");
+    for (u8 k = 0; k < n; k++) {
+        emit(g, k ? ", .f%u = " : ".f%u = ", order[k]);
+        field_value(g, &rec->fields[order[k]]);
+    }
+    emit(g, " }");
+}
+
+static RecordVar *
+add_record_var(Gen *g, char prefix, u32 n, u8 r)
+{
+    assert(g->nrvars < MAX_RECORD_VARS);
+    RecordVar *v = &g->rvars[g->nrvars++];
+    snprintf(v->name, NAME_LEN, "%c%u", prefix, n);
+    v->record = r;
+    v->length = 0;
+    v->pointer = false;
+    v->assignable = true;
+    return v;
+}
+
+static void
+declare_record(Gen *g)
+{
+    if (g->nrecords == 0 || g->nrvars == MAX_RECORD_VARS) {
+        return;
+    }
+
+    u8 r = (u8)random_below(g->rng, (int)g->nrecords);
+    u8 length = chance(g, 25) ? (u8)(1 + random_below(g->rng, 4)) : 0;
+    u32 n = g->names++;
+    int form = random_below(g->rng, 10);
+    line(g);
+    if (length && form < 4) {
+        emit(g, "o%u: [%u]R%u", n, length, r);
+    } else if (length && form < 7) {
+        emit(g, "o%u: [%u]R%u = .", n, length, r);
+        record_items(g, r, length);
+    } else if (length) {
+        emit(g, "o%u := R%u.", n, r);
+        record_items(g, r, length);
+    } else if (form < 3) {
+        emit(g, "o%u: R%u", n, r);
+    } else if (form < 6) {
+        emit(g, "o%u: R%u = ", n, r);
+        record_value(g, r);
+    } else if (form < 7 && count_record_places(g, r, false)) {
+        emit(g, "o%u := ", n);
+        record_place(g, r, false);
+    } else {
+        emit(g, "o%u := R%u.", n, r);
+        record_literal(g, r);
+    }
+    add_record_var(g, 'o', n, r)->length = length;
+}
+
+static u8
+held_record(Gen *g, const RecordVar *v)
+{
+    u32 n = 0;
+    for (u8 r = 0; r < g->nrecords; r++) {
+        n += r == v->record || has_record(g, v->record, r);
+    }
+    u32 pick = (u32)random_below(g->rng, (int)n);
+    for (u8 r = 0; r < g->nrecords; r++) {
+        if ((r == v->record || has_record(g, v->record, r)) && pick-- == 0) {
+            return r;
+        }
+    }
+    return v->record;
+}
+
+static RecordVar *
+pick_writable_record(Gen *g)
+{
+    u32 n = 0;
+    for (u32 i = 0; i < g->nrvars; i++) {
+        n += g->rvars[i].assignable || g->rvars[i].pointer;
+    }
+    if (n == 0) {
+        return NULL;
+    }
+    u32 k = (u32)random_below(g->rng, (int)n);
+    for (u32 i = 0; i < g->nrvars; i++) {
+        if ((g->rvars[i].assignable || g->rvars[i].pointer) && k-- == 0) {
+            return &g->rvars[i];
+        }
+    }
+    return NULL;
+}
+
+static void
+record_loop(Gen *g, int depth)
+{
+    u32 n = 0;
+    for (u32 i = 0; i < g->nrvars; i++) {
+        n += g->rvars[i].length != 0;
+    }
+    if (n == 0 || g->nrvars == MAX_RECORD_VARS) {
+        return;
+    }
+    u32 k = (u32)random_below(g->rng, (int)n);
+    const RecordVar *a = NULL;
+    for (u32 i = 0; i < g->nrvars; i++) {
+        if (g->rvars[i].length && k-- == 0) {
+            a = &g->rvars[i];
+        }
+    }
+
+    line(g);
+    loop_label(g);
+    u32 x = g->names++;
+    emit(g, "for x%u in %s {", x, a->name);
+    u32 saved = g->nrvars;
+    add_record_var(g, 'x', x, a->record)->assignable = false;
+    g->loops++;
+    block(g, depth - 1, 1 + random_below(g->rng, 3));
+    g->loops--;
+    g->nrvars = saved;
+    line(g);
+    emit(g, "}");
+}
+
+static void
+record_statement(Gen *g, int depth)
+{
+    RecordVar *v = pick_writable_record(g);
+    int pick = random_below(g->rng, 10);
+    if (!v || pick < 3) {
+        declare_record(g);
+        return;
+    }
+    if (pick < 4 && depth > 0 && g->loops < g->max_loops) {
+        record_loop(g, depth);
+        return;
+    }
+    if (pick < 5 && g->nrvars < MAX_RECORD_VARS) {
+        u8 r = held_record(g, v);
+        u32 n = g->names++;
+        line(g);
+        emit(g, "q%u := &", n);
+        record_place_in(g, v, r);
+        RecordVar *q = add_record_var(g, 'q', n, r);
+        q->pointer = true;
+        q->assignable = false;
+        return;
+    }
+    if (pick < 7) {
+        u8 r = held_record(g, v);
+        line(g);
+        record_place_in(g, v, r);
+        emit(g, " = ");
+        record_value(g, r);
+        return;
+    }
+
+    u8 t = random_type(g, false);
+    for (int k = 0; k < 4 && !has_leaf(g, v->record, t); k++) {
+        t = random_type(g, false);
+    }
+    if (!has_leaf(g, v->record, t)) {
+        return;
+    }
+    line(g);
+    record_leaf(g, v, t);
+    assignment(g, t);
+}
+
 static void
 statement(Gen *g, int depth)
 {
+    if (g->nrecords && chance(g, 12)) {
+        record_statement(g, depth);
+        return;
+    }
     if (chance(g, 12)) {
         pointer_statement(g);
         return;
@@ -2301,12 +2808,14 @@ static void
 block(Gen *g, int depth, int count)
 {
     u32 saved = g->nvars;
+    u32 records = g->nrvars;
     g->indent++;
     for (int k = 0; k < count; k++) {
         statement(g, depth);
     }
     g->indent--;
     g->nvars = saved;
+    g->nrvars = records;
 }
 
 static void
@@ -2334,12 +2843,88 @@ digest(Gen *g, u32 sum, const Var *a)
     emit(g, a->inner ? " } }" : " }");
 }
 
+static void
+digest_leaf(Gen *g, u32 sum, const char *x, u8 t)
+{
+    line(g);
+    if (t == T_BOOL) {
+        emit(g, "if %s { s%u +%%= 1 }; s%u *%%= 31", x, sum, sum);
+    } else if (is_float(t)) {
+        emit(g, "if %s < 0.0 { s%u +%%= 1 }; if %s > 0.0 { s%u +%%= 2 }; s%u *%%= 31", x, sum, x, sum, sum);
+    } else if (t == T_U64) {
+        emit(g, "s%u = s%u *%% 31 +%% int((%s & %llu))", sum, sum, x, (unsigned long long)max_of(T_INT));
+    } else {
+        emit(g, "s%u = s%u *%% 31 +%% int(%s)", sum, sum, x);
+    }
+}
+
+static void
+digest_record(Gen *g, u32 sum, char *path, int len, u8 r)
+{
+    const Record *rec = &g->records[r];
+    for (u8 k = 0; k < rec->count; k++) {
+        const Field *f = &rec->fields[k];
+        int n = len + snprintf(path + len, PATH_LEN - (size_t)len, ".f%u", k);
+        assert(n < PATH_LEN);
+        if (!f->length && f->record != NO_RECORD) {
+            digest_record(g, sum, path, n, f->record);
+        } else if (!f->length) {
+            digest_leaf(g, sum, path, f->type);
+        } else {
+            u32 x = g->names++;
+            line(g);
+            emit(g, "for x%u in %s {", x, path);
+            g->indent++;
+            char element[PATH_LEN];
+            int m = snprintf(element, sizeof element, "x%u", x);
+            if (f->record != NO_RECORD) {
+                digest_record(g, sum, element, m, f->record);
+            } else {
+                digest_leaf(g, sum, element, f->type);
+            }
+            g->indent--;
+            line(g);
+            emit(g, "}");
+        }
+        path[len] = 0;
+    }
+}
+
+static void
+digest_records(Gen *g, u32 sum)
+{
+    for (u32 i = 0; i < g->nrvars; i++) {
+        const RecordVar *v = &g->rvars[i];
+        if (v->pointer) {
+            continue;
+        }
+        char path[PATH_LEN];
+        if (!v->length) {
+            int n = snprintf(path, sizeof path, "%s", v->name);
+            digest_record(g, sum, path, n, v->record);
+            continue;
+        }
+        u32 x = g->names++;
+        line(g);
+        emit(g, "for x%u in %s {", x, v->name);
+        g->indent++;
+        int n = snprintf(path, sizeof path, "x%u", x);
+        digest_record(g, sum, path, n, v->record);
+        g->indent--;
+        line(g);
+        emit(g, "}");
+    }
+}
+
 static bool
 digest_arrays(Gen *g)
 {
     u32 n = 0;
     for (u32 i = 0; i < g->nvars; i++) {
         n += g->vars[i].length && !g->vars[i].pointer && !g->vars[i].slice;
+    }
+    for (u32 i = 0; i < g->nrvars; i++) {
+        n += !g->rvars[i].pointer;
     }
     if (n == 0 || !chance(g, 50)) {
         return false;
@@ -2353,6 +2938,7 @@ digest_arrays(Gen *g)
             digest(g, sum, &g->vars[i]);
         }
     }
+    digest_records(g, sum);
     u32 result = g->names++;
     line(g);
     emit(g, "t%u: int = ", result);
@@ -2387,6 +2973,7 @@ random_typed_program(u64 *rng, char *buf)
 {
     Gen g = { .rng = rng, .out = buf };
     enum_declarations(&g);
+    record_declarations(&g);
     for (u32 k = 0; k < MAX_HELPERS; k++) {
         Helper *h = &g.helpers[k];
         h->level = (u8)(k / 2);
@@ -2398,6 +2985,7 @@ random_typed_program(u64 *rng, char *buf)
             h->nparams = 2;
         }
         g.nvars = 0;
+        g.nrvars = 0;
         g.names = 0;
         g.level = h->level;
         g.ret = h->ret;
@@ -2408,6 +2996,20 @@ random_typed_program(u64 *rng, char *buf)
         emit(&g, "fn h%u(", k);
         for (u32 p = 0; p < h->nparams; p++) {
             bool source = h->ret_slice && p == 1;
+            h->records[p] = NO_RECORD;
+            if (!source && p > 0 && g.nrecords && chance(&g, 20)) {
+                h->records[p] = (u8)random_below(rng, (int)g.nrecords);
+                h->params[p] = T_INT;
+                h->pointers[p] = false;
+                h->slices[p] = false;
+                h->lengths[p] = 0;
+                u32 n = g.names++;
+                RecordVar *v = add_record_var(&g, 'p', n, h->records[p]);
+                v->pointer = true;
+                v->assignable = false;
+                emit(&g, ", %s: *R%u", v->name, h->records[p]);
+                continue;
+            }
             h->params[p] = source ? h->ret : random_type(&g, p == 0);
             h->pointers[p] = !source && p > 0 && chance(&g, 30);
             h->slices[p] = source || (p > 0 && !h->pointers[p] && chance(&g, 25));
@@ -2443,6 +3045,7 @@ random_typed_program(u64 *rng, char *buf)
 
     for (u32 k = 0; k < PROGRAM_ENTRIES; k++) {
         g.nvars = 0;
+        g.nrvars = 0;
         g.names = 0;
         g.level = MAX_HELPERS;
         g.ret = T_INT;
@@ -2481,6 +3084,9 @@ random_typed_program(u64 *rng, char *buf)
         }
         if (chance(&g, 40)) {
             declare_slice(&g);
+        }
+        if (chance(&g, 50)) {
+            declare_record(&g);
         }
         function(&g, 3 + random_below(rng, 6), true);
     }

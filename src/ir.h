@@ -10,6 +10,7 @@
     X(IR_ADDR, "addr")                                                         \
     X(IR_INDEX, "index")                                                       \
     X(IR_INDEX_LEN, "index-len")                                               \
+    X(IR_FIELD, "field")                                                       \
     X(IR_SLICE, "slice")                                                       \
     X(IR_SLICE_FROM, "slice-from")                                             \
     X(IR_SECOND, "second")                                                     \

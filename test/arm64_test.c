@@ -1022,6 +1022,145 @@ TEST_CASE(arrays)
     return true;
 }
 
+static const char STRUCTS
+    [] = "enum Color: u8 { red = 1, green, blue }\n"
+         "struct Mixed { a: u8, b: i64, c: u16, d: f32, e: bool, f: [3]i16, g: "
+         "Color = .green }\n"
+         "struct Point { x: int, y: int = 7 }\n"
+         "struct Line { a: Point, b: Point }\n"
+         "struct Deep { lines: [3]Line, n: u8 = 5 }\n"
+         "\n"
+         "fn fill(m: *Mixed, k: int) -> int {\n"
+         "    m.a = u8(k & 255)\n"
+         "    m.b = k * 1000\n"
+         "    m.c = u16(k & 0x7FFF) + 1\n"
+         "    m.d = f32(k) * 0.5\n"
+         "    m.e = k > 0\n"
+         "    m.f[0] = i16(k)\n"
+         "    m.f[2] = i16(k) - 1\n"
+         "    m.g = .blue\n"
+         "    return int(m.a) + m.f.len\n"
+         "}\n"
+         "\n"
+         "fn read(ms: *[3]Mixed) -> int {\n"
+         "    t := 0\n"
+         "    for m, i in ms.* {\n"
+         "        t += int(m.a) + int(m.b) + int(m.c) + int(m.f[1]) * i\n"
+         "        if m.e and m.g == .red {\n"
+         "            t += 1000000\n"
+         "        }\n"
+         "    }\n"
+         "    return t + int(ms.*[1].d * 4.0)\n"
+         "}\n"
+         "\n"
+         "fn lines(a: int, b: int) -> int {\n"
+         "    l := Line.{ .{ a, b }, .{ .x = b } }\n"
+         "    m := l\n"
+         "    m.a.y += 100\n"
+         "    l.b = m.a\n"
+         "    d: Deep\n"
+         "    d.lines[1] = m\n"
+         "    e := d\n"
+         "    return l.a.x + l.a.y * 10 + l.b.y * 1000 + m.b.y * 100000 + "
+         "int(e.n) * 10000000 + e.lines[1].a.y + e.lines[2].b.y\n"
+         "}\n"
+         "\n"
+         "fn defaults(a: int, b: int) -> int {\n"
+         "    t := 0\n"
+         "    for k in 0..3 {\n"
+         "        d: Deep\n"
+         "        t += d.lines[2].b.y + int(d.n)\n"
+         "        d.lines[2].b.y = a\n"
+         "        d.n = u8(b & 255)\n"
+         "    }\n"
+         "    return t\n"
+         "}\n"
+         "\n"
+         "fn through(p: *Point, k: int) -> int {\n"
+         "    p.x += k\n"
+         "    q := &p.y\n"
+         "    q.* *= 2\n"
+         "    r := p.*\n"
+         "    r.x = 0\n"
+         "    return p.x + r.y\n"
+         "}\n"
+         "\n"
+         "fn via(a: int, b: int) -> int {\n"
+         "    pt := Point.{ a, b }\n"
+         "    s := through(&pt, 3)\n"
+         "    return s * 1000 + pt.x + pt.y\n"
+         "}\n"
+         "\n"
+         "fn many(a: int, b: int) -> int {\n"
+         "    big: [100]Mixed\n"
+         "    big[99].b = i64(a)\n"
+         "    big[a & 63].f[2] = i16(b)\n"
+         "    c := big\n"
+         "    n := 0\n"
+         "    if c[50].g == .green {\n"
+         "        n = 1\n"
+         "    }\n"
+         "    return int(c[99].b) + int(c[a & 63].f[2]) * 10 + n * 100000\n"
+         "}\n"
+         "\n"
+         "fn poke(a: int, b: int) -> int {\n"
+         "    m: Mixed\n"
+         "    m.f[a] = i16(b)\n"
+         "    return int(m.f[2])\n"
+         "}\n";
+
+typedef struct
+{
+    uint8_t a;
+    int64_t b;
+    uint16_t c;
+    float d;
+    bool e;
+    int16_t f[3];
+    uint8_t g;
+} Mixed;
+
+typedef int64_t MI(Mixed *, int64_t);
+typedef int64_t M3(Mixed *);
+
+TEST_CASE(structs)
+{
+    catch_traps();
+    Program p;
+    REQUIRE(build(&p, STRUCTS));
+    int64_t r = 0;
+
+    Mixed ms[3];
+    memset(ms, 0xAB, sizeof ms);
+    REQUIRE(((MI *)fn(&p, "fill"))(&ms[0], 5) == 8);
+    REQUIRE(ms[0].a == 5 && ms[0].b == 5000 && ms[0].c == 6 && ms[0].d == 2.5f);
+    REQUIRE(ms[0].e && ms[0].f[0] == 5 && ms[0].f[2] == 4 && ms[0].g == 3);
+    REQUIRE(((MI *)fn(&p, "fill"))(&ms[2], -3) == 256);
+    REQUIRE(ms[2].a == 253 && ms[2].b == -3000 && ms[2].c == 32766 && ms[2].d == -1.5f);
+    REQUIRE(!ms[2].e && ms[2].f[0] == -3 && ms[2].f[2] == -4 && ms[2].g == 3);
+    memset(&ms[1], 0, sizeof ms[1]);
+    ms[0].f[1] = 0;
+    ms[2].f[1] = 0;
+    ms[1].d = 2.5f;
+    ms[1].f[1] = 9;
+    ms[1].e = true;
+    ms[1].g = 1;
+    REQUIRE(((M3 *)fn(&p, "read"))(ms) == 1035049);
+
+    REQUIRE(((I2 *)fn(&p, "lines"))(3, 4) == 50804154);
+    REQUIRE(((I2 *)fn(&p, "lines"))(-2, 9) == 50809204);
+    REQUIRE(((I2 *)fn(&p, "defaults"))(11, 200) == 36);
+    REQUIRE(((I2 *)fn(&p, "via"))(1, 2) == 8008);
+    REQUIRE(((I2 *)fn(&p, "via"))(-50, 6) == -35035);
+    REQUIRE(((I2 *)fn(&p, "many"))(7, -3) == 99977);
+    REQUIRE(((I2 *)fn(&p, "many"))(64, 1000) == 110064);
+    REQUIRE(call_i2((I2 *)fn(&p, "poke"), 2, -7, &r) == 0 && r == -7);
+    REQUIRE(call_i2((I2 *)fn(&p, "poke"), 1, 5, &r) == 0 && r == 0);
+    REQUIRE(call_i2((I2 *)fn(&p, "poke"), 3, 5, &r) == TRAP_BOUNDS);
+    release_program(&p);
+    return true;
+}
+
 static const char
     SLICES[] = "fn sum(xs: []int) -> int {\n"
                "    total := 0\n"
@@ -2177,6 +2316,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(unsupported_types);
     RUN_TEST_CASE(pointers);
     RUN_TEST_CASE(arrays);
+    RUN_TEST_CASE(structs);
     RUN_TEST_CASE(slices);
     RUN_TEST_CASE(constant_conditions);
     RUN_TEST_CASE(deep_logic);

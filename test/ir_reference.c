@@ -216,8 +216,10 @@ ir_reference_init(IrReference *r, const Checker *c)
         u64 size = 0;
         for (u32 s = 0; s < fn->nslots; s++) {
             u32 type = ir->code.slots[fn->first_slot + s].type;
-            u64 bytes = c->types.kinds[type] == TYPE_ARRAY ? check_type_size(c, type)
-                                                           : 8;
+            u8 kind = c->types.kinds[type];
+            u64 bytes = kind == TYPE_ARRAY || kind == TYPE_STRUCT
+                          ? check_type_size(c, type)
+                          : 8;
             assert(bytes < (1u << 24) && size < (1u << 24));
             r->offsets[fn->first_slot + s] = (u32)size;
             size += (bytes + 7) & ~(u64)7;
@@ -330,6 +332,7 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                 second = (u64)(hi - lo);
                 break;
             }
+            case IR_FIELD: v = OPERAND(a) + check_field_offset(c, b); break;
             case IR_SECOND: v = second; break;
             case IR_COPY:
                 memmove(
