@@ -91,7 +91,7 @@ enum
     DECL_PUB = 1,
     DECL_EXPORT = 2,
     DECL_CYCLE = 4,
-    DECL_PAIRS = 8,
+    DECL_COMPOUND = 8,
     DECL_STORED = 16,
     DECL_DEFAULTS = 32,
     DECL_NO_ZERO = 64,
@@ -134,11 +134,11 @@ enum
     X(DIAG_NOT_BOOL, "expected `bool`, found `%T`")                                                 \
     X(DIAG_BAD_OPERATOR, "`%T` doesn't support `%t`")                                               \
     X(DIAG_NOT_ASSIGNABLE, "only a local, a field, an element or `p.*` can be assigned to")         \
-    X(DIAG_ASSIGN_PARAM, "`%t` is a parameter, so it can't be assigned")                            \
-    X(DIAG_ASSIGN_LOOP_VARIABLE, "`%t` is a loop variable, so it can't be assigned")                \
+    X(DIAG_ASSIGN_PARAM, "`%n` is a parameter, so it can't be assigned")                            \
+    X(DIAG_ASSIGN_LOOP_VARIABLE, "`%n` is a loop variable, so it can't be assigned")                \
     X(DIAG_NOT_ADDRESSABLE, "only a local, a field, an element or `p.*` has an address")            \
-    X(DIAG_ADDRESS_PARAM, "`%t` is a parameter, so `&` can't take its address")                     \
-    X(DIAG_ADDRESS_LOOP_VARIABLE, "`%t` is a loop variable, so `&` can't take its address")         \
+    X(DIAG_ADDRESS_PARAM, "`%n` is a parameter, so `&` can't take its address")                     \
+    X(DIAG_ADDRESS_LOOP_VARIABLE, "`%n` is a loop variable, so `&` can't take its address")         \
     X(DIAG_NOT_POINTER, "`%T` is not a pointer, so `.*` can't follow it")                           \
     X(DIAG_NEVER_NIL, "`%U` is never nil, so this needs a value")                                   \
     X(DIAG_NOT_INDEXABLE, "`%T` can't be indexed")                                                  \
@@ -180,6 +180,7 @@ enum
     X(DIAG_MISSING_CASE, "the switch doesn't handle %w; add an arm for it or a `_` arm")          \
     X(DIAG_MISSING_MEMBER, "the switch doesn't handle `.%n`; add an arm for it or a `_` arm")     \
     X(DIAG_ARM_END, "this arm can reach its end without a value")                                 \
+    X(DIAG_TOO_LARGE_VALUE, "`%T` is too large to pass or return by value yet; use a pointer")    \
     X(DIAG_UNSUPPORTED, "the checker doesn't support this yet")
 // clang-format on
 
@@ -411,6 +412,15 @@ u64 check_type_size(const Checker *c, u32 type);
 u32 check_type_align(const Checker *c, u32 type);
 
 u64 check_field_offset(const Checker *c, u32 field);
+
+enum
+{
+    REGS_COUNT = 7,
+    REGS_FLOAT = 8,
+    REGS_DOUBLE = 16,
+};
+
+u32 check_struct_regs(const Checker *c, u32 type);
 
 void check_free(Checker *c);
 

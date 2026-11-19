@@ -1878,6 +1878,528 @@ TEST_CASE(stored_slices)
     return true;
 }
 
+static const char PASSED_STRUCTS[] =
+    "struct B1 { a: u8 }\n"
+    "struct B3 { a: u8, b: u8, c: u8 }\n"
+    "struct H3 { a: u16, b: u16, c: u16 }\n"
+    "struct B7 { a: [7]u8 }\n"
+    "struct P { x: i32, y: i32 }\n"
+    "struct B11 { a: [11]u8 }\n"
+    "struct I3 { a: i32, b: i32, c: i32 }\n"
+    "struct H7 { a: [7]u16 }\n"
+    "struct B15 { a: [15]u8 }\n"
+    "struct LD { a: int, b: f64 }\n"
+    "struct FI { a: f32, b: i32 }\n"
+    "struct FD { a: f32, b: f64 }\n"
+    "struct S { s: []u8 }\n"
+    "struct V3 { x: f32, y: f32, z: f32 }\n"
+    "struct V4 { v: [4]f32 }\n"
+    "struct D4 { x: f64, y: f64, z: f64, w: f64 }\n"
+    "struct V2 { x: f32, y: f32 }\n"
+    "struct N3 { a: V2, z: f32 }\n"
+    "struct D1 { x: f64 }\n"
+    "struct D2 { x: f64, y: f64 }\n"
+    "\n"
+    "fn tB1(s: B1) -> B1 {\n"
+    "    return B1.{ s.a +% 1 }\n"
+    "}\n"
+    "\n"
+    "fn tB3(s: B3) -> B3 {\n"
+    "    return B3.{ s.a +% 1, s.b +% 2, s.c +% 3 }\n"
+    "}\n"
+    "\n"
+    "fn tH3(s: H3) -> H3 {\n"
+    "    return H3.{ s.a +% 1, s.b +% 2, s.c +% 3 }\n"
+    "}\n"
+    "\n"
+    "fn tB7(s: B7) -> B7 {\n"
+    "    r := s\n"
+    "    for i in 0..7 {\n"
+    "        r.a[i] +%= u8(i + 1)\n"
+    "    }\n"
+    "    return r\n"
+    "}\n"
+    "\n"
+    "fn tP(s: P) -> P {\n"
+    "    return P.{ s.y, s.x }\n"
+    "}\n"
+    "\n"
+    "fn tB11(s: B11) -> B11 {\n"
+    "    r := s\n"
+    "    for i in 0..11 {\n"
+    "        r.a[i] +%= u8(i + 1)\n"
+    "    }\n"
+    "    return r\n"
+    "}\n"
+    "\n"
+    "fn tI3(s: I3) -> I3 {\n"
+    "    return I3.{ s.c, s.a, s.b }\n"
+    "}\n"
+    "\n"
+    "fn tH7(s: H7) -> H7 {\n"
+    "    r := s\n"
+    "    for i in 0..7 {\n"
+    "        r.a[i] +%= u16(i + 1)\n"
+    "    }\n"
+    "    return r\n"
+    "}\n"
+    "\n"
+    "fn tB15(s: B15) -> B15 {\n"
+    "    r := s\n"
+    "    for i in 0..15 {\n"
+    "        r.a[i] +%= u8(i + 1)\n"
+    "    }\n"
+    "    return r\n"
+    "}\n"
+    "\n"
+    "fn tLD(s: LD) -> LD {\n"
+    "    return LD.{ s.a + 1, s.b * 2 }\n"
+    "}\n"
+    "\n"
+    "fn tFI(s: FI) -> FI {\n"
+    "    return FI.{ s.a + 0.5, s.b - 1 }\n"
+    "}\n"
+    "\n"
+    "fn tFD(s: FD) -> FD {\n"
+    "    return FD.{ s.a * 2, s.b + 0.25 }\n"
+    "}\n"
+    "\n"
+    "fn tS(s: S) -> S {\n"
+    "    return S.{ s.s[1..] }\n"
+    "}\n"
+    "\n"
+    "fn tV3(s: V3) -> V3 {\n"
+    "    return V3.{ s.z, s.x, s.y }\n"
+    "}\n"
+    "\n"
+    "fn tV4(s: V4) -> V4 {\n"
+    "    r := s\n"
+    "    r.v[0] += 1\n"
+    "    r.v[3] -= 1\n"
+    "    return r\n"
+    "}\n"
+    "\n"
+    "fn tD4(s: D4) -> D4 {\n"
+    "    return D4.{ s.w, s.z, s.y, s.x }\n"
+    "}\n"
+    "\n"
+    "fn tN3(s: N3) -> N3 {\n"
+    "    return N3.{ V2.{ s.z, s.a.x }, s.a.y }\n"
+    "}\n"
+    "\n"
+    "fn tD1(s: D1) -> D1 {\n"
+    "    return D1.{ -s.x }\n"
+    "}\n"
+    "\n"
+    "fn mix(a: int, b: B3, c: f32, d: V3, e: P, f: f64, g: D2, h: u8) -> f64 "
+    "{\n"
+    "    n := a + int(b.a) * 2 + int(b.b) * 3 + int(b.c) * 4 + int(e.x) * 5 + "
+    "int(e.y) * 6 + int(h) * 7\n"
+    "    return f64(n) + f64(c) * 8 + f64(d.x) * 9 + f64(d.y) * 10 + f64(d.z) "
+    "* 11 + f * 12 + g.x * 13 + g.y * 14\n"
+    "}\n"
+    "\n"
+    "fn first(s: P, z: i32) -> i32 {\n"
+    "    return s.x + z\n"
+    "}\n"
+    "\n"
+    "fn bump(q: *P) -> i32 {\n"
+    "    q.x = 100\n"
+    "    return 0\n"
+    "}\n"
+    "\n"
+    "fn late(a: int, b: int) -> int {\n"
+    "    p := P.{ i32(a & 0xFF), i32(b & 0xFF) }\n"
+    "    return int(first(p, bump(&p)))\n"
+    "}\n"
+    "\n"
+    "fn chain(a: int, b: int) -> int {\n"
+    "    p := P.{ i32(a & 0xFFFF), i32(b & 0xFFFF) }\n"
+    "    q := tP(tP(tP(p)))\n"
+    "    v := tV3(tV3(V3.{ f32(a & 7), f32(b & 7), 2.5 }))\n"
+    "    t := tB3(B3.{ u8(a & 0xFF), u8(b & 0xFF), 250 })\n"
+    "    w := tD4(D4.{ 1, f64(a & 3), f64(b & 3), 4 })\n"
+    "    k := tLD(LD.{ a & 0xFFFF, f64(b & 15) })\n"
+    "    r := mix(a & 0xFF, t, v.x, v, q, w.y, D2.{ w.x, w.z }, u8(b & 0x7F))\n"
+    "    return int(r) + int(q.x) * 3 + int(t.c) + int(k.b) + k.a\n"
+    "}\n"
+    "\n"
+    "fn rows(a: int, b: int) -> int {\n"
+    "    xs: [4]P\n"
+    "    for i in 0..4 {\n"
+    "        xs[i] = P.{ i32(a & 0xFF) + i32(i), i32(b & 0xFF) - i32(i) }\n"
+    "    }\n"
+    "    total := 0\n"
+    "    for i in 0..4 {\n"
+    "        total += int(first(tP(xs[i]), i32(i)))\n"
+    "    }\n"
+    "    pp := &xs[a & 3]\n"
+    "    return total * 100 + int(tP(pp.*).x)\n"
+    "}\n"
+    "\n"
+    "fn lateI(s: LD, k: int) -> int {\n"
+    "    return s.a * 1000 + int(s.b) * 10 + k\n"
+    "}\n"
+    "\n"
+    "fn lateF(v: V3, x: f64) -> f64 {\n"
+    "    return f64(v.x) * 100 + f64(v.y) * 10 + f64(v.z) + x * 1000\n"
+    "}\n"
+    "\n"
+    "fn lateX(s: LD, v: V3, x: f64) -> f64 {\n"
+    "    return f64(s.a) + s.b * 10 + f64(v.z) * 100 + x * 1000\n"
+    "}\n"
+    "\n"
+    "fn lateK(v: V3, k: int) -> int {\n"
+    "    return int(v.x) * 100 + k\n"
+    "}\n"
+    "\n"
+    "fn lateS(s: LD, t: []u8) -> int {\n"
+    "    return s.a + int(s.b) + t.len * 100 + int(t[0])\n"
+    "}\n"
+    "\n"
+    "fn tails(a: int, b: int) -> int {\n"
+    "    k := i32(b & 0x7F)\n"
+    "    x := f32(a & 7)\n"
+    "    bytes := u8.[9, 8, 7]\n"
+    "    bytes[0] = u8(b & 0xFF)\n"
+    "    r := lateI(LD.{ a & 0xFF, f64(b & 15) }, k)\n"
+    "    q := lateF(V3.{ f32(a & 3), f32(b & 3), 1 }, x)\n"
+    "    y := lateX(LD.{ a & 0xF, 2 }, V3.{ 1, 2, f32(b & 7) }, x)\n"
+    "    z := lateK(V3.{ f32(b & 3), 0, 0 }, k)\n"
+    "    u := lateS(LD.{ a & 0xF, 2 }, bytes)\n"
+    "    return r + int(q) + int(y) + z + u\n"
+    "}\n"
+    "\n"
+    "fn eB3(s: B3, k: u8) -> B3 {\n"
+    "    return s\n"
+    "}\n"
+    "\n"
+    "fn eV3(k: f32, s: V3) -> V3 {\n"
+    "    return s\n"
+    "}\n"
+    "\n"
+    "fn eB15(s: B15, t: B7) -> B15 {\n"
+    "    return s\n"
+    "}\n"
+    "\n"
+    "fn eD4(a: D4, b: P, c: f64) -> D4 {\n"
+    "    return a\n"
+    "}\n"
+    "\n"
+    "fn eS(s: S, n: int) -> S {\n"
+    "    return s\n"
+    "}\n"
+    "\n"
+    "fn callB3(a: int, b: int) -> int {\n"
+    "    t := eB3(B3.{ u8(a & 0xFF), u8(b & 0xFF), 7 }, 3)\n"
+    "    return int(t.a) + int(t.b) * 256 + int(t.c) * 65536\n"
+    "}\n"
+    "\n"
+    "fn callV3(a: int, b: int) -> int {\n"
+    "    v := eV3(0.5, V3.{ f32(a & 15), f32(b & 15), 3 })\n"
+    "    return int(v.x * 2) * 10000 + int(v.y * 2) * 100 + int(v.z * 2)\n"
+    "}\n"
+    "\n"
+    "fn callB15(a: int, b: int) -> int {\n"
+    "    x: B15\n"
+    "    for i in 0..15 {\n"
+    "        x.a[i] = u8((a + i * 3) & 0xFF)\n"
+    "    }\n"
+    "    y := eB15(x, B7.{ .[1, 2, 3, 4, 5, 6, u8(b & 0xFF)] })\n"
+    "    total := 0\n"
+    "    for i in 0..15 {\n"
+    "        total = total * 3 + int(y.a[i])\n"
+    "    }\n"
+    "    return total\n"
+    "}\n"
+    "\n"
+    "fn callD4(a: int, b: int) -> int {\n"
+    "    d := eD4(D4.{ 1, 2, 3, f64(b & 15) }, P.{ i32(a & 0xFF), 6 }, 0.25)\n"
+    "    return int(d.x * 4) * 1000000 + int(d.y * 4) * 10000 + int(d.z * 4) * "
+    "100 + int(d.w * 4)\n"
+    "}\n"
+    "\n"
+    "fn callS(a: int, b: int) -> int {\n"
+    "    bytes := u8.[1, 2, 3, 4, 5, 6]\n"
+    "    r := eS(S.{ bytes[a & 1..] }, b & 3)\n"
+    "    return r.s.len * 100 + int(r.s[0])\n"
+    "}\n";
+
+typedef struct
+{
+    uint8_t a;
+} CB1;
+
+typedef struct
+{
+    uint8_t a, b, c;
+} CB3;
+
+typedef struct
+{
+    uint16_t a, b, c;
+} CH3;
+
+typedef struct
+{
+    uint8_t a[7];
+} CB7;
+
+typedef struct
+{
+    int32_t x, y;
+} CP;
+
+typedef struct
+{
+    uint8_t a[11];
+} CB11;
+
+typedef struct
+{
+    int32_t a, b, c;
+} CI3;
+
+typedef struct
+{
+    uint16_t a[7];
+} CH7;
+
+typedef struct
+{
+    uint8_t a[15];
+} CB15;
+
+typedef struct
+{
+    int64_t a;
+    double b;
+} CLD;
+
+typedef struct
+{
+    float a;
+    int32_t b;
+} CFI;
+
+typedef struct
+{
+    float a;
+    double b;
+} CFD;
+
+typedef struct
+{
+    Slice s;
+} CS;
+
+typedef struct
+{
+    float x, y, z;
+} CV3;
+
+typedef struct
+{
+    float v[4];
+} CV4;
+
+typedef struct
+{
+    double x, y, z, w;
+} CD4;
+
+typedef struct
+{
+    float x, y;
+} CV2;
+
+typedef struct
+{
+    CV2 a;
+    float z;
+} CN3;
+
+typedef struct
+{
+    double x;
+} CD1;
+
+typedef struct
+{
+    double x, y;
+} CD2;
+
+typedef double MIX(int64_t, CB3, float, CV3, CP, double, CD2, uint8_t);
+
+static CB3
+c_eB3(CB3 s, uint8_t k)
+{
+    return (CB3){ (uint8_t)(s.a + k), (uint8_t)(s.b + k), (uint8_t)(s.c + k) };
+}
+
+static CV3
+c_eV3(float k, CV3 s)
+{
+    return (CV3){ s.x + k, s.y + k, s.z + k };
+}
+
+static CB15
+c_eB15(CB15 s, CB7 t)
+{
+    for (int i = 0; i < 15; i++) {
+        s.a[i] = (uint8_t)(s.a[i] + t.a[i % 7]);
+    }
+    return s;
+}
+
+static CD4
+c_eD4(CD4 a, CP b, double c)
+{
+    return (CD4){ a.w + c, a.z + b.x, a.y + b.y, a.x };
+}
+
+static CS
+c_eS(CS s, int64_t n)
+{
+    return (CS){ { (const uint8_t *)s.s.ptr + n, s.s.len - n } };
+}
+
+static const char *const PASSED_STRUCT_FUNCTIONS[] = { "late", "chain", "rows", "tails" };
+
+static bool
+passes_to_c(Program *p)
+{
+    native_replace(&p->n, decl_named(p, "eB3"), (void *)c_eB3);
+    native_replace(&p->n, decl_named(p, "eV3"), (void *)c_eV3);
+    native_replace(&p->n, decl_named(p, "eB15"), (void *)c_eB15);
+    native_replace(&p->n, decl_named(p, "eD4"), (void *)c_eD4);
+    native_replace(&p->n, decl_named(p, "eS"), (void *)c_eS);
+    for (int64_t a = 0; a < 40; a += 7) {
+        for (int64_t b = 0; b < 40; b += 5) {
+            int64_t t = ((a + 3) & 0xFF) + ((b + 3) & 0xFF) * 256 + 10 * 65536;
+            int64_t vx = (int64_t)(((a & 15) + 0.5) * 2);
+            int64_t vy = (int64_t)(((b & 15) + 0.5) * 2);
+            uint8_t t7[7] = { 1, 2, 3, 4, 5, 6, (uint8_t)(b & 0xFF) };
+            int64_t sum = 0;
+            for (int i = 0; i < 15; i++) {
+                sum = sum * 3 + (uint8_t)(((a + i * 3) & 0xFF) + t7[i % 7]);
+            }
+            int64_t dw = (int64_t)(((b & 15) + 0.25) * 4);
+            int64_t d = dw * 1000000 + (3 + (a & 0xFF)) * 40000 + 3200 + 4;
+            int64_t off = (a & 1) + (b & 3);
+            if (((I2 *)fn(p, "callB3"))(a, b) != t ||
+                ((I2 *)fn(p, "callV3"))(a, b) != vx * 10000 + vy * 100 + 7 ||
+                ((I2 *)fn(p, "callB15"))(a, b) != sum ||
+                ((I2 *)fn(p, "callD4"))(a, b) != d ||
+                ((I2 *)fn(p, "callS"))(a, b) != (6 - off) * 100 + 1 + off) {
+                fprintf(
+                    stderr,
+                    "arm64 test: a call to C with structs at (%lld, %lld)\n",
+                    (long long)a,
+                    (long long)b
+                );
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+TEST_CASE(passed_structs)
+{
+    Program p;
+    REQUIRE(build(&p, PASSED_STRUCTS));
+
+    REQUIRE(((CB1(*)(CB1))fn(&p, "tB1"))((CB1){ 0xFF }).a == 0);
+    CB3 b3 = ((CB3(*)(CB3))fn(&p, "tB3"))((CB3){ 10, 20, 254 });
+    REQUIRE(b3.a == 11 && b3.b == 22 && b3.c == 1);
+    CH3 h3 = ((CH3(*)(CH3))fn(&p, "tH3"))((CH3){ 1000, 0xFFFF, 7 });
+    REQUIRE(h3.a == 1001 && h3.b == 1 && h3.c == 10);
+    CB7 b7 = ((CB7(*)(CB7))fn(&p, "tB7"))((CB7){ { 1, 2, 3, 4, 5, 6, 0xFF } });
+    for (int i = 0; i < 7; i++) {
+        REQUIRE(b7.a[i] == (uint8_t)((i < 6 ? i + 1 : 0xFF) + i + 1));
+    }
+    CP pi = ((CP(*)(CP))fn(&p, "tP"))((CP){ -5, 7 });
+    REQUIRE(pi.x == 7 && pi.y == -5);
+    CB11 b11;
+    for (int i = 0; i < 11; i++) {
+        b11.a[i] = (uint8_t)(0xA0 + i);
+    }
+    b11 = ((CB11(*)(CB11))fn(&p, "tB11"))(b11);
+    for (int i = 0; i < 11; i++) {
+        REQUIRE(b11.a[i] == (uint8_t)(0xA0 + 2 * i + 1));
+    }
+    CI3 i3 = ((CI3(*)(CI3))fn(&p, "tI3"))((CI3){ 1, -2, 3 });
+    REQUIRE(i3.a == 3 && i3.b == 1 && i3.c == -2);
+    CH7 h7;
+    for (int i = 0; i < 7; i++) {
+        h7.a[i] = (uint16_t)(0xF000 + i * 0x111);
+    }
+    h7 = ((CH7(*)(CH7))fn(&p, "tH7"))(h7);
+    for (int i = 0; i < 7; i++) {
+        REQUIRE(h7.a[i] == (uint16_t)(0xF000 + i * 0x111 + i + 1));
+    }
+    CB15 b15;
+    for (int i = 0; i < 15; i++) {
+        b15.a[i] = (uint8_t)(0x30 + 7 * i);
+    }
+    b15 = ((CB15(*)(CB15))fn(&p, "tB15"))(b15);
+    for (int i = 0; i < 15; i++) {
+        REQUIRE(b15.a[i] == (uint8_t)(0x30 + 8 * i + 1));
+    }
+    CLD ld = ((CLD(*)(CLD))fn(&p, "tLD"))((CLD){ -9, 1.25 });
+    REQUIRE(ld.a == -8 && ld.b == 2.5);
+    CFI fi = ((CFI(*)(CFI))fn(&p, "tFI"))((CFI){ 2.0f, 40 });
+    REQUIRE(fi.a == 2.5f && fi.b == 39);
+    CFD fd = ((CFD(*)(CFD))fn(&p, "tFD"))((CFD){ 1.5f, -1.0 });
+    REQUIRE(fd.a == 3.0f && fd.b == -0.75);
+    static const uint8_t text[] = "hello";
+    CS s = ((CS(*)(CS))fn(&p, "tS"))((CS){ { text, 5 } });
+    REQUIRE(s.s.ptr == text + 1 && s.s.len == 4);
+    CV3 v3 = ((CV3(*)(CV3))fn(&p, "tV3"))((CV3){ 1, 2, 3 });
+    REQUIRE(v3.x == 3 && v3.y == 1 && v3.z == 2);
+    CV4 v4 = ((CV4(*)(CV4))fn(&p, "tV4"))((CV4){ { 1, 2, 3, 4 } });
+    REQUIRE(v4.v[0] == 2 && v4.v[1] == 2 && v4.v[2] == 3 && v4.v[3] == 3);
+    CD4 d4 = ((CD4(*)(CD4))fn(&p, "tD4"))((CD4){ 1, 2, 3, 4 });
+    REQUIRE(d4.x == 4 && d4.y == 3 && d4.z == 2 && d4.w == 1);
+    CN3 n3 = ((CN3(*)(CN3))fn(&p, "tN3"))((CN3){ { 1, 2 }, 3 });
+    REQUIRE(n3.a.x == 3 && n3.a.y == 1 && n3.z == 2);
+    REQUIRE(((CD1(*)(CD1))fn(&p, "tD1"))((CD1){ 2.5 }).x == -2.5);
+    double m = ((MIX *)fn(&p, "mix"))(
+        1,
+        (CB3){ 2, 3, 4 },
+        5,
+        (CV3){ 6, 7, 8 },
+        (CP){ 9, 10 },
+        11,
+        (CD2){ 12, 13 },
+        14
+    );
+    REQUIRE(m == 955);
+    REQUIRE(((I2 *)fn(&p, "late"))(5, 6) == 100);
+
+    REQUIRE(agree_on_grid(
+        &p,
+        PASSED_STRUCT_FUNCTIONS,
+        sizeof PASSED_STRUCT_FUNCTIONS / sizeof PASSED_STRUCT_FUNCTIONS[0]
+    ));
+    REQUIRE(passes_to_c(&p));
+    release_program(&p);
+
+    Program q;
+    REQUIRE(check_text(
+        &q,
+        "struct P { a: int, b: int }\n"
+        "fn f(a: int, b: int, c: int, d: int, e: int, f: int, g: int, p: P) -> "
+        "int {\n"
+        "    return a + p.b\n"
+        "}\n"
+    ));
+    REQUIRE(!arm64_compile(&q.n, &q.c) && strstr(q.n.error, "more than 8 integer"));
+    release_program(&q);
+    return true;
+}
+
 static const char CONSTANT_CONDITIONS[] = "const DEBUG := false\n"
                                           "fn g() -> bool {\n"
                                           "    return true\n"
@@ -2531,6 +3053,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(structs);
     RUN_TEST_CASE(slices);
     RUN_TEST_CASE(stored_slices);
+    RUN_TEST_CASE(passed_structs);
     RUN_TEST_CASE(constant_conditions);
     RUN_TEST_CASE(deep_logic);
     RUN_TEST_CASE(small_integers);

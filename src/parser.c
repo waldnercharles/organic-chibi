@@ -749,6 +749,7 @@ parse_return(Parser *p)
         return;
     }
 
+    emit(p, NODE_RETURN_START, at);
     parse_binary(p, PREC_OR);
     emit(p, NODE_RETURN_VALUE, at);
 }
@@ -1065,7 +1066,7 @@ parse_function(Parser *p, bool named)
         fail(p, "expected `,` or `)`");
         return;
     }
-    p->pos++;
+    int close = p->pos++;
 
     if (p->tokens.kinds[p->pos] == TK_ARROW) {
         int arrow = p->pos++;
@@ -1085,6 +1086,7 @@ parse_function(Parser *p, bool named)
         parse_block(p);
     } else {
         p->pos++;
+        emit(p, NODE_RETURN_START, close);
         parse_binary(p, PREC_OR);
         emit(p, NODE_RETURN_VALUE, body);
     }

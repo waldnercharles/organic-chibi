@@ -633,12 +633,6 @@ is_held(const Checker *c, u32 type)
     return !is_compound(c, type) || is_storable(c, type);
 }
 
-static bool
-is_passed(const Checker *c, u32 type)
-{
-    return !is_compound(c, type) || (is_slice(c, type) && is_storable(c, type));
-}
-
 u64
 check_type_size(const Checker *c, u32 type)
 {
@@ -678,6 +672,73 @@ u64
 check_field_offset(const Checker *c, u32 field)
 {
     return list_u64(c, field);
+}
+
+static bool
+all_floats(const Checker *c, u32 type, u32 *base)
+{
+    while (is_array(c, type)) {
+        type = c->types.arg0[type];
+    }
+    if (c->types.kinds[type] == TYPE_FLOAT) {
+        bool same = *base == TYPE_ID_NONE || *base == type;
+        *base = type;
+        return same;
+    }
+    if (!is_struct(c, type)) {
+        return false;
+    }
+
+    u32 decl = c->types.arg0[type];
+    u32 first = c->decls.members[decl];
+    u32 end = first + c->decls.member_counts[decl];
+    for (u32 i = first; i < end; i++) {
+        if (!all_floats(c, c->members[i].type, base)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+u32
+check_struct_regs(const Checker *c, u32 type)
+{
+    u64 size = check_type_size(c, type);
+    if (size == 0 || size > 32) {
+        return 0;
+    }
+
+    u32 base = TYPE_ID_NONE;
+    if (all_floats(c, type, &base) && base != TYPE_ID_NONE) {
+        u64 m = check_type_size(c, base);
+        if (size / m <= 4) {
+            return (u32)(size / m) | REGS_FLOAT | (m == 8 ? REGS_DOUBLE : 0);
+        }
+    }
+    return size <= 16 ? (u32)(size + 7) / 8 : 0;
+}
+
+static NOINLINE bool
+is_passed_compound(const Checker *c, u32 type)
+{
+    if (!is_storable(c, type)) {
+        return false;
+    }
+    return is_slice(c, type) || (is_struct(c, type) && check_struct_regs(c, type));
+}
+
+static ALWAYS_INLINE bool
+is_passed(const Checker *c, u32 type)
+{
+    return !is_compound(c, type) || is_passed_compound(c, type);
+}
+
+static NOINLINE void
+report_unpassed(Checker *c, u32 file, u32 token, u32 type)
+{
+    bool large = is_struct(c, type) && is_storable(c, type) &&
+                 check_type_size(c, type) > 16;
+    report(c, file, token, large ? DIAG_TOO_LARGE_VALUE : DIAG_UNSUPPORTED, type, 0);
 }
 
 static bool
@@ -899,11 +960,11 @@ binding_kind(const Checker *c, u32 file, u32 slot)
     }
 }
 
-static u8
-place_binding(const Checker *c, u32 file, Operand o)
+static u32
+place_root(const Checker *c, Operand o)
 {
     if (o.type == OPERAND_LOCAL) {
-        return binding_kind(c, file, o.ref);
+        return o.ref;
     }
 
     const IrCode *code = c->body.code;
@@ -911,7 +972,14 @@ place_binding(const Checker *c, u32 file, Operand o)
     while (code->kinds[v] == IR_INDEX || code->kinds[v] == IR_FIELD) {
         v = c->body.first + code->as[v];
     }
-    return code->kinds[v] == IR_ADDR ? binding_kind(c, file, code->as[v]) : NODE_NONE;
+    return code->kinds[v] == IR_ADDR ? code->as[v] : NO_SLOT;
+}
+
+static u8
+place_binding(const Checker *c, u32 file, Operand o)
+{
+    u32 slot = place_root(c, o);
+    return slot != NO_SLOT ? binding_kind(c, file, slot) : NODE_NONE;
 }
 
 static void
@@ -1636,6 +1704,10 @@ expected_at(const Checker *c, u32 top)
             depth++;
             top = m;
             continue;
+        }
+        if (kind == NODE_RETURN_START) {
+            u32 type = c->body.ret == TYPE_ID_INFERRED ? TYPE_ID_NONE : c->body.ret;
+            return depth ? element_of(c, type, depth) : type;
         }
         if (m == 0 || (kind != NODE_VALUE && kind != NODE_CALL_ARGS && !literal)) {
             return TYPE_ID_NONE;
@@ -2408,21 +2480,26 @@ condition(Checker *c, u32 file, u32 token, Operand cond)
 }
 
 static NOINLINE Operand
-call_pairs(Checker *c, u32 file, u32 token, u32 decl, u32 first_arg, u32 nargs)
+call_compound(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg, u32 nargs)
 {
     const Decls *d = &c->decls;
     u32 fn = d->types[decl];
     u32 ret = (u32)c->types.arg1[fn];
+    if (!is_passed(c, ret)) {
+        report_unpassed(c, file, token, ret);
+        return poison;
+    }
+
     u32 list = c->types.arg0[fn];
     u32 n = c->lists[list];
 
     IrCode *code = c->body.code;
-    if (code->nextra + 2 * n + 1 > code->extra_cap) {
-        code->extra_cap = (code->nextra + 2 * n + 1) * 2;
+    if (code->nextra + 2 * n + 2 > code->extra_cap) {
+        code->extra_cap = (code->nextra + 2 * n + 2) * 2;
         code->extra = resize(code->extra, code->extra_cap, sizeof *code->extra);
     }
     u32 extra = code->nextra;
-    code->nextra += 2 * n + 1;
+    code->nextra += 2 * n + 2;
     u32 relative = extra - c->body.first_extra;
 
     bool ok = true;
@@ -2430,7 +2507,7 @@ call_pairs(Checker *c, u32 file, u32 token, u32 decl, u32 first_arg, u32 nargs)
     for (u32 i = 0; i < n; i++) {
         u32 type = c->lists[list + 1 + i];
         if (!is_passed(c, type)) {
-            report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
+            report_unpassed(c, file, token, type);
             return poison;
         }
         Operand v = i < nargs
@@ -2444,6 +2521,8 @@ call_pairs(Checker *c, u32 file, u32 token, u32 decl, u32 first_arg, u32 nargs)
             Pair p = pair_of(c, v);
             code->extra[w++] = p.first;
             code->extra[w++] = p.second;
+        } else if (is_struct(c, type)) {
+            code->extra[w++] = emit(c, IR_LOAD_AT, type, place_address(c, v), 0);
         } else {
             code->extra[w++] = operand_ir(c, v);
         }
@@ -2453,7 +2532,13 @@ call_pairs(Checker *c, u32 file, u32 token, u32 decl, u32 first_arg, u32 nargs)
     }
 
     code->extra[extra] = w - extra - 1;
-    if (code->nextra == extra + 2 * n + 1) {
+    u32 slot = 0;
+    if (is_struct(c, ret)) {
+        slot = add_slot(c, 0, ret, node);
+        weigh(c, slot);
+        code->extra[w++] = slot;
+    }
+    if (code->nextra == extra + 2 * n + 2) {
         code->nextra = w;
     }
 
@@ -2462,21 +2547,20 @@ call_pairs(Checker *c, u32 file, u32 token, u32 decl, u32 first_arg, u32 nargs)
     if (is_slice(c, ret)) {
         return make_pair(c, ret, i, emit(c, IR_SECOND, TYPE_ID_I64, 0, 0));
     }
+    if (is_struct(c, ret)) {
+        return (Operand){ OPERAND_LOCAL, slot };
+    }
     return ret == TYPE_ID_VOID ? (Operand){ TYPE_ID_VOID, 0 }
                                : (Operand){ ret, REF_VALUE | i };
 }
 
 static Operand
-call_fn(Checker *c, u32 file, u32 token, u32 decl, u32 first_arg, u32 nargs)
+call_fn(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg, u32 nargs)
 {
     const Decls *d = &c->decls;
     u32 fn = d->types[decl];
     u32 ret = (u32)c->types.arg1[fn];
     if (ret == TYPE_ID_INFERRED || ret == TYPE_ID_NONE) {
-        return poison;
-    }
-    if (!is_passed(c, ret)) {
-        report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
         return poison;
     }
 
@@ -2491,8 +2575,8 @@ call_fn(Checker *c, u32 file, u32 token, u32 decl, u32 first_arg, u32 nargs)
         report(c, file, token, DIAG_ARG_COUNT, n, nargs);
         return poison;
     }
-    if (d->flags[decl] & DECL_PAIRS) {
-        return call_pairs(c, file, token, decl, first_arg, nargs);
+    if (d->flags[decl] & DECL_COMPOUND) {
+        return call_compound(c, file, node, token, decl, first_arg, nargs);
     }
 
     IrCode *code = c->body.code;
@@ -2508,10 +2592,7 @@ call_fn(Checker *c, u32 file, u32 token, u32 decl, u32 first_arg, u32 nargs)
     bool ok = true;
     for (u32 i = 0; i < n; i++) {
         u32 type = c->lists[list + 1 + i];
-        if (is_aggregate(c, type)) {
-            report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
-            return poison;
-        }
+        assert(!is_compound(c, type));
         Operand v = i < nargs
                       ? convert(c, file, c->stack_tokens[first_arg + i], c->stack[first_arg + i], type)
                       : (Operand){ type, c->members[d->members[decl] + i].value };
@@ -2529,7 +2610,7 @@ call_fn(Checker *c, u32 file, u32 token, u32 decl, u32 first_arg, u32 nargs)
 }
 
 static void
-call(Checker *c, u32 file)
+call(Checker *c, u32 file, u32 node)
 {
     u32 m = list_start(c, NODE_CALL_ARGS);
     Operand callee = c->stack[m - 1];
@@ -2549,7 +2630,7 @@ call(Checker *c, u32 file)
             report(c, file, callee_token, DIAG_ARG_COUNT, 1, nargs);
         }
     } else if (callee.type == OPERAND_FN) {
-        r = call_fn(c, file, callee_token, callee.ref, m + 1, nargs);
+        r = call_fn(c, file, node, callee_token, callee.ref, m + 1, nargs);
     } else if (callee.type != TYPE_ID_NONE) {
         report(c, file, callee_token, DIAG_NOT_CALLABLE, 0, 0);
     }
@@ -2697,7 +2778,7 @@ assign(Checker *c, u32 file, u32 node, u32 token, u8 kind)
                 file,
                 target_token,
                 binding == NODE_PARAM ? DIAG_ASSIGN_PARAM : DIAG_ASSIGN_LOOP_VARIABLE,
-                0,
+                slot_at(c, place_root(c, target))->name,
                 0
             );
             return;
@@ -2774,7 +2855,14 @@ address_of(Checker *c, u32 file, u32 token, Operand target)
 
     u8 binding = place_binding(c, file, target);
     if (binding != NODE_NONE) {
-        report(c, file, token, binding == NODE_PARAM ? DIAG_ADDRESS_PARAM : DIAG_ADDRESS_LOOP_VARIABLE, 0, 0);
+        report(
+            c,
+            file,
+            token,
+            binding == NODE_PARAM ? DIAG_ADDRESS_PARAM : DIAG_ADDRESS_LOOP_VARIABLE,
+            slot_at(c, place_root(c, target))->name,
+            0
+        );
         return poison;
     }
     if (target.type == OPERAND_ADDRESS) {
@@ -3502,11 +3590,32 @@ add_peer(Checker *c, Peers *peers, Break b)
     peers->last = c->nbreaks;
 }
 
+static NOINLINE void
+return_struct_peer(Checker *c, u32 file, u32 token, Peers *peers, u8 kind, Operand v)
+{
+    u32 type = place_type(c, v);
+    if (kind != IR_RET) {
+        report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
+        return;
+    }
+    if (!is_passed(c, type)) {
+        report_unpassed(c, file, token, type);
+        return;
+    }
+    u32 address = place_address(c, v);
+    u32 at = emit(c, IR_RET, 0, address, 0);
+    add_peer(c, peers, (Break){ { type, REF_VALUE | address }, token, at, 0 });
+}
+
 static void
 exit_to_peers(Checker *c, u32 file, u32 token, Peers *peers, u8 kind, u32 loop, Operand v)
 {
     if (is_place(v) && is_slice(c, place_type(c, v))) {
         v = read_slice(c, v);
+    }
+    if (is_place(v) && is_struct(c, place_type(c, v))) {
+        return_struct_peer(c, file, token, peers, kind, v);
+        return;
     }
     if (v.type == TYPE_ID_NONE) {
         return;
@@ -3540,6 +3649,9 @@ return_value(Checker *c, u32 file, u32 token, bool has_value)
 {
     u32 v_token = has_value ? c->stack_tokens[c->sp - 1] : token;
     Operand v = has_value ? pop(c) : poison;
+    if (has_value) {
+        pop(c);
+    }
     push(c, token, OPERAND_STMT, 0);
     c->body.reachable = false;
 
@@ -3573,6 +3685,8 @@ return_value(Checker *c, u32 file, u32 token, bool has_value)
     if (is_pair(c, v)) {
         Pair p = pair_of(c, v);
         emit(c, IR_RET, ret, p.first, p.second);
+    } else if (is_place(v)) {
+        emit(c, IR_RET, ret, place_address(c, v), 0);
     } else if (v.type != TYPE_ID_NONE) {
         emit(c, IR_RET, ret, operand_ir(c, v), 0);
     }
@@ -4696,7 +4810,7 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
             }
             case NODE_AND:
             case NODE_OR: push_operand(c, token, logical(c, file, kind)); break;
-            case NODE_CALL: call(c, file); break;
+            case NODE_CALL: call(c, file, i); break;
             case NODE_POINTER_TYPE: {
                 u32 t = type_operand(c, file, child, pop(c));
                 push_type(c, token, t ? pointer_type(c, t) : TYPE_ID_NONE);
@@ -4961,15 +5075,15 @@ finish_signature(Checker *c, u32 decl)
     u32 first = collect_members(c, file, m + 1, DIAG_DUPLICATE_PARAM);
     u32 count = c->nmembers - first;
     u32 list = reserve_list(c, count);
-    bool pairs = is_slice(c, ret);
+    bool compound = is_compound(c, ret);
     for (u32 i = 0; i < count; i++) {
         u32 type = c->members[first + i].type;
         c->lists[list + 1 + i] = type;
-        pairs |= is_slice(c, type);
+        compound |= is_compound(c, type);
     }
 
     c->decls.types[decl] = fn_type(c, list, ret);
-    c->decls.flags[decl] |= pairs ? DECL_PAIRS : 0;
+    c->decls.flags[decl] |= compound ? DECL_COMPOUND : 0;
     c->decls.members[decl] = first;
     c->decls.member_counts[decl] = count;
     c->nscratch = c->stack[m].ref;
@@ -5168,7 +5282,7 @@ check_body(Checker *c, u32 decl)
 
     const u32 *tokens = c->files[file].nodes.tokens;
     if (!is_passed(c, c->body.ret)) {
-        report(c, file, tokens[d->roots[decl]], DIAG_UNSUPPORTED, 0, 0);
+        report_unpassed(c, file, tokens[d->roots[decl]], c->body.ret);
         c->body.ret = TYPE_ID_NONE;
     }
 
@@ -5177,7 +5291,7 @@ check_body(Checker *c, u32 decl)
     for (u32 i = 0; i < nparams; i++) {
         Member m = c->members[first + i];
         if (!is_passed(c, m.type)) {
-            report(c, file, tokens[m.node], DIAG_UNSUPPORTED, 0, 0);
+            report_unpassed(c, file, tokens[m.node], m.type);
             m.type = TYPE_ID_NONE;
         }
         u32 slot = add_slot(c, m.name, m.type, m.node);
@@ -5215,7 +5329,7 @@ check_body(Checker *c, u32 decl)
     }
     if (c->types.arg1[fn] == TYPE_ID_INFERRED) {
         d->types[decl] = intern_type(c, TYPE_FN, c->types.arg0[fn], c->body.ret);
-        d->flags[decl] |= is_slice(c, c->body.ret) ? DECL_PAIRS : 0;
+        d->flags[decl] |= is_compound(c, c->body.ret) ? DECL_COMPOUND : 0;
     }
 
     unbind_to(c, scope);
@@ -5756,7 +5870,8 @@ print_function(FILE *out, const Checker *c, const IrFunc *fn)
         assert(depth < sizeof openers);
         fprintf(out, "%*s", 4 * depth, "");
 
-        bool value = kind < IR_CALL || (kind == IR_CALL && type != TYPE_ID_VOID) ||
+        bool value = kind < IR_CALL ||
+                     (kind == IR_CALL && type != TYPE_ID_VOID && !is_struct(c, type)) ||
                      (kind == IR_END && type != TYPE_ID_NONE);
         if (value) {
             fprintf(out, "%%%u = ", i);
@@ -5805,6 +5920,10 @@ print_function(FILE *out, const Checker *c, const IrFunc *fn)
                     print_operand(out, c, fn, args[j]);
                 }
                 fputc(')', out);
+                if (is_struct(c, type)) {
+                    fputs(" -> ", out);
+                    print_slot(out, c, fn, args[args[0] + 1]);
+                }
                 break;
             }
             case IR_INDEX_LEN:

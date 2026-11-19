@@ -70,11 +70,12 @@ Updated 2026-11-19. Built so far:
 - step 3d.3, slices: `[]T` locals, parameters and results held in two registers, slicing with bounds checks, `.len`, `for` over slices, and arrays converting to slices.
 - step 3d.4, structs: locals laid out as C lays them out, field access through values and pointers, copies, zeroing with field defaults, typed and anonymous literals, and `*S` parameters.
 - step 3d.5, slices in memory: slice fields, arrays and slices of slices, `&s` and `*[]T`.
+- step 3d.6, small structs by value: parameters and results of up to 16 bytes, and float-only structs of up to 32, in registers as C passes them.
 
 [checker-and-ir.md](checker-and-ir.md) section 8 has the details and the measurements.
 
 The goal now is self-hosting: translate the compiler into chibi, then use the compiler as the benchmark that chibi improves against (the Compiler rows of 2026-11-16 and 2026-11-17). The order:
-1. **The rest of step 3d:** step 3d.6 passes structs up to 16 bytes by value in registers, as C does. Options A and C of question 14 were timed on 2026-11-19, on x86-64 ([experiments/slice-lowering](../../experiments/slice-lowering/README.md)): C was at least as fast as A on every kernel, and 21–28% faster on a loop that re-slices as a lexer does, so 3d builds C, and step 3d.3 built slices that way. The same kernels still need timing on the owner's M4 Pro. A cloud container runs the arm64 backend's tests under qemu (`make test`), but can't time arm64 code.
+1. **The rest of step 3d:** larger structs by value, which wait on rank 8 (open decision 1 below). Options A and C of question 14 were timed on 2026-11-19, on x86-64 ([experiments/slice-lowering](../../experiments/slice-lowering/README.md)): C was at least as fast as A on every kernel, and 21–28% faster on a loop that re-slices as a lexer does, so 3d builds C, and step 3d.3 built slices that way. The same kernels still need timing on the owner's M4 Pro. A cloud container runs the arm64 backend's tests under qemu (`make test`), but can't time arm64 code.
 2. Global variables and constant tables.
 3. Calling C and being called from C.
 4. SIMD types, and the bit-scan and overflow builtins.
@@ -92,7 +93,7 @@ Measure cycles per IR instruction, and swap one slot while the program runs. Tha
 
 Updated 2026-11-18. The owner's answers are in [../decisions.md](../decisions.md). This list holds what is still open, in the order of the next step above. Points that a decision row marks "proposed, not yet decided" are open too, and are not repeated here. The compiler's own C (`src/`) shows what the translator meets first: it uses `++`, `--`, `?:` and character literals throughout, calls C's `printf` family and `qsort`, uses `vector_size` types, the bit-scan and overflow builtins, and the `noinline`, `always_inline` and `noreturn` attributes, and has no bitfields and no `goto`.
 
-1. **Step 3d.** Questions 12–14 of [checker-and-ir.md](checker-and-ir.md) section 9 are decided, and so is the hidden context of rank 7 (the Language row of 2026-11-18). How a call passes a struct still needs rank 8 ([adopt-or-settle.md](adopt-or-settle.md) 2.8): whether parameters behave as copies, with large structs passed by pointer. It also needs where the context travels; the proposal is a register that C preserves, so arguments follow the C convention. Read-only parameters are decided.
+1. **Step 3d.** Questions 12–14 of [checker-and-ir.md](checker-and-ir.md) section 9 are decided, and so is the hidden context of rank 7 (the Language row of 2026-11-18). Step 3d.6 passes structs of up to 16 bytes, and float-only structs of up to 32, in registers as C does; its rules open to review are in [checker-and-ir.md](checker-and-ir.md) section 8. Larger structs still need rank 8 ([adopt-or-settle.md](adopt-or-settle.md) 2.8): whether parameters behave as copies, with large structs passed by pointer. It also needs where the context travels; the proposal is a register that C preserves, so arguments follow the C convention. Read-only parameters are decided.
 2. **Globals and constant tables.**
    - Initialization, the rest of rank 6 (2.6): memory zeroed by default, field defaults, and globals built at compile time. `undefined` is decided.
    - Whether a library's global may run code at startup, as in `score := load_score()` ([top-level-code.md](top-level-code.md) 5).

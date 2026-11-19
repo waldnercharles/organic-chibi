@@ -135,6 +135,8 @@ enum
     OP_LDP_X = 0xA9400000u,
     OP_STP_D = 0x6D000000u,
     OP_LDP_D = 0x6D400000u,
+    OP_STP_S = 0x2D000000u,
+    OP_LDP_S = 0x2D400000u,
     OP_SUB_SP_HIGH = 0xD14003FFu,
     OP_ADD_FROM_SP = 0x910003E0u,
     OP_ADD_HIGH = 0x91400000u,
@@ -716,6 +718,27 @@ aliased(const Emit *e, u32 h)
     return false;
 }
 
+static NOINLINE u32
+late_arg(Emit *e, const u32 *args, u32 v, u8 info)
+{
+    bool fl = is_float(info);
+    u32 same = 0;
+    for (u32 j = 1; j <= args[0] && same < 8; j++) {
+        if (args[j] == v) {
+            add_alias(e, v, (fl ? 32 : 0) + same, info);
+            return same;
+        }
+        u8 t = operand_info(e, args[j]);
+        if (t & INFO_MEMORY) {
+            u32 regs = check_struct_regs(e->c, e->ir->types[e->fn->first + args[j]]);
+            same += (bool)(regs & REGS_FLOAT) == fl ? regs & REGS_COUNT : 0;
+        } else {
+            same += is_float(t) == fl;
+        }
+    }
+    return alloc(e, v, info);
+}
+
 static u32
 result(Emit *e, u32 v, u8 info)
 {
@@ -740,7 +763,11 @@ result(Emit *e, u32 v, u8 info)
                     add_alias(e, v, (fl ? 32 : 0) + same, info);
                     return same;
                 }
-                same += is_float(operand_info(e, args[j])) == fl;
+                u8 t = operand_info(e, args[j]);
+                if (t & INFO_MEMORY) {
+                    return late_arg(e, args, v, info);
+                }
+                same += is_float(t) == fl;
             }
         }
     }
@@ -1912,6 +1939,7 @@ half_target(const Emit *e, u32 i, u32 half)
                 if (args[j] == v) {
                     return (u8)same;
                 }
+                assert(args[j] == i || !(operand_info(e, args[j]) & INFO_MEMORY));
                 same += args[j] == i || !is_float(operand_info(e, args[j]));
             }
             return NO_REG;
@@ -2147,19 +2175,149 @@ move_into(Emit *e, u32 d, u32 x, bool fl)
 }
 
 static void
+piece(Emit *e, u32 op, u32 scale, u32 rt, u32 base, u32 offset)
+{
+    if (base == SP) {
+        memory(e, op, scale, rt, offset, X16);
+        return;
+    }
+    put(e, op | (offset >> scale) << 10 | base << 5 | rt);
+}
+
+static bool
+pairs_at(u32 offset, u32 scale)
+{
+    return (offset & ((1u << scale) - 1)) == 0 && (offset >> scale) < 64;
+}
+
+static void
+load_chunk(Emit *e, u32 d, u32 base, u32 offset, u32 n)
+{
+    static const u32 ops[4] = { OP_LDRB, OP_LDRH, OP_LDRW, OP_LDRX };
+    u32 s = n >= 8 ? 3 : n >= 4 ? 2 : n >= 2 ? 1 : 0;
+    piece(e, ops[s], s, d, base, offset);
+    u32 done = 1u << s;
+    while (done < n) {
+        s = n - done >= 2 ? 1 : 0;
+        piece(e, ops[s], s, X17, base, offset + done);
+        put(e, OP_ORR | SF | X17 << 16 | (done * 8) << 10 | d << 5 | d);
+        done += 1u << s;
+    }
+}
+
+static void
+store_chunk(Emit *e, u32 r, u32 base, u32 offset, u32 n)
+{
+    static const u32 ops[4] = { OP_STRB, OP_STRH, OP_STRW, OP_STRX };
+    u32 s = n >= 8 ? 3 : n >= 4 ? 2 : n >= 2 ? 1 : 0;
+    piece(e, ops[s], s, r, base, offset);
+    u32 done = 1u << s;
+    while (done < n) {
+        s = n - done >= 2 ? 1 : 0;
+        shift_imm(e, OP_LSR_IMM, SF, X17, r, done * 8);
+        piece(e, ops[s], s, X17, base, offset + done);
+        done += 1u << s;
+    }
+}
+
+static void
+move_struct(Emit *e, bool load, u32 type, u32 first, u32 base, u32 offset)
+{
+    u32 regs = check_struct_regs(e->c, type);
+    u32 n = regs & REGS_COUNT;
+    if (regs & REGS_FLOAT) {
+        bool d = regs & REGS_DOUBLE;
+        u32 scale = d ? 3 : 2;
+        u32 one = load ? (d ? OP_LDRD : OP_LDRS) : (d ? OP_STRD : OP_STRS);
+        u32 two = load ? (d ? OP_LDP_D : OP_LDP_S) : (d ? OP_STP_D : OP_STP_S);
+        for (u32 k = 0; k < n; k += 2) {
+            u32 at = offset + (k << scale);
+            if (k + 1 < n && pairs_at(at, scale)) {
+                put(e,
+                    two | (at >> scale) << 15 | (first + k + 1) << 10 |
+                        base << 5 | (first + k));
+            } else {
+                piece(e, one, scale, first + k, base, at);
+                if (k + 1 < n) {
+                    piece(e, one, scale, first + k + 1, base, at + (1u << scale));
+                }
+            }
+        }
+        return;
+    }
+
+    u32 size = (u32)check_type_size(e->c, type);
+    if (size == 16 && pairs_at(offset, 3)) {
+        put(e,
+            (load ? OP_LDP_X : OP_STP_X) | (offset >> 3) << 15 |
+                (first + 1) << 10 | base << 5 | first);
+        return;
+    }
+    for (u32 k = 0; k < n; k++) {
+        u32 bytes = size - 8 * k < 8 ? size - 8 * k : 8;
+        if (load) {
+            load_chunk(e, first + k, base, offset + 8 * k, bytes);
+        } else {
+            store_chunk(e, first + k, base, offset + 8 * k, bytes);
+        }
+    }
+}
+
+static NOINLINE u32
+pass_struct(Emit *e, u32 v, u32 ints, u32 floats)
+{
+    u32 type = e->ir->types[e->fn->first + v];
+    u32 regs = check_struct_regs(e->c, type);
+    u32 first = regs & REGS_FLOAT ? floats : ints;
+    if (first + (regs & REGS_COUNT) > 8) {
+        e->error = "a call passes more than 8 integer or 8 float arguments";
+        return 0;
+    }
+    u32 p = fetch(e, v, X16);
+    move_struct(e, true, type, first, p, 0);
+    release(e, v);
+    return regs;
+}
+
+static NOINLINE bool
+pass_args(Emit *e, const u32 *args)
+{
+    u32 ints = 0, floats = 0;
+    for (u32 j = 1; j <= args[0]; j++) {
+        u8 at = operand_info(e, args[j]);
+        if (at & INFO_MEMORY) {
+            u32 regs = pass_struct(e, args[j], ints, floats);
+            if (regs == 0) {
+                return false;
+            }
+            ints += regs & REGS_FLOAT ? 0 : regs & REGS_COUNT;
+            floats += regs & REGS_FLOAT ? regs & REGS_COUNT : 0;
+            continue;
+        }
+        bool fl = is_float(at);
+        u32 d = fl ? floats++ : ints++;
+        if (d >= 8) {
+            e->error = "a call passes more than 8 integer or 8 float arguments";
+            return false;
+        }
+        move_into(e, d, args[j], fl);
+    }
+    return true;
+}
+
+static NOINLINE void
+receive_result(Emit *e, u32 type, u32 slot)
+{
+    move_struct(e, false, type, 0, SP, e->slot_offsets[slot]);
+}
+
+static void
 call(Emit *e, u32 i, u32 type, u32 decl, u32 b, const Native *n)
 {
     u8 t = e->info[type];
     const u32 *args = e->ir->extra + e->fn->first_extra + b;
-    u32 ints = 0, floats = 0;
-    for (u32 j = 1; j <= args[0]; j++) {
-        bool fl = is_float(operand_info(e, args[j]));
-        u32 d = fl ? floats++ : ints++;
-        if (d >= 8) {
-            e->error = "a call passes more than 8 integer or 8 float arguments";
-            return;
-        }
-        move_into(e, d, args[j], fl);
+    if (!pass_args(e, args)) {
+        return;
     }
     save_for_call(e, ~e->free_int & INT_POOL, false);
     save_for_call(e, ~e->free_float & FLOAT_POOL, true);
@@ -2182,6 +2340,8 @@ call(Emit *e, u32 i, u32 type, u32 decl, u32 b, const Native *n)
             mov(e, SF, d0, 0);
             mov(e, SF, d1, 1);
         }
+    } else if (t & INFO_MEMORY) {
+        receive_result(e, type, args[args[0] + 1]);
     } else if (type != TYPE_ID_VOID) {
         bool fl = is_float(t);
         u32 d = result(e, i, e->info[type]);
@@ -2472,6 +2632,13 @@ pin_by_weight(Emit *e, bool fl, u32 first, u32 cheap, u32 callee)
     }
 }
 
+static NOINLINE void
+skip_struct(const Emit *e, u32 type, u32 *used)
+{
+    u32 regs = check_struct_regs(e->c, type);
+    used[(regs & REGS_FLOAT) != 0] += regs & REGS_COUNT;
+}
+
 static void
 pin_locals(Emit *e)
 {
@@ -2494,7 +2661,12 @@ pin_locals(Emit *e)
         cheap[1] = ARGUMENTS;
         u32 used[2] = { 0, 0 };
         for (u32 p = 0; p < fn->nparams; p++) {
-            bool fl = is_float(e->info[slots[p].type]);
+            u8 info = e->info[slots[p].type];
+            if (info & INFO_MEMORY) {
+                skip_struct(e, slots[p].type, used);
+                continue;
+            }
+            bool fl = is_float(info);
             u32 r = used[fl]++;
             if (r < 8 && slots[p].weight) {
                 e->slot_regs[p] = (u8)((fl ? 32 : 0) + r);
@@ -2625,6 +2797,45 @@ callee_words(u32 *out, bool load, u32 saved_int, u32 saved_float)
     return n;
 }
 
+static NOINLINE u32
+receive_param(Emit *e, u32 p, u32 ints, u32 floats)
+{
+    const IrSlot *slot = e->ir->slots + e->fn->first_slot + p;
+    u32 regs = check_struct_regs(e->c, slot->type);
+    u32 first = regs & REGS_FLOAT ? floats : ints;
+    if (first + (regs & REGS_COUNT) > 8) {
+        e->error = "a function has more than 8 integer or 8 float parameters";
+        return 0;
+    }
+    if (slot->weight) {
+        move_struct(e, false, slot->type, first, SP, e->slot_offsets[p]);
+    }
+    return regs;
+}
+
+static NOINLINE void
+hold_struct(Emit *e, u32 i, u32 a)
+{
+    if (e->regs[a] != NO_REG) {
+        take_over(e, a, i, INFO_MEMORY | 3);
+        return;
+    }
+    e->spills[i] = e->spills[a];
+    e->vinfo[i] = INFO_MEMORY | 3;
+}
+
+static NOINLINE void
+return_struct(Emit *e, u32 type, u32 a)
+{
+    u32 p = fetch(e, a, X16);
+    if (p < 8) {
+        mov(e, SF, X16, p);
+        p = X16;
+    }
+    move_struct(e, true, type, 0, p, 0);
+    release(e, a);
+}
+
 static u32
 emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
 {
@@ -2662,6 +2873,15 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
     u32 ints = 0, floats = 0;
     for (u32 p = 0; p < fn->nparams; p++) {
         u32 type = slots[p].type;
+        if (e->info[type] & INFO_MEMORY) {
+            u32 regs = receive_param(e, p, ints, floats);
+            if (regs == 0) {
+                return 0;
+            }
+            ints += regs & REGS_FLOAT ? 0 : regs & REGS_COUNT;
+            floats += regs & REGS_FLOAT ? regs & REGS_COUNT : 0;
+            continue;
+        }
         bool fl = is_float(e->info[type]);
         u32 r = fl ? floats++ : ints++;
         if (r >= 8) {
@@ -2737,9 +2957,13 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                 break;
             }
             case IR_LOAD_AT: {
+                u8 t = e->info[type];
+                if (t & INFO_MEMORY) {
+                    hold_struct(e, i, a);
+                    break;
+                }
                 u32 p = fetch(e, a, X16);
                 release(e, a);
-                u8 t = e->info[type];
                 if (t & INFO_PAIR) {
                     load_pair(e, i, p, t);
                     break;
@@ -2801,6 +3025,8 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
             case IR_RET:
                 if (e->info[type] & INFO_PAIR) {
                     return_pair(e, a, b);
+                } else if (e->info[type] & INFO_MEMORY) {
+                    return_struct(e, type, a);
                 } else if (type != TYPE_ID_VOID) {
                     move_into(e, 0, a, is_float(e->info[type]));
                 }

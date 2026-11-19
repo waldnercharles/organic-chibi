@@ -248,7 +248,12 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
     u8 *frame = calloc(r->frames[f] + 8, 1);
     const u32 *offsets = r->offsets + fn->first_slot;
     for (u32 p = 0; p < fn->nparams; p++) {
-        memcpy(frame + offsets[p], &args[p], sizeof *args);
+        u32 type = ir->slots[fn->first_slot + p].type;
+        if (c->types.kinds[type] == TYPE_STRUCT) {
+            memcpy(frame + offsets[p], (const void *)(uintptr_t)args[p], check_type_size(c, type));
+        } else {
+            memcpy(frame + offsets[p], &args[p], sizeof *args);
+        }
     }
 
 #define OPERAND(x)                                                             \
@@ -345,6 +350,10 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                 memset((void *)(uintptr_t)OPERAND(a), 0, check_type_size(c, type));
                 break;
             case IR_LOAD_AT: {
+                if (c->types.kinds[type] == TYPE_STRUCT) {
+                    v = OPERAND(a);
+                    break;
+                }
                 u64 raw = 0;
                 const u8 *p = (const u8 *)(uintptr_t)OPERAND(a);
                 memcpy(&raw, p, t.bits / 8);
@@ -490,15 +499,23 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                 for (u32 k = 0; k < list[0]; k++) {
                     call_args[k] = OPERAND(list[1 + k]);
                 }
-                u64 out[2] = { 0, 0 };
+                u64 out[4] = { 0, 0, 0, 0 };
                 fail = run(r, c->decls.funcs[a] - 1, call_args, out);
                 v = out[0];
                 second = out[1];
+                if (c->types.kinds[type] == TYPE_STRUCT) {
+                    memcpy(frame + offsets[list[list[0] + 1]], out, check_type_size(c, type));
+                }
                 free(call_args);
                 break;
             }
             case IR_DROP: break;
             case IR_RET:
+                if (c->types.kinds[type] == TYPE_STRUCT) {
+                    memcpy(result, (const void *)(uintptr_t)OPERAND(a), check_type_size(c, type));
+                    trap = 0;
+                    goto done;
+                }
                 result[0] = type == TYPE_ID_VOID ? 0 : OPERAND(a);
                 result[1] = c->types.kinds[type] == TYPE_SLICE ? OPERAND(b) : 0;
                 trap = 0;
@@ -576,7 +593,7 @@ int
 ir_reference_run(IrReference *r, u32 decl, const u64 *args, u64 *result)
 {
     r->steps = 0;
-    u64 out[2] = { 0, 0 };
+    u64 out[4] = { 0, 0, 0, 0 };
     int trap = run(r, r->c->decls.funcs[decl] - 1, args, out);
     *result = out[0];
     return trap;

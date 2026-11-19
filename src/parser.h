@@ -110,7 +110,7 @@
     NODE(NODE_NAMED_ARG, 3, "arg")                                             \
     NODE(NODE_WHILE, 4, "while")                                               \
     NODE(NODE_RETURN, 0, NULL)                                                 \
-    NODE(NODE_RETURN_VALUE, 1, "return")                                       \
+    NODE(NODE_RETURN_VALUE, 2, "return")                                       \
     NODE(NODE_BREAK, 0, NULL)                                                  \
     NODE(NODE_BREAK_LABEL, 0, "break")                                         \
     NODE(NODE_BREAK_VALUE, 1, "break")                                         \
@@ -179,7 +179,8 @@
     MARKER(NODE_CASE_BODY)                                                     \
     MARKER(NODE_SWITCH_START)                                                  \
     MARKER(NODE_VALUE_SWITCH_START)                                            \
-    MARKER(NODE_VALUE)
+    MARKER(NODE_VALUE)                                                         \
+    MARKER(NODE_RETURN_START)
 // clang-format on
 
 #define CHIBI_NODE_NAME(name, ...) name,

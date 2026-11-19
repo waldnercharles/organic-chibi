@@ -105,6 +105,11 @@ typedef struct
 {
     Field fields[MAX_FIELDS];
     u8 count;
+    u8 align;
+    u8 leaf;
+    u8 xregs;
+    u8 vregs;
+    u32 size;
 } Record;
 
 typedef struct
@@ -131,6 +136,7 @@ typedef struct
 {
     u8 ret;
     bool ret_slice;
+    u8 ret_record;
     u16 ret_length;
     u8 nparams;
     u8 params[MAX_PARAMS];
@@ -154,6 +160,7 @@ typedef struct
     u32 level;
     u8 ret;
     bool ret_slice;
+    u8 ret_record;
     u16 ret_length;
     u32 nesting;
     Label result;
@@ -965,6 +972,10 @@ literal_items(Gen *g, u8 t, u16 length, u16 inner)
 }
 
 static bool slice_value(Gen *g, u32 limit, bool escaping, u8 t, u16 inner, u16 length, bool convert);
+static void record_value(Gen *g, u32 limit, u8 r);
+static void record_literal(Gen *g, u32 limit, u8 r);
+static int pick_record_call(Gen *g, u8 r, u8 t);
+static void record_call(Gen *g, u32 k);
 
 static void
 slice_argument(Gen *g, u8 t, u16 length, bool keep)
@@ -986,7 +997,8 @@ slice_argument(Gen *g, u8 t, u16 length, bool keep)
 static bool
 can_call(const Gen *g, const Helper *h, u8 t, bool keep)
 {
-    if (h->level >= g->level || (t != NTYPES && (h->ret != t || h->ret_slice))) {
+    if (h->level >= g->level || (t != NTYPES && (h->ret != t || h->ret_slice ||
+                                                 h->ret_record != NO_RECORD))) {
         return false;
     }
     for (u32 p = 0; p < h->nparams; p++) {
@@ -999,7 +1011,8 @@ can_call(const Gen *g, const Helper *h, u8 t, bool keep)
             continue;
         }
         if (h->records[p] != NO_RECORD) {
-            if (count_record_places(g, h->records[p], true, MAX_VARS) == 0) {
+            if (h->pointers[p] &&
+                count_record_places(g, h->records[p], true, MAX_VARS) == 0) {
                 return false;
             }
             continue;
@@ -1056,9 +1069,17 @@ call_args(Gen *g, u32 k, int depth, bool keep)
         if (p) {
             emit(g, ", ");
         }
-        if (h->records[p] != NO_RECORD) {
+        if (h->records[p] != NO_RECORD && h->pointers[p]) {
+            int call = chance(g, 15) ? pick_record_call(g, h->records[p], NTYPES)
+                                     : -1;
             emit(g, "&");
-            record_place(g, h->records[p], true, MAX_VARS);
+            if (call >= 0) {
+                record_call(g, (u32)call);
+            } else {
+                record_place(g, h->records[p], true, MAX_VARS);
+            }
+        } else if (h->records[p] != NO_RECORD) {
+            record_value(g, g->nvars, h->records[p]);
         } else if (h->slices[p]) {
             slice_argument(g, h->params[p], h->lengths[p], keep);
         } else if (h->pointers[p]) {
@@ -1111,6 +1132,59 @@ pick_returning(Gen *g, u8 t, u16 length)
         }
     }
     return -1;
+}
+
+static bool
+returns_record(const Gen *g, const Helper *h, u8 r, u8 t)
+{
+    if (h->ret_record == NO_RECORD || !can_call(g, h, NTYPES, false)) {
+        return false;
+    }
+    return r != NO_RECORD ? h->ret_record == r : has_leaf(g, h->ret_record, t, false);
+}
+
+static int
+pick_record_call(Gen *g, u8 r, u8 t)
+{
+    if (g->nesting >= 2) {
+        return -1;
+    }
+    u32 n = 0;
+    for (u32 k = 0; k < g->nhelpers; k++) {
+        n += returns_record(g, &g->helpers[k], r, t);
+    }
+    if (n == 0) {
+        return -1;
+    }
+    u32 pick = (u32)random_below(g->rng, (int)n);
+    for (u32 k = 0; k < g->nhelpers; k++) {
+        if (returns_record(g, &g->helpers[k], r, t) && pick-- == 0) {
+            return (int)k;
+        }
+    }
+    return -1;
+}
+
+static void
+record_call(Gen *g, u32 k)
+{
+    g->nesting++;
+    call_args(g, k, 2, false);
+    g->nesting--;
+}
+
+static bool
+call_leaf(Gen *g, u8 t)
+{
+    int k = pick_record_call(g, NO_RECORD, t);
+    if (k < 0) {
+        return false;
+    }
+    record_call(g, (u32)k);
+    g->in_path++;
+    leaf_path(g, g->helpers[k].ret_record, t, false);
+    g->in_path--;
+    return true;
 }
 
 static bool
@@ -1168,6 +1242,9 @@ nonliteral(Gen *g, u8 t, int depth)
 {
     if (depth > 0 && chance(g, 40)) {
         int form = random_below(g->rng, 4);
+        if (form == 0 && !g->in_path && chance(g, 30) && call_leaf(g, t)) {
+            return;
+        }
         if (t == T_BOOL) {
             u8 u = random_type(g, false);
             static const char *const ops[] = { "<", "<=", ">", ">=", "==", "!=" };
@@ -1655,10 +1732,31 @@ switch_value(Gen *g, u8 t, int depth, bool typed)
 }
 
 static void
+record_result(Gen *g)
+{
+    u8 r = g->ret_record;
+    if (g->result.typed) {
+        record_value(g, g->nvars, r);
+        return;
+    }
+    int k = chance(g, 20) ? pick_record_call(g, r, NTYPES) : -1;
+    if (k >= 0) {
+        record_call(g, (u32)k);
+    } else if (count_record_places(g, r, false, g->nvars) && chance(g, 30)) {
+        record_place(g, r, false, g->nvars);
+    } else {
+        emit(g, "R%u.", r);
+        record_literal(g, g->nvars, r);
+    }
+}
+
+static void
 return_value(Gen *g, int depth)
 {
     emit(g, "return ");
-    if (g->ret_slice) {
+    if (g->ret_record != NO_RECORD) {
+        record_result(g);
+    } else if (g->ret_slice) {
         slice_value(g, g->nvars, true, g->ret, 0, g->ret_length, g->result.typed);
     } else {
         break_value(g, &g->result, depth);
@@ -1767,22 +1865,61 @@ enum_declarations(Gen *g)
 }
 
 static void
+lay_out_record(Gen *g, Record *rec)
+{
+    u32 size = 0;
+    u32 align = 1;
+    u8 leaf = NTYPES;
+    for (u8 k = 0; k < rec->count; k++) {
+        const Field *f = &rec->fields[k];
+        u32 bytes = type_bits[f->type] / 8u;
+        u32 a = bytes;
+        u8 l = is_float(f->type) ? f->type : NTYPES;
+        if (f->slice) {
+            bytes = 16;
+            a = 8;
+            l = NTYPES;
+        } else if (f->record != NO_RECORD) {
+            const Record *in = &g->records[f->record];
+            bytes = in->size;
+            a = in->align;
+            l = in->leaf;
+        }
+        size = (size + a - 1) / a * a + bytes * (f->length ? f->length : 1u);
+        align = a > align ? a : align;
+        leaf = k == 0 || l == leaf ? l : NTYPES;
+    }
+    rec->size = (size + align - 1) / align * align;
+    rec->align = (u8)align;
+    rec->leaf = leaf;
+
+    u32 piece = leaf == NTYPES ? 0 : type_bits[leaf] / 8u;
+    rec->vregs = piece && rec->size <= 4 * piece ? (u8)(rec->size / piece) : 0;
+    rec->xregs = !rec->vregs && rec->size <= 16 ? (u8)((rec->size + 7) / 8) : 0;
+}
+
+static void
 record_declarations(Gen *g)
 {
     g->nrecords = chance(g, 60) ? 1 + (u32)random_below(g->rng, MAX_RECORDS) : 0;
     for (u32 r = 0; r < g->nrecords; r++) {
         Record *rec = &g->records[r];
         rec->count = (u8)(1 + random_below(g->rng, MAX_FIELDS));
+        u8 uniform = chance(g, 15) ? (chance(g, 50) ? T_F32 : T_F64) : NTYPES;
         emit(g, "struct R%u {", r);
         for (u8 k = 0; k < rec->count; k++) {
             Field *f = &rec->fields[k];
             int form = random_below(g->rng, 100);
-            f->type = random_type(g, false);
+            f->type = uniform != NTYPES ? uniform : random_type(g, false);
             f->record = r && form >= 70 ? (u8)random_below(g->rng, (int)r) : NO_RECORD;
+            if (uniform != NTYPES && f->record != NO_RECORD &&
+                g->records[f->record].leaf != uniform) {
+                f->record = NO_RECORD;
+            }
             f->length = (form >= 55 && form < 70) || form >= 90
                           ? (u8)(1 + random_below(g->rng, 4))
                           : 0;
-            f->slice = form >= 35 && form < 55;
+            f->slice = uniform == NTYPES && form >= 35 && form < 55;
             f->given = f->record == NO_RECORD && !f->length && !f->slice &&
                        chance(g, 35);
             emit(g, "%s f%u: ", k ? "," : "", k);
@@ -1802,6 +1939,7 @@ record_declarations(Gen *g)
             }
         }
         emit(g, " }\n");
+        lay_out_record(g, rec);
     }
 }
 
@@ -2557,11 +2695,14 @@ slice_statement(Gen *g, int depth)
     }
 }
 
-static void record_literal(Gen *g, u32 limit, u8 r);
-
 static void
 record_value(Gen *g, u32 limit, u8 r)
 {
+    int k = chance(g, 20) ? pick_record_call(g, r, NTYPES) : -1;
+    if (k >= 0) {
+        record_call(g, (u32)k);
+        return;
+    }
     if (count_record_places(g, r, false, limit) && chance(g, 30)) {
         record_place(g, r, false, limit);
         return;
@@ -2717,6 +2858,7 @@ declare_record(Gen *g)
     u8 length = chance(g, 25) ? (u8)(1 + random_below(g->rng, 4)) : 0;
     u32 n = g->names++;
     int form = random_below(g->rng, 10);
+    int k = !length && form == 7 ? pick_record_call(g, r, NTYPES) : -1;
     line(g);
     u32 limit = g->nvars;
     if (length && form < 4) {
@@ -2735,6 +2877,9 @@ declare_record(Gen *g)
     } else if (form < 7 && count_record_places(g, r, false, limit)) {
         emit(g, "o%u := ", n);
         record_place(g, r, false, limit);
+    } else if (k >= 0) {
+        emit(g, "o%u := ", n);
+        record_call(g, (u32)k);
     } else {
         emit(g, "o%u := R%u.", n, r);
         record_literal(g, limit, r);
@@ -3533,7 +3678,9 @@ function(Gen *g, int count, bool entry)
     if (!entry || !digest_arrays(g)) {
         line(g);
         emit(g, "return ");
-        if (g->ret_slice) {
+        if (g->ret_record != NO_RECORD) {
+            record_result(g);
+        } else if (g->ret_slice) {
             slice_value(g, g->nvars, true, g->ret, 0, g->ret_length, g->result.typed);
         } else {
             last_value(g, &g->result, 4);
@@ -3554,6 +3701,13 @@ random_typed_program(u64 *rng, char *buf)
         h->level = (u8)(k / 2);
         h->ret = random_type(&g, false);
         h->ret_slice = chance(&g, 20);
+        h->ret_record = NO_RECORD;
+        u8 returned = g.nrecords ? (u8)random_below(rng, (int)g.nrecords) : 0;
+        const Record *rec = &g.records[returned];
+        if (g.nrecords && !h->ret_slice && (rec->xregs || rec->vregs) &&
+            !holds_slices(&g, returned) && chance(&g, 30)) {
+            h->ret_record = returned;
+        }
         h->ret_length = (u16)random_below(rng, 5);
         h->nparams = (u8)(1 + random_below(rng, MAX_PARAMS));
         if (h->ret_slice && h->nparams < 2) {
@@ -3566,26 +3720,33 @@ random_typed_program(u64 *rng, char *buf)
         g.level = h->level;
         g.ret = h->ret;
         g.ret_slice = h->ret_slice;
+        g.ret_record = h->ret_record;
         g.ret_length = h->ret_length;
         g.result = (Label){ .type = h->ret, .typed = chance(&g, 50) };
         g.max_loops = 1;
         emit(&g, "fn h%u(", k);
+        u32 floats = 0;
         for (u32 p = 0; p < h->nparams; p++) {
             bool source = h->ret_slice && p == 1;
             h->records[p] = NO_RECORD;
             u8 r = g.nrecords ? (u8)random_below(rng, (int)g.nrecords) : 0;
+            const Record *pr = &g.records[r];
+            bool value = (pr->xregs || pr->vregs) && floats + pr->vregs <= 8 &&
+                         chance(&g, 50);
             if (!source && p > 0 && g.nrecords && chance(&g, 20) &&
-                !holds_slices(&g, r)) {
+                (value || !holds_slices(&g, r))) {
                 h->records[p] = r;
                 h->params[p] = T_INT;
-                h->pointers[p] = false;
+                h->pointers[p] = !value;
                 h->slices[p] = false;
                 h->lengths[p] = 0;
+                floats += value ? pr->vregs : 0;
                 u32 n = g.names++;
                 RecordVar *v = add_record_var(&g, 'p', n, h->records[p]);
-                v->pointer = true;
+                v->pointer = !value;
                 v->assignable = false;
-                emit(&g, ", %s: *R%u", v->name, h->records[p]);
+                v->limit = 0;
+                emit(&g, ", %s: %sR%u", v->name, value ? "" : "*", h->records[p]);
                 continue;
             }
             h->params[p] = source ? h->ret : random_type(&g, p == 0);
@@ -3596,6 +3757,7 @@ random_typed_program(u64 *rng, char *buf)
                           : source ? (u16)(h->ret_length + random_below(rng, 3))
                           : h->slices[p] ? (u16)random_below(rng, 7)
                                          : 0;
+            floats += is_float(h->params[p]) && !h->pointers[p] && !h->slices[p];
             Var *v = declare(&g, 'p', h->params[p], false);
             v->pointer = h->pointers[p];
             v->slice = h->slices[p];
@@ -3609,13 +3771,13 @@ random_typed_program(u64 *rng, char *buf)
             }
             emit(&g, "%s", type_names[h->params[p]]);
         }
-        emit(
-            &g,
-            !g.result.typed ? ") {"
-            : h->ret_slice  ? ") -> []%s {"
-                            : ") -> %s {",
-            type_names[h->ret]
-        );
+        if (!g.result.typed) {
+            emit(&g, ") {");
+        } else if (h->ret_record != NO_RECORD) {
+            emit(&g, ") -> R%u {", h->ret_record);
+        } else {
+            emit(&g, h->ret_slice ? ") -> []%s {" : ") -> %s {", type_names[h->ret]);
+        }
         g.nhelpers = k;
         function(&g, 2 + random_below(rng, 4), false);
     }
@@ -3629,6 +3791,7 @@ random_typed_program(u64 *rng, char *buf)
         g.level = MAX_HELPERS;
         g.ret = T_INT;
         g.ret_slice = false;
+        g.ret_record = NO_RECORD;
         g.result = (Label){ .type = T_INT, .typed = true };
         g.max_loops = 2;
         emit(&g, "fn e%u(a: int, b: int, c: int, d: f64) -> int {", k);
