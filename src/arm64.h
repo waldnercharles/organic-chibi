@@ -10,6 +10,7 @@ typedef enum
     TRAP_SHIFT,
     TRAP_RANGE,
     TRAP_UNREACHABLE,
+    TRAP_BOUNDS,
     NTRAPS,
 } TrapKind;
 

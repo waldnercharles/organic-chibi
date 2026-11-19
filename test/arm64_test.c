@@ -859,6 +859,169 @@ TEST_CASE(pointers)
     return true;
 }
 
+static const char ARRAYS
+    [] = "fn sum(a: int, b: int) -> int {\n"
+         "    x: [4]int\n"
+         "    x[0] = a\n"
+         "    x[1] = b\n"
+         "    x[2] += 3\n"
+         "    y := x\n"
+         "    y[3] = 100\n"
+         "    t := 0\n"
+         "    for v in y {\n"
+         "        t += v\n"
+         "    }\n"
+         "    return t + x.len + x[3]\n"
+         "}\n"
+         "fn lit(i: int, j: int) -> int {\n"
+         "    a: [3]int = .[10, 20, 30]\n"
+         "    b := u8.[1, 2, 3]\n"
+         "    m := [2]int.[.[1, 2], .[3, 4]]\n"
+         "    return a[i] + int(b[i]) + m[j][1]\n"
+         "}\n"
+         "fn idx(p: *[3]i32, k: u8) -> i32 {\n"
+         "    p.*[k] = 7\n"
+         "    q := &p.*[2]\n"
+         "    q.* += 1\n"
+         "    s: i32 = 0\n"
+         "    for v, j in p.* {\n"
+         "        s += v * i32(j)\n"
+         "    }\n"
+         "    return s\n"
+         "}\n"
+         "fn via(a: int, b: int) -> int {\n"
+         "    arr: [3]i32 = .[i32(a), 2, 3]\n"
+         "    s := idx(&arr, u8(b & 255))\n"
+         "    return int(s) * 1000 + int(arr[0])\n"
+         "}\n"
+         "fn tails(a: int, b: int) -> int {\n"
+         "    x: [100]u8\n"
+         "    for i in 0..x.len {\n"
+         "        x[i] = u8((i + a) & 255)\n"
+         "    }\n"
+         "    y := x\n"
+         "    h: [33]i16\n"
+         "    for i in 0..h.len {\n"
+         "        h[i] = i16(i * b)\n"
+         "    }\n"
+         "    g := h\n"
+         "    w: [33]i32\n"
+         "    w[32] = i32(a)\n"
+         "    z := w\n"
+         "    return int(y[99]) * 1000000 + int(g[32]) * 100 + int(z[32]) + "
+         "int(y[96])\n"
+         "}\n"
+         "fn rezero(a: int, b: int) -> int {\n"
+         "    t := 0\n"
+         "    for k in 0..3 {\n"
+         "        z: [40]u64\n"
+         "        s: [7]u8\n"
+         "        t += int(z[39]) + int(z[20]) + int(s[6])\n"
+         "        z[39] = u64(a & 0xFFFF) + 1\n"
+         "        z[20] = u64(b & 0xFF)\n"
+         "        s[6] = 9\n"
+         "    }\n"
+         "    return t\n"
+         "}\n"
+         "fn big(a: int, b: int) -> int {\n"
+         "    x: [5000]int\n"
+         "    x[0] = a\n"
+         "    x[4999] = b\n"
+         "    y := x\n"
+         "    return y[0] + y[4999] + x.len\n"
+         "}\n"
+         "fn odd(a: int, b: int) -> int {\n"
+         "    m: [7][3]u8\n"
+         "    for i in 0..m.len {\n"
+         "        for j in 0..3 {\n"
+         "            m[i][j] = u8(i * 10 + j)\n"
+         "        }\n"
+         "    }\n"
+         "    r := m[a]\n"
+         "    return int(r[b]) + int(m[6][2])\n"
+         "}\n"
+         "fn rows(i: int, j: int) -> int {\n"
+         "    g: [2][3]u16 = .[.[1, 2, 3], .[7, 8, 9]]\n"
+         "    p := &g\n"
+         "    p.*[1] = .[4, 5, 6]\n"
+         "    m := p.*\n"
+         "    m[0] = m[1]\n"
+         "    r := m[i]\n"
+         "    n := p.*.len + m[1].len + r.len\n"
+         "    for row in m {\n"
+         "        if row[0] == 4 and j == 0 {\n"
+         "            continue\n"
+         "        }\n"
+         "        for v in row {\n"
+         "            if v == 6 {\n"
+         "                break\n"
+         "            }\n"
+         "            n += int(v)\n"
+         "        }\n"
+         "    }\n"
+         "    return n * 100 + int(r[2]) + int(g[0][0])\n"
+         "}\n"
+         "fn kinds(a: int, b: int) -> int {\n"
+         "    f: [3]f32 = .[1.5, 2.5, 3.5]\n"
+         "    d := f64.[0.25, 0.5]\n"
+         "    flags: [4]bool\n"
+         "    flags[a & 3] = true\n"
+         "    k: i8 = i8(b)\n"
+         "    u: u32 = u32(a & 1)\n"
+         "    n := 0\n"
+         "    for v, i in flags {\n"
+         "        if v {\n"
+         "            n += i\n"
+         "        }\n"
+         "    }\n"
+         "    return int(f[u] * 2.0) + int(d[1] * 8.0) + n * 100 + int(f[k])\n"
+         "}\n"
+         "fn swap_rows(a: int, b: int) -> int {\n"
+         "    m: [2][2]int = .[.[a, b], .[b, a]]\n"
+         "    m = .[m[1], m[0]]\n"
+         "    return m[0][0] * 10 + m[0][1]\n"
+         "}\n";
+
+TEST_CASE(arrays)
+{
+    catch_traps();
+    Program p;
+    REQUIRE(build(&p, ARRAYS));
+    int64_t r = 0;
+    REQUIRE(((I2 *)fn(&p, "sum"))(1, 2) == 110);
+    REQUIRE(((I2 *)fn(&p, "sum"))(-5, 7) == 109);
+    REQUIRE(call_i2((I2 *)fn(&p, "lit"), 0, 0, &r) == 0 && r == 13);
+    REQUIRE(call_i2((I2 *)fn(&p, "lit"), 2, 1, &r) == 0 && r == 37);
+    REQUIRE(call_i2((I2 *)fn(&p, "lit"), 3, 0, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "lit"), -1, 0, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "lit"), 0, 2, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "via"), 5, 0, &r) == 0 && r == 10007);
+    REQUIRE(call_i2((I2 *)fn(&p, "via"), 5, 1, &r) == 0 && r == 15005);
+    REQUIRE(call_i2((I2 *)fn(&p, "via"), 5, 2, &r) == 0 && r == 18005);
+    REQUIRE(call_i2((I2 *)fn(&p, "via"), 5, 3, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "via"), 1, 255, &r) == TRAP_BOUNDS);
+    REQUIRE(((I2 *)fn(&p, "tails"))(1, 2) == 100006498);
+    REQUIRE(((I2 *)fn(&p, "tails"))(200, -1) == 42997040);
+    REQUIRE(((I2 *)fn(&p, "rezero"))(7, 3) == 0);
+    REQUIRE(((I2 *)fn(&p, "rezero"))(-1, 255) == 0);
+    REQUIRE(((I2 *)fn(&p, "big"))(1, 2) == 5003);
+    REQUIRE(((I2 *)fn(&p, "big"))(-3, 9) == 5006);
+    REQUIRE(call_i2((I2 *)fn(&p, "odd"), 4, 1, &r) == 0 && r == 103);
+    REQUIRE(call_i2((I2 *)fn(&p, "odd"), 0, 0, &r) == 0 && r == 62);
+    REQUIRE(call_i2((I2 *)fn(&p, "odd"), 7, 0, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "odd"), 2, 3, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "rows"), 0, 0, &r) == 0 && r == 807);
+    REQUIRE(call_i2((I2 *)fn(&p, "rows"), 1, 1, &r) == 0 && r == 2607);
+    REQUIRE(call_i2((I2 *)fn(&p, "rows"), 2, 0, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "kinds"), 1, 2, &r) == 0 && r == 112);
+    REQUIRE(call_i2((I2 *)fn(&p, "kinds"), 2, 0, &r) == 0 && r == 208);
+    REQUIRE(call_i2((I2 *)fn(&p, "kinds"), 0, -1, &r) == TRAP_BOUNDS);
+    REQUIRE(((I2 *)fn(&p, "swap_rows"))(1, 2) == 21);
+    REQUIRE(((I2 *)fn(&p, "swap_rows"))(5, -3) == -25);
+    release_program(&p);
+    return true;
+}
+
 static const char CONSTANT_CONDITIONS[] = "const DEBUG := false\n"
                                           "fn g() -> bool {\n"
                                           "    return true\n"
@@ -1508,6 +1671,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(store_while_loaded);
     RUN_TEST_CASE(unsupported_types);
     RUN_TEST_CASE(pointers);
+    RUN_TEST_CASE(arrays);
     RUN_TEST_CASE(constant_conditions);
     RUN_TEST_CASE(deep_logic);
     RUN_TEST_CASE(small_integers);

@@ -208,6 +208,22 @@ ir_reference_init(IrReference *r, const Checker *c)
     }
     free(stack);
     free(last);
+
+    r->offsets = malloc((ir->code.nslots + 1) * sizeof *r->offsets);
+    r->frames = malloc((ir->nfuncs + 1) * sizeof *r->frames);
+    for (u32 f = 0; f < ir->nfuncs; f++) {
+        const IrFunc *fn = &ir->funcs[f];
+        u64 size = 0;
+        for (u32 s = 0; s < fn->nslots; s++) {
+            u32 type = ir->code.slots[fn->first_slot + s].type;
+            u64 bytes = c->types.kinds[type] == TYPE_ARRAY ? check_type_size(c, type)
+                                                           : 8;
+            assert(bytes < (1u << 24) && size < (1u << 24));
+            r->offsets[fn->first_slot + s] = (u32)size;
+            size += (bytes + 7) & ~(u64)7;
+        }
+        r->frames[f] = (u32)size;
+    }
 }
 
 void
@@ -216,6 +232,8 @@ ir_reference_free(IrReference *r)
     free(r->ends);
     free(r->elses);
     free(r->opens);
+    free(r->offsets);
+    free(r->frames);
 }
 
 static int
@@ -225,8 +243,11 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
     const IrCode *ir = &c->ir.code;
     const IrFunc *fn = &c->ir.funcs[f];
     u64 *vals = calloc(fn->count + 1, sizeof *vals);
-    u64 *slots = calloc(fn->nslots + 1, sizeof *slots);
-    memcpy(slots, args, fn->nparams * sizeof *slots);
+    u8 *frame = calloc(r->frames[f] + 8, 1);
+    const u32 *offsets = r->offsets + fn->first_slot;
+    for (u32 p = 0; p < fn->nparams; p++) {
+        memcpy(frame + offsets[p], &args[p], sizeof *args);
+    }
 
 #define OPERAND(x)                                                             \
     (((x) & IR_CONST) ? ir->consts[fn->first_const + ((x) & ~IR_CONST)].bits   \
@@ -257,9 +278,38 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
         int fail = 0;
         u64 v = 0;
         switch (kind) {
-            case IR_LOAD: v = canon(slots[a], t); break;
-            case IR_STORE: slots[a] = OPERAND(b); break;
-            case IR_ADDR: v = (u64)(uintptr_t)&slots[a]; break;
+            case IR_LOAD: {
+                u64 raw;
+                memcpy(&raw, frame + offsets[a], sizeof raw);
+                v = canon(raw, t);
+                break;
+            }
+            case IR_STORE: {
+                u64 raw = OPERAND(b);
+                memcpy(frame + offsets[a], &raw, sizeof raw);
+                break;
+            }
+            case IR_ADDR: v = (u64)(uintptr_t)(frame + offsets[a]); break;
+            case IR_INDEX: {
+                u32 array = c->types.arg0[OPERAND_TYPE(a)];
+                __int128 k = wide(OPERAND(b), ty(c, OPERAND_TYPE(b)));
+                if (k < 0 || k >= (__int128)c->types.arg1[array]) {
+                    fail = TRAP_BOUNDS;
+                    break;
+                }
+                v = OPERAND(a) + (u64)k * check_type_size(c, c->types.arg0[type]);
+                break;
+            }
+            case IR_COPY:
+                memmove(
+                    (void *)(uintptr_t)OPERAND(a),
+                    (const void *)(uintptr_t)OPERAND(b),
+                    check_type_size(c, type)
+                );
+                break;
+            case IR_ZERO:
+                memset((void *)(uintptr_t)OPERAND(a), 0, check_type_size(c, type));
+                break;
             case IR_LOAD_AT: {
                 u64 raw = 0;
                 memcpy(&raw, (const void *)(uintptr_t)OPERAND(a), t.bits / 8);
@@ -468,7 +518,7 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
 
 done:
     free(vals);
-    free(slots);
+    free(frame);
     return trap;
 #undef OPERAND
 #undef OPERAND_TYPE

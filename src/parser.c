@@ -144,14 +144,14 @@ parse_items(Parser *p, TokenKind close)
 }
 
 static void
-parse_literal(Parser *p, NodeKind node, TokenKind close)
+parse_literal(Parser *p, NodeKind node, NodeKind start, TokenKind close)
 {
     if (!descend(p)) {
         return;
     }
 
     p->pos++;
-    emit(p, NODE_LITERAL_START, p->pos++);
+    emit(p, start, p->pos++);
     p->brackets++;
     parse_items(p, close);
     p->brackets--;
@@ -221,11 +221,11 @@ parse_postfix(Parser *p)
                     return;
                 }
                 if (p->tokens.kinds[at + 1] == TK_LBRACE) {
-                    parse_literal(p, NODE_LITERAL, TK_RBRACE);
+                    parse_literal(p, NODE_LITERAL, NODE_LITERAL_START, TK_RBRACE);
                     break;
                 }
                 if (p->tokens.kinds[at + 1] == TK_LBRACK) {
-                    parse_literal(p, NODE_ARRAY_LITERAL, TK_RBRACK);
+                    parse_literal(p, NODE_ARRAY_LITERAL, NODE_LITERAL_START, TK_RBRACK);
                     break;
                 }
 
@@ -363,12 +363,12 @@ parse_operand(Parser *p)
     if (kind == TK_PERIOD) {
         TokenKind next = p->tokens.kinds[at + 1];
         if (next == TK_LBRACE) {
-            parse_literal(p, NODE_ANON_LITERAL, TK_RBRACE);
+            parse_literal(p, NODE_ANON_LITERAL, NODE_ANON_LITERAL_START, TK_RBRACE);
             parse_postfix(p);
             return;
         }
         if (next == TK_LBRACK) {
-            parse_literal(p, NODE_ANON_ARRAY_LITERAL, TK_RBRACK);
+            parse_literal(p, NODE_ANON_ARRAY_LITERAL, NODE_ANON_LITERAL_START, TK_RBRACK);
             parse_postfix(p);
             return;
         }

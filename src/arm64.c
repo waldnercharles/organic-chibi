@@ -32,6 +32,9 @@ enum
     ARGUMENTS = 0x000000FFu,
     ALIAS = 64,
     PROLOGUE_WORDS = 13,
+    PROBE_INTERVAL = 4096,
+    FRAME_LIMIT = 1u << 24,
+    UNROLLED_BYTES = 64,
     WORDS_PER_FUNCTION = 96,
     WORDS_PER_INSTRUCTION = 32,
     WORDS_PER_ARGUMENT = 8,
@@ -71,6 +74,7 @@ enum
     OP_SDIV = 0x1AC00C00u,
     OP_UDIV = 0x1AC00800u,
     OP_MUL = 0x1B007C00u,
+    OP_MADD = 0x1B000000u,
     OP_MSUB = 0x1B008000u,
     OP_SMULL = 0x9B207C00u,
     OP_UMULL = 0x9BA07C00u,
@@ -120,6 +124,14 @@ enum
     OP_POP_FRAME = 0xA8C17BFDu,
     OP_SUB_SP = 0xD10003FFu,
     OP_STP_X = 0xA9000000u,
+    OP_STP_X_POST = 0xA8800000u,
+    OP_LDP_Q = 0xAD400000u,
+    OP_STP_Q = 0xAD000000u,
+    OP_LDP_Q_POST = 0xACC00000u,
+    OP_STP_Q_POST = 0xAC800000u,
+    OP_LDR_Q = 0x3DC00000u,
+    OP_STR_Q = 0x3D800000u,
+    OP_STR_ZR_SP = 0xF90003FFu,
     OP_LDP_X = 0xA9400000u,
     OP_STP_D = 0x6D000000u,
     OP_LDP_D = 0x6D400000u,
@@ -166,6 +178,7 @@ enum
     INFO_SIGNED = 0x08,
     INFO_SMALL = 0x10,
     INFO_UNSUPPORTED = 0x20,
+    INFO_MEMORY = 0x40,
 };
 
 typedef struct
@@ -332,6 +345,9 @@ type_info(const Checker *c, u32 type)
     }
     if (kind == TYPE_POINTER) {
         return 3;
+    }
+    if (kind == TYPE_ARRAY) {
+        return INFO_MEMORY;
     }
     u32 bits = c->types.arg0[type];
     u8 scale = bits == 64 ? 3 : bits == 32 ? 2 : bits == 16 ? 1 : 0;
@@ -1722,6 +1738,157 @@ truncate_to(Emit *e, u32 i, u32 to, u32 a)
 }
 
 static void
+add_offset(Emit *e, u32 d, u32 n, u64 offset)
+{
+    u32 field;
+    if (offset == 0) {
+        mov(e, SF, d, n);
+    } else if (imm12(offset, &field)) {
+        put(e, OP_ADD_IMM | SF | field | n << 5 | d);
+    } else {
+        mov_imm(e, X17, offset, SF);
+        put(e, OP_ADD | SF | X17 << 16 | n << 5 | d);
+    }
+}
+
+static void
+index_address(Emit *e, u32 i, u32 type, u32 a, u32 b)
+{
+    const Types *t = &e->c->types;
+    u64 size = check_type_size(e->c, t->arg0[type]);
+    u64 n = t->arg1[t->arg0[e->ir->types[e->fn->first + a]]];
+    u32 p = fetch(e, a, X16);
+    if (b & IR_CONST) {
+        release(e, a);
+        u32 d = result(e, i, e->info[type]);
+        add_offset(e, d, p, constant_bits(e, b) * size);
+        return;
+    }
+
+    u8 it = operand_info(e, b);
+    u32 r = fetch(e, b, X17);
+    if (bits_of(it) < 64) {
+        put(e, is_signed(it) ? OP_SXTW | r << 5 | X17 : OP_ORR | r << 16 | ZR << 5 | X17);
+        r = X17;
+    }
+    compare_imm(e, r, n, SF, false);
+    trap_if(e, COND_HS, TRAP_BOUNDS);
+    release(e, a);
+    release(e, b);
+
+    u32 d = result(e, i, e->info[type]);
+    if (size == 0) {
+        mov(e, SF, d, p);
+    } else if ((size & (size - 1)) == 0) {
+        u32 shift = (u32)__builtin_ctzll(size);
+        put(e, OP_ADD | SF | r << 16 | shift << 10 | p << 5 | d);
+    } else {
+        mov_imm(e, X8, size, SF);
+        put(e, OP_MADD | SF | X8 << 16 | p << 10 | r << 5 | d);
+    }
+}
+
+static void
+store_zeros(Emit *e, u32 p, u64 size)
+{
+    u32 k = 0;
+    for (; size >= 16; size -= 16, k += 16) {
+        put(e, OP_STP_X | (k / 8) << 15 | ZR << 10 | p << 5 | ZR);
+    }
+    if (size & 8) {
+        put(e, OP_STRX | (k / 8) << 10 | p << 5 | ZR);
+        k += 8;
+    }
+    if (size & 4) {
+        put(e, OP_STRW | (k / 4) << 10 | p << 5 | ZR);
+        k += 4;
+    }
+    if (size & 2) {
+        put(e, OP_STRH | (k / 2) << 10 | p << 5 | ZR);
+        k += 2;
+    }
+    if (size & 1) {
+        put(e, OP_STRB | k << 10 | p << 5 | ZR);
+    }
+}
+
+static void
+zero_memory(Emit *e, u32 type, u32 a)
+{
+    u64 size = check_type_size(e->c, type);
+    u32 p = fetch(e, a, X16);
+    release(e, a);
+    if (size > UNROLLED_BYTES) {
+        mov(e, SF, X16, p);
+        p = X16;
+        mov_imm(e, X17, size / 32, SF);
+        put(e, OP_STP_X | 2 << 15 | ZR << 10 | X16 << 5 | ZR);
+        put(e, OP_STP_X_POST | 4 << 15 | ZR << 10 | X16 << 5 | ZR);
+        put(e, OP_SUBS_IMM | SF | 1 << 10 | X17 << 5 | X17);
+        put(e, OP_B_COND | ((u32)-3 & 0x7FFFFu) << 5 | COND_NE);
+        size %= 32;
+    }
+    store_zeros(e, p, size);
+}
+
+static void
+copy_bytes(Emit *e, u32 d, u32 s, u64 size)
+{
+    u32 k = 0;
+    for (; size >= 32; size -= 32, k += 32) {
+        put(e, OP_LDP_Q | (k / 16) << 15 | V31 << 10 | s << 5 | V30);
+        put(e, OP_STP_Q | (k / 16) << 15 | V31 << 10 | d << 5 | V30);
+    }
+    if (size & 16) {
+        put(e, OP_LDR_Q | (k / 16) << 10 | s << 5 | V30);
+        put(e, OP_STR_Q | (k / 16) << 10 | d << 5 | V30);
+        k += 16;
+    }
+    if (size & 8) {
+        put(e, OP_LDRX | (k / 8) << 10 | s << 5 | X8);
+        put(e, OP_STRX | (k / 8) << 10 | d << 5 | X8);
+        k += 8;
+    }
+    if (size & 4) {
+        put(e, OP_LDRW | (k / 4) << 10 | s << 5 | X8);
+        put(e, OP_STRW | (k / 4) << 10 | d << 5 | X8);
+        k += 4;
+    }
+    if (size & 2) {
+        put(e, OP_LDRH | (k / 2) << 10 | s << 5 | X8);
+        put(e, OP_STRH | (k / 2) << 10 | d << 5 | X8);
+        k += 2;
+    }
+    if (size & 1) {
+        put(e, OP_LDRB | k << 10 | s << 5 | X8);
+        put(e, OP_STRB | k << 10 | d << 5 | X8);
+    }
+}
+
+static void
+copy_memory(Emit *e, u32 type, u32 a, u32 b)
+{
+    u64 size = check_type_size(e->c, type);
+    u32 d = fetch(e, a, X16);
+    u32 s = fetch(e, b, X17);
+    release(e, a);
+    release(e, b);
+    if (size > UNROLLED_BYTES) {
+        mov(e, SF, X16, d);
+        mov(e, SF, X17, s);
+        d = X16;
+        s = X17;
+        mov_imm(e, X8, size / 32, SF);
+        put(e, OP_LDP_Q_POST | 2 << 15 | V31 << 10 | X17 << 5 | V30);
+        put(e, OP_STP_Q_POST | 2 << 15 | V31 << 10 | X16 << 5 | V30);
+        put(e, OP_SUBS_IMM | SF | 1 << 10 | X8 << 5 | X8);
+        put(e, OP_B_COND | ((u32)-3 & 0x7FFFFu) << 5 | COND_NE);
+        size %= 32;
+    }
+    copy_bytes(e, d, s, size);
+}
+
+static void
 move_into(Emit *e, u32 d, u32 x, bool fl)
 {
     u8 t = operand_info(e, x);
@@ -1903,7 +2070,7 @@ find_open(Emit *e, u32 target)
 
 static const char
     UNSUPPORTED_TYPE[] = "the arm64 backend supports only "
-                         "integers, floats, bool and pointers so far";
+                         "integers, floats, bool, pointers and arrays so far";
 
 static u32
 arm_end(const Emit *e, u32 i)
@@ -1982,7 +2149,7 @@ pin_by_weight(Emit *e, bool fl, u32 first, u32 cheap, u32 callee)
         u8 info = e->info[slots[s].type];
         u32 w = slots[s].weight;
         if (!w || is_float(info) != fl || e->slot_regs[s] != NO_REG ||
-            (info & INFO_UNSUPPORTED) || w == WEIGHT_ADDRESSED ||
+            (info & (INFO_UNSUPPORTED | INFO_MEMORY)) || w == WEIGHT_ADDRESSED ||
             (ntop == room && w <= slots[top[room - 1]].weight)) {
             continue;
         }
@@ -2043,9 +2210,10 @@ pin_locals(Emit *e)
 
     u32 wanted[2] = { 0, 0 };
     for (u32 s = first; s < fn->nslots; s++) {
+        u8 info = e->info[slots[s].type];
         u32 w = slots[s].weight;
-        wanted[is_float(e->info[slots[s].type])] += w != 0 && w != WEIGHT_ADDRESSED &&
-                                                    e->slot_regs[s] == NO_REG;
+        wanted[is_float(info)] += w != 0 && w != WEIGHT_ADDRESSED &&
+                                  !(info & INFO_MEMORY) && e->slot_regs[s] == NO_REG;
     }
     u32 callee[2] = { CALLEE_INT, CALLEE_FLOAT };
     for (u32 c = 0; c < 2; c++) {
@@ -2058,7 +2226,7 @@ pin_locals(Emit *e)
             u8 info = e->info[slots[s].type];
             u32 w = slots[s].weight;
             if (is_float(info) != c || !w || e->slot_regs[s] != NO_REG ||
-                (info & INFO_UNSUPPORTED) || w == WEIGHT_ADDRESSED) {
+                (info & (INFO_UNSUPPORTED | INFO_MEMORY)) || w == WEIGHT_ADDRESSED) {
                 continue;
             }
             wanted[c]--;
@@ -2091,13 +2259,15 @@ lay_out_frame(Emit *e)
         sizeof *e->slot_offsets
     );
     u32 counts[4] = { 0 };
+    u32 memory = 0;
     for (u32 s = 0; s < fn->nslots; s++) {
         u8 info = e->info[slots[s].type];
         if (info & INFO_UNSUPPORTED) {
             e->error = UNSUPPORTED_TYPE;
         }
         if (e->slot_regs[s] == NO_REG && slots[s].weight) {
-            counts[info & INFO_SCALE]++;
+            memory += (info & INFO_MEMORY) != 0;
+            counts[info & INFO_SCALE] += (info & INFO_MEMORY) == 0;
         }
     }
     u32 bases[4];
@@ -2108,12 +2278,32 @@ lay_out_frame(Emit *e)
         offset += counts[k] << k;
     }
     for (u32 s = 0; s < fn->nslots; s++) {
-        if (e->slot_regs[s] != NO_REG || !slots[s].weight) {
+        u8 info = e->info[slots[s].type];
+        if (e->slot_regs[s] != NO_REG || !slots[s].weight || (info & INFO_MEMORY)) {
             continue;
         }
-        u32 k = e->info[slots[s].type] & INFO_SCALE;
+        u32 k = info & INFO_SCALE;
         e->slot_offsets[s] = bases[k];
         bases[k] += 1u << k;
+    }
+
+    for (u32 align = 8; memory && align > 0; align /= 2) {
+        offset = (offset + align - 1) & ~(align - 1);
+        for (u32 s = 0; s < fn->nslots; s++) {
+            u32 type = slots[s].type;
+            if (!(e->info[type] & INFO_MEMORY) || !slots[s].weight ||
+                check_type_align(e->c, type) != align) {
+                continue;
+            }
+            u64 size = check_type_size(e->c, type);
+            if (size >= FRAME_LIMIT - offset) {
+                e->error = "a function's frame is larger than 16 MB";
+                return;
+            }
+            e->slot_offsets[s] = offset;
+            offset += (u32)size;
+            memory--;
+        }
     }
     e->locals = (offset + 7) & ~7u;
 }
@@ -2258,6 +2448,9 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                 put(e, load_op(t) | p << 5 | d);
                 break;
             }
+            case IR_INDEX: index_address(e, i, type, a, b); break;
+            case IR_COPY: copy_memory(e, type, a, b); break;
+            case IR_ZERO: zero_memory(e, type, a); break;
             case IR_STORE_AT: {
                 u8 t = e->info[type];
                 u32 p = fetch(e, a, X16);
@@ -2442,17 +2635,35 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
         }
     }
 
-    if (frame >= (1u << 24)) {
+    if (frame >= FRAME_LIMIT) {
         e->error = "a function's frame is larger than 16 MB";
         return 0;
     }
+    u32 probe = 0;
+    if (frame >= PROBE_INTERVAL) {
+        probe = here(e);
+        mov_imm(e, X16, frame / PROBE_INTERVAL, SF);
+        put(e, OP_SUB_SP_HIGH | 1 << 10);
+        put(e, OP_STR_ZR_SP);
+        put(e, OP_SUBS_IMM | SF | 1 << 10 | X16 << 5 | X16);
+        put(e, OP_B_COND | ((u32)-3 & 0x7FFFFu) << 5 | COND_NE);
+        if (frame % PROBE_INTERVAL) {
+            put(e, OP_SUB_SP | (frame % PROBE_INTERVAL) << 10);
+            put(e, OP_STR_ZR_SP);
+        }
+        put(e, OP_B);
+    }
+
     u32 prologue[PROLOGUE_WORDS];
     u32 k = 0;
     if (record) {
         prologue[k++] = OP_PUSH_FRAME;
         prologue[k++] = OP_SET_FRAME;
     }
-    if (frame) {
+    u32 jump = k;
+    if (probe) {
+        prologue[k++] = OP_B;
+    } else if (frame) {
         prologue[k++] = OP_SUB_SP | (frame & 0xFFF) << 10;
         if (frame >> 12) {
             prologue[k++] = OP_SUB_SP_HIGH | (frame >> 12) << 10;
@@ -2461,8 +2672,15 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
     memcpy(prologue + k, saves, nsaves * sizeof *saves);
     k += nsaves;
     assert(k <= PROLOGUE_WORDS);
-    memcpy(code + PROLOGUE_WORDS - k, prologue, k * sizeof *prologue);
-    return PROLOGUE_WORDS - k;
+    u32 entry = PROLOGUE_WORDS - k;
+    memcpy(code + entry, prologue, k * sizeof *prologue);
+    if (probe) {
+        u32 from = entry + jump;
+        u32 back = here(e) - 1;
+        code[from] = OP_B | ((probe - from) & 0x03FFFFFFu);
+        code[back] = OP_B | ((from + 1 - back) & 0x03FFFFFFu);
+    }
+    return entry;
 }
 
 static void

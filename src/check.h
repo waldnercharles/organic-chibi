@@ -129,14 +129,20 @@ enum
     X(DIAG_NOT_VALUE, "expected a value")                                                           \
     X(DIAG_NOT_BOOL, "expected `bool`, found `%T`")                                                 \
     X(DIAG_BAD_OPERATOR, "`%T` doesn't support `%t`")                                               \
-    X(DIAG_NOT_ASSIGNABLE, "only a local or `p.*` can be assigned to")                              \
+    X(DIAG_NOT_ASSIGNABLE, "only a local, an element or `p.*` can be assigned to")                  \
     X(DIAG_ASSIGN_PARAM, "`%t` is a parameter, so it can't be assigned")                            \
     X(DIAG_ASSIGN_LOOP_VARIABLE, "`%t` is a loop variable, so it can't be assigned")                \
-    X(DIAG_NOT_ADDRESSABLE, "only a local or `p.*` has an address")                                 \
+    X(DIAG_NOT_ADDRESSABLE, "only a local, an element or `p.*` has an address")                     \
     X(DIAG_ADDRESS_PARAM, "`%t` is a parameter, so `&` can't take its address")                     \
     X(DIAG_ADDRESS_LOOP_VARIABLE, "`%t` is a loop variable, so `&` can't take its address")         \
     X(DIAG_NOT_POINTER, "`%T` is not a pointer, so `.*` can't follow it")                           \
     X(DIAG_NEVER_NIL, "`%U` is never nil, so this needs a value")                                   \
+    X(DIAG_NOT_INDEXABLE, "`%T` can't be indexed")                                                  \
+    X(DIAG_NOT_INDEX, "an index must be an integer, found `%T`")                                    \
+    X(DIAG_INDEX_RANGE, "index %v is out of range for `%U`")                                        \
+    X(DIAG_LITERAL_TYPE, "the type of this literal isn't known here; write it, as in `u8.[1, 2]`")  \
+    X(DIAG_LITERAL_COUNT, "expected the length of `%U`, found %c elements")                         \
+    X(DIAG_NOT_ARRAY, "`%U` is not an array, so an array literal can't build it")                   \
     X(DIAG_UNUSED, "this value is not used; discard it with `_ = ...`")                             \
     X(DIAG_DISCARD, "`_` can only discard a value, as in `_ = f()`")                                \
     X(DIAG_NOT_CALLABLE, "expected a function or a type")                                           \
@@ -377,6 +383,10 @@ void check_print_diagnostics(FILE *out, const Checker *c);
 void check_dump(FILE *out, const Checker *c);
 
 void check_dump_ir(FILE *out, const Checker *c);
+
+u64 check_type_size(const Checker *c, u32 type);
+
+u32 check_type_align(const Checker *c, u32 type);
 
 void check_free(Checker *c);
 

@@ -8,6 +8,7 @@
     X(IR_LOAD, "load")                                                         \
     X(IR_LOAD_AT, "load-at")                                                   \
     X(IR_ADDR, "addr")                                                         \
+    X(IR_INDEX, "index")                                                       \
     X(IR_ADD, "add")                                                           \
     X(IR_SUB, "sub")                                                           \
     X(IR_MUL, "mul")                                                           \
@@ -37,6 +38,8 @@
     X(IR_CALL, "call")                                                         \
     X(IR_STORE, "store")                                                       \
     X(IR_STORE_AT, "store-at")                                                 \
+    X(IR_COPY, "copy")                                                         \
+    X(IR_ZERO, "zero")                                                         \
     X(IR_DROP, "drop")                                                         \
     X(IR_RET, "ret")                                                           \
     X(IR_BLOCK, "block")                                                       \

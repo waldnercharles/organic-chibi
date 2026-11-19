@@ -9,6 +9,8 @@ typedef struct
     u32 *ends;
     u32 *elses;
     u32 *opens;
+    u32 *offsets;
+    u32 *frames;
     u64 steps;
 } IrReference;
 

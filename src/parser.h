@@ -137,9 +137,9 @@
     LIST(NODE_FN_LITERAL, NODE_FN_START, 0, "fn-literal")                      \
     LIST(NODE_FN_TYPE, NODE_FN_START, 0, "fn-type")                            \
     LIST(NODE_LITERAL, NODE_LITERAL_START, 1, "literal")                       \
-    LIST(NODE_ANON_LITERAL, NODE_LITERAL_START, 0, "literal")                  \
+    LIST(NODE_ANON_LITERAL, NODE_ANON_LITERAL_START, 0, "literal")             \
     LIST(NODE_ARRAY_LITERAL, NODE_LITERAL_START, 1, "array-literal")           \
-    LIST(NODE_ANON_ARRAY_LITERAL, NODE_LITERAL_START, 0, "array-literal")      \
+    LIST(NODE_ANON_ARRAY_LITERAL, NODE_ANON_LITERAL_START, 0, "array-literal") \
     LIST(NODE_STRUCT, NODE_STRUCT_START, 0, "struct")                          \
     LIST(NODE_ENUM, NODE_ENUM_START, 0, "enum")                                \
     LIST(NODE_UNION, NODE_UNION_START, 0, "union")                             \
@@ -168,6 +168,7 @@
     MARKER(NODE_FN_START)                                                      \
     MARKER(NODE_FN_BODY)                                                       \
     MARKER(NODE_LITERAL_START)                                                 \
+    MARKER(NODE_ANON_LITERAL_START)                                            \
     MARKER(NODE_STRUCT_START)                                                  \
     MARKER(NODE_ENUM_START)                                                    \
     MARKER(NODE_UNION_START)                                                   \

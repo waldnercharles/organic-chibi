@@ -571,6 +571,50 @@ is_untyped(u32 type)
 }
 
 static bool
+is_aggregate(const Checker *c, u32 type)
+{
+    return c->types.kinds[type] == TYPE_ARRAY;
+}
+
+static bool
+is_storable(const Checker *c, u32 type)
+{
+    while (is_aggregate(c, type)) {
+        type = c->types.arg0[type];
+    }
+    return is_scalar(c, type) && !is_untyped(type);
+}
+
+u64
+check_type_size(const Checker *c, u32 type)
+{
+    const Types *t = &c->types;
+    switch (t->kinds[type]) {
+        case TYPE_BOOL:
+        case TYPE_INT:
+        case TYPE_UINTPTR:
+        case TYPE_FLOAT: return t->arg0[type] / 8;
+        case TYPE_POINTER: return 8;
+        case TYPE_ENUM: return check_type_size(c, (u32)t->arg1[type]);
+        case TYPE_ARRAY: {
+            u64 n = t->arg1[type];
+            u64 size = check_type_size(c, t->arg0[type]);
+            return size && n > UINT64_MAX / size ? UINT64_MAX : n * size;
+        }
+        default: return 0;
+    }
+}
+
+u32
+check_type_align(const Checker *c, u32 type)
+{
+    while (is_aggregate(c, type)) {
+        type = c->types.arg0[type];
+    }
+    return (u32)check_type_size(c, type);
+}
+
+static bool
 is_value_type(u32 type)
 {
     return type != TYPE_ID_NONE && type != TYPE_ID_TYPE && type != TYPE_ID_VOID &&
@@ -723,6 +767,12 @@ slot_at(const Checker *c, u32 slot)
     return &c->body.code->slots[c->body.first_slot + slot];
 }
 
+static bool
+is_place(Operand o)
+{
+    return o.type == OPERAND_LOCAL || o.type == OPERAND_ADDRESS;
+}
+
 static u32
 place_type(const Checker *c, Operand o)
 {
@@ -740,9 +790,25 @@ binding_kind(const Checker *c, u32 file, u32 slot)
         case NODE_PARAM_INIT:
         case NODE_PARAM_TYPE:
         case NODE_PARAM_TYPE_INIT: return NODE_PARAM;
-        case NODE_FOR_VALUE: return NODE_FOR_VALUE;
+        case NODE_FOR_VALUE:
+        case NODE_FOR_INDEX: return NODE_FOR_VALUE;
         default: return NODE_NONE;
     }
+}
+
+static u8
+place_binding(const Checker *c, u32 file, Operand o)
+{
+    if (o.type == OPERAND_LOCAL) {
+        return binding_kind(c, file, o.ref);
+    }
+
+    const IrCode *code = c->body.code;
+    u32 v = c->body.first + value_of(o);
+    while (code->kinds[v] == IR_INDEX) {
+        v = c->body.first + code->as[v];
+    }
+    return code->kinds[v] == IR_ADDR ? binding_kind(c, file, code->as[v]) : NODE_NONE;
 }
 
 static void
@@ -755,6 +821,26 @@ weigh(Checker *c, u32 slot)
     u32 depth = c->body.depth < 6 ? c->body.depth : 6;
     u64 w = (u64)s->weight + (1u << (3 * depth));
     s->weight = w < WEIGHT_ADDRESSED ? (u32)w : WEIGHT_ADDRESSED - 1;
+}
+
+static u32
+place_address(Checker *c, Operand o)
+{
+    if (o.type == OPERAND_ADDRESS) {
+        return value_of(o);
+    }
+    u32 type = slot_at(c, o.ref)->type;
+    weigh(c, o.ref);
+    return emit(c, IR_ADDR, pointer_type(c, type), o.ref, 0);
+}
+
+static void
+copy_place(Checker *c, Operand to, Operand from)
+{
+    u32 type = place_type(c, to);
+    u32 dst = place_address(c, to);
+    u32 src = place_address(c, from);
+    emit(c, IR_COPY, type, dst, src);
 }
 
 static Operand
@@ -989,6 +1075,14 @@ convert(Checker *c, u32 file, u32 token, Operand o, u32 to)
         return o;
     }
     if (!is_value_type(o.type)) {
+        if (is_place(o)) {
+            u32 from = place_type(c, o);
+            if (from == to) {
+                return o;
+            }
+            report(c, file, token, DIAG_MISMATCH, from, to);
+            return poison;
+        }
         report(c, file, token, DIAG_NOT_VALUE, 0, 0);
         return poison;
     }
@@ -1294,34 +1388,63 @@ fold(Checker *c, u32 file, u32 token, u8 kind, u32 type, Operand a, Operand b)
     return constant_result(c, file, token, type, r);
 }
 
+static NOINLINE bool
+array_marker(const Checker *c, u32 m)
+{
+    u32 file = c->decls.files[c->body.decl];
+    return c->files[file].tokens.kinds[c->stack_tokens[m]] == TK_LBRACK;
+}
+
+static u32
+element_of(const Checker *c, u32 type, u32 depth)
+{
+    for (; depth > 0; depth--) {
+        if (c->types.kinds[type] != TYPE_ARRAY) {
+            return TYPE_ID_NONE;
+        }
+        type = c->types.arg0[type];
+    }
+    return type;
+}
+
 static ALWAYS_INLINE u32
 expected_type(const Checker *c, u32 own)
 {
-    for (u32 m = c->sp - own; m-- > 0;) {
+    u32 top = c->sp - own;
+    u32 depth = 0;
+    for (u32 m = top; m-- > 0;) {
         Operand o = c->stack[m];
         if (o.type < OPERAND_MARKER) {
             continue;
         }
 
         u8 kind = (u8)(o.type - OPERAND_MARKER);
-        if (m == 0 || (kind != NODE_VALUE && kind != NODE_CALL_ARGS)) {
+        if (kind == NODE_ANON_LITERAL_START && array_marker(c, m)) {
+            depth++;
+            top = m;
+            continue;
+        }
+        if (m == 0 || (kind != NODE_VALUE && kind != NODE_CALL_ARGS &&
+                       kind != NODE_LITERAL_START)) {
             return TYPE_ID_NONE;
         }
+
         Operand below = c->stack[m - 1];
-        if (below.type == TYPE_ID_TYPE) {
-            return below.ref;
-        }
-        if (kind == NODE_VALUE &&
-            (below.type == OPERAND_LOCAL || below.type == OPERAND_ADDRESS)) {
-            return place_type(c, below);
-        }
-        if (kind == NODE_CALL_ARGS && below.type == OPERAND_FN) {
+        u32 type = TYPE_ID_NONE;
+        if (kind == NODE_LITERAL_START) {
+            type = below.type == TYPE_ID_TYPE && array_marker(c, m) ? below.ref
+                                                                    : TYPE_ID_NONE;
+        } else if (below.type == TYPE_ID_TYPE) {
+            type = below.ref;
+        } else if (kind == NODE_VALUE && is_place(below)) {
+            type = place_type(c, below);
+        } else if (kind == NODE_CALL_ARGS && below.type == OPERAND_FN) {
             u32 fn = c->decls.types[below.ref];
             const u32 *params = c->lists + c->types.arg0[fn];
-            u32 index = c->sp - own - m - 1;
-            return index < params[0] ? params[1 + index] : TYPE_ID_NONE;
+            u32 index = top - m - 1;
+            type = index < params[0] ? params[1 + index] : TYPE_ID_NONE;
         }
-        return TYPE_ID_NONE;
+        return depth ? element_of(c, type, depth) : type;
     }
     return TYPE_ID_NONE;
 }
@@ -1386,7 +1509,12 @@ binary(Checker *c, u32 file, u32 token, u8 kind, Operand a, Operand b)
         return poison;
     }
     if (!is_value_type(a.type) || !is_value_type(b.type)) {
-        report(c, file, token, DIAG_NOT_VALUE, 0, 0);
+        Operand p = is_place(a) ? a : b;
+        if (is_place(p)) {
+            report(c, file, token, DIAG_BAD_OPERATOR, place_type(c, p), 0);
+        } else {
+            report(c, file, token, DIAG_NOT_VALUE, 0, 0);
+        }
         return poison;
     }
 
@@ -1424,6 +1552,10 @@ static Operand
 unary(Checker *c, u32 file, u32 token, u8 kind, Operand a)
 {
     if (a.type == TYPE_ID_NONE) {
+        return poison;
+    }
+    if (is_place(a)) {
+        report(c, file, token, DIAG_BAD_OPERATOR, place_type(c, a), 0);
         return poison;
     }
     if (!is_value_type(a.type)) {
@@ -1501,8 +1633,8 @@ array_length(Checker *c, u32 file, u32 token, Operand n, bool *ok)
         report(c, file, token, DIAG_NEGATIVE_LENGTH, 0, 0);
         return 0;
     }
-    if (!exact_fits(&c->exacts, v, 64, false)) {
-        report(c, file, token, DIAG_DOES_NOT_FIT, v, TYPE_ID_U64);
+    if (!exact_fits(&c->exacts, v, 64, true)) {
+        report(c, file, token, DIAG_DOES_NOT_FIT, v, TYPE_ID_I64);
         return 0;
     }
 
@@ -1833,25 +1965,45 @@ unbind_to(Checker *c, u32 n)
     }
 }
 
-static void
+static u32
+local_type(Checker *c, u32 file, u32 token, u32 type)
+{
+    if (is_aggregate(c, type) && !is_storable(c, type)) {
+        report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
+        return TYPE_ID_NONE;
+    }
+    return type;
+}
+
+static u32
 declare_local(Checker *c, u32 file, u32 node, u32 type, Operand v)
 {
     u32 name = node_name(c, file, node);
-    u32 slot = add_slot(c, name, type, node);
-    if (v.type != TYPE_ID_UNDEFINED) {
-        store_local(c, slot, v);
+    u32 slot;
+    if (v.type == OPERAND_LOCAL && slot_at(c, v.ref)->name == 0) {
+        slot = v.ref;
+        slot_at(c, slot)->name = name;
+        slot_at(c, slot)->node = node;
+    } else {
+        slot = add_slot(c, name, type, node);
+        if (is_place(v)) {
+            copy_place(c, (Operand){ OPERAND_LOCAL, slot }, v);
+        } else if (v.type != TYPE_ID_UNDEFINED) {
+            store_local(c, slot, v);
+        }
     }
 
     u32 token = c->files[file].nodes.tokens[node];
     if (name - (NAME_LAST_KEYWORD + 1) < NBUILTIN_TYPES) {
         report(c, file, token, DIAG_RESERVED, 0, 0);
-        return;
+        return slot;
     }
     if (name == NAME_DISCARD) {
         report(c, file, token, DIAG_DISCARD, 0, 0);
-        return;
+        return slot;
     }
     bind(c, file, node, slot);
+    return slot;
 }
 
 static Loop *
@@ -1931,6 +2083,10 @@ call_fn(Checker *c, u32 file, u32 token, u32 decl, u32 first_arg, u32 nargs)
     if (ret == TYPE_ID_INFERRED || ret == TYPE_ID_NONE) {
         return poison;
     }
+    if (is_aggregate(c, ret)) {
+        report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
+        return poison;
+    }
 
     u32 list = c->types.arg0[fn];
     u32 n = c->lists[list];
@@ -1957,6 +2113,10 @@ call_fn(Checker *c, u32 file, u32 token, u32 decl, u32 first_arg, u32 nargs)
     bool ok = true;
     for (u32 i = 0; i < n; i++) {
         u32 type = c->lists[list + 1 + i];
+        if (is_aggregate(c, type)) {
+            report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
+            return poison;
+        }
         Operand v = i < nargs
                       ? convert(c, file, c->stack_tokens[first_arg + i], c->stack[first_arg + i], type)
                       : (Operand){ type, c->members[d->members[decl] + i].value };
@@ -2117,10 +2277,40 @@ assign(Checker *c, u32 file, u32 node, u32 token, u8 kind)
     if (target.type == OPERAND_DISCARD) {
         if (kind != NODE_ASSIGN) {
             report(c, file, target_token, DIAG_DISCARD, 0, 0);
+        } else if (is_place(v)) {
+            if (v.type == OPERAND_ADDRESS) {
+                emit(c, IR_DROP, 0, value_of(v), 0);
+            }
         } else if (v.type != TYPE_ID_NONE && !is_value_type(v.type)) {
             report(c, file, v_token, DIAG_NOT_VALUE, 0, 0);
         } else if (v.type != TYPE_ID_NONE && !is_constant(v)) {
             emit(c, IR_DROP, 0, value_of(v), 0);
+        }
+        return;
+    }
+    if (is_place(target)) {
+        u8 binding = place_binding(c, file, target);
+        if (binding != NODE_NONE) {
+            report(
+                c,
+                file,
+                target_token,
+                binding == NODE_PARAM ? DIAG_ASSIGN_PARAM : DIAG_ASSIGN_LOOP_VARIABLE,
+                0,
+                0
+            );
+            return;
+        }
+    }
+    if (is_place(target) && is_aggregate(c, place_type(c, target))) {
+        u32 type = place_type(c, target);
+        if (kind != NODE_ASSIGN) {
+            report(c, file, token, DIAG_BAD_OPERATOR, type, 0);
+            return;
+        }
+        Operand from = convert(c, file, v_token, v, type);
+        if (from.type != TYPE_ID_NONE) {
+            copy_place(c, target, from);
         }
         return;
     }
@@ -2136,12 +2326,6 @@ assign(Checker *c, u32 file, u32 node, u32 token, u8 kind)
     }
 
     u32 slot = target.ref;
-    u8 binding = binding_kind(c, file, slot);
-    if (binding != NODE_NONE) {
-        report(c, file, target_token, binding == NODE_PARAM ? DIAG_ASSIGN_PARAM : DIAG_ASSIGN_LOOP_VARIABLE, 0, 0);
-        return;
-    }
-
     u32 type = slot_at(c, slot)->type;
     if (kind != NODE_ASSIGN) {
         u8 op = assign_ops[kind];
@@ -2172,21 +2356,21 @@ address_of(Checker *c, u32 file, u32 token, Operand target)
     if (target.type == TYPE_ID_NONE) {
         return poison;
     }
-    if (target.type == OPERAND_ADDRESS) {
-        return (Operand){ pointer_type(c, place_type(c, target)), target.ref };
-    }
-    if (target.type != OPERAND_LOCAL) {
+    if (!is_place(target)) {
         report(c, file, token, DIAG_NOT_ADDRESSABLE, 0, 0);
         return poison;
     }
 
-    u32 slot = target.ref;
-    u8 binding = binding_kind(c, file, slot);
+    u8 binding = place_binding(c, file, target);
     if (binding != NODE_NONE) {
         report(c, file, token, binding == NODE_PARAM ? DIAG_ADDRESS_PARAM : DIAG_ADDRESS_LOOP_VARIABLE, 0, 0);
         return poison;
     }
+    if (target.type == OPERAND_ADDRESS) {
+        return (Operand){ pointer_type(c, place_type(c, target)), target.ref };
+    }
 
+    u32 slot = target.ref;
     u32 type = slot_at(c, slot)->type;
     if (type == TYPE_ID_NONE) {
         return poison;
@@ -2201,6 +2385,10 @@ deref(Checker *c, u32 file, u32 token, Operand p, bool place)
     if (p.type == TYPE_ID_NONE) {
         return poison;
     }
+    if (is_place(p)) {
+        report(c, file, token, DIAG_NOT_POINTER, place_type(c, p), 0);
+        return poison;
+    }
     if (!is_value_type(p.type)) {
         report(c, file, token, DIAG_NOT_VALUE, 0, 0);
         return poison;
@@ -2211,6 +2399,9 @@ deref(Checker *c, u32 file, u32 token, Operand p, bool place)
     }
 
     u32 type = c->types.arg0[p.type];
+    if (is_aggregate(c, type) && is_storable(c, type)) {
+        return (Operand){ OPERAND_ADDRESS, p.ref };
+    }
     if (!is_scalar(c, type)) {
         report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
         return poison;
@@ -2219,6 +2410,124 @@ deref(Checker *c, u32 file, u32 token, Operand p, bool place)
         return (Operand){ OPERAND_ADDRESS, p.ref };
     }
     return emit_value(c, IR_LOAD_AT, type, value_of(p), 0);
+}
+
+static Operand
+index_place(Checker *c, u32 file, u32 token, Operand base, Operand index, u32 index_token, bool place)
+{
+    if (base.type == TYPE_ID_NONE || index.type == TYPE_ID_NONE) {
+        return poison;
+    }
+
+    u32 type = is_place(base) ? place_type(c, base) : base.type;
+    if (!is_value_type(type)) {
+        report(c, file, token, DIAG_NOT_VALUE, 0, 0);
+        return poison;
+    }
+    if (!is_aggregate(c, type)) {
+        report(c, file, token, DIAG_NOT_INDEXABLE, type, 0);
+        return poison;
+    }
+
+    u32 index_type = is_place(index) ? place_type(c, index) : index.type;
+    if (!is_value_type(index_type)) {
+        report(c, file, index_token, DIAG_NOT_VALUE, 0, 0);
+        return poison;
+    }
+    if (!is_int(c, index_type)) {
+        report(c, file, index_token, DIAG_NOT_INDEX, index_type, 0);
+        return poison;
+    }
+
+    u32 at = value_of(index);
+    if (is_constant(index)) {
+        if (!exact_fits(&c->exacts, at, 64, false) ||
+            exact_bits(&c->exacts, at) >= c->types.arg1[type]) {
+            report(c, file, index_token, DIAG_INDEX_RANGE, at, type);
+            return poison;
+        }
+        at = ir_const(c, TYPE_ID_I64, exact_bits(&c->exacts, at));
+    }
+
+    u32 elem = c->types.arg0[type];
+    u32 pointer = pointer_type(c, elem);
+    u32 address = emit(c, IR_INDEX, pointer, place_address(c, base), at);
+    if (place || is_aggregate(c, elem)) {
+        return (Operand){ OPERAND_ADDRESS, REF_VALUE | address };
+    }
+    return emit_value(c, IR_LOAD_AT, elem, address, 0);
+}
+
+static Operand
+array_field(Checker *c, u32 file, u32 token, Operand o)
+{
+    u32 type = place_type(c, o);
+    if (o.type == OPERAND_ADDRESS) {
+        emit(c, IR_DROP, 0, value_of(o), 0);
+    }
+
+    u32 name = c->files[file].tokens.ids[token];
+    if (name != NAME_LEN) {
+        report(c, file, token, DIAG_NO_MEMBER, name, type);
+        return poison;
+    }
+    return (Operand){ TYPE_ID_I64,
+                      exact_int(&c->exacts, (int64_t)c->types.arg1[type]) };
+}
+
+static void
+array_literal(Checker *c, u32 file, u32 node, u8 kind)
+{
+    bool typed = kind == NODE_ARRAY_LITERAL;
+    u32 m = list_start(c, typed ? NODE_LITERAL_START : NODE_ANON_LITERAL_START);
+    u32 n = c->sp - m - 1;
+    u32 base = typed ? m - 1 : m;
+    u32 token = c->stack_tokens[base];
+
+    u32 type = TYPE_ID_NONE;
+    if (typed) {
+        u32 elem = type_operand(c, file, token, c->stack[base]);
+        if (elem && is_storable(c, elem)) {
+            type = intern_type(c, TYPE_ARRAY, elem, n);
+        } else if (elem) {
+            report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
+        }
+    } else {
+        type = expected_type(c, c->sp - m);
+        if (type == TYPE_ID_NONE) {
+            report(c, file, token, DIAG_LITERAL_TYPE, 0, 0);
+        } else if (!is_aggregate(c, type)) {
+            report(c, file, token, DIAG_NOT_ARRAY, 0, type);
+            type = TYPE_ID_NONE;
+        } else if (c->types.arg1[type] != n) {
+            report(c, file, token, DIAG_LITERAL_COUNT, n, type);
+            type = TYPE_ID_NONE;
+        } else if (!is_storable(c, type)) {
+            type = TYPE_ID_NONE;
+        }
+    }
+
+    bool ok = type != TYPE_ID_NONE;
+    Operand array = { OPERAND_LOCAL, ok ? add_slot(c, 0, type, node) : 0 };
+    u32 elem = c->types.arg0[type];
+    for (u32 k = 0; type && k < n; k++) {
+        Operand x = convert(c, file, c->stack_tokens[m + 1 + k], c->stack[m + 1 + k], elem);
+        if (x.type == TYPE_ID_NONE) {
+            ok = false;
+            continue;
+        }
+
+        u32 index = ir_const(c, TYPE_ID_I64, k);
+        u32 address = emit(c, IR_INDEX, pointer_type(c, elem), place_address(c, array), index);
+        if (is_place(x)) {
+            emit(c, IR_COPY, elem, address, place_address(c, x));
+        } else {
+            emit(c, IR_STORE_AT, elem, address, operand_ir(c, x));
+        }
+    }
+
+    c->sp = base;
+    push_operand(c, token, ok ? array : poison);
 }
 
 static bool
@@ -2326,6 +2635,10 @@ give(Checker *c, u32 file, u32 token, Loop *target, Operand v)
         return;
     }
     Operand x = convert(c, file, token, v, target->type);
+    if (is_place(x)) {
+        report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
+        return;
+    }
     if (x.type != TYPE_ID_NONE) {
         emit(c, IR_EXIT, x.type, target->loop, operand_ir(c, x));
     }
@@ -2389,9 +2702,12 @@ result_type(Checker *c, u32 file, u32 node, u32 own, u8 start, u8 end_kind, u8 i
                 u32 m = c->sp - own;
                 while (c->stack[--m].type < OPERAND_MARKER) {
                 }
-                bool call = c->stack[m].type == OPERAND_MARKER + NODE_CALL_ARGS &&
+                u32 marker = c->stack[m].type - OPERAND_MARKER;
+                bool call = marker == NODE_CALL_ARGS &&
                             c->stack[m - 1].type == OPERAND_FN;
-                return call ? expected_type(c, own) : TYPE_ID_NONE;
+                bool literal = marker == NODE_LITERAL_START ||
+                               marker == NODE_ANON_LITERAL_START;
+                return call || literal ? expected_type(c, own) : TYPE_ID_NONE;
             }
             u8 next = kinds[i + 1];
             bool direct = c->sp > own && c->stack[c->sp - own - 1].type ==
@@ -2920,6 +3236,16 @@ for_range(Checker *c, u32 file, u32 node, u32 token)
     u32 end_token = c->stack_tokens[c->sp - 1];
     Operand end = pop(c);
     Operand start = pop(c);
+    Operand bad = start.type >= OPERAND_MEMBER ? start : end;
+    if (bad.type >= OPERAND_MEMBER) {
+        if (is_place(bad)) {
+            report(c, file, token, DIAG_BAD_OPERATOR, place_type(c, bad), 0);
+        } else {
+            report(c, file, token, DIAG_NOT_VALUE, 0, 0);
+        }
+        push(c, end_token, TYPE_ID_NONE, 0);
+        return;
+    }
     if (start.type == TYPE_ID_UNTYPED_INT && end.type == TYPE_ID_UNTYPED_INT) {
         start = convert(c, file, token, start, TYPE_ID_I64);
         end = convert(c, file, end_token, end, TYPE_ID_I64);
@@ -2943,12 +3269,77 @@ for_range(Checker *c, u32 file, u32 node, u32 token)
 }
 
 static void
+bind_loop_variable(Checker *c, u32 file, u32 node, u32 slot)
+{
+    if (node_name(c, file, node) - (NAME_LAST_KEYWORD + 1) < NBUILTIN_TYPES) {
+        report(c, file, c->files[file].nodes.tokens[node], DIAG_RESERVED, 0, 0);
+        return;
+    }
+    bind(c, file, node, slot);
+}
+
+static void
+for_array(Checker *c, u32 file, u32 node, u32 label, Operand array, bool indexed)
+{
+    u32 type = place_type(c, array);
+    u32 elem = c->types.arg0[type];
+    u32 base = NO_SLOT;
+    if (array.type == OPERAND_ADDRESS) {
+        u32 pointer = pointer_type(c, type);
+        base = add_slot(c, 0, pointer, node);
+        store_local(c, base, (Operand){ pointer, array.ref });
+    }
+
+    u32 index = add_slot(c, 0, TYPE_ID_I64, node);
+    store_local(c, index, (Operand){ TYPE_ID_I64, EXACT_ZERO });
+    u32 name = node_name(c, file, node);
+    u32 value = add_slot(c, name, elem, node);
+    bind_loop_variable(c, file, node, value);
+    if (indexed) {
+        slot_at(c, index)->name = node_name(c, file, node + 1);
+        slot_at(c, index)->node = node + 1;
+        bind_loop_variable(c, file, node + 1, index);
+    }
+
+    u32 loop = emit(c, IR_LOOP, 0, 0, 0);
+    c->body.depth++;
+    u32 i = value_of(load_local(c, index));
+    u32 n = ir_const(c, TYPE_ID_I64, c->types.arg1[type]);
+    emit(c, IR_IF, 0, emit(c, IR_LT, TYPE_ID_I64, i, n), 0);
+    push_loop(c, (Loop){ loop, emit(c, IR_BLOCK, 0, 0, 0), index, .label = label });
+    if (name == NAME_DISCARD) {
+        return;
+    }
+
+    Operand place = base == NO_SLOT
+                      ? array
+                      : (Operand){ OPERAND_ADDRESS, load_local(c, base).ref };
+    u32 address = place_address(c, place);
+    u32 at = emit(c, IR_INDEX, pointer_type(c, elem), address, value_of(load_local(c, index)));
+    if (is_aggregate(c, elem)) {
+        u32 to = place_address(c, (Operand){ OPERAND_LOCAL, value });
+        emit(c, IR_COPY, elem, to, at);
+    } else {
+        store_local(c, value, emit_value(c, IR_LOAD_AT, elem, at, 0));
+    }
+}
+
+static void
 for_value(Checker *c, u32 file, u32 node, u32 token, bool inclusive)
 {
     u32 m = list_start(c, NODE_FOR_START);
     u32 label = pending_label(c, m);
     Operand range = pop(c);
     push(c, token, OPERAND_STMT, 0);
+    const ParsedFile *f = &c->files[file];
+    bool indexed = f->nodes.kinds[node + 1] == NODE_FOR_INDEX;
+    if (is_place(range) && is_aggregate(c, place_type(c, range))) {
+        for_array(c, file, node, label, range, indexed);
+        return;
+    }
+    if (indexed) {
+        report(c, file, f->nodes.tokens[node + 1], DIAG_UNSUPPORTED, 0, 0);
+    }
     if (range.type != OPERAND_RANGE) {
         if (range.type != TYPE_ID_NONE) {
             report(c, file, c->files[file].nodes.tokens[node - 1], DIAG_UNSUPPORTED, 0, 0);
@@ -2965,11 +3356,7 @@ for_value(Checker *c, u32 file, u32 node, u32 token, bool inclusive)
     s->name = node_name(c, file, node);
     s->node = node;
     u32 type = s->type;
-    if (s->name - (NAME_LAST_KEYWORD + 1) < NBUILTIN_TYPES) {
-        report(c, file, token, DIAG_RESERVED, 0, 0);
-    } else {
-        bind(c, file, node, slot);
-    }
+    bind_loop_variable(c, file, node, slot);
 
     u32 loop = emit(c, IR_LOOP, 0, 0, 0);
     c->body.depth++;
@@ -3157,10 +3544,12 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                 if (in_body) {
                     u64 binding = c->bindings[id];
                     if ((u32)(binding >> 32) == c->body.owner) {
-                        if (kinds[i + 1] == NODE_VALUE || kinds[i + 1] == NODE_ADDR) {
-                            push(c, token, OPERAND_LOCAL, (u32)binding);
+                        u32 slot = (u32)binding;
+                        if (kinds[i + 1] == NODE_VALUE || kinds[i + 1] == NODE_ADDR ||
+                            is_aggregate(c, slot_at(c, slot)->type)) {
+                            push(c, token, OPERAND_LOCAL, slot);
                         } else {
-                            push_operand(c, token, load_local(c, (u32)binding));
+                            push_operand(c, token, load_local(c, slot));
                         }
                         break;
                     }
@@ -3189,11 +3578,38 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                 if (o.type == TYPE_ID_TYPE && c->types.kinds[o.ref] == TYPE_ENUM) {
                     pop(c);
                     push_operand(c, token, enum_member(c, file, token, o.ref, ids[token]));
+                } else if (is_place(o) && is_aggregate(c, place_type(c, o))) {
+                    pop(c);
+                    push_operand(c, token, array_field(c, file, token, o));
                 } else {
                     unsupported(c, file, i);
                 }
                 break;
             }
+            case NODE_INDEX:
+                if (in_body) {
+                    u32 index_token = c->stack_tokens[c->sp - 1];
+                    Operand index = pop(c);
+                    u32 base_token = c->stack_tokens[c->sp - 1];
+                    Operand base = pop(c);
+                    bool place = kinds[i + 1] == NODE_VALUE || kinds[i + 1] == NODE_ADDR;
+                    push_operand(
+                        c,
+                        base_token,
+                        index_place(c, file, base_token, base, index, index_token, place)
+                    );
+                } else {
+                    unsupported(c, file, i);
+                }
+                break;
+            case NODE_ARRAY_LITERAL:
+            case NODE_ANON_ARRAY_LITERAL:
+                if (in_body) {
+                    array_literal(c, file, i, kind);
+                } else {
+                    unsupported(c, file, i);
+                }
+                break;
             case NODE_FLOAT:
                 push_operand(c, token, number_literal(c, file, i, TYPE_ID_UNTYPED_FLOAT));
                 break;
@@ -3375,25 +3791,38 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
             case NODE_VAR_INIT: {
                 u32 v_token = c->stack_tokens[c->sp - 1];
                 Operand v = pop(c);
-                u32 t = value_type(c, file, v_token, v);
+                u32 t = is_place(v) ? place_type(c, v)
+                                    : value_type(c, file, v_token, v);
                 declare_local(c, file, i, t, t ? convert(c, file, v_token, v, t) : poison);
                 push(c, token, OPERAND_STMT, 0);
                 break;
             }
             case NODE_VAR_TYPE: {
-                u32 t = type_operand(c, file, child, pop(c));
-                bool scalar = is_number(c, t) || t == TYPE_ID_BOOL;
-                if (t && c->types.kinds[t] == TYPE_ENUM) {
-                    scalar = enum_has(c, t, order_key(c, t, 0));
-                    if (!scalar) {
-                        report(c, file, token, DIAG_NO_ZERO_MEMBER, 0, t);
+                u32 t = local_type(c, file, child, type_operand(c, file, child, pop(c)));
+                u32 elem = t;
+                while (is_aggregate(c, elem)) {
+                    elem = c->types.arg0[elem];
+                }
+                bool zero = is_number(c, elem) || elem == TYPE_ID_BOOL;
+                if (elem && c->types.kinds[elem] == TYPE_ENUM) {
+                    zero = enum_has(c, elem, order_key(c, elem, 0));
+                    if (!zero) {
+                        report(c, file, token, DIAG_NO_ZERO_MEMBER, 0, elem);
                     }
-                } else if (t && c->types.kinds[t] == TYPE_POINTER) {
-                    report(c, file, token, DIAG_NEVER_NIL, 0, t);
-                } else if (t && !scalar) {
+                } else if (elem && c->types.kinds[elem] == TYPE_POINTER) {
+                    report(c, file, token, DIAG_NEVER_NIL, 0, elem);
+                } else if (elem && !zero) {
                     report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
                 }
-                declare_local(c, file, i, t, scalar ? (Operand){ t, EXACT_ZERO } : poison);
+
+                bool aggregate = is_aggregate(c, t);
+                Operand v = !zero     ? poison
+                          : aggregate ? (Operand){ TYPE_ID_UNDEFINED, 0 }
+                                      : (Operand){ t, EXACT_ZERO };
+                u32 slot = declare_local(c, file, i, t, v);
+                if (zero && aggregate) {
+                    emit(c, IR_ZERO, t, place_address(c, (Operand){ OPERAND_LOCAL, slot }), 0);
+                }
                 push(c, token, OPERAND_STMT, 0);
                 break;
             }
@@ -3402,7 +3831,7 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                 Operand v = pop(c);
                 pop(c);
                 u32 t_token = c->stack_tokens[c->sp - 1];
-                u32 t = type_operand(c, file, t_token, pop(c));
+                u32 t = local_type(c, file, t_token, type_operand(c, file, t_token, pop(c)));
                 declare_local(
                     c,
                     file,
@@ -3477,6 +3906,11 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                 break;
             case NODE_FOR_VALUE:
                 for_value(c, file, i, token, kinds[i - 1] == NODE_RANGE_INCLUSIVE);
+                break;
+            case NODE_FOR_INDEX:
+                if (!in_body) {
+                    unsupported(c, file, i);
+                }
                 break;
             case NODE_FOR: close_for(c, token); break;
             case NODE_CASE:
@@ -3723,10 +4157,20 @@ check_body(Checker *c, u32 decl)
     };
     u32 scope = c->nscope;
 
+    const u32 *tokens = c->files[file].nodes.tokens;
+    if (is_aggregate(c, c->body.ret)) {
+        report(c, file, tokens[d->roots[decl]], DIAG_UNSUPPORTED, 0, 0);
+        c->body.ret = TYPE_ID_NONE;
+    }
+
     u32 first = d->members[decl];
     u32 nparams = d->member_counts[decl];
     for (u32 i = 0; i < nparams; i++) {
         Member m = c->members[first + i];
+        if (is_aggregate(c, m.type)) {
+            report(c, file, tokens[m.node], DIAG_UNSUPPORTED, 0, 0);
+            m.type = TYPE_ID_NONE;
+        }
         u32 slot = add_slot(c, m.name, m.type, m.node);
         if (m.name - (NAME_LAST_KEYWORD + 1) >= NBUILTIN_TYPES) {
             bind(c, file, m.node, slot);
@@ -4316,6 +4760,7 @@ print_function(FILE *out, const Checker *c, const IrFunc *fn)
                 print_operand(out, c, fn, b);
                 break;
             case IR_LOAD_AT:
+            case IR_ZERO:
             case IR_NEG:
             case IR_NEG_WRAP:
             case IR_NOT:

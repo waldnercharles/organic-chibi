@@ -139,7 +139,8 @@ enum
     TYPE(NAME_UINTPTR, "uintptr")                                              \
     TYPE(NAME_ERROR, "error")                                                  \
     OTHER(NAME_TAIL, "tail")                                                   \
-    OTHER(NAME_DISCARD, "_")
+    OTHER(NAME_DISCARD, "_")                                                   \
+    OTHER(NAME_LEN, "len")
 // clang-format on
 
 #define CHIBI_BUILTIN_NAME_ID(name, text) name,
