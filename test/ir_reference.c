@@ -499,13 +499,12 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                 for (u32 k = 0; k < list[0]; k++) {
                     call_args[k] = OPERAND(list[1 + k]);
                 }
-                u64 out[4] = { 0, 0, 0, 0 };
-                fail = run(r, c->decls.funcs[a] - 1, call_args, out);
+                u64 out[2] = { 0, 0 };
+                bool record = c->types.kinds[type] == TYPE_STRUCT;
+                u64 *to = record ? (u64 *)(frame + offsets[list[list[0] + 1]]) : out;
+                fail = run(r, c->decls.funcs[a] - 1, call_args, to);
                 v = out[0];
                 second = out[1];
-                if (c->types.kinds[type] == TYPE_STRUCT) {
-                    memcpy(frame + offsets[list[list[0] + 1]], out, check_type_size(c, type));
-                }
                 free(call_args);
                 break;
             }
@@ -592,8 +591,10 @@ done:
 int
 ir_reference_run(IrReference *r, u32 decl, const u64 *args, u64 *result)
 {
+    const Checker *c = r->c;
+    assert(c->types.kinds[c->types.arg1[c->decls.types[decl]]] != TYPE_STRUCT);
     r->steps = 0;
-    u64 out[4] = { 0, 0, 0, 0 };
+    u64 out[2] = { 0, 0 };
     int trap = run(r, r->c->decls.funcs[decl] - 1, args, out);
     *result = out[0];
     return trap;

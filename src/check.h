@@ -181,7 +181,6 @@ enum
     X(DIAG_MISSING_CASE, "the switch doesn't handle %w; add an arm for it or a `_` arm")          \
     X(DIAG_MISSING_MEMBER, "the switch doesn't handle `.%n`; add an arm for it or a `_` arm")     \
     X(DIAG_ARM_END, "this arm can reach its end without a value")                                 \
-    X(DIAG_TOO_LARGE_VALUE, "`%T` is too large to pass or return by value yet; use a pointer")    \
     X(DIAG_UNSUPPORTED, "the checker doesn't support this yet")
 // clang-format on
 
@@ -309,6 +308,7 @@ typedef struct
     u32 depth;
     u32 calls;
     u32 blocks;
+    u32 copies;
     bool reachable;
     bool returns_value;
 } Body;
@@ -432,6 +432,7 @@ enum
     REGS_COUNT = 7,
     REGS_FLOAT = 8,
     REGS_DOUBLE = 16,
+    REGS_POINTER = 32,
 };
 
 u32 check_struct_regs(const Checker *c, u32 type);

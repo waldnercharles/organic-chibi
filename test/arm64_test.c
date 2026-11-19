@@ -2654,6 +2654,710 @@ TEST_CASE(left_to_right)
     return true;
 }
 
+static const char LARGE_STRUCTS[] =
+    "struct W { a: int, b: int, c: int }\n"
+    "struct O { n: int, w: W }\n"
+    "struct WA { a: [3]int, n: int }\n"
+    "struct B17 { a: [17]u8 }\n"
+    "struct F5 { a: [5]f32 }\n"
+    "struct D5 { a: [5]f64 }\n"
+    "struct D2 { x: f64, y: f64 }\n"
+    "struct M { n: i32, d: D2, s: []u8 }\n"
+    "struct Big { a: [9]int }\n"
+    "struct Huge { a: [40]int }\n"
+    "\n"
+    "fn tW(s: W) -> W {\n"
+    "    return W.{ s.c, s.a, s.b }\n"
+    "}\n"
+    "\n"
+    "fn tB17(s: B17) -> B17 {\n"
+    "    r := s\n"
+    "    for i in 0..17 {\n"
+    "        r.a[i] +%= u8(i + 1)\n"
+    "    }\n"
+    "    return r\n"
+    "}\n"
+    "\n"
+    "fn tF5(s: F5) -> F5 {\n"
+    "    r: F5\n"
+    "    for i in 0..5 {\n"
+    "        r.a[i] = s.a[4 - i] * 2\n"
+    "    }\n"
+    "    return r\n"
+    "}\n"
+    "\n"
+    "fn tD5(s: D5) -> D5 {\n"
+    "    r: D5\n"
+    "    for i in 0..5 {\n"
+    "        r.a[i] = f64(i) - s.a[i]\n"
+    "    }\n"
+    "    return r\n"
+    "}\n"
+    "\n"
+    "fn tM(s: M) -> M {\n"
+    "    return M.{ s.n + 1, D2.{ s.d.y, s.d.x }, s.s[1..] }\n"
+    "}\n"
+    "\n"
+    "fn tBig(s: Big) -> Big {\n"
+    "    r: Big\n"
+    "    for i in 0..9 {\n"
+    "        r.a[i] = s.a[8 - i] + 1\n"
+    "    }\n"
+    "    return r\n"
+    "}\n"
+    "\n"
+    "fn tHuge(s: Huge) -> Huge {\n"
+    "    r: Huge\n"
+    "    for i in 0..40 {\n"
+    "        r.a[i] = s.a[39 - i] * 3\n"
+    "    }\n"
+    "    return r\n"
+    "}\n"
+    "\n"
+    "fn mixL(\n"
+    "    a: int, w: W, f: f32, v: F5, b: Big, d: f64, x: D2, k: u8,\n"
+    ") -> f64 {\n"
+    "    n := a + w.a * 2 + w.b * 3 + w.c * 4\n"
+    "    n += b.a[0] * 5 + b.a[8] * 6 + int(k) * 7\n"
+    "    r := f64(n) + f64(f) * 8 + f64(v.a[0]) * 9 + f64(v.a[4]) * 10\n"
+    "    return r + d * 11 + x.x * 12 + x.y * 13\n"
+    "}\n"
+    "\n"
+    "fn readAfter(s: W, q: *W) -> int {\n"
+    "    q.a = 100\n"
+    "    return s.a\n"
+    "}\n"
+    "\n"
+    "fn alias(a: int, b: int) -> int {\n"
+    "    w := W.{ a & 0xFF, b & 0xFF, 3 }\n"
+    "    r := readAfter(w, &w)\n"
+    "    return r * 1000 + w.a\n"
+    "}\n"
+    "\n"
+    "fn fieldAlias(a: int, b: int) -> int {\n"
+    "    o := O.{ b & 0xFF, W.{ a & 0xFF, 0, 0 } }\n"
+    "    r := readAfter(o.w, &o.w)\n"
+    "    return r * 1000 + o.w.a + o.n * 1000000\n"
+    "}\n"
+    "\n"
+    "fn readSlice(s: WA, t: []int) -> int {\n"
+    "    t[0] = 100\n"
+    "    return s.a[0]\n"
+    "}\n"
+    "\n"
+    "fn sliceAlias(a: int, b: int) -> int {\n"
+    "    x := WA.{ .[a & 0xFF, 1, 2], b & 0xFF }\n"
+    "    r := readSlice(x, x.a[0..2])\n"
+    "    return r * 1000 + x.a[0]\n"
+    "}\n"
+    "\n"
+    "fn convertAlias(a: int, b: int) -> int {\n"
+    "    x := WA.{ .[a & 0xFF, 1, 2], b & 0xFF }\n"
+    "    r := readSlice(x, x.a)\n"
+    "    return r * 1000 + x.a[0]\n"
+    "}\n"
+    "\n"
+    "fn derefAlias(a: int, b: int) -> int {\n"
+    "    w := W.{ a & 0xFF, b & 0xFF, 3 }\n"
+    "    p := &w\n"
+    "    r := readAfter(p.*, p)\n"
+    "    return r * 1000 + w.a\n"
+    "}\n"
+    "\n"
+    "fn pass(s: W, q: *W) -> int {\n"
+    "    return readAfter(s, q) + s.a\n"
+    "}\n"
+    "\n"
+    "fn passAlias(a: int, b: int) -> int {\n"
+    "    w := W.{ a & 0xFF, b & 0xFF, 3 }\n"
+    "    return pass(w, &w) * 1000 + w.a\n"
+    "}\n"
+    "\n"
+    "fn mk(a: int) -> W {\n"
+    "    return W.{ a, a + 1, a + 2 }\n"
+    "}\n"
+    "\n"
+    "fn sum(s: W) -> int {\n"
+    "    return s.a + s.b * 10 + s.c * 100\n"
+    "}\n"
+    "\n"
+    "fn results(a: int, b: int) -> int {\n"
+    "    x := mk(a & 0xFF)\n"
+    "    y := sum(mk(b & 0xFF))\n"
+    "    return sum(x) * 100000 + y + mk(a & 7).c * 1000000000\n"
+    "}\n"
+    "\n"
+    "fn rotate(s: W) -> W {\n"
+    "    return W.{ s.c, s.a, s.b }\n"
+    "}\n"
+    "\n"
+    "fn selfAssign(a: int, b: int) -> int {\n"
+    "    w := W.{ a & 0xFF, b & 0xFF, 7 }\n"
+    "    w = rotate(w)\n"
+    "    w = rotate(w)\n"
+    "    return sum(w)\n"
+    "}\n"
+    "\n"
+    "fn rotatePtr(q: *W) -> W {\n"
+    "    return W.{ q.c, q.a, q.b }\n"
+    "}\n"
+    "\n"
+    "fn ptrAssign(a: int, b: int) -> int {\n"
+    "    w := W.{ a & 0xFF, b & 0xFF, 7 }\n"
+    "    w = rotatePtr(&w)\n"
+    "    return sum(w)\n"
+    "}\n"
+    "\n"
+    "fn loopPass(a: int, b: int) -> int {\n"
+    "    w := W.{ a & 0xFF, b & 0xFF, 0 }\n"
+    "    total := 0\n"
+    "    for i in 0..3 {\n"
+    "        total += sum(w) * (i + 1)\n"
+    "        w.a += 1\n"
+    "    }\n"
+    "    return total\n"
+    "}\n"
+    "\n"
+    "fn bigChain(a: int, b: int) -> int {\n"
+    "    x: Big\n"
+    "    for i in 0..9 {\n"
+    "        x.a[i] = (a + i) & 0xFF\n"
+    "    }\n"
+    "    y := tBig(tBig(x))\n"
+    "    total := 0\n"
+    "    for i in 0..9 {\n"
+    "        total = total * 3 + y.a[i]\n"
+    "    }\n"
+    "    return total + x.a[0] * 1000000000\n"
+    "}\n"
+    "\n"
+    "fn retParam(s: W) -> W {\n"
+    "    return s\n"
+    "}\n"
+    "\n"
+    "fn retTwice(a: int, b: int) -> int {\n"
+    "    w := W.{ a & 0xFFFF, b & 0xFFFF, 1 }\n"
+    "    return sum(retParam(retParam(w)))\n"
+    "}\n"
+    "\n"
+    "fn hugeLoop(a: int, b: int) -> int {\n"
+    "    h: Huge\n"
+    "    for i in 0..40 {\n"
+    "        h.a[i] = (a + i * b) & 0xFFF\n"
+    "    }\n"
+    "    r := tHuge(h)\n"
+    "    total := 0\n"
+    "    for i in 0..40 {\n"
+    "        total = (total * 31 + r.a[i]) & 0xFFFFFFF\n"
+    "    }\n"
+    "    return total\n"
+    "}\n"
+    "\n"
+    "fn readHuge(s: Huge, q: *Huge) -> int {\n"
+    "    q.a[39] = 5\n"
+    "    return s.a[39] + s.a[0]\n"
+    "}\n"
+    "\n"
+    "fn hugeAlias(a: int, b: int) -> int {\n"
+    "    h: Huge\n"
+    "    h.a[0] = a & 0xFF\n"
+    "    h.a[39] = b & 0xFF\n"
+    "    r := readHuge(h, &h)\n"
+    "    return r * 1000 + h.a[39]\n"
+    "}\n"
+    "\n"
+    "fn readBig(s: Big, q: *Big) -> int {\n"
+    "    q.a[8] = 7\n"
+    "    return s.a[8] * 10 + s.a[0]\n"
+    "}\n"
+    "\n"
+    "fn bigAlias(a: int, b: int) -> int {\n"
+    "    x: Big\n"
+    "    x.a[0] = a & 0xFF\n"
+    "    x.a[8] = b & 0xFF\n"
+    "    p := &x\n"
+    "    return readBig(x, p) * 1000 + x.a[8]\n"
+    "}\n"
+    "\n"
+    "fn readB17(s: B17, q: *B17) -> int {\n"
+    "    q.a[16] = 9\n"
+    "    return int(s.a[16]) * 1000 + int(s.a[0])\n"
+    "}\n"
+    "\n"
+    "fn b17Alias(a: int, b: int) -> int {\n"
+    "    x: B17\n"
+    "    x.a[0] = u8(a & 0xFF)\n"
+    "    x.a[16] = u8(b & 0xFF)\n"
+    "    return readB17(x, &x) * 10 + int(x.a[16])\n"
+    "}\n"
+    "\n"
+    "fn keep(s: W, q: *W) -> W {\n"
+    "    q.a = 0\n"
+    "    return s\n"
+    "}\n"
+    "\n"
+    "fn copyAndReturn(a: int, b: int) -> W {\n"
+    "    w := W.{ a, b, 7 }\n"
+    "    r := keep(w, &w)\n"
+    "    return W.{ r.a, r.b + w.a, r.c }\n"
+    "}\n"
+    "\n"
+    "fn copyReturn(a: int, b: int) -> int {\n"
+    "    return sum(copyAndReturn(a & 0xFF, b & 0xFF))\n"
+    "}\n"
+    "\n"
+    "fn three(s: B17, t: W, u: Big) -> int {\n"
+    "    n := int(s.a[0]) + int(s.a[16]) * 10 + t.a * 100 + t.c * 1000\n"
+    "    return n + u.a[0] * 10000 + u.a[8] * 100000\n"
+    "}\n"
+    "\n"
+    "fn copyThree(a: int, b: int) -> int {\n"
+    "    x: B17\n"
+    "    x.a[0] = u8(a & 7)\n"
+    "    x.a[16] = u8(b & 7)\n"
+    "    w := W.{ b & 7, 0, a & 7 }\n"
+    "    big: Big\n"
+    "    big.a[0] = (a + b) & 7\n"
+    "    big.a[8] = 9\n"
+    "    p := &x\n"
+    "    q := &w\n"
+    "    r := &big\n"
+    "    return three(p.*, q.*, r.*)\n"
+    "}\n"
+    "\n"
+    "fn spillParam(s: W, k: int) -> int {\n"
+    "    a := k + 1\n"
+    "    b := k + 2\n"
+    "    c := k + 3\n"
+    "    d := k + 4\n"
+    "    e := k + 5\n"
+    "    f := k + 6\n"
+    "    g := k + 7\n"
+    "    h := k + 8\n"
+    "    i := k + 9\n"
+    "    j := k + 10\n"
+    "    m := k + 11\n"
+    "    n := k + 12\n"
+    "    total := sum(W.{ k, 1, 2 })\n"
+    "    for r in 0..3 {\n"
+    "        total += a * b + c * d + e * f + g * h + i * j + m * n + r\n"
+    "        a += 1\n"
+    "        c += 1\n"
+    "        e += 1\n"
+    "        g += 1\n"
+    "        i += 1\n"
+    "        m += 1\n"
+    "    }\n"
+    "    return total + s.a + s.b * 10\n"
+    "}\n"
+    "\n"
+    "fn callSpill(a: int, b: int) -> int {\n"
+    "    return spillParam(W.{ a & 0xFF, b & 0xFF, 0 }, a & 7)\n"
+    "}\n"
+    "\n"
+    "fn bumpW(q: *W) -> int {\n"
+    "    q.a += 100\n"
+    "    return 1\n"
+    "}\n"
+    "\n"
+    "fn first(s: W, k: int) -> int {\n"
+    "    return s.a * 10 + k\n"
+    "}\n"
+    "\n"
+    "fn lateL(a: int, b: int) -> int {\n"
+    "    w := W.{ a & 0xFF, b & 0xFF, 0 }\n"
+    "    return first(w, bumpW(&w)) * 1000 + w.a\n"
+    "}\n"
+    "\n"
+    "fn callMix(a: int, b: int) -> int {\n"
+    "    v: F5\n"
+    "    v.a[0] = f32(a & 7)\n"
+    "    v.a[4] = 2\n"
+    "    big: Big\n"
+    "    big.a[0] = b & 0xFF\n"
+    "    big.a[8] = 3\n"
+    "    x := D2.{ 1, 2 }\n"
+    "    k := u8(b & 0x7F)\n"
+    "    return int(mixL(a & 0xFF, W.{ 1, 2, 3 }, 0.5, v, big, 0.25, x, k))\n"
+    "}\n"
+    "\n"
+    "fn eW(s: W, k: int) -> W {\n"
+    "    return s\n"
+    "}\n"
+    "\n"
+    "fn callEW(a: int, b: int) -> int {\n"
+    "    w := W.{ a & 0xFF, b & 0xFF, 5 }\n"
+    "    r := eW(w, 3)\n"
+    "    return sum(r) * 1000 + sum(w)\n"
+    "}\n"
+    "\n"
+    "fn eBig(s: Big) -> Big {\n"
+    "    return s\n"
+    "}\n"
+    "\n"
+    "fn callEBig(a: int, b: int) -> int {\n"
+    "    x: Big\n"
+    "    for i in 0..9 {\n"
+    "        x.a[i] = (a & 0xFF) + i\n"
+    "    }\n"
+    "    y := eBig(x)\n"
+    "    return y.a[0] * 100 + y.a[8] + x.a[8] * 1000000\n"
+    "}\n"
+    "\n"
+    "fn see(s: W) -> int {\n"
+    "    return s.a\n"
+    "}\n"
+    "\n"
+    "fn seeWA(s: WA) -> int {\n"
+    "    return s.n\n"
+    "}\n"
+    "\n"
+    "fn seeLocal(a: int, b: int) -> int {\n"
+    "    w := W.{ a, b, 0 }\n"
+    "    _ = see(w)\n"
+    "    return w.a\n"
+    "}\n"
+    "\n"
+    "fn seeAddressed(a: int, b: int) -> int {\n"
+    "    w := W.{ a, b, 0 }\n"
+    "    p := &w\n"
+    "    _ = see(w)\n"
+    "    return w.a + p.b - b\n"
+    "}\n"
+    "\n"
+    "fn seeLater(a: int, b: int) -> int {\n"
+    "    w := W.{ a, b, 0 }\n"
+    "    _ = see(w)\n"
+    "    r := w.a\n"
+    "    p := &w\n"
+    "    return r + p.b - b\n"
+    "}\n"
+    "\n"
+    "fn seeParam(s: W) -> int {\n"
+    "    _ = see(s)\n"
+    "    return s.a\n"
+    "}\n"
+    "\n"
+    "fn seeDeref(p: *W) -> int {\n"
+    "    _ = see(p.*)\n"
+    "    return p.a\n"
+    "}\n"
+    "\n"
+    "fn seeField(a: int, b: int) -> int {\n"
+    "    o := O.{ b, W.{ a, b, 0 } }\n"
+    "    _ = see(o.w)\n"
+    "    return o.w.a\n"
+    "}\n"
+    "\n"
+    "fn seeElement(a: int, b: int) -> int {\n"
+    "    xs: [2]W\n"
+    "    xs[1] = W.{ a, b, 0 }\n"
+    "    _ = see(xs[1])\n"
+    "    return xs[1].a\n"
+    "}\n"
+    "\n"
+    "fn seeLoop(a: int, b: int) -> int {\n"
+    "    xs: [2]W\n"
+    "    xs[0] = W.{ a, b, 0 }\n"
+    "    total := 0\n"
+    "    for v in xs {\n"
+    "        _ = see(v)\n"
+    "        total += v.a\n"
+    "    }\n"
+    "    return total * 10 + xs[0].a\n"
+    "}\n"
+    "\n"
+    "fn seeSliced(a: int, b: int) -> int {\n"
+    "    x := WA.{ .[a, 0, 0], b }\n"
+    "    t := x.a[0..1]\n"
+    "    _ = seeWA(x)\n"
+    "    return x.a[0] + t.len - 1\n"
+    "}\n";
+
+typedef struct
+{
+    int64_t a, b, c;
+} CW;
+
+typedef struct
+{
+    int64_t a[3];
+    int64_t n;
+} CWA;
+
+typedef struct
+{
+    uint8_t a[17];
+} CB17;
+
+typedef struct
+{
+    float a[5];
+} CF5;
+
+typedef struct
+{
+    double a[5];
+} CD5;
+
+typedef struct
+{
+    int32_t n;
+    CD2 d;
+    Slice s;
+} CM;
+
+typedef struct
+{
+    int64_t a[9];
+} CBig;
+
+typedef struct
+{
+    int64_t a[40];
+} CHuge;
+
+typedef double MIXL(int64_t, CW, float, CF5, CBig, double, CD2, uint8_t);
+
+static CW
+c_eW(const CW *s, int64_t k)
+{
+    return (CW){ s->a + k, s->b * 2, s->c - k };
+}
+
+static CBig
+c_eBig(const CBig *s)
+{
+    CBig r;
+    for (int i = 0; i < 9; i++) {
+        r.a[i] = s->a[i] * 2;
+    }
+    return r;
+}
+
+static int64_t
+c_see(CW *s)
+{
+    s->a = 999;
+    return 0;
+}
+
+static int64_t
+c_seeWA(CWA *s)
+{
+    s->a[0] = 999;
+    return 0;
+}
+
+static const char *const LARGE_STRUCT_FUNCTIONS[] = {
+    "alias",      "fieldAlias", "sliceAlias", "convertAlias", "derefAlias", "passAlias",
+    "results",    "selfAssign", "ptrAssign",  "loopPass",     "bigChain",   "retTwice",
+    "hugeLoop",   "hugeAlias",  "bigAlias",   "b17Alias",     "lateL",      "callMix",
+    "copyReturn", "copyThree",  "callSpill",
+};
+
+static const char *const SEE_FUNCTIONS[] = {
+    "seeLocal", "seeAddressed", "seeLater", "seeField", "seeElement",
+    "seeLoop",  "seeSliced",    "callEW",   "callEBig",
+};
+
+static int64_t
+large_want(const char *name, int64_t a, int64_t b)
+{
+    int64_t x = a & 0xFF;
+    int64_t y = b & 0xFF;
+    if (strcmp(name, "alias") == 0 || strcmp(name, "derefAlias") == 0 ||
+        strcmp(name, "sliceAlias") == 0 || strcmp(name, "convertAlias") == 0) {
+        return x * 1000 + 100;
+    }
+    if (strcmp(name, "fieldAlias") == 0) {
+        return x * 1000 + 100 + y * 1000000;
+    }
+    if (strcmp(name, "passAlias") == 0) {
+        return 2 * x * 1000 + 100;
+    }
+    if (strcmp(name, "results") == 0) {
+        return (111 * x + 210) * 100000 + 111 * y + 210 + ((a & 7) + 2) * 1000000000;
+    }
+    if (strcmp(name, "selfAssign") == 0) {
+        return 100 * x + 70 + y;
+    }
+    if (strcmp(name, "ptrAssign") == 0) {
+        return 7 + 10 * x + 100 * y;
+    }
+    if (strcmp(name, "loopPass") == 0) {
+        return 6 * (x + 10 * y) + 8;
+    }
+    if (strcmp(name, "bigChain") == 0) {
+        int64_t total = 0;
+        for (int64_t i = 0; i < 9; i++) {
+            total = total * 3 + ((a + i) & 0xFF) + 2;
+        }
+        return total + x * 1000000000;
+    }
+    if (strcmp(name, "retTwice") == 0) {
+        return (a & 0xFFFF) + 10 * (b & 0xFFFF) + 100;
+    }
+    if (strcmp(name, "hugeLoop") == 0) {
+        int64_t total = 0;
+        for (int64_t i = 0; i < 40; i++) {
+            total = (total * 31 + ((a + (39 - i) * b) & 0xFFF) * 3) & 0xFFFFFFF;
+        }
+        return total;
+    }
+    if (strcmp(name, "hugeAlias") == 0) {
+        return (x + y) * 1000 + 5;
+    }
+    if (strcmp(name, "bigAlias") == 0) {
+        return (10 * y + x) * 1000 + 7;
+    }
+    if (strcmp(name, "b17Alias") == 0) {
+        return (y * 1000 + x) * 10 + 9;
+    }
+    if (strcmp(name, "lateL") == 0) {
+        return (10 * x + 1) * 1000 + x + 100;
+    }
+    if (strcmp(name, "callMix") == 0) {
+        int64_t n = x + 2 + 6 + 12 + y * 5 + 3 * 6 + (b & 0x7F) * 7;
+        return (int64_t)((double)n + 4 + (double)(a & 7) * 9 + 20 + 2.75 + 12 + 26);
+    }
+    if (strcmp(name, "copyReturn") == 0) {
+        return x + 10 * y + 700;
+    }
+    if (strcmp(name, "copyThree") == 0) {
+        return (a & 7) + (b & 7) * 110 + (a & 7) * 1000 + ((a + b) & 7) * 10000 + 900000;
+    }
+    if (strcmp(name, "callSpill") == 0) {
+        int64_t k = a & 7;
+        int64_t v[12];
+        for (int64_t i = 0; i < 12; i++) {
+            v[i] = k + 1 + i;
+        }
+        int64_t total = k + 210;
+        for (int64_t r = 0; r < 3; r++) {
+            for (int i = 0; i < 12; i += 2) {
+                total += v[i] * v[i + 1];
+            }
+            total += r;
+            for (int i = 0; i < 12; i += 2) {
+                v[i] += 1;
+            }
+        }
+        return total + x + 10 * y;
+    }
+    if (strcmp(name, "seeLocal") == 0 || strcmp(name, "seeField") == 0 ||
+        strcmp(name, "seeElement") == 0) {
+        return 999;
+    }
+    if (strcmp(name, "seeLoop") == 0) {
+        return 19980 + a;
+    }
+    if (strcmp(name, "callEW") == 0) {
+        return (x + 3 + 20 * y + 200) * 1000 + x + 10 * y + 500;
+    }
+    if (strcmp(name, "callEBig") == 0) {
+        return 200 * x + 2 * (x + 8) + (x + 8) * 1000000;
+    }
+    return a;
+}
+
+static bool
+matches_by_hand(Program *p, const char *const *names, size_t count)
+{
+    for (size_t f = 0; f < count; f++) {
+        for (int64_t a = -3; a < 300; a += 37) {
+            for (int64_t b = -3; b < 9; b++) {
+                int64_t got = ((I2 *)fn(p, names[f]))(a, b);
+                int64_t want = large_want(names[f], a, b);
+                if (got != want) {
+                    fprintf(
+                        stderr,
+                        "arm64 test: %s(%lld, %lld) = %lld, want %lld\n",
+                        names[f],
+                        (long long)a,
+                        (long long)b,
+                        (long long)got,
+                        (long long)want
+                    );
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+TEST_CASE(large_structs)
+{
+    Program p;
+    REQUIRE(build(&p, LARGE_STRUCTS));
+
+    CW w = ((CW(*)(CW))fn(&p, "tW"))((CW){ 1, -2, 3 });
+    REQUIRE(w.a == 3 && w.b == 1 && w.c == -2);
+    CB17 b17;
+    for (int i = 0; i < 17; i++) {
+        b17.a[i] = (uint8_t)(0xF0 + i);
+    }
+    b17 = ((CB17(*)(CB17))fn(&p, "tB17"))(b17);
+    for (int i = 0; i < 17; i++) {
+        REQUIRE(b17.a[i] == (uint8_t)(0xF0 + 2 * i + 1));
+    }
+    CF5 f5 = ((CF5(*)(CF5))fn(&p, "tF5"))((CF5){ { 1, 2, 3, 4, 5 } });
+    for (int i = 0; i < 5; i++) {
+        REQUIRE(f5.a[i] == (float)(2 * (5 - i)));
+    }
+    CD5 d5 = ((CD5(*)(CD5))fn(&p, "tD5"))((CD5){ { 1.5, -2, 3, 0.25, 8 } });
+    REQUIRE(d5.a[0] == -1.5 && d5.a[1] == 3 && d5.a[2] == -1 && d5.a[3] == 2.75 &&
+            d5.a[4] == -4);
+    static const uint8_t text[] = "hello";
+    CM m = ((CM(*)(CM))fn(&p, "tM"))((CM){ 7, { 1.5, -2.5 }, { text, 5 } });
+    REQUIRE(m.n == 8 && m.d.x == -2.5 && m.d.y == 1.5 && m.s.ptr == text + 1 &&
+            m.s.len == 4);
+    CBig big;
+    for (int i = 0; i < 9; i++) {
+        big.a[i] = i * 11 - 3;
+    }
+    big = ((CBig(*)(CBig))fn(&p, "tBig"))(big);
+    for (int i = 0; i < 9; i++) {
+        REQUIRE(big.a[i] == (8 - i) * 11 - 2);
+    }
+    CHuge huge;
+    for (int i = 0; i < 40; i++) {
+        huge.a[i] = i * i - 7;
+    }
+    huge = ((CHuge(*)(CHuge))fn(&p, "tHuge"))(huge);
+    for (int i = 0; i < 40; i++) {
+        REQUIRE(huge.a[i] == ((39 - i) * (39 - i) - 7) * 3);
+    }
+    CBig mb = { { 8, 0, 0, 0, 0, 0, 0, 0, 9 } };
+    double mix = ((MIXL *)fn(&p, "mixL"))(
+        1,
+        (CW){ 2, 3, 4 },
+        5,
+        (CF5){ { 6, 0, 0, 0, 7 } },
+        mb,
+        10,
+        (CD2){ 11, 12 },
+        13
+    );
+    REQUIRE(mix == 777);
+
+    size_t count = sizeof LARGE_STRUCT_FUNCTIONS / sizeof LARGE_STRUCT_FUNCTIONS[0];
+    REQUIRE(matches_by_hand(&p, LARGE_STRUCT_FUNCTIONS, count));
+    REQUIRE(agree_on_grid(&p, LARGE_STRUCT_FUNCTIONS, count));
+
+    native_replace(&p.n, decl_named(&p, "eW"), (void *)c_eW);
+    native_replace(&p.n, decl_named(&p, "eBig"), (void *)c_eBig);
+    native_replace(&p.n, decl_named(&p, "see"), (void *)c_see);
+    native_replace(&p.n, decl_named(&p, "seeWA"), (void *)c_seeWA);
+    REQUIRE(matches_by_hand(&p, SEE_FUNCTIONS, sizeof SEE_FUNCTIONS / sizeof SEE_FUNCTIONS[0]));
+    CW cw = { 5, 6, 7 };
+    REQUIRE(((int64_t(*)(CW))fn(&p, "seeParam"))(cw) == 999 && cw.a == 5);
+    REQUIRE(((int64_t(*)(CW *))fn(&p, "seeDeref"))(&cw) == 5 && cw.a == 5);
+    release_program(&p);
+    return true;
+}
+
 static const char CONSTANT_CONDITIONS[] = "const DEBUG := false\n"
                                           "fn g() -> bool {\n"
                                           "    return true\n"
@@ -3309,6 +4013,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(stored_slices);
     RUN_TEST_CASE(passed_structs);
     RUN_TEST_CASE(left_to_right);
+    RUN_TEST_CASE(large_structs);
     RUN_TEST_CASE(constant_conditions);
     RUN_TEST_CASE(deep_logic);
     RUN_TEST_CASE(small_integers);

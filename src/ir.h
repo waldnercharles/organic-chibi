@@ -76,6 +76,11 @@ enum
     WEIGHT_ADDRESSED = UINT32_MAX,
 };
 
+enum
+{
+    NO_SLOT = UINT32_MAX,
+};
+
 typedef struct
 {
     u32 name;
@@ -122,6 +127,7 @@ typedef struct
     u32 first_const;
     u32 nconsts;
     u32 calls;
+    u32 copies;
 } IrFunc;
 
 typedef struct

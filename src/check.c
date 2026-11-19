@@ -7,7 +7,6 @@
 #define CHECK_MAX_DEPTH 1000
 #define MEMBER_UNDEFINED 0xFFFFFFFFu
 #define MEMBER_NONE 0xFFFFFFFEu
-#define NO_SLOT 0xFFFFFFFFu
 
 enum
 {
@@ -704,18 +703,18 @@ u32
 check_struct_regs(const Checker *c, u32 type)
 {
     u64 size = check_type_size(c, type);
-    if (size == 0 || size > 32) {
+    if (size == 0) {
         return 0;
     }
 
     u32 base = TYPE_ID_NONE;
-    if (all_floats(c, type, &base) && base != TYPE_ID_NONE) {
+    if (size <= 32 && all_floats(c, type, &base) && base != TYPE_ID_NONE) {
         u64 m = check_type_size(c, base);
         if (size / m <= 4) {
             return (u32)(size / m) | REGS_FLOAT | (m == 8 ? REGS_DOUBLE : 0);
         }
     }
-    return size <= 16 ? (u32)(size + 7) / 8 : 0;
+    return size <= 16 ? (u32)(size + 7) / 8 : 1 | REGS_POINTER;
 }
 
 static NOINLINE bool
@@ -736,9 +735,7 @@ is_passed(const Checker *c, u32 type)
 static NOINLINE void
 report_unpassed(Checker *c, u32 file, u32 token, u32 type)
 {
-    bool large = is_struct(c, type) && is_storable(c, type) &&
-                 check_type_size(c, type) > 16;
-    report(c, file, token, large ? DIAG_TOO_LARGE_VALUE : DIAG_UNSUPPORTED, type, 0);
+    report(c, file, token, DIAG_UNSUPPORTED, type, 0);
 }
 
 static bool
@@ -980,6 +977,20 @@ place_binding(const Checker *c, u32 file, Operand o)
 {
     u32 slot = place_root(c, o);
     return slot != NO_SLOT ? binding_kind(c, file, slot) : NODE_NONE;
+}
+
+static NOINLINE u8
+expose(Checker *c, u32 file, Operand o)
+{
+    u32 slot = place_root(c, o);
+    if (slot == NO_SLOT) {
+        return NODE_NONE;
+    }
+    u8 binding = binding_kind(c, file, slot);
+    if (binding == NODE_NONE) {
+        slot_at(c, slot)->weight = WEIGHT_ADDRESSED;
+    }
+    return binding;
 }
 
 static void
@@ -1351,7 +1362,7 @@ slice_of_place(Checker *c, u32 file, u32 token, Operand o, u32 to)
         report(c, file, token, DIAG_MISMATCH, from, to);
         return poison;
     }
-    if (place_binding(c, file, o) != NODE_NONE) {
+    if (expose(c, file, o) != NODE_NONE) {
         report(c, file, token, DIAG_SLICE_LOOP_VARIABLE, 0, 0);
         return poison;
     }
@@ -2569,14 +2580,29 @@ drop_unread(Checker *c, u32 at)
 }
 
 static bool
-may_change(Checker *c, Operand o)
+slot_may_change(Checker *c, u32 slot)
 {
-    u32 slot = place_root(c, o);
     if (slot == NO_SLOT) {
         return true;
     }
     u32 file = c->decls.files[c->body.decl];
     return slot_at(c, slot)->name != 0 && binding_kind(c, file, slot) == NODE_NONE;
+}
+
+static NOINLINE u32
+copy_root(Checker *c, Operand v, u32 type, u32 *copies)
+{
+    u32 slot = place_root(c, v);
+    if (slot_may_change(c, slot)) {
+        *copies += (u32)((check_type_size(c, type) + 7) & ~(u64)7);
+    }
+    return slot;
+}
+
+static bool
+may_change(Checker *c, Operand o)
+{
+    return slot_may_change(c, place_root(c, o));
 }
 
 static NOINLINE void
@@ -2625,6 +2651,7 @@ call_compound(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg
 
     bool ok = true;
     u32 w = extra + 1;
+    u32 copies = 0;
     for (u32 i = 0; i < n; i++) {
         u32 type = c->lists[list + 1 + i];
         if (!is_passed(c, type)) {
@@ -2651,8 +2678,11 @@ call_compound(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg
                 fill_block(c, block, copy, IR_NOP, 0, type, v);
                 v = (Operand){ OPERAND_LOCAL, copy };
             }
+            u32 root = check_struct_regs(c, type) & REGS_POINTER
+                         ? copy_root(c, v, type, &copies)
+                         : 0;
             u32 address = place_address(c, v);
-            code->extra[w++] = emit(c, IR_LOAD_AT, type, address, 0);
+            code->extra[w++] = emit(c, IR_LOAD_AT, type, address, root);
         } else {
             code->extra[w++] = operand_ir(c, v);
         }
@@ -2662,6 +2692,7 @@ call_compound(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg
     }
 
     code->extra[extra] = w - extra - 1;
+    c->body.copies = copies > c->body.copies ? copies : c->body.copies;
     u32 slot = 0;
     if (is_struct(c, ret)) {
         slot = add_slot(c, 0, ret, node);
@@ -3005,7 +3036,7 @@ address_of(Checker *c, u32 file, u32 token, Operand target)
         return poison;
     }
 
-    u8 binding = place_binding(c, file, target);
+    u8 binding = expose(c, file, target);
     if (binding != NODE_NONE) {
         report(
             c,
@@ -3029,7 +3060,6 @@ address_of(Checker *c, u32 file, u32 token, Operand target)
     if (is_slice(c, type)) {
         slot_at(c, slot + 1)->weight = WEIGHT_ADDRESSED;
     }
-    slot_at(c, slot)->weight = WEIGHT_ADDRESSED;
     return emit_value(c, IR_ADDR, pointer_type(c, type), slot, 0);
 }
 
@@ -3200,7 +3230,7 @@ slice_range(Checker *c, u32 file, u8 kind)
         return poison;
     }
     bool array = is_array(c, type);
-    if (array && place_binding(c, file, base) != NODE_NONE) {
+    if (array && expose(c, file, base) != NODE_NONE) {
         report(c, file, token, DIAG_SLICE_LOOP_VARIABLE, 0, 0);
         return poison;
     }
@@ -5435,6 +5465,7 @@ finish_ir(Checker *c, u32 decl, u32 nparams)
         .first_const = b->first_const,
         .nconsts = code->nconsts - b->first_const,
         .calls = b->calls,
+        .copies = b->copies,
     };
 
     if (code != &ir->code) {
@@ -6086,6 +6117,9 @@ print_function(FILE *out, const Checker *c, const IrFunc *fn)
         print_type(out, c, code->slots[fn->first_slot + i].type);
     }
     fputc('\n', out);
+    if (fn->copies) {
+        fprintf(out, "    copies: %u bytes\n", fn->copies);
+    }
 
     u32 depth = 1;
     u8 openers[PARSER_MAX_DEPTH * 4];
@@ -6124,6 +6158,16 @@ print_function(FILE *out, const Checker *c, const IrFunc *fn)
                 print_operand(out, c, fn, b);
                 break;
             case IR_LOAD_AT:
+                fputc(' ', out);
+                print_type(out, c, type);
+                fputc(' ', out);
+                print_operand(out, c, fn, a);
+                if (is_struct(c, type) &&
+                    (check_struct_regs(c, type) & REGS_POINTER) && b != NO_SLOT) {
+                    fputs(", ", out);
+                    print_slot(out, c, fn, b);
+                }
+                break;
             case IR_ZERO:
             case IR_NEG:
             case IR_NEG_WRAP:

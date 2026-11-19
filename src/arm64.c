@@ -255,6 +255,13 @@ typedef struct
     u32 locals;
     u32 *slot_offsets;
     u32 slot_offsets_cap;
+    const IrSlot *slots;
+    IrSlot *retyped;
+    u32 retyped_cap;
+    u32 by_ref;
+    u32 copies_at;
+    u32 copied;
+    u32 result_at;
     Open *open;
     u32 nopen;
     u32 open_cap;
@@ -496,20 +503,26 @@ float_imm(Emit *e, u32 reg, u64 bits, bool is_double)
 }
 
 static void
+sp_address(Emit *e, u32 d, u32 offset)
+{
+    if (offset >= (1u << 24)) {
+        e->error = "a function's frame is larger than 16 MB";
+        return;
+    }
+    put(e, OP_ADD_FROM_SP | (offset & 0xFFF) << 10 | d);
+    if (offset >> 12) {
+        put(e, OP_ADD_HIGH | (offset >> 12) << 10 | d << 5 | d);
+    }
+}
+
+static void
 memory(Emit *e, u32 op, u32 scale, u32 rt, u32 offset, u32 address)
 {
     if ((offset & ((1u << scale) - 1)) == 0 && (offset >> scale) < 4096) {
         put(e, op | (offset >> scale) << 10 | SP << 5 | rt);
         return;
     }
-    if (offset >= (1u << 24)) {
-        e->error = "a function's frame is larger than 16 MB";
-        return;
-    }
-    put(e, OP_ADD_FROM_SP | SF | (offset & 0xFFF) << 10 | address);
-    if (offset >> 12) {
-        put(e, OP_ADD_HIGH | (offset >> 12) << 10 | address << 5 | address);
-    }
+    sp_address(e, address, offset);
     put(e, op | address << 5 | rt);
 }
 
@@ -2128,13 +2141,9 @@ copy_bytes(Emit *e, u32 d, u32 s, u64 size)
 }
 
 static void
-copy_memory(Emit *e, u32 type, u32 a, u32 b)
+copy_between(Emit *e, u32 d, u32 s, u64 size)
 {
-    u64 size = check_type_size(e->c, type);
-    u32 d = fetch(e, a, X16);
-    u32 s = fetch(e, b, X17);
-    release(e, a);
-    release(e, b);
+    assert(s != X16);
     if (size > UNROLLED_BYTES) {
         mov(e, SF, X16, d);
         mov(e, SF, X17, s);
@@ -2148,6 +2157,17 @@ copy_memory(Emit *e, u32 type, u32 a, u32 b)
         size %= 32;
     }
     copy_bytes(e, d, s, size);
+}
+
+static void
+copy_memory(Emit *e, u32 type, u32 a, u32 b)
+{
+    u64 size = check_type_size(e->c, type);
+    u32 d = fetch(e, a, X16);
+    u32 s = fetch(e, b, X17);
+    release(e, a);
+    release(e, b);
+    copy_between(e, d, s, size);
 }
 
 static void
@@ -2263,6 +2283,26 @@ move_struct(Emit *e, bool load, u32 type, u32 first, u32 base, u32 offset)
     }
 }
 
+static void
+pass_pointer(Emit *e, u32 v, u32 type, u32 d)
+{
+    u32 s = fetch(e, v, X17);
+    release(e, v);
+
+    u32 root = e->ir->bs[e->fn->first + v];
+    if (root != NO_SLOT &&
+        e->ir->slots[e->fn->first_slot + root].weight != WEIGHT_ADDRESSED) {
+        mov(e, SF, d, s);
+        return;
+    }
+
+    u64 size = check_type_size(e->c, type);
+    sp_address(e, d, e->copies_at + e->copied);
+    copy_between(e, d, s, size);
+    e->copied += (u32)((size + 7) & ~(u64)7);
+    assert(e->copied <= e->fn->copies);
+}
+
 static NOINLINE u32
 pass_struct(Emit *e, u32 v, u32 ints, u32 floats)
 {
@@ -2272,6 +2312,10 @@ pass_struct(Emit *e, u32 v, u32 ints, u32 floats)
     if (first + (regs & REGS_COUNT) > 8) {
         e->error = "a call passes more than 8 integer or 8 float arguments";
         return 0;
+    }
+    if (regs & REGS_POINTER) {
+        pass_pointer(e, v, type, first);
+        return regs;
     }
     u32 p = fetch(e, v, X16);
     move_struct(e, true, type, first, p, 0);
@@ -2283,6 +2327,7 @@ static NOINLINE bool
 pass_args(Emit *e, const u32 *args)
 {
     u32 ints = 0, floats = 0;
+    e->copied = 0;
     for (u32 j = 1; j <= args[0]; j++) {
         u8 at = operand_info(e, args[j]);
         if (at & INFO_MEMORY) {
@@ -2305,10 +2350,26 @@ pass_args(Emit *e, const u32 *args)
     return true;
 }
 
+static NOINLINE u32
+by_pointer(const Emit *e, u32 type)
+{
+    return (check_struct_regs(e->c, type) & REGS_POINTER) != 0;
+}
+
+static NOINLINE void
+point_result(Emit *e, u32 type, u32 slot)
+{
+    if (by_pointer(e, type)) {
+        sp_address(e, X8, e->slot_offsets[slot]);
+    }
+}
+
 static NOINLINE void
 receive_result(Emit *e, u32 type, u32 slot)
 {
-    move_struct(e, false, type, 0, SP, e->slot_offsets[slot]);
+    if (!by_pointer(e, type)) {
+        move_struct(e, false, type, 0, SP, e->slot_offsets[slot]);
+    }
 }
 
 static void
@@ -2321,6 +2382,9 @@ call(Emit *e, u32 i, u32 type, u32 decl, u32 b, const Native *n)
     }
     save_for_call(e, ~e->free_int & INT_POOL, false);
     save_for_call(e, ~e->free_float & FLOAT_POOL, true);
+    if (t & INFO_MEMORY) {
+        point_result(e, type, args[args[0] + 1]);
+    }
 
     u64 pc = (u64)(uintptr_t)(e->code + here(e));
     u64 entry = (u64)(uintptr_t)(n->entries + decl);
@@ -2597,7 +2661,7 @@ store_pinned(Emit *e, u8 h, u32 type, u32 b)
 static void
 pin_by_weight(Emit *e, bool fl, u32 first, u32 cheap, u32 callee)
 {
-    const IrSlot *slots = e->ir->slots + e->fn->first_slot;
+    const IrSlot *slots = e->slots;
     u32 top[32];
     u32 ntop = 0;
     u32 room = (u32)__builtin_popcount(cheap | callee);
@@ -2639,6 +2703,18 @@ skip_struct(const Emit *e, u32 type, u32 *used)
     used[(regs & REGS_FLOAT) != 0] += regs & REGS_COUNT;
 }
 
+static NOINLINE const IrSlot *
+retype_params(Emit *e, const IrSlot *slots)
+{
+    u32 n = e->fn->nslots;
+    e->retyped = grow(e->retyped, &e->retyped_cap, n, sizeof *e->retyped);
+    memcpy(e->retyped, slots, n * sizeof *slots);
+    for (u32 m = e->by_ref; m; m &= m - 1) {
+        e->retyped[__builtin_ctz(m)].type = TYPE_ID_I64;
+    }
+    return e->retyped;
+}
+
 static void
 pin_locals(Emit *e)
 {
@@ -2653,6 +2729,16 @@ pin_locals(Emit *e)
     memset(e->slot_regs, NO_REG, fn->nslots);
     e->saved_int = 0;
     e->saved_float = 0;
+    e->by_ref = 0;
+    for (u32 p = 0; p < fn->nparams && p < 32; p++) {
+        if (e->info[slots[p].type] & INFO_MEMORY) {
+            e->by_ref |= by_pointer(e, slots[p].type) << p;
+        }
+    }
+    if (e->by_ref) {
+        slots = retype_params(e, slots);
+    }
+    e->slots = slots;
 
     u32 cheap[2] = { 0, 0 };
     u32 first = 0;
@@ -2719,7 +2805,7 @@ static void
 lay_out_frame(Emit *e)
 {
     const IrFunc *fn = e->fn;
-    const IrSlot *slots = e->ir->slots + fn->first_slot;
+    const IrSlot *slots = e->slots;
     e->slot_offsets = grow(
         e->slot_offsets,
         &e->slot_offsets_cap,
@@ -2773,7 +2859,22 @@ lay_out_frame(Emit *e)
             memory--;
         }
     }
-    e->locals = (offset + 7) & ~7u;
+
+    offset = (offset + 7) & ~7u;
+    if (fn->copies >= FRAME_LIMIT - offset) {
+        e->error = "a function's frame is larger than 16 MB";
+        return;
+    }
+    e->copies_at = offset;
+    offset += fn->copies;
+
+    u32 ret = (u32)e->c->types.arg1[e->c->decls.types[fn->decl]];
+    e->result_at = NO_VALUE;
+    if ((e->info[ret] & INFO_MEMORY) && by_pointer(e, ret)) {
+        e->result_at = offset;
+        offset += 8;
+    }
+    e->locals = offset;
 }
 
 static u32
@@ -2824,9 +2925,28 @@ hold_struct(Emit *e, u32 i, u32 a)
     e->vinfo[i] = INFO_MEMORY | 3;
 }
 
+static void
+param_address(Emit *e, u32 i, u32 p, u8 info)
+{
+    u8 h = e->slot_regs[p];
+    if (h != NO_REG) {
+        add_alias(e, i, h, info);
+        return;
+    }
+    u32 d = result(e, i, info);
+    memory(e, OP_LDRX, 3, d, e->slot_offsets[p], d);
+}
+
 static NOINLINE void
 return_struct(Emit *e, u32 type, u32 a)
 {
+    if (e->result_at != NO_VALUE) {
+        u32 s = fetch(e, a, X17);
+        release(e, a);
+        memory(e, OP_LDRX, 3, X16, e->result_at, X16);
+        copy_between(e, X16, s, check_type_size(e->c, type));
+        return;
+    }
     u32 p = fetch(e, a, X16);
     if (p < 8) {
         mov(e, SF, X16, p);
@@ -2869,7 +2989,10 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
     memset(code, 0, PROLOGUE_WORDS * sizeof *code);
     e->at = code + PROLOGUE_WORDS;
 
-    const IrSlot *slots = ir->slots + fn->first_slot;
+    const IrSlot *slots = e->slots;
+    if (e->result_at != NO_VALUE) {
+        memory(e, OP_STRX, 3, X8, e->result_at, X16);
+    }
     u32 ints = 0, floats = 0;
     for (u32 p = 0; p < fn->nparams; p++) {
         u32 type = slots[p].type;
@@ -2943,19 +3066,13 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                 store_typed(e, type, r, e->slot_offsets[a]);
                 break;
             }
-            case IR_ADDR: {
-                u32 d = result(e, i, e->info[type]);
-                u32 offset = e->slot_offsets[a];
-                if (offset >= (1u << 24)) {
-                    e->error = "a function's frame is larger than 16 MB";
+            case IR_ADDR:
+                if (a < 32 && (e->by_ref >> a & 1)) {
+                    param_address(e, i, a, e->info[type]);
                     break;
                 }
-                put(e, OP_ADD_FROM_SP | (offset & 0xFFF) << 10 | d);
-                if (offset >> 12) {
-                    put(e, OP_ADD_HIGH | (offset >> 12) << 10 | d << 5 | d);
-                }
+                sp_address(e, result(e, i, e->info[type]), e->slot_offsets[a]);
                 break;
-            }
             case IR_LOAD_AT: {
                 u8 t = e->info[type];
                 if (t & INFO_MEMORY) {
@@ -3299,6 +3416,7 @@ arm64_compile(Native *n, const Checker *c)
     free(e.spill_free);
     free(e.slot_offsets);
     free(e.slot_regs);
+    free(e.retyped);
     free(e.aliases);
     free(e.alias_at);
     free(e.open);

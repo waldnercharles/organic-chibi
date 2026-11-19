@@ -107,7 +107,6 @@ typedef struct
     u8 count;
     u8 align;
     u8 leaf;
-    u8 xregs;
     u8 vregs;
     u32 size;
 } Record;
@@ -1065,21 +1064,34 @@ call_args(Gen *g, u32 k, int depth, bool keep)
 {
     const Helper *h = &g->helpers[k];
     emit(g, "h%u(", k);
+    u8 shared = NO_RECORD;
+    size_t shared_at = 0;
+    size_t shared_len = 0;
     for (u32 p = 0; p < h->nparams; p++) {
         if (p) {
             emit(g, ", ");
         }
-        if (h->records[p] != NO_RECORD && h->pointers[p]) {
-            int call = chance(g, 15) ? pick_record_call(g, h->records[p], NTYPES)
-                                     : -1;
+        u8 r = h->records[p];
+        if (r != NO_RECORD && h->pointers[p]) {
+            int call = chance(g, 15) ? pick_record_call(g, r, NTYPES) : -1;
             emit(g, "&");
             if (call >= 0) {
                 record_call(g, (u32)call);
             } else {
-                record_place(g, h->records[p], true, MAX_VARS);
+                shared = r;
+                shared_at = g->len;
+                record_place(g, r, true, MAX_VARS);
+                shared_len = g->len - shared_at;
             }
-        } else if (h->records[p] != NO_RECORD) {
-            record_value(g, g->nvars, h->records[p]);
+        } else if (r != NO_RECORD && r == shared && chance(g, 60)) {
+            emit(g, "%.*s", (int)shared_len, g->out + shared_at);
+        } else if (r != NO_RECORD &&
+                   count_record_places(g, r, false, g->nvars) && chance(g, 50)) {
+            record_place(g, r, false, g->nvars);
+        } else if (r != NO_RECORD) {
+            g->nesting++;
+            record_value(g, g->nvars, r);
+            g->nesting--;
         } else if (h->slices[p]) {
             slice_argument(g, h->params[p], h->lengths[p], keep);
         } else if (h->pointers[p]) {
@@ -1895,7 +1907,6 @@ lay_out_record(Gen *g, Record *rec)
 
     u32 piece = leaf == NTYPES ? 0 : type_bits[leaf] / 8u;
     rec->vregs = piece && rec->size <= 4 * piece ? (u8)(rec->size / piece) : 0;
-    rec->xregs = !rec->vregs && rec->size <= 16 ? (u8)((rec->size + 7) / 8) : 0;
 }
 
 static void
@@ -2745,7 +2756,7 @@ field_value(Gen *g, u32 limit, const Field *f)
     if (f->slice) {
         any_slice(g, limit, f->type);
     } else if (f->record == NO_RECORD && !f->length) {
-        expr(g, f->type, 1);
+        expr(g, f->type, g->nesting ? 0 : 1);
     } else if (f->record == NO_RECORD) {
         if (chance(g, 30)) {
             emit(g, "%s", type_names[f->type]);
@@ -3703,9 +3714,8 @@ random_typed_program(u64 *rng, char *buf)
         h->ret_slice = chance(&g, 20);
         h->ret_record = NO_RECORD;
         u8 returned = g.nrecords ? (u8)random_below(rng, (int)g.nrecords) : 0;
-        const Record *rec = &g.records[returned];
-        if (g.nrecords && !h->ret_slice && (rec->xregs || rec->vregs) &&
-            !holds_slices(&g, returned) && chance(&g, 30)) {
+        if (g.nrecords && !h->ret_slice && !holds_slices(&g, returned) &&
+            chance(&g, 30)) {
             h->ret_record = returned;
         }
         h->ret_length = (u16)random_below(rng, 5);
@@ -3726,15 +3736,19 @@ random_typed_program(u64 *rng, char *buf)
         g.max_loops = 1;
         emit(&g, "fn h%u(", k);
         u32 floats = 0;
+        u8 pointed = NO_RECORD;
         for (u32 p = 0; p < h->nparams; p++) {
             bool source = h->ret_slice && p == 1;
             h->records[p] = NO_RECORD;
-            u8 r = g.nrecords ? (u8)random_below(rng, (int)g.nrecords) : 0;
+            bool alias = pointed != NO_RECORD && chance(&g, 70);
+            u8 r = alias      ? pointed
+                 : g.nrecords ? (u8)random_below(rng, (int)g.nrecords)
+                              : 0;
             const Record *pr = &g.records[r];
-            bool value = (pr->xregs || pr->vregs) && floats + pr->vregs <= 8 &&
-                         chance(&g, 50);
-            if (!source && p > 0 && g.nrecords && chance(&g, 20) &&
+            bool value = floats + pr->vregs <= 8 && (alias || chance(&g, 50));
+            if (!source && p > 0 && g.nrecords && chance(&g, alias ? 80 : 20) &&
                 (value || !holds_slices(&g, r))) {
+                pointed = value ? pointed : r;
                 h->records[p] = r;
                 h->params[p] = T_INT;
                 h->pointers[p] = !value;

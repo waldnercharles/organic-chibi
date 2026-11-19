@@ -525,7 +525,7 @@ Old Chibi paid the cost from the other side. When its analysis couldn't prove th
 
 **Cost of deciding late.** The change would be silent wherever aliasing exists, and structural for the ABI.
 
-**Decided 2026-11-19** as recommended below: parameters behave as copies, and a large struct goes by pointer to a copy that the caller skips when nothing the callee can reach is able to write the original. Checker step 3d.8 builds it. See [../decisions.md](../decisions.md).
+**Decided 2026-11-19** as recommended below: parameters behave as copies, and a large struct goes by pointer to a copy that the caller skips when nothing the callee can reach is able to write the original. Checker step 3d.8 built it the same day ([checker-and-ir.md](checker-and-ir.md) section 8). See [../decisions.md](../decisions.md).
 
 **Recommendation.**
 - **Copy semantics.** Parameters are immutable bindings with copy semantics, so the callee always sees the values as they were at the call.
