@@ -30,6 +30,7 @@ enum
     CALLEE_INT = 0x1FF80000u,
     CALLEE_FLOAT = 0x0000FF00u,
     ARGUMENTS = 0x000000FFu,
+    FIRST_INT_ARG = 1,
     ALIAS = 64,
     PROLOGUE_WORDS = 13,
     PROBE_INTERVAL = 4096,
@@ -119,9 +120,13 @@ enum
     OP_ADRP = 0x90000000u,
     OP_LDR_X16_X16 = 0xF9400210u,
     OP_PUSH_FRAME = 0xA9BF7BFDu,
+    OP_PUSH_CONTEXT_FRAME = 0xA9BE7BFDu,
+    OP_SAVE_CONTEXT = 0xF9000BA0u,
+    OP_LOAD_CONTEXT = 0xF9400BA0u,
     OP_SET_FRAME = 0x910003FDu,
     OP_RESET_SP = 0x910003BFu,
     OP_POP_FRAME = 0xA8C17BFDu,
+    OP_POP_CONTEXT_FRAME = 0xA8C27BFDu,
     OP_SUB_SP = 0xD10003FFu,
     OP_STP_X = 0xA9000000u,
     OP_STP_X_POST = 0xA8800000u,
@@ -264,6 +269,8 @@ typedef struct
     u32 copies_at;
     u32 copied;
     u32 result_at;
+    bool called;
+    bool context_saved;
     Open *open;
     u32 nopen;
     u32 open_cap;
@@ -745,7 +752,7 @@ static NOINLINE u32
 late_arg(Emit *e, const u32 *args, u32 v, u8 info)
 {
     bool fl = is_float(info);
-    u32 same = 0;
+    u32 same = fl ? 0 : FIRST_INT_ARG;
     for (u32 j = 1; j <= args[0] && same < 8; j++) {
         if (args[j] == v) {
             add_alias(e, v, (fl ? 32 : 0) + same, info);
@@ -780,7 +787,7 @@ result(Emit *e, u32 v, u8 info)
         } else if (kind == IR_CALL) {
             const u32 *args = e->ir->extra + e->fn->first_extra + e->ir->bs[at];
             bool fl = is_float(info);
-            u32 same = 0;
+            u32 same = fl ? 0 : FIRST_INT_ARG;
             for (u32 j = 1; j <= args[0] && same < 8; j++) {
                 if (args[j] == v) {
                     add_alias(e, v, (fl ? 32 : 0) + same, info);
@@ -1976,7 +1983,7 @@ half_target(const Emit *e, u32 i, u32 half)
                      : NO_REG;
         case IR_CALL: {
             const u32 *args = e->ir->extra + e->fn->first_extra + e->ir->bs[g];
-            u32 same = 0;
+            u32 same = FIRST_INT_ARG;
             for (u32 j = 1; j <= args[0] && same < 8; j++) {
                 if (args[j] == v) {
                     return (u8)same;
@@ -2340,7 +2347,7 @@ pass_struct(Emit *e, u32 v, u32 ints, u32 floats)
     u32 regs = check_struct_regs(e->c, type);
     u32 first = regs & REGS_FLOAT ? floats : ints;
     if (first + (regs & REGS_COUNT) > 8) {
-        e->error = "a call passes more than 8 integer or 8 float arguments";
+        e->error = "a call passes more than 7 integer or 8 float arguments";
         return 0;
     }
     if (regs & REGS_POINTER) {
@@ -2356,7 +2363,7 @@ pass_struct(Emit *e, u32 v, u32 ints, u32 floats)
 static NOINLINE bool
 pass_args(Emit *e, const u32 *args)
 {
-    u32 ints = 0, floats = 0;
+    u32 ints = FIRST_INT_ARG, floats = 0;
     e->copied = 0;
     for (u32 j = 1; j <= args[0]; j++) {
         u8 at = operand_info(e, args[j]);
@@ -2372,7 +2379,7 @@ pass_args(Emit *e, const u32 *args)
         bool fl = is_float(at);
         u32 d = fl ? floats++ : ints++;
         if (d >= 8) {
-            e->error = "a call passes more than 8 integer or 8 float arguments";
+            e->error = "a call passes more than 7 integer or 8 float arguments";
             return false;
         }
         move_into(e, d, args[j], fl);
@@ -2402,6 +2409,17 @@ receive_result(Emit *e, u32 type, u32 slot)
     }
 }
 
+static bool
+inside_loop(const Emit *e)
+{
+    for (u32 k = 0; k < e->nopen; k++) {
+        if (e->open[k].kind == IR_LOOP) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void
 call(Emit *e, u32 i, u32 type, u32 decl, u32 b, const Native *n)
 {
@@ -2415,6 +2433,11 @@ call(Emit *e, u32 i, u32 type, u32 decl, u32 b, const Native *n)
     if (t & INFO_MEMORY) {
         point_result(e, type, args[args[0] + 1]);
     }
+    if (e->called || inside_loop(e)) {
+        put(e, OP_LOAD_CONTEXT);
+        e->context_saved = true;
+    }
+    e->called = true;
 
     u64 entry = (u64)(uintptr_t)(n->entries + decl);
     adrp(e, X16, entry);
@@ -2773,7 +2796,7 @@ pin_locals(Emit *e)
     if (fn->calls == 0) {
         cheap[0] = ARGUMENTS;
         cheap[1] = ARGUMENTS;
-        u32 used[2] = { 0, 0 };
+        u32 used[2] = { FIRST_INT_ARG, 0 };
         for (u32 p = 0; p < fn->nparams; p++) {
             u8 info = e->info[slots[p].type];
             if (info & INFO_MEMORY) {
@@ -2933,7 +2956,7 @@ receive_param(Emit *e, u32 p, u32 ints, u32 floats)
     u32 regs = check_struct_regs(e->c, slot->type);
     u32 first = regs & REGS_FLOAT ? floats : ints;
     if (first + (regs & REGS_COUNT) > 8) {
-        e->error = "a function has more than 8 integer or 8 float parameters";
+        e->error = "a function has more than 7 integer or 8 float parameters";
         return 0;
     }
     if (slot->weight) {
@@ -2997,6 +3020,8 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
     e->spill_max = 0;
     e->naliases = 0;
     e->epilogue = 0;
+    e->called = false;
+    e->context_saved = false;
     e->free_int = INT_POOL;
     e->free_float = FLOAT_POOL;
     e->fused = NO_VALUE;
@@ -3021,7 +3046,7 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
     if (e->result_at != NO_VALUE) {
         memory(e, OP_STRX, 3, X8, e->result_at, X16);
     }
-    u32 ints = 0, floats = 0;
+    u32 ints = FIRST_INT_ARG, floats = 0;
     for (u32 p = 0; p < fn->nparams; p++) {
         u32 type = slots[p].type;
         if (e->info[type] & INFO_MEMORY) {
@@ -3036,7 +3061,7 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
         bool fl = is_float(e->info[type]);
         u32 r = fl ? floats++ : ints++;
         if (r >= 8) {
-            e->error = "a function has more than 8 integer or 8 float "
+            e->error = "a function has more than 7 integer or 8 float "
                        "parameters";
             return 0;
         }
@@ -3307,7 +3332,7 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
         if (frame) {
             put(e, OP_RESET_SP);
         }
-        put(e, OP_POP_FRAME);
+        put(e, e->context_saved ? OP_POP_CONTEXT_FRAME : OP_POP_FRAME);
     }
     put(e, OP_RET);
 
@@ -3340,8 +3365,11 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
     u32 prologue[PROLOGUE_WORDS];
     u32 k = 0;
     if (record) {
-        prologue[k++] = OP_PUSH_FRAME;
+        prologue[k++] = e->context_saved ? OP_PUSH_CONTEXT_FRAME : OP_PUSH_FRAME;
         prologue[k++] = OP_SET_FRAME;
+    }
+    if (e->context_saved) {
+        prologue[k++] = OP_SAVE_CONTEXT;
     }
     u32 jump = k;
     if (probe) {

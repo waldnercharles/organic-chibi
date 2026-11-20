@@ -26,6 +26,7 @@
 - **Stack probes:** a frame of 4 KB or more is reserved one page at a time by a stub after the traps, which stores zero at each new page, so a large frame cannot step over the guard page. The prologue branches to the stub and the stub branches back. A frame of 16 MB or more is an error.
 - **Values** each get a register when they are made, and free it at their one use. Integer values use `x9`–`x15` and floats `v16`–`v28`. When none is free, the oldest value is spilled to the stack, because it will be used last. A value about to be stored to a register-held local, returned, or passed as the last argument of a call is computed straight into that register.
 - **Calls** go through a table of function addresses at the start of the mapping, using `adrp`, `ldr` and `blr`. Replacing one entry redirects every call to that function, and a test does so while the program is loaded. Values still needed after a call move to free callee-saved registers, and are spilled only when none is left. Calling directly with `bl` instead measured the same on `fib` (7.7 against 7.8 ms), so the table stays.
+- **The context** (step 3d.9, 2026-11-20) arrives in `x0`, and integer arguments start at `x1`. A function passes `x0` unchanged to a call that no call precedes in the code and no loop surrounds. Before any other call it reloads `x0` with `ldr x0, [x29, #16]`, and a function that reloads pushes a 32-byte frame record and stores `x0` there in its prologue. A function without calls uses `x0` as one more free register.
 - **Frames:** each function reserves 13 words before its body. When the body is done, the prologue it needs is written at the end of those words and the function's entry skips the rest. A function without calls, stack slots or callee-saved registers has no prologue. Every `return` jumps to one shared epilogue.
 - **Comparisons** that feed the next `if` become a compare and a conditional branch, with no `bool` in a register. `x % 2^k == 0` and `x & c == 0` become one `tst`.
 - **Constants** become immediates where arm64 has them: 12-bit and shifted 12-bit for `+`, `-` and comparisons, negated as `sub` or `cmn` where the flags still mean the same, and bitmask immediates for `&`, `|` and `^`. A constant on the left of a commutative operator or a comparison moves to the right.
@@ -37,7 +38,7 @@
 
 **Limits:**
 - arm64 only;
-- at most 8 integer and 8 float arguments;
+- at most 7 integer arguments after the context, and 8 float arguments;
 - a local keeps one register for the whole function, so a function with more hot locals than registers keeps the lighter ones in memory even where they are hot;
 - values are integers, floats, `bool`, enums, pointers, structs, and arrays and slices of those. An optional or error union is rejected with an error, and so is a struct or array passed or returned by value. A slice argument counts as two integer arguments.
 

@@ -89,6 +89,15 @@ fn(Program *p, const char *name)
     return native_entry(&p->n, decl_named(p, name));
 }
 
+static uint8_t CONTEXT[16];
+static u32 lost_contexts;
+
+static void
+see_context(const void *context)
+{
+    lost_contexts += context != CONTEXT;
+}
+
 static void
 release_program(Program *p)
 {
@@ -125,14 +134,14 @@ catch_traps(void)
     sigaction(SIGTRAP, &sa, NULL);
 }
 
-typedef int64_t I2(int64_t, int64_t);
+typedef int64_t I2(void *, int64_t, int64_t);
 
 static int
 call_i2(I2 *f, int64_t a, int64_t b, int64_t *result)
 {
     trap_kind = 0;
     if (sigsetjmp(trap_jump, 1) == 0) {
-        *result = f(a, b);
+        *result = f(CONTEXT, a, b);
         return 0;
     }
     return trap_kind;
@@ -540,12 +549,11 @@ static const char
                 "    return scale(x) + scale(x, 2)\n"
                 "}\n"
                 "fn many(a: int, b: int, c: int, d: int, e: int, f: int, g: "
-                "int, h: int) -> int {\n"
-                "    return a + 2 * b + 3 * c + 4 * d + 5 * e + 6 * f + 7 * g "
-                "+ 8 * h\n"
+                "int) -> int {\n"
+                "    return a + 2 * b + 3 * c + 4 * d + 5 * e + 6 * f + 7 * g\n"
                 "}\n"
                 "fn use_many() -> int {\n"
-                "    return many(1, 2, 3, 4, 5, 6, 7, 8)\n"
+                "    return many(1, 2, 3, 4, 5, 6, 7)\n"
                 "}\n"
                 "fn floats(x: f32, y: f64) -> f64 {\n"
                 "    h := x / 2\n"
@@ -567,16 +575,16 @@ static const char
                 "    return one() + 10\n"
                 "}\n";
 
-typedef int64_t I1(int64_t);
-typedef int64_t I0(void);
-typedef bool B1(int64_t);
-typedef bool B3(bool, bool, bool);
-typedef int64_t I4(int64_t, int64_t, int64_t, int64_t);
-typedef double D4(int64_t, double, int32_t, float);
-typedef double D0(void);
-typedef double DFD(float, double);
-typedef int64_t ID(double);
-typedef int64_t IF(float);
+typedef int64_t I1(void *, int64_t);
+typedef int64_t I0(void *);
+typedef bool B1(void *, int64_t);
+typedef bool B3(void *, bool, bool, bool);
+typedef int64_t I4(void *, int64_t, int64_t, int64_t, int64_t);
+typedef double D4(void *, int64_t, double, int32_t, float);
+typedef double D0(void *);
+typedef double DFD(void *, float, double);
+typedef int64_t ID(void *, double);
+typedef int64_t IF(void *, float);
 
 static int64_t
 deep_reference(int64_t a, int64_t b, int64_t c, int64_t d)
@@ -591,7 +599,7 @@ call_id(ID *f, double x, int64_t *result)
 {
     trap_kind = 0;
     if (sigsetjmp(trap_jump, 1) == 0) {
-        *result = f(x);
+        *result = f(CONTEXT, x);
         return 0;
     }
     return trap_kind;
@@ -602,7 +610,7 @@ call_if(IF *f, float x, int64_t *result)
 {
     trap_kind = 0;
     if (sigsetjmp(trap_jump, 1) == 0) {
-        *result = f(x);
+        *result = f(CONTEXT, x);
         return 0;
     }
     return trap_kind;
@@ -613,44 +621,44 @@ TEST_CASE(control_flow)
     Program p;
     REQUIRE(build(&p, CONTROL));
     catch_traps();
-    REQUIRE(((I1 *)fn(&p, "sum"))(100) == 4950);
-    REQUIRE(((I1 *)fn(&p, "sum"))(0) == 0);
-    REQUIRE(((I1 *)fn(&p, "collatz"))(27) == 111);
-    REQUIRE(((I1 *)fn(&p, "fib"))(20) == 6765);
-    REQUIRE(((B1 *)fn(&p, "is_even"))(10));
-    REQUIRE(!((B1 *)fn(&p, "is_even"))(7));
-    REQUIRE(((I0 *)fn(&p, "bytes"))() == 256);
-    REQUIRE(((I1 *)fn(&p, "skips"))(10) == 1 + 2 + 4 + 5 + 7 + 8 + 10);
+    REQUIRE(((I1 *)fn(&p, "sum"))(CONTEXT, 100) == 4950);
+    REQUIRE(((I1 *)fn(&p, "sum"))(CONTEXT, 0) == 0);
+    REQUIRE(((I1 *)fn(&p, "collatz"))(CONTEXT, 27) == 111);
+    REQUIRE(((I1 *)fn(&p, "fib"))(CONTEXT, 20) == 6765);
+    REQUIRE(((B1 *)fn(&p, "is_even"))(CONTEXT, 10));
+    REQUIRE(!((B1 *)fn(&p, "is_even"))(CONTEXT, 7));
+    REQUIRE(((I0 *)fn(&p, "bytes"))(CONTEXT) == 256);
+    REQUIRE(((I1 *)fn(&p, "skips"))(CONTEXT, 10) == 1 + 2 + 4 + 5 + 7 + 8 + 10);
 
     I2 *logic = (I2 *)fn(&p, "logic");
     I2 *count_flags = (I2 *)fn(&p, "count_flags");
     for (int64_t a = -2; a <= 2; a++) {
         for (int64_t b = -2; b <= 2; b++) {
-            REQUIRE(logic(a, b) == ((a > 0 && b > 0) || a == b));
+            REQUIRE(logic(CONTEXT, a, b) == ((a > 0 && b > 0) || a == b));
             bool pp = a > b, q = a < b || a == 0;
-            REQUIRE(count_flags(a, b) == (pp || (q && !pp)) + 10 * a);
+            REQUIRE(count_flags(CONTEXT, a, b) == (pp || (q && !pp)) + 10 * a);
         }
     }
     B3 *flags = (B3 *)fn(&p, "flags");
     for (int m = 0; m < 8; m++) {
         bool a = m & 1, b = m & 2, c = m & 4;
-        REQUIRE(flags(a, b, c) == (a && (b || c)));
+        REQUIRE(flags(CONTEXT, a, b, c) == (a && (b || c)));
     }
 
     I4 *deep = (I4 *)fn(&p, "deep");
-    REQUIRE(deep(3, -5, 7, 11) == deep_reference(3, -5, 7, 11));
-    REQUIRE(deep(-1, 2, -3, 4) == deep_reference(-1, 2, -3, 4));
-    REQUIRE(((I1 *)fn(&p, "live"))(4) == 4 + 55 * (4 + 5));
+    REQUIRE(deep(CONTEXT, 3, -5, 7, 11) == deep_reference(3, -5, 7, 11));
+    REQUIRE(deep(CONTEXT, -1, 2, -3, 4) == deep_reference(-1, 2, -3, 4));
+    REQUIRE(((I1 *)fn(&p, "live"))(CONTEXT, 4) == 4 + 55 * (4 + 5));
 
-    REQUIRE(((D4 *)fn(&p, "mix"))(1, 2.5, 3, 4.5f) == 11.0);
-    REQUIRE(((D0 *)fn(&p, "use_mix"))() == 22.0);
-    REQUIRE(((I1 *)fn(&p, "use_scale"))(3) == 36);
-    REQUIRE(((I0 *)fn(&p, "use_many"))() == 1 + 4 + 9 + 16 + 25 + 36 + 49 + 64);
+    REQUIRE(((D4 *)fn(&p, "mix"))(CONTEXT, 1, 2.5, 3, 4.5f) == 11.0);
+    REQUIRE(((D0 *)fn(&p, "use_mix"))(CONTEXT) == 22.0);
+    REQUIRE(((I1 *)fn(&p, "use_scale"))(CONTEXT, 3) == 36);
+    REQUIRE(((I0 *)fn(&p, "use_many"))(CONTEXT) == 1 + 4 + 9 + 16 + 25 + 36 + 49);
 
     DFD *floats = (DFD *)fn(&p, "floats");
-    REQUIRE(floats(5.0f, 4.0) == 2.5 * 4.0 - 0.25);
-    REQUIRE(floats(2.0f, 4.0) == -4.0);
-    REQUIRE(floats(5.0f, NAN) == -NAN || isnan(floats(5.0f, NAN)));
+    REQUIRE(floats(CONTEXT, 5.0f, 4.0) == 2.5 * 4.0 - 0.25);
+    REQUIRE(floats(CONTEXT, 2.0f, 4.0) == -4.0);
+    REQUIRE(floats(CONTEXT, 5.0f, NAN) == -NAN || isnan(floats(CONTEXT, 5.0f, NAN)));
 
     int64_t got = 0;
     REQUIRE(call_id((ID *)fn(&p, "to_int"), -2.75, &got) == 0 && got == -2);
@@ -668,9 +676,9 @@ TEST_CASE(control_flow)
     REQUIRE(call_id((ID *)fn(&p, "to_i32f"), 2147483647.9, &got) == 0 && got == INT32_MAX);
 
     I0 *call_one = (I0 *)fn(&p, "call_one");
-    REQUIRE(call_one() == 11);
+    REQUIRE(call_one(CONTEXT) == 11);
     native_replace(&p.n, decl_named(&p, "one"), fn(&p, "two"));
-    REQUIRE(call_one() == 12);
+    REQUIRE(call_one(CONTEXT) == 12);
 
     release_program(&p);
     return true;
@@ -831,30 +839,30 @@ TEST_CASE(pointers)
     Program p;
     REQUIRE(build(&p, POINTERS));
     int64_t r = 0;
-    REQUIRE(((I2 *)fn(&p, "run"))(1, 1) == 14);
-    REQUIRE(((I2 *)fn(&p, "run"))(7, -3) == 18);
+    REQUIRE(((I2 *)fn(&p, "run"))(CONTEXT, 1, 1) == 14);
+    REQUIRE(((I2 *)fn(&p, "run"))(CONTEXT, 7, -3) == 18);
     REQUIRE(call_i2((I2 *)fn(&p, "over"), 5, 6, &r) == 0 && r == 11);
     REQUIRE(call_i2((I2 *)fn(&p, "over"), INT64_MAX, 1, &r) == TRAP_OVERFLOW);
-    REQUIRE(((I2 *)fn(&p, "reload"))(4, 1) == 20);
-    REQUIRE(((I2 *)fn(&p, "reload"))(-2, 0) == -8);
-    REQUIRE(((I2 *)fn(&p, "alias"))(3, 1) == 24);
-    REQUIRE(((I2 *)fn(&p, "alias"))(-5, 2) == -18);
-    REQUIRE(((I2 *)fn(&p, "narrow"))(1, 2) == 2001015);
-    REQUIRE(((I2 *)fn(&p, "narrow"))(300, 70000) == 4464001744);
-    REQUIRE(((I2 *)fn(&p, "narrow"))(200, 0) == 637);
-    REQUIRE(((I2 *)fn(&p, "choose"))(1, 2) == 101002);
-    REQUIRE(((I2 *)fn(&p, "choose"))(5, 3) == 5103);
-    REQUIRE(((I2 *)fn(&p, "same"))(1, 2) == 11);
-    REQUIRE(((I2 *)fn(&p, "same"))(4, 4) == 11);
-    REQUIRE(((I2 *)fn(&p, "accumulate"))(10, 0) == 45);
-    REQUIRE(((I2 *)fn(&p, "accumulate"))(0, 7) == 7);
+    REQUIRE(((I2 *)fn(&p, "reload"))(CONTEXT, 4, 1) == 20);
+    REQUIRE(((I2 *)fn(&p, "reload"))(CONTEXT, -2, 0) == -8);
+    REQUIRE(((I2 *)fn(&p, "alias"))(CONTEXT, 3, 1) == 24);
+    REQUIRE(((I2 *)fn(&p, "alias"))(CONTEXT, -5, 2) == -18);
+    REQUIRE(((I2 *)fn(&p, "narrow"))(CONTEXT, 1, 2) == 2001015);
+    REQUIRE(((I2 *)fn(&p, "narrow"))(CONTEXT, 300, 70000) == 4464001744);
+    REQUIRE(((I2 *)fn(&p, "narrow"))(CONTEXT, 200, 0) == 637);
+    REQUIRE(((I2 *)fn(&p, "choose"))(CONTEXT, 1, 2) == 101002);
+    REQUIRE(((I2 *)fn(&p, "choose"))(CONTEXT, 5, 3) == 5103);
+    REQUIRE(((I2 *)fn(&p, "same"))(CONTEXT, 1, 2) == 11);
+    REQUIRE(((I2 *)fn(&p, "same"))(CONTEXT, 4, 4) == 11);
+    REQUIRE(((I2 *)fn(&p, "accumulate"))(CONTEXT, 10, 0) == 45);
+    REQUIRE(((I2 *)fn(&p, "accumulate"))(CONTEXT, 0, 7) == 7);
     release_program(&p);
 
     char *text = malloc(64 * 1024);
     REQUIRE(build(&p, large_frame(text, 64 * 1024)));
     free(text);
-    REQUIRE(((I2 *)fn(&p, "big"))(1, 0) == 180901);
-    REQUIRE(((I2 *)fn(&p, "big"))(-7, 3) == 176096);
+    REQUIRE(((I2 *)fn(&p, "big"))(CONTEXT, 1, 0) == 180901);
+    REQUIRE(((I2 *)fn(&p, "big"))(CONTEXT, -7, 3) == 176096);
     release_program(&p);
     return true;
 }
@@ -988,8 +996,8 @@ TEST_CASE(arrays)
     Program p;
     REQUIRE(build(&p, ARRAYS));
     int64_t r = 0;
-    REQUIRE(((I2 *)fn(&p, "sum"))(1, 2) == 110);
-    REQUIRE(((I2 *)fn(&p, "sum"))(-5, 7) == 109);
+    REQUIRE(((I2 *)fn(&p, "sum"))(CONTEXT, 1, 2) == 110);
+    REQUIRE(((I2 *)fn(&p, "sum"))(CONTEXT, -5, 7) == 109);
     REQUIRE(call_i2((I2 *)fn(&p, "lit"), 0, 0, &r) == 0 && r == 13);
     REQUIRE(call_i2((I2 *)fn(&p, "lit"), 2, 1, &r) == 0 && r == 37);
     REQUIRE(call_i2((I2 *)fn(&p, "lit"), 3, 0, &r) == TRAP_BOUNDS);
@@ -1000,12 +1008,12 @@ TEST_CASE(arrays)
     REQUIRE(call_i2((I2 *)fn(&p, "via"), 5, 2, &r) == 0 && r == 18005);
     REQUIRE(call_i2((I2 *)fn(&p, "via"), 5, 3, &r) == TRAP_BOUNDS);
     REQUIRE(call_i2((I2 *)fn(&p, "via"), 1, 255, &r) == TRAP_BOUNDS);
-    REQUIRE(((I2 *)fn(&p, "tails"))(1, 2) == 100006498);
-    REQUIRE(((I2 *)fn(&p, "tails"))(200, -1) == 42997040);
-    REQUIRE(((I2 *)fn(&p, "rezero"))(7, 3) == 0);
-    REQUIRE(((I2 *)fn(&p, "rezero"))(-1, 255) == 0);
-    REQUIRE(((I2 *)fn(&p, "big"))(1, 2) == 5003);
-    REQUIRE(((I2 *)fn(&p, "big"))(-3, 9) == 5006);
+    REQUIRE(((I2 *)fn(&p, "tails"))(CONTEXT, 1, 2) == 100006498);
+    REQUIRE(((I2 *)fn(&p, "tails"))(CONTEXT, 200, -1) == 42997040);
+    REQUIRE(((I2 *)fn(&p, "rezero"))(CONTEXT, 7, 3) == 0);
+    REQUIRE(((I2 *)fn(&p, "rezero"))(CONTEXT, -1, 255) == 0);
+    REQUIRE(((I2 *)fn(&p, "big"))(CONTEXT, 1, 2) == 5003);
+    REQUIRE(((I2 *)fn(&p, "big"))(CONTEXT, -3, 9) == 5006);
     REQUIRE(call_i2((I2 *)fn(&p, "odd"), 4, 1, &r) == 0 && r == 103);
     REQUIRE(call_i2((I2 *)fn(&p, "odd"), 0, 0, &r) == 0 && r == 62);
     REQUIRE(call_i2((I2 *)fn(&p, "odd"), 7, 0, &r) == TRAP_BOUNDS);
@@ -1016,8 +1024,8 @@ TEST_CASE(arrays)
     REQUIRE(call_i2((I2 *)fn(&p, "kinds"), 1, 2, &r) == 0 && r == 112);
     REQUIRE(call_i2((I2 *)fn(&p, "kinds"), 2, 0, &r) == 0 && r == 208);
     REQUIRE(call_i2((I2 *)fn(&p, "kinds"), 0, -1, &r) == TRAP_BOUNDS);
-    REQUIRE(((I2 *)fn(&p, "swap_rows"))(1, 2) == 21);
-    REQUIRE(((I2 *)fn(&p, "swap_rows"))(5, -3) == -25);
+    REQUIRE(((I2 *)fn(&p, "swap_rows"))(CONTEXT, 1, 2) == 21);
+    REQUIRE(((I2 *)fn(&p, "swap_rows"))(CONTEXT, 5, -3) == -25);
     release_program(&p);
     return true;
 }
@@ -1120,8 +1128,8 @@ typedef struct
     uint8_t g;
 } Mixed;
 
-typedef int64_t MI(Mixed *, int64_t);
-typedef int64_t M3(Mixed *);
+typedef int64_t MI(void *, Mixed *, int64_t);
+typedef int64_t M3(void *, Mixed *);
 
 TEST_CASE(structs)
 {
@@ -1132,10 +1140,10 @@ TEST_CASE(structs)
 
     Mixed ms[3];
     memset(ms, 0xAB, sizeof ms);
-    REQUIRE(((MI *)fn(&p, "fill"))(&ms[0], 5) == 8);
+    REQUIRE(((MI *)fn(&p, "fill"))(CONTEXT, &ms[0], 5) == 8);
     REQUIRE(ms[0].a == 5 && ms[0].b == 5000 && ms[0].c == 6 && ms[0].d == 2.5f);
     REQUIRE(ms[0].e && ms[0].f[0] == 5 && ms[0].f[2] == 4 && ms[0].g == 3);
-    REQUIRE(((MI *)fn(&p, "fill"))(&ms[2], -3) == 256);
+    REQUIRE(((MI *)fn(&p, "fill"))(CONTEXT, &ms[2], -3) == 256);
     REQUIRE(ms[2].a == 253 && ms[2].b == -3000 && ms[2].c == 32766 && ms[2].d == -1.5f);
     REQUIRE(!ms[2].e && ms[2].f[0] == -3 && ms[2].f[2] == -4 && ms[2].g == 3);
     memset(&ms[1], 0, sizeof ms[1]);
@@ -1145,15 +1153,15 @@ TEST_CASE(structs)
     ms[1].f[1] = 9;
     ms[1].e = true;
     ms[1].g = 1;
-    REQUIRE(((M3 *)fn(&p, "read"))(ms) == 1035049);
+    REQUIRE(((M3 *)fn(&p, "read"))(CONTEXT, ms) == 1035049);
 
-    REQUIRE(((I2 *)fn(&p, "lines"))(3, 4) == 50804154);
-    REQUIRE(((I2 *)fn(&p, "lines"))(-2, 9) == 50809204);
-    REQUIRE(((I2 *)fn(&p, "defaults"))(11, 200) == 36);
-    REQUIRE(((I2 *)fn(&p, "via"))(1, 2) == 8008);
-    REQUIRE(((I2 *)fn(&p, "via"))(-50, 6) == -35035);
-    REQUIRE(((I2 *)fn(&p, "many"))(7, -3) == 99977);
-    REQUIRE(((I2 *)fn(&p, "many"))(64, 1000) == 110064);
+    REQUIRE(((I2 *)fn(&p, "lines"))(CONTEXT, 3, 4) == 50804154);
+    REQUIRE(((I2 *)fn(&p, "lines"))(CONTEXT, -2, 9) == 50809204);
+    REQUIRE(((I2 *)fn(&p, "defaults"))(CONTEXT, 11, 200) == 36);
+    REQUIRE(((I2 *)fn(&p, "via"))(CONTEXT, 1, 2) == 8008);
+    REQUIRE(((I2 *)fn(&p, "via"))(CONTEXT, -50, 6) == -35035);
+    REQUIRE(((I2 *)fn(&p, "many"))(CONTEXT, 7, -3) == 99977);
+    REQUIRE(((I2 *)fn(&p, "many"))(CONTEXT, 64, 1000) == 110064);
     REQUIRE(call_i2((I2 *)fn(&p, "poke"), 2, -7, &r) == 0 && r == -7);
     REQUIRE(call_i2((I2 *)fn(&p, "poke"), 1, 5, &r) == 0 && r == 0);
     REQUIRE(call_i2((I2 *)fn(&p, "poke"), 3, 5, &r) == TRAP_BOUNDS);
@@ -1528,12 +1536,12 @@ typedef struct
     int64_t len;
 } Slice;
 
-typedef int64_t SI(Slice);
-typedef int64_t SU8(Slice, uint8_t);
-typedef Slice SS(Slice);
-typedef float SF(Slice);
-typedef int64_t ISIS(int64_t, Slice, int64_t, Slice);
-typedef Slice IIS(int64_t, int64_t, Slice);
+typedef int64_t SI(void *, Slice);
+typedef int64_t SU8(void *, Slice, uint8_t);
+typedef Slice SS(void *, Slice);
+typedef float SF(void *, Slice);
+typedef int64_t ISIS(void *, int64_t, Slice, int64_t, Slice);
+typedef Slice IIS(void *, int64_t, int64_t, Slice);
 
 static bool
 agree_on_grid(Program *p, const char *const *names, size_t count)
@@ -1647,13 +1655,15 @@ TEST_CASE(slices)
 
     int64_t xs[3] = { 4, 5, 6 };
     float fs[3] = { 1.5f, 2.0f, 4.0f };
-    REQUIRE(((SI *)fn(&p, "sum"))((Slice){ xs, 3 }) == 15);
-    REQUIRE(((SU8 *)fn(&p, "count"))((Slice){ "a,b,,c", 6 }, ',') == 3);
-    Slice t = ((SS *)fn(&p, "tail"))((Slice){ xs, 3 });
+    REQUIRE(((SI *)fn(&p, "sum"))(CONTEXT, (Slice){ xs, 3 }) == 15);
+    REQUIRE(((SU8 *)fn(&p, "count"))(CONTEXT, (Slice){ "a,b,,c", 6 }, ',') == 3);
+    Slice t = ((SS *)fn(&p, "tail"))(CONTEXT, (Slice){ xs, 3 });
     REQUIRE(t.ptr == xs + 1 && t.len == 2);
-    REQUIRE(((SF *)fn(&p, "fsum"))((Slice){ fs, 3 }) == 7.5f);
-    REQUIRE(((ISIS *)fn(&p, "mix"))(2, (Slice){ xs, 3 }, 3, (Slice){ "xyz", 2 }) == 20671);
-    t = ((SS *)fn(&p, "skip2"))((Slice){ xs, 3 });
+    REQUIRE(((SF *)fn(&p, "fsum"))(CONTEXT, (Slice){ fs, 3 }) == 7.5f);
+    REQUIRE(
+        ((ISIS *)fn(&p, "mix"))(CONTEXT, 2, (Slice){ xs, 3 }, 3, (Slice){ "xyz", 2 }) == 20671
+    );
+    t = ((SS *)fn(&p, "skip2"))(CONTEXT, (Slice){ xs, 3 });
     REQUIRE(t.ptr == xs + 2 && t.len == 1);
 
     int64_t ws[8] = { 0, 10, 20, 30, 40, 50, 60, 70 };
@@ -1661,13 +1671,13 @@ TEST_CASE(slices)
     int64_t us[8] = { 0, 40, 0, 0, 0, 0, 0, 0 };
     IIS *swapped = (IIS *)fn(&p, "swapped");
     IIS *lone = (IIS *)fn(&p, "lone");
-    t = swapped(0, 0, (Slice){ ws, 8 });
+    t = swapped(CONTEXT, 0, 0, (Slice){ ws, 8 });
     REQUIRE(t.ptr == ws + 1 && t.len == 7);
-    t = swapped(0, 0, (Slice){ vs, 8 });
+    t = swapped(CONTEXT, 0, 0, (Slice){ vs, 8 });
     REQUIRE(t.ptr == vs + 2 && t.len == 6);
-    t = lone(0, 0, (Slice){ ws, 8 });
+    t = lone(CONTEXT, 0, 0, (Slice){ ws, 8 });
     REQUIRE(t.ptr == ws + 1 && t.len == 7);
-    t = lone(0, 0, (Slice){ us, 8 });
+    t = lone(CONTEXT, 0, 0, (Slice){ us, 8 });
     REQUIRE(t.ptr == us + 2 && t.len == 6);
 
     REQUIRE(agree_on_grid(&p, SLICE_FUNCTIONS, sizeof SLICE_FUNCTIONS / sizeof SLICE_FUNCTIONS[0])
@@ -1814,10 +1824,10 @@ typedef struct
     int64_t w;
 } Grid;
 
-typedef int64_t TI(Text *);
-typedef int64_t GI(Grid *);
-typedef Slice GS(Grid *, int64_t);
-typedef void GP(Grid *, int64_t, Slice);
+typedef int64_t TI(void *, Text *);
+typedef int64_t GI(void *, Grid *);
+typedef Slice GS(void *, Grid *, int64_t);
+typedef void GP(void *, Grid *, int64_t, Slice);
 
 static const char *const STORED_SLICE_FUNCTIONS[] = {
     "spans", "table", "deep", "walk", "order", "chain",
@@ -1855,19 +1865,19 @@ TEST_CASE(stored_slices)
 
     char text[] = "x,y,,z";
     Text t = { { text, 6 }, -1, 0 };
-    REQUIRE(((TI *)fn(&p, "measure"))(&t) == 305);
+    REQUIRE(((TI *)fn(&p, "measure"))(CONTEXT, &t) == 305);
     REQUIRE(t.n == 3 && t.tag == 'x' && t.data.ptr == text + 1 && t.data.len == 5);
 
     int64_t r0[2] = { 1, 2 };
     int64_t r1[3] = { 3, 4, 5 };
     Slice rows[2] = { { r0, 2 }, { r1, 3 } };
     Grid g = { { rows, 2 }, 0 };
-    REQUIRE(((GI *)fn(&p, "total"))(&g) == 27 && g.w == 2);
-    Slice row = ((GS *)fn(&p, "get"))(&g, 1);
+    REQUIRE(((GI *)fn(&p, "total"))(CONTEXT, &g) == 27 && g.w == 2);
+    Slice row = ((GS *)fn(&p, "get"))(CONTEXT, &g, 1);
     REQUIRE(row.ptr == r1 && row.len == 3);
-    ((GP *)fn(&p, "put"))(&g, 0, (Slice){ r1 + 1, 2 });
+    ((GP *)fn(&p, "put"))(CONTEXT, &g, 0, (Slice){ r1 + 1, 2 });
     REQUIRE(rows[0].ptr == r1 + 1 && rows[0].len == 2);
-    REQUIRE(((GI *)fn(&p, "total"))(&g) == 33 && g.w == 2);
+    REQUIRE(((GI *)fn(&p, "total"))(CONTEXT, &g) == 33 && g.w == 2);
 
     REQUIRE(agree_on_grid(
         &p,
@@ -2229,23 +2239,26 @@ typedef struct
     double x, y;
 } CD2;
 
-typedef double MIX(int64_t, CB3, float, CV3, CP, double, CD2, uint8_t);
+typedef double MIX(void *, int64_t, CB3, float, CV3, CP, double, CD2, uint8_t);
 
 static CB3
-c_eB3(CB3 s, uint8_t k)
+c_eB3(void *context, CB3 s, uint8_t k)
 {
+    see_context(context);
     return (CB3){ (uint8_t)(s.a + k), (uint8_t)(s.b + k), (uint8_t)(s.c + k) };
 }
 
 static CV3
-c_eV3(float k, CV3 s)
+c_eV3(void *context, float k, CV3 s)
 {
+    see_context(context);
     return (CV3){ s.x + k, s.y + k, s.z + k };
 }
 
 static CB15
-c_eB15(CB15 s, CB7 t)
+c_eB15(void *context, CB15 s, CB7 t)
 {
+    see_context(context);
     for (int i = 0; i < 15; i++) {
         s.a[i] = (uint8_t)(s.a[i] + t.a[i % 7]);
     }
@@ -2253,14 +2266,16 @@ c_eB15(CB15 s, CB7 t)
 }
 
 static CD4
-c_eD4(CD4 a, CP b, double c)
+c_eD4(void *context, CD4 a, CP b, double c)
 {
+    see_context(context);
     return (CD4){ a.w + c, a.z + b.x, a.y + b.y, a.x };
 }
 
 static CS
-c_eS(CS s, int64_t n)
+c_eS(void *context, CS s, int64_t n)
 {
+    see_context(context);
     return (CS){ { (const uint8_t *)s.s.ptr + n, s.s.len - n } };
 }
 
@@ -2287,11 +2302,11 @@ passes_to_c(Program *p)
             int64_t dw = (int64_t)(((b & 15) + 0.25) * 4);
             int64_t d = dw * 1000000 + (3 + (a & 0xFF)) * 40000 + 3200 + 4;
             int64_t off = (a & 1) + (b & 3);
-            if (((I2 *)fn(p, "callB3"))(a, b) != t ||
-                ((I2 *)fn(p, "callV3"))(a, b) != vx * 10000 + vy * 100 + 7 ||
-                ((I2 *)fn(p, "callB15"))(a, b) != sum ||
-                ((I2 *)fn(p, "callD4"))(a, b) != d ||
-                ((I2 *)fn(p, "callS"))(a, b) != (6 - off) * 100 + 1 + off) {
+            if (((I2 *)fn(p, "callB3"))(CONTEXT, a, b) != t ||
+                ((I2 *)fn(p, "callV3"))(CONTEXT, a, b) != vx * 10000 + vy * 100 + 7 ||
+                ((I2 *)fn(p, "callB15"))(CONTEXT, a, b) != sum ||
+                ((I2 *)fn(p, "callD4"))(CONTEXT, a, b) != d ||
+                ((I2 *)fn(p, "callS"))(CONTEXT, a, b) != (6 - off) * 100 + 1 + off) {
                 fprintf(
                     stderr,
                     "arm64 test: a call to C with structs at (%lld, %lld)\n",
@@ -2310,32 +2325,33 @@ TEST_CASE(passed_structs)
     Program p;
     REQUIRE(build(&p, PASSED_STRUCTS));
 
-    REQUIRE(((CB1(*)(CB1))fn(&p, "tB1"))((CB1){ 0xFF }).a == 0);
-    CB3 b3 = ((CB3(*)(CB3))fn(&p, "tB3"))((CB3){ 10, 20, 254 });
+    REQUIRE(((CB1(*)(void *, CB1))fn(&p, "tB1"))(CONTEXT, (CB1){ 0xFF }).a == 0);
+    CB3 b3 = ((CB3(*)(void *, CB3))fn(&p, "tB3"))(CONTEXT, (CB3){ 10, 20, 254 });
     REQUIRE(b3.a == 11 && b3.b == 22 && b3.c == 1);
-    CH3 h3 = ((CH3(*)(CH3))fn(&p, "tH3"))((CH3){ 1000, 0xFFFF, 7 });
+    CH3 h3 = ((CH3(*)(void *, CH3))fn(&p, "tH3"))(CONTEXT, (CH3){ 1000, 0xFFFF, 7 });
     REQUIRE(h3.a == 1001 && h3.b == 1 && h3.c == 10);
-    CB7 b7 = ((CB7(*)(CB7))fn(&p, "tB7"))((CB7){ { 1, 2, 3, 4, 5, 6, 0xFF } });
+    CB7 in7 = { { 1, 2, 3, 4, 5, 6, 0xFF } };
+    CB7 b7 = ((CB7(*)(void *, CB7))fn(&p, "tB7"))(CONTEXT, in7);
     for (int i = 0; i < 7; i++) {
         REQUIRE(b7.a[i] == (uint8_t)((i < 6 ? i + 1 : 0xFF) + i + 1));
     }
-    CP pi = ((CP(*)(CP))fn(&p, "tP"))((CP){ -5, 7 });
+    CP pi = ((CP(*)(void *, CP))fn(&p, "tP"))(CONTEXT, (CP){ -5, 7 });
     REQUIRE(pi.x == 7 && pi.y == -5);
     CB11 b11;
     for (int i = 0; i < 11; i++) {
         b11.a[i] = (uint8_t)(0xA0 + i);
     }
-    b11 = ((CB11(*)(CB11))fn(&p, "tB11"))(b11);
+    b11 = ((CB11(*)(void *, CB11))fn(&p, "tB11"))(CONTEXT, b11);
     for (int i = 0; i < 11; i++) {
         REQUIRE(b11.a[i] == (uint8_t)(0xA0 + 2 * i + 1));
     }
-    CI3 i3 = ((CI3(*)(CI3))fn(&p, "tI3"))((CI3){ 1, -2, 3 });
+    CI3 i3 = ((CI3(*)(void *, CI3))fn(&p, "tI3"))(CONTEXT, (CI3){ 1, -2, 3 });
     REQUIRE(i3.a == 3 && i3.b == 1 && i3.c == -2);
     CH7 h7;
     for (int i = 0; i < 7; i++) {
         h7.a[i] = (uint16_t)(0xF000 + i * 0x111);
     }
-    h7 = ((CH7(*)(CH7))fn(&p, "tH7"))(h7);
+    h7 = ((CH7(*)(void *, CH7))fn(&p, "tH7"))(CONTEXT, h7);
     for (int i = 0; i < 7; i++) {
         REQUIRE(h7.a[i] == (uint16_t)(0xF000 + i * 0x111 + i + 1));
     }
@@ -2343,29 +2359,30 @@ TEST_CASE(passed_structs)
     for (int i = 0; i < 15; i++) {
         b15.a[i] = (uint8_t)(0x30 + 7 * i);
     }
-    b15 = ((CB15(*)(CB15))fn(&p, "tB15"))(b15);
+    b15 = ((CB15(*)(void *, CB15))fn(&p, "tB15"))(CONTEXT, b15);
     for (int i = 0; i < 15; i++) {
         REQUIRE(b15.a[i] == (uint8_t)(0x30 + 8 * i + 1));
     }
-    CLD ld = ((CLD(*)(CLD))fn(&p, "tLD"))((CLD){ -9, 1.25 });
+    CLD ld = ((CLD(*)(void *, CLD))fn(&p, "tLD"))(CONTEXT, (CLD){ -9, 1.25 });
     REQUIRE(ld.a == -8 && ld.b == 2.5);
-    CFI fi = ((CFI(*)(CFI))fn(&p, "tFI"))((CFI){ 2.0f, 40 });
+    CFI fi = ((CFI(*)(void *, CFI))fn(&p, "tFI"))(CONTEXT, (CFI){ 2.0f, 40 });
     REQUIRE(fi.a == 2.5f && fi.b == 39);
-    CFD fd = ((CFD(*)(CFD))fn(&p, "tFD"))((CFD){ 1.5f, -1.0 });
+    CFD fd = ((CFD(*)(void *, CFD))fn(&p, "tFD"))(CONTEXT, (CFD){ 1.5f, -1.0 });
     REQUIRE(fd.a == 3.0f && fd.b == -0.75);
     static const uint8_t text[] = "hello";
-    CS s = ((CS(*)(CS))fn(&p, "tS"))((CS){ { text, 5 } });
+    CS s = ((CS(*)(void *, CS))fn(&p, "tS"))(CONTEXT, (CS){ { text, 5 } });
     REQUIRE(s.s.ptr == text + 1 && s.s.len == 4);
-    CV3 v3 = ((CV3(*)(CV3))fn(&p, "tV3"))((CV3){ 1, 2, 3 });
+    CV3 v3 = ((CV3(*)(void *, CV3))fn(&p, "tV3"))(CONTEXT, (CV3){ 1, 2, 3 });
     REQUIRE(v3.x == 3 && v3.y == 1 && v3.z == 2);
-    CV4 v4 = ((CV4(*)(CV4))fn(&p, "tV4"))((CV4){ { 1, 2, 3, 4 } });
+    CV4 v4 = ((CV4(*)(void *, CV4))fn(&p, "tV4"))(CONTEXT, (CV4){ { 1, 2, 3, 4 } });
     REQUIRE(v4.v[0] == 2 && v4.v[1] == 2 && v4.v[2] == 3 && v4.v[3] == 3);
-    CD4 d4 = ((CD4(*)(CD4))fn(&p, "tD4"))((CD4){ 1, 2, 3, 4 });
+    CD4 d4 = ((CD4(*)(void *, CD4))fn(&p, "tD4"))(CONTEXT, (CD4){ 1, 2, 3, 4 });
     REQUIRE(d4.x == 4 && d4.y == 3 && d4.z == 2 && d4.w == 1);
-    CN3 n3 = ((CN3(*)(CN3))fn(&p, "tN3"))((CN3){ { 1, 2 }, 3 });
+    CN3 n3 = ((CN3(*)(void *, CN3))fn(&p, "tN3"))(CONTEXT, (CN3){ { 1, 2 }, 3 });
     REQUIRE(n3.a.x == 3 && n3.a.y == 1 && n3.z == 2);
-    REQUIRE(((CD1(*)(CD1))fn(&p, "tD1"))((CD1){ 2.5 }).x == -2.5);
+    REQUIRE(((CD1(*)(void *, CD1))fn(&p, "tD1"))(CONTEXT, (CD1){ 2.5 }).x == -2.5);
     double m = ((MIX *)fn(&p, "mix"))(
+        CONTEXT,
         1,
         (CB3){ 2, 3, 4 },
         5,
@@ -2376,26 +2393,27 @@ TEST_CASE(passed_structs)
         14
     );
     REQUIRE(m == 955);
-    REQUIRE(((I2 *)fn(&p, "late"))(5, 6) == 5);
+    REQUIRE(((I2 *)fn(&p, "late"))(CONTEXT, 5, 6) == 5);
 
     REQUIRE(agree_on_grid(
         &p,
         PASSED_STRUCT_FUNCTIONS,
         sizeof PASSED_STRUCT_FUNCTIONS / sizeof PASSED_STRUCT_FUNCTIONS[0]
     ));
+    lost_contexts = 0;
     REQUIRE(passes_to_c(&p));
+    REQUIRE(lost_contexts == 0);
     release_program(&p);
 
     Program q;
     REQUIRE(check_text(
         &q,
         "struct P { a: int, b: int }\n"
-        "fn f(a: int, b: int, c: int, d: int, e: int, f: int, g: int, p: P) -> "
-        "int {\n"
+        "fn f(a: int, b: int, c: int, d: int, e: int, f: int, p: P) -> int {\n"
         "    return a + p.b\n"
         "}\n"
     ));
-    REQUIRE(!arm64_compile(&q.n, &q.c) && strstr(q.n.error, "more than 8 integer"));
+    REQUIRE(!arm64_compile(&q.n, &q.c) && strstr(q.n.error, "more than 7 integer"));
     release_program(&q);
     return true;
 }
@@ -2632,7 +2650,7 @@ TEST_CASE(left_to_right)
         for (int64_t a = -3; a < 300; a += 37) {
             for (int64_t b = -3; b < 9; b++) {
                 const char *name = LEFT_TO_RIGHT_FUNCTIONS[f];
-                int64_t got = ((I2 *)fn(&p, name))(a, b);
+                int64_t got = ((I2 *)fn(&p, name))(CONTEXT, a, b);
                 int64_t want = left_to_right_want(name, a, b);
                 if (got != want) {
                     fprintf(
@@ -3117,17 +3135,19 @@ typedef struct
     int64_t a[40];
 } CHuge;
 
-typedef double MIXL(int64_t, CW, float, CF5, CBig, double, CD2, uint8_t);
+typedef double MIXL(void *, int64_t, CW, float, CF5, CBig, double, CD2, uint8_t);
 
 static CW
-c_eW(const CW *s, int64_t k)
+c_eW(void *context, const CW *s, int64_t k)
 {
+    see_context(context);
     return (CW){ s->a + k, s->b * 2, s->c - k };
 }
 
 static CBig
-c_eBig(const CBig *s)
+c_eBig(void *context, const CBig *s)
 {
+    see_context(context);
     CBig r;
     for (int i = 0; i < 9; i++) {
         r.a[i] = s->a[i] * 2;
@@ -3136,15 +3156,17 @@ c_eBig(const CBig *s)
 }
 
 static int64_t
-c_see(CW *s)
+c_see(void *context, CW *s)
 {
+    see_context(context);
     s->a = 999;
     return 0;
 }
 
 static int64_t
-c_seeWA(CWA *s)
+c_seeWA(void *context, CWA *s)
 {
+    see_context(context);
     s->a[0] = 999;
     return 0;
 }
@@ -3269,7 +3291,7 @@ matches_by_hand(Program *p, const char *const *names, size_t count, Want *rule)
     for (size_t f = 0; f < count; f++) {
         for (int64_t a = -3; a < 300; a += 37) {
             for (int64_t b = -3; b < 9; b++) {
-                int64_t got = ((I2 *)fn(p, names[f]))(a, b);
+                int64_t got = ((I2 *)fn(p, names[f]))(CONTEXT, a, b);
                 int64_t want = rule(names[f], a, b);
                 if (got != want) {
                     fprintf(
@@ -3294,32 +3316,34 @@ TEST_CASE(large_structs)
     Program p;
     REQUIRE(build(&p, LARGE_STRUCTS));
 
-    CW w = ((CW(*)(CW))fn(&p, "tW"))((CW){ 1, -2, 3 });
+    CW w = ((CW(*)(void *, CW))fn(&p, "tW"))(CONTEXT, (CW){ 1, -2, 3 });
     REQUIRE(w.a == 3 && w.b == 1 && w.c == -2);
     CB17 b17;
     for (int i = 0; i < 17; i++) {
         b17.a[i] = (uint8_t)(0xF0 + i);
     }
-    b17 = ((CB17(*)(CB17))fn(&p, "tB17"))(b17);
+    b17 = ((CB17(*)(void *, CB17))fn(&p, "tB17"))(CONTEXT, b17);
     for (int i = 0; i < 17; i++) {
         REQUIRE(b17.a[i] == (uint8_t)(0xF0 + 2 * i + 1));
     }
-    CF5 f5 = ((CF5(*)(CF5))fn(&p, "tF5"))((CF5){ { 1, 2, 3, 4, 5 } });
+    CF5 f5 = ((CF5(*)(void *, CF5))fn(&p, "tF5"))(CONTEXT, (CF5){ { 1, 2, 3, 4, 5 } });
     for (int i = 0; i < 5; i++) {
         REQUIRE(f5.a[i] == (float)(2 * (5 - i)));
     }
-    CD5 d5 = ((CD5(*)(CD5))fn(&p, "tD5"))((CD5){ { 1.5, -2, 3, 0.25, 8 } });
+    CD5 in5 = { { 1.5, -2, 3, 0.25, 8 } };
+    CD5 d5 = ((CD5(*)(void *, CD5))fn(&p, "tD5"))(CONTEXT, in5);
     REQUIRE(d5.a[0] == -1.5 && d5.a[1] == 3 && d5.a[2] == -1 && d5.a[3] == 2.75 &&
             d5.a[4] == -4);
     static const uint8_t text[] = "hello";
-    CM m = ((CM(*)(CM))fn(&p, "tM"))((CM){ 7, { 1.5, -2.5 }, { text, 5 } });
+    CM in = { 7, { 1.5, -2.5 }, { text, 5 } };
+    CM m = ((CM(*)(void *, CM))fn(&p, "tM"))(CONTEXT, in);
     REQUIRE(m.n == 8 && m.d.x == -2.5 && m.d.y == 1.5 && m.s.ptr == text + 1 &&
             m.s.len == 4);
     CBig big;
     for (int i = 0; i < 9; i++) {
         big.a[i] = i * 11 - 3;
     }
-    big = ((CBig(*)(CBig))fn(&p, "tBig"))(big);
+    big = ((CBig(*)(void *, CBig))fn(&p, "tBig"))(CONTEXT, big);
     for (int i = 0; i < 9; i++) {
         REQUIRE(big.a[i] == (8 - i) * 11 - 2);
     }
@@ -3327,12 +3351,13 @@ TEST_CASE(large_structs)
     for (int i = 0; i < 40; i++) {
         huge.a[i] = i * i - 7;
     }
-    huge = ((CHuge(*)(CHuge))fn(&p, "tHuge"))(huge);
+    huge = ((CHuge(*)(void *, CHuge))fn(&p, "tHuge"))(CONTEXT, huge);
     for (int i = 0; i < 40; i++) {
         REQUIRE(huge.a[i] == ((39 - i) * (39 - i) - 7) * 3);
     }
     CBig mb = { { 8, 0, 0, 0, 0, 0, 0, 0, 9 } };
     double mix = ((MIXL *)fn(&p, "mixL"))(
+        CONTEXT,
         1,
         (CW){ 2, 3, 4 },
         5,
@@ -3353,10 +3378,12 @@ TEST_CASE(large_structs)
     native_replace(&p.n, decl_named(&p, "see"), (void *)c_see);
     native_replace(&p.n, decl_named(&p, "seeWA"), (void *)c_seeWA);
     size_t sees = sizeof SEE_FUNCTIONS / sizeof SEE_FUNCTIONS[0];
+    lost_contexts = 0;
     REQUIRE(matches_by_hand(&p, SEE_FUNCTIONS, sees, large_want));
+    REQUIRE(lost_contexts == 0);
     CW cw = { 5, 6, 7 };
-    REQUIRE(((int64_t(*)(CW))fn(&p, "seeParam"))(cw) == 999 && cw.a == 5);
-    REQUIRE(((int64_t(*)(CW *))fn(&p, "seeDeref"))(&cw) == 5 && cw.a == 5);
+    REQUIRE(((int64_t(*)(void *, CW))fn(&p, "seeParam"))(CONTEXT, cw) == 999 && cw.a == 5);
+    REQUIRE(((int64_t(*)(void *, CW *))fn(&p, "seeDeref"))(CONTEXT, &cw) == 5 && cw.a == 5);
     release_program(&p);
     return true;
 }
@@ -3397,10 +3424,10 @@ TEST_CASE(constant_conditions)
 {
     Program p;
     REQUIRE(build(&p, CONSTANT_CONDITIONS));
-    REQUIRE(((I1 *)fn(&p, "t"))(5) == 5);
-    REQUIRE(((I1 *)fn(&p, "u"))(7) == 1007);
-    REQUIRE(((I1 *)fn(&p, "v"))(4) == 8);
-    REQUIRE(((I1 *)fn(&p, "w"))(4) == 5);
+    REQUIRE(((I1 *)fn(&p, "t"))(CONTEXT, 5) == 5);
+    REQUIRE(((I1 *)fn(&p, "u"))(CONTEXT, 7) == 1007);
+    REQUIRE(((I1 *)fn(&p, "v"))(CONTEXT, 4) == 8);
+    REQUIRE(((I1 *)fn(&p, "w"))(CONTEXT, 4) == 5);
     release_program(&p);
     return true;
 }
@@ -3791,7 +3818,7 @@ TEST_CASE(constant_tables)
     REQUIRE(agree_on_grid(&p, CONSTANT_TABLE_FUNCTIONS, count));
     REQUIRE(agree_on_grid(&p, CONSTANT_TABLE_TRAPS, 2));
 
-    CW w = ((CW(*)(void))fn(&p, "wideOf"))();
+    CW w = ((CW(*)(void *))fn(&p, "wideOf"))(CONTEXT);
     REQUIRE(w.a == 1 && w.b == 2 && w.c == 3);
 
     int64_t r = 0;
@@ -3806,7 +3833,7 @@ TEST_CASE(constant_tables)
     return true;
 }
 
-typedef bool B8(bool, bool, bool, bool, bool, bool, bool, bool);
+typedef bool B7(void *, bool, bool, bool, bool, bool, bool, bool);
 
 TEST_CASE(deep_logic)
 {
@@ -3814,32 +3841,31 @@ TEST_CASE(deep_logic)
     REQUIRE(build(
         &p,
         "fn deep(a: bool, b: bool, c: bool, d: bool, e: bool, f: bool, g: "
-        "bool, h: bool) -> bool {\n"
-        "    return a and (b or (c and (d or (e and (f or (g and h))))))\n"
+        "bool) -> bool {\n"
+        "    return a and (b or (c and (d or (e and (f or g)))))\n"
         "}\n"
     ));
-    B8 *deep = (B8 *)fn(&p, "deep");
-    for (int m = 0; m < 256; m++) {
-        bool v[8];
-        for (int k = 0; k < 8; k++) {
+    B7 *deep = (B7 *)fn(&p, "deep");
+    for (int m = 0; m < 128; m++) {
+        bool v[7];
+        for (int k = 0; k < 7; k++) {
             v[k] = (m >> k) & 1;
         }
-        bool want = v[0] &&
-                    (v[1] || (v[2] && (v[3] || (v[4] && (v[5] || (v[6] && v[7]))))));
-        REQUIRE(deep(v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]) == want);
+        bool want = v[0] && (v[1] || (v[2] && (v[3] || (v[4] && (v[5] || v[6])))));
+        REQUIRE(deep(CONTEXT, v[0], v[1], v[2], v[3], v[4], v[5], v[6]) == want);
     }
     release_program(&p);
     return true;
 }
 
-typedef int64_t E4(int64_t, int64_t, int64_t, double);
+typedef int64_t E4(void *, int64_t, int64_t, int64_t, double);
 
 static int
 call_e4(E4 *f, const int64_t *args, double d, int64_t *result)
 {
     trap_kind = 0;
     if (sigsetjmp(trap_jump, 1) == 0) {
-        *result = f(args[0], args[1], args[2], d);
+        *result = f(CONTEXT, args[0], args[1], args[2], d);
         return 0;
     }
     return trap_kind;
@@ -4154,19 +4180,19 @@ TEST_CASE(store_while_loaded)
     code->as[first + 1] = slot;
     code->bs[first + 1] = value;
     REQUIRE(arm64_compile(&p.n, &p.c));
-    REQUIRE(((I1 *)fn(&p, "f"))(7) == 75);
+    REQUIRE(((I1 *)fn(&p, "f"))(CONTEXT, 7) == 75);
     release_program(&p);
     return true;
 }
 
-typedef uint64_t U1(uint64_t);
+typedef uint64_t U1(void *, uint64_t);
 
 static int
 call_u1(U1 *f, uint64_t a, uint64_t *result)
 {
     trap_kind = 0;
     if (sigsetjmp(trap_jump, 1) == 0) {
-        *result = f(a);
+        *result = f(CONTEXT, a);
         return 0;
     }
     return trap_kind;
@@ -4367,7 +4393,7 @@ TEST_CASE(constant_division)
     return true;
 }
 
-typedef int64_t W1(uint64_t);
+typedef int64_t W1(void *, uint64_t);
 
 TEST_CASE(narrow_parameters)
 {
@@ -4393,12 +4419,12 @@ TEST_CASE(narrow_parameters)
         "    return 0\n"
         "}\n"
     ));
-    REQUIRE(((W1 *)fn(&p, "t"))(0x100000009ull) == 3);
-    REQUIRE(((W1 *)fn(&p, "t_store"))(0x100000009ull) == 9);
-    REQUIRE(((W1 *)fn(&p, "t_call"))(0x100000009ull) == 4);
-    REQUIRE(((W1 *)fn(&p, "t8"))(0xFFFFFF0Full) == 5);
-    REQUIRE(((W1 *)fn(&p, "ti8"))(0x1F4ull) == -4);
-    REQUIRE(((W1 *)fn(&p, "tb"))(0x100ull) == 0);
+    REQUIRE(((W1 *)fn(&p, "t"))(CONTEXT, 0x100000009ull) == 3);
+    REQUIRE(((W1 *)fn(&p, "t_store"))(CONTEXT, 0x100000009ull) == 9);
+    REQUIRE(((W1 *)fn(&p, "t_call"))(CONTEXT, 0x100000009ull) == 4);
+    REQUIRE(((W1 *)fn(&p, "t8"))(CONTEXT, 0xFFFFFF0Full) == 5);
+    REQUIRE(((W1 *)fn(&p, "ti8"))(CONTEXT, 0x1F4ull) == -4);
+    REQUIRE(((W1 *)fn(&p, "tb"))(CONTEXT, 0x100ull) == 0);
     release_program(&p);
     return true;
 }
@@ -4723,8 +4749,8 @@ TEST_CASE(empty_globals)
     Program p;
     REQUIRE(build(&p, EMPTY_GLOBALS));
 
-    void *empty = ((void *(*)(void))fn(&p, "emptyAt"))();
-    void *none = ((void *(*)(void))fn(&p, "noneAt"))();
+    void *empty = ((void *(*)(void *))fn(&p, "emptyAt"))(CONTEXT);
+    void *none = ((void *(*)(void *))fn(&p, "noneAt"))(CONTEXT);
     REQUIRE(empty && none && empty != none);
     release_program(&p);
     return true;
@@ -4754,22 +4780,22 @@ TEST_CASE(globals)
 
     I2 *get = (I2 *)fn(&p, "getCounter");
     I2 *bump = (I2 *)fn(&p, "bump");
-    REQUIRE(get(0, 0) == 5);
-    REQUIRE(((I2 *)fn(&p, "narrow"))(0, 0) == 3999994909);
-    REQUIRE(bump(1, 0) == 60);
-    REQUIRE(bump(2, 3) == 83);
-    REQUIRE(get(0, 1) == 9);
+    REQUIRE(get(CONTEXT, 0, 0) == 5);
+    REQUIRE(((I2 *)fn(&p, "narrow"))(CONTEXT, 0, 0) == 3999994909);
+    REQUIRE(bump(CONTEXT, 1, 0) == 60);
+    REQUIRE(bump(CONTEXT, 2, 3) == 83);
+    REQUIRE(get(CONTEXT, 0, 1) == 9);
 
-    int64_t *counter = ((int64_t * (*)(void)) fn(&p, "counterAt"))();
+    int64_t *counter = ((int64_t * (*)(void *)) fn(&p, "counterAt"))(CONTEXT);
     REQUIRE((u8 *)counter == p.n.globals + p.c.decls.values[decl_named(&p, "counter")]);
     *counter = 42;
-    REQUIRE(get(0, 0) == 42);
+    REQUIRE(get(CONTEXT, 0, 0) == 42);
 
-    CPoint *corner = ((CPoint * (*)(void)) fn(&p, "cornerAt"))();
+    CPoint *corner = ((CPoint * (*)(void *)) fn(&p, "cornerAt"))(CONTEXT);
     REQUIRE(corner->x == 3 && corner->y == 4);
     corner->x = 11;
     corner->y = 12;
-    CPoint c = ((CPoint(*)(void))fn(&p, "cornerOf"))();
+    CPoint c = ((CPoint(*)(void *))fn(&p, "cornerOf"))(CONTEXT);
     REQUIRE(c.x == 11 && c.y == 12);
 
     int64_t r = 0;
@@ -4781,7 +4807,7 @@ TEST_CASE(globals)
     size_t count = sizeof GLOBAL_FUNCTIONS / sizeof GLOBAL_FUNCTIONS[0];
     REQUIRE(matches_by_hand(&p, GLOBAL_FUNCTIONS, count, globals_want));
 
-    CQuad q = ((CQuad(*)(void))fn(&p, "bigOf"))();
+    CQuad q = ((CQuad(*)(void *))fn(&p, "bigOf"))(CONTEXT);
     REQUIRE(q.a == 100 && q.c == 0 && q.d == 0);
     release_program(&p);
 
@@ -4795,8 +4821,229 @@ TEST_CASE(globals)
     return true;
 }
 
+static const char HIDDEN_CONTEXT
+    [] = "struct P { a: int, b: int }\n"
+         "struct W { a: int, b: int, c: int }\n"
+         "\n"
+         "fn h(x: int) -> int {\n"
+         "    return x\n"
+         "}\n"
+         "\n"
+         "fn hw(w: W, k: int) -> W {\n"
+         "    return w\n"
+         "}\n"
+         "\n"
+         "fn hs(s: []u8, k: int) -> int {\n"
+         "    return k\n"
+         "}\n"
+         "\n"
+         "fn hf(x: f64, k: int) -> f64 {\n"
+         "    return x\n"
+         "}\n"
+         "\n"
+         "fn h7(a: int, b: int, c: int, d: int, e: int, p: P) -> int {\n"
+         "    return a\n"
+         "}\n"
+         "\n"
+         "fn twice(x: int) -> int {\n"
+         "    return h(x) + h(x + 1)\n"
+         "}\n"
+         "\n"
+         "fn nested(x: int) -> int {\n"
+         "    return h(h(x))\n"
+         "}\n"
+         "\n"
+         "fn looped(n: int) -> int {\n"
+         "    s := 0\n"
+         "    for i in 0..n {\n"
+         "        s += h(i)\n"
+         "    }\n"
+         "    return s\n"
+         "}\n"
+         "\n"
+         "fn evens(n: int) -> int {\n"
+         "    s := 0\n"
+         "    for i in 0..n {\n"
+         "        if i % 2 == 0 {\n"
+         "            s += h(i)\n"
+         "        }\n"
+         "    }\n"
+         "    return s\n"
+         "}\n"
+         "\n"
+         "fn arms(x: int) -> int {\n"
+         "    if x > 0 {\n"
+         "        return h(x)\n"
+         "    }\n"
+         "    return h(-x) * 2\n"
+         "}\n"
+         "\n"
+         "fn chain(x: int) -> int {\n"
+         "    return twice(x) + once(x)\n"
+         "}\n"
+         "\n"
+         "fn mixed(x: int) -> int {\n"
+         "    w := hw(W.{ x, 2, 3 }, 4)\n"
+         "    bytes := u8.[1, 2, 3]\n"
+         "    n := hs(bytes[0..], x)\n"
+         "    f := hf(f64(x), 5)\n"
+         "    m := h7(x, 2, 3, 4, 5, .{ 6, 7 })\n"
+         "    return w.a + w.b + w.c + n + int(f) + m\n"
+         "}\n"
+         "\n"
+         "fn once(x: int) -> int {\n"
+         "    return h(x) + 1\n"
+         "}\n"
+         "\n"
+         "fn seven(a: int, b: int, c: int, d: int, e: int, f: int, g: int) -> "
+         "int {\n"
+         "    return a + 2 * b + 3 * c + 4 * d + 5 * e + 6 * f + 7 * g\n"
+         "}\n";
+
+typedef int64_t S7(void *, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t);
+
+static const char *const ARGUMENT_LIMITS[][2] = {
+    { "fn g() -> int {\n"
+      "    return f(1, 2, 3, 4, 5, 6, 7, 8)\n"
+      "}\n"
+      "fn f(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: int) -> "
+      "int {\n"
+      "    return a\n"
+      "}\n",
+      "a call passes more than 7 integer or 8 float arguments" },
+    { "struct P { a: int, b: int }\n"
+      "fn g() -> int {\n"
+      "    return f(1, 2, 3, 4, 5, 6, .{ 7, 8 })\n"
+      "}\n"
+      "fn f(a: int, b: int, c: int, d: int, e: int, f: int, p: P) -> int {\n"
+      "    return a\n"
+      "}\n",
+      "a call passes more than 7 integer or 8 float arguments" },
+    { "fn f(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: int) -> "
+      "int {\n"
+      "    return a\n"
+      "}\n",
+      "a function has more than 7 integer or 8 float parameters" },
+};
+
+enum
+{
+    WORD_RET = 0xD65F03C0u,
+    WORD_SAVE_CONTEXT = 0xF9000BA0u,
+    WORD_LOAD_CONTEXT = 0xF9400BA0u,
+    WORD_PUSH_CONTEXT_FRAME = 0xA9BE7BFDu,
+    WORD_POP_CONTEXT_FRAME = 0xA8C27BFDu,
+    WORD_MOV_X = 0xAA0003E0u,
+    MOV_REGS = 0x001F001Fu,
+};
+
+static int64_t
+c_h(void *context, int64_t x)
+{
+    see_context(context);
+    return x * 3 + 1;
+}
+
+static CW
+c_hw(void *context, const CW *w, int64_t k)
+{
+    see_context(context);
+    return (CW){ w->a + k, w->b * k, w->c - k };
+}
+
+static int64_t
+c_hs(void *context, Slice s, int64_t k)
+{
+    see_context(context);
+    const uint8_t *bytes = s.ptr;
+    return s.len * 100 + bytes[s.len - 1] * 10 + k;
+}
+
+static double
+c_hf(void *context, double x, int64_t k)
+{
+    see_context(context);
+    return x * (double)k + 0.5;
+}
+
+static int64_t
+c_h7(void *context, int64_t a, int64_t b, int64_t c, int64_t d, int64_t e, CPoint p)
+{
+    see_context(context);
+    return a + 2 * b + 3 * c + 4 * d + 5 * e + 6 * p.x + 7 * p.y;
+}
+
+static u32
+count_words(Program *p, const char *name, u32 word, u32 ignored)
+{
+    u32 n = 0;
+    for (const u32 *at = fn(p, name); *at != WORD_RET; at++) {
+        n += (*at & ~ignored) == word;
+    }
+    return n;
+}
+
+static bool
+keeps_context(Program *p, const char *name, u32 loads)
+{
+    u32 saves = loads ? 1 : 0;
+    return count_words(p, name, WORD_LOAD_CONTEXT, 0) == loads &&
+           count_words(p, name, WORD_SAVE_CONTEXT, 0) == saves &&
+           count_words(p, name, WORD_PUSH_CONTEXT_FRAME, 0) == saves &&
+           count_words(p, name, WORD_POP_CONTEXT_FRAME, 0) == saves;
+}
+
+TEST_CASE(hidden_context)
+{
+    Program p;
+    REQUIRE(build(&p, HIDDEN_CONTEXT));
+    native_replace(&p.n, decl_named(&p, "h"), (void *)c_h);
+    native_replace(&p.n, decl_named(&p, "hw"), (void *)c_hw);
+    native_replace(&p.n, decl_named(&p, "hs"), (void *)c_hs);
+    native_replace(&p.n, decl_named(&p, "hf"), (void *)c_hf);
+    native_replace(&p.n, decl_named(&p, "h7"), (void *)c_h7);
+
+    REQUIRE(keeps_context(&p, "once", 0));
+    REQUIRE(keeps_context(&p, "twice", 1));
+    REQUIRE(keeps_context(&p, "nested", 1));
+    REQUIRE(keeps_context(&p, "looped", 1));
+    REQUIRE(keeps_context(&p, "evens", 1));
+    REQUIRE(keeps_context(&p, "arms", 1));
+    REQUIRE(keeps_context(&p, "mixed", 3));
+    REQUIRE(keeps_context(&p, "seven", 0));
+    REQUIRE(count_words(&p, "seven", WORD_MOV_X, MOV_REGS) == 0);
+
+    lost_contexts = 0;
+    for (int64_t x = 0; x < 20; x++) {
+        int64_t evens = 0;
+        for (int64_t i = 0; i < x; i += 2) {
+            evens += 3 * i + 1;
+        }
+        REQUIRE(((I1 *)fn(&p, "once"))(CONTEXT, x) == 3 * x + 2);
+        REQUIRE(((I1 *)fn(&p, "twice"))(CONTEXT, x) == 6 * x + 5);
+        REQUIRE(((I1 *)fn(&p, "nested"))(CONTEXT, x) == 9 * x + 4);
+        REQUIRE(((I1 *)fn(&p, "looped"))(CONTEXT, x) == 3 * x * (x - 1) / 2 + x);
+        REQUIRE(((I1 *)fn(&p, "evens"))(CONTEXT, x) == evens);
+        REQUIRE(((I1 *)fn(&p, "arms"))(CONTEXT, x) == (x > 0 ? 3 * x + 1 : 2));
+        REQUIRE(((I1 *)fn(&p, "arms"))(CONTEXT, -x) == (x > 0 ? 6 * x + 2 : 2));
+        REQUIRE(((I1 *)fn(&p, "chain"))(CONTEXT, x) == 9 * x + 7);
+        REQUIRE(((I1 *)fn(&p, "mixed"))(CONTEXT, x) == 8 * x + 480);
+    }
+    REQUIRE(lost_contexts == 0);
+    REQUIRE(((S7 *)fn(&p, "seven"))(CONTEXT, 1, 2, 3, 4, 5, 6, -7) == 42);
+    release_program(&p);
+
+    for (size_t k = 0; k < sizeof ARGUMENT_LIMITS / sizeof ARGUMENT_LIMITS[0]; k++) {
+        REQUIRE(check_text(&p, ARGUMENT_LIMITS[k][0]));
+        REQUIRE(!arm64_compile(&p.n, &p.c) && strcmp(p.n.error, ARGUMENT_LIMITS[k][1]) == 0);
+        release_program(&p);
+    }
+    return true;
+}
+
 TEST_SUITE(arm64_tests)
 {
+    RUN_TEST_CASE(hidden_context);
     RUN_TEST_CASE(narrow_parameters);
     RUN_TEST_CASE(constant_division);
     RUN_TEST_CASE(differential);

@@ -492,7 +492,7 @@ data := make([]u8, 1024) // allocates from context.allocator
 
 **Own sheet?** A short one, with that measurement and a C callback test on SDL's audio thread.
 
-**Decided 2026-11-20:** the context travels as a hidden first argument in every backend (decisions.md, the Language row of 2026-11-18), not in a register that C preserves.
+**Decided 2026-11-20:** the context travels as a hidden first argument in every backend (decisions.md, the Language row of 2026-11-18), not in a register that C preserves. Step 3d.9 built it on arm64 the same day ([checker-and-ir.md](checker-and-ir.md) section 8).
 
 **Prior art for option A, gathered 2026-11-19,** after the owner chose it (decisions.md, the Language row of 2026-11-18):
 - **Jai,** from the community book *The Way to Jai* ([ch. 25](https://github.com/Ivo-Balbaert/The_Way_to_Jai/blob/main/book/25A_Context.md), [ch. 29](https://github.com/Ivo-Balbaert/The_Way_to_Jai/blob/main/book/29A_Interacting_with_C.md), [ch. 31](https://github.com/Ivo-Balbaert/The_Way_to_Jai/blob/main/book/31A_Working_with_threads.md)). The context holds the thread index, the allocator, a logger, temporary storage, a stack trace and an assertion handler, and any module adds a field with `#add_context name := value`. `push_context c { … }` replaces the context for a block and everything the block calls, and `push_allocator(a)` swaps the allocator until the scope ends. `#no_context` marks a procedure that doesn't use the context. Calling Jai code from a `#c_call` procedure is a compile error until that procedure writes `push_context`, and the runtime's C `main` pushes a global `first_thread_context`. Each thread has its own context. None of these sources says which register carries it.

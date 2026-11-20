@@ -5,6 +5,7 @@
 #include <string.h>
 #include <time.h>
 typedef int64_t I1(int64_t);
+typedef int64_t J1(void *, int64_t);
 I1 O0_fib, O0_sum, O0_collatz, O0_primes, O2_fib, O2_sum, O2_collatz, O2_primes;
 static double
 now(void)
@@ -32,6 +33,7 @@ static const char
 int
 main(void)
 {
+    static char context[16];
     Arena arena = { 0 };
     size_t len = strlen(text);
     Lexer lx;
@@ -64,14 +66,14 @@ main(void)
     printf("%-8s %10s %10s %10s   chibi/O0  chibi/O2\n", "", "chibi ms", "O0 ms", "O2 ms");
     for (int k = 0; k < 4; k++) {
         u32 id = names_intern(&lx.names, names[k], strlen(names[k]));
-        I1 *jit = (I1 *)native_entry(&n, ch.package_names[id]);
+        J1 *jit = (J1 *)native_entry(&n, ch.package_names[id]);
         double best[3] = { 1e9, 1e9, 1e9 };
         int64_t r[3];
-        I1 *fs[3] = { jit, o0[k], o2[k] };
+        I1 *fs[3] = { 0, o0[k], o2[k] };
         for (int rep = 0; rep < 3; rep++) {
             for (int m = 0; m < 3; m++) {
                 double t0 = now();
-                r[m] = fs[m](args[k]);
+                r[m] = m == 0 ? jit(context, args[k]) : fs[m](args[k]);
                 double d = now() - t0;
                 if (d < best[m]) {
                     best[m] = d;
