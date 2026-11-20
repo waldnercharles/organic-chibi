@@ -74,12 +74,13 @@ Updated 2026-11-19. Built so far:
 - step 3d.6, small structs by value: parameters and results of up to 16 bytes, and float-only structs of up to 32, in registers as C passes them.
 - step 3d.7, arrays and structs read left to right as items of literals and as struct arguments, as slices already were (rank 3, option A, decided 2026-11-19).
 - step 3d.8, larger structs by value: by pointer to a copy that the caller skips when nothing the callee can reach is able to write the original, and results through memory the caller provides (rank 8, decided 2026-11-19).
+- step 3g.1, constant tables: top-level `const` arrays and structs, built at compile time into a buffer that the backend maps beside the code, and read in function bodies through `data` places.
 
 [checker-and-ir.md](checker-and-ir.md) section 8 has the details and the measurements.
 
 The goal now is self-hosting: translate the compiler into chibi, then use the compiler as the benchmark that chibi improves against (the Compiler rows of 2026-11-16 and 2026-11-17). The order:
 1. **The rest of step 3d:** where the hidden context travels (open decision 1 below). Options A and C of question 14 were timed on 2026-11-19, on x86-64 ([experiments/slice-lowering](../../experiments/slice-lowering/README.md)): C was at least as fast as A on every kernel, and 21–28% faster on a loop that re-slices as a lexer does, so 3d builds C, and step 3d.3 built slices that way. The same kernels still need timing on the owner's M4 Pro. A cloud container runs the arm64 backend's tests under qemu (`make test`), but can't time arm64 code.
-2. Global variables and constant tables.
+2. Global variables (step 3g.2). Constant tables are built (3g.1).
 3. Calling C and being called from C.
 4. SIMD types, and the bit-scan and overflow builtins.
 5. The C backend, the C-to-chibi translator and the bootstrap check.

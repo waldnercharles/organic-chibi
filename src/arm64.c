@@ -226,6 +226,7 @@ typedef struct
     const IrCode *ir;
     const IrFunc *fn;
     const u8 *info;
+    const u8 *data;
     u32 *code;
     u32 *at;
     u8 *regs;
@@ -500,6 +501,14 @@ float_imm(Emit *e, u32 reg, u64 bits, bool is_double)
     }
     mov_imm(e, X8, bits, is_double ? SF : 0);
     put(e, (is_double ? OP_FMOV_FROM_X : OP_FMOV_FROM_W) | X8 << 5 | reg);
+}
+
+static void
+adrp(Emit *e, u32 d, u64 to)
+{
+    u64 pc = (u64)(uintptr_t)(e->code + here(e));
+    int64_t pages = (int64_t)((to & ~0xFFFull) - (pc & ~0xFFFull)) >> 12;
+    put(e, OP_ADRP | ((u32)pages & 3) << 29 | (((u32)pages >> 2) & 0x7FFFFu) << 5 | d);
 }
 
 static void
@@ -785,6 +794,18 @@ result(Emit *e, u32 v, u8 info)
         }
     }
     return alloc(e, v, info);
+}
+
+static NOINLINE void
+data_address(Emit *e, u32 i, u32 type, u32 offset)
+{
+    u32 d = result(e, i, e->info[type]);
+    u64 to = (u64)(uintptr_t)(e->data + offset);
+
+    adrp(e, d, to);
+    if (to & 0xFFF) {
+        put(e, SF | OP_ADD_IMM | (u32)(to & 0xFFF) << 10 | d << 5 | d);
+    }
 }
 
 static u32
@@ -2290,8 +2311,9 @@ pass_pointer(Emit *e, u32 v, u32 type, u32 d)
     release(e, v);
 
     u32 root = e->ir->bs[e->fn->first + v];
-    if (root != NO_SLOT &&
-        e->ir->slots[e->fn->first_slot + root].weight != WEIGHT_ADDRESSED) {
+    if (root == DATA_ROOT ||
+        (root < DATA_ROOT &&
+         e->ir->slots[e->fn->first_slot + root].weight != WEIGHT_ADDRESSED)) {
         mov(e, SF, d, s);
         return;
     }
@@ -2386,10 +2408,8 @@ call(Emit *e, u32 i, u32 type, u32 decl, u32 b, const Native *n)
         point_result(e, type, args[args[0] + 1]);
     }
 
-    u64 pc = (u64)(uintptr_t)(e->code + here(e));
     u64 entry = (u64)(uintptr_t)(n->entries + decl);
-    int64_t pages = (int64_t)((entry & ~0xFFFull) - (pc & ~0xFFFull)) >> 12;
-    put(e, OP_ADRP | ((u32)pages & 3) << 29 | (((u32)pages >> 2) & 0x7FFFFu) << 5 | X16);
+    adrp(e, X16, entry);
     put(e, OP_LDR_X16_X16 | (u32)((entry & 0xFFF) >> 3) << 10);
     put(e, OP_BLR_X16);
 
@@ -3073,6 +3093,7 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                 }
                 sp_address(e, result(e, i, e->info[type]), e->slot_offsets[a]);
                 break;
+            case IR_DATA: data_address(e, i, type, a); break;
             case IR_LOAD_AT: {
                 u8 t = e->info[type];
                 if (t & INFO_MEMORY) {
@@ -3359,8 +3380,9 @@ arm64_compile(Native *n, const Checker *c)
                  (size_t)WORDS_PER_ARGUMENT * fn->nextra;
     }
     size_t table = ((size_t)c->decls.count * sizeof(u64) + page - 1) & ~(page - 1);
-    size_t size = table + ((words * sizeof(u32) + page - 1) & ~(page - 1));
-    if (size == table) {
+    size_t code = table + (((size_t)ir->ndata + page - 1) & ~(page - 1));
+    size_t size = code + ((words * sizeof(u32) + page - 1) & ~(page - 1));
+    if (size == code) {
         size += page;
     }
 
@@ -3383,7 +3405,7 @@ arm64_compile(Native *n, const Checker *c)
     n->size = size;
     n->entries = memory;
     n->nentries = c->decls.count;
-    n->code = (u32 *)(n->memory + table);
+    n->code = (u32 *)(n->memory + code);
 
     u8 *info = malloc(c->types.count);
     for (u32 t = 0; t < c->types.count; t++) {
@@ -3391,7 +3413,10 @@ arm64_compile(Native *n, const Checker *c)
     }
 
     jit_write(true);
-    Emit e = { .c = c, .ir = &ir->code, .info = info };
+    if (ir->ndata) {
+        memcpy(n->memory + table, ir->data, ir->ndata);
+    }
+    Emit e = { .c = c, .ir = &ir->code, .info = info, .data = n->memory + table };
     for (u32 f = 0; f < ir->nfuncs && !e.error; f++) {
         const IrFunc *fn = &ir->funcs[f];
         n->words = (n->words + 3) & ~(size_t)3;

@@ -8,6 +8,7 @@
     X(IR_LOAD, "load")                                                         \
     X(IR_LOAD_AT, "load-at")                                                   \
     X(IR_ADDR, "addr")                                                         \
+    X(IR_DATA, "data")                                                         \
     X(IR_INDEX, "index")                                                       \
     X(IR_INDEX_LEN, "index-len")                                               \
     X(IR_FIELD, "field")                                                       \
@@ -79,6 +80,7 @@ enum
 enum
 {
     NO_SLOT = UINT32_MAX,
+    DATA_ROOT = UINT32_MAX - 1,
 };
 
 typedef struct
@@ -136,6 +138,9 @@ typedef struct
     IrFunc *funcs;
     u32 nfuncs;
     u32 funcs_cap;
+    u8 *data;
+    u32 ndata;
+    u32 data_cap;
 } Ir;
 
 #endif

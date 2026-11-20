@@ -298,6 +298,7 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                 break;
             }
             case IR_ADDR: v = (u64)(uintptr_t)(frame + offsets[a]); break;
+            case IR_DATA: v = (u64)(uintptr_t)(c->ir.data + a); break;
             case IR_INDEX: {
                 u32 base = OPERAND_TYPE(a);
                 __int128 k = wide(OPERAND(b), ty(c, OPERAND_TYPE(b)));

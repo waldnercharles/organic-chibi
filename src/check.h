@@ -121,6 +121,7 @@ enum
     X(DIAG_FN_VALUE, "`%t` is a function, so it can't be used here")                                \
     X(DIAG_TOO_LARGE, "an integer constant must fit in 512 bits")                                   \
     X(DIAG_FLOAT_TOO_LARGE, "a float constant must fit in 4,095 bits as an exact fraction")          \
+    X(DIAG_DATA_TOO_LARGE, "constants can't take more than 256 MB in all")                          \
     X(DIAG_DOES_NOT_FIT, "%v does not fit in `%U`")                                                 \
     X(DIAG_MISMATCH, "`%T` and `%U` don't mix without a conversion")                                \
     X(DIAG_DIVIDE_BY_ZERO, "division by zero")                                                      \
@@ -136,17 +137,21 @@ enum
     X(DIAG_NOT_ASSIGNABLE, "only a local, a field, an element or `p.*` can be assigned to")         \
     X(DIAG_ASSIGN_PARAM, "`%n` is a parameter, so it can't be assigned")                            \
     X(DIAG_ASSIGN_LOOP_VARIABLE, "`%n` is a loop variable, so it can't be assigned")                \
+    X(DIAG_ASSIGN_CONSTANT, "`%n` is a constant, so it can't be assigned")                          \
     X(DIAG_ASSIGN_RESULT, "a call's result can't be assigned; copy it to a local to change it")     \
     X(DIAG_NOT_ADDRESSABLE, "only a local, a field, an element or `p.*` has an address")            \
     X(DIAG_ADDRESS_PARAM, "`%n` is a parameter, so `&` can't take its address")                     \
     X(DIAG_ADDRESS_LOOP_VARIABLE, "`%n` is a loop variable, so `&` can't take its address")         \
+    X(DIAG_ADDRESS_CONSTANT, "`%n` is a constant, so `&` can't take its address")                   \
     X(DIAG_NOT_POINTER, "`%T` is not a pointer, so `.*` can't follow it")                           \
     X(DIAG_NEVER_NIL, "`%U` is never nil, so this needs a value")                                   \
     X(DIAG_NOT_INDEXABLE, "`%T` can't be indexed")                                                  \
     X(DIAG_NOT_INDEX, "an index must be an integer, found `%T`")                                    \
     X(DIAG_INDEX_RANGE, "index %v is out of range for `%U`")                                        \
     X(DIAG_SLICE_ORDER, "this slice starts at %v, after its end")                                   \
-    X(DIAG_SLICE_LOOP_VARIABLE, "`%t` is a loop variable, so a slice can't point into it")          \
+    X(DIAG_SLICE_PARAM, "`%n` is a parameter, so a slice can't point into it")                      \
+    X(DIAG_SLICE_LOOP_VARIABLE, "`%n` is a loop variable, so a slice can't point into it")          \
+    X(DIAG_SLICE_CONSTANT, "`%n` is a constant, so a slice can't point into it")                    \
     X(DIAG_LITERAL_TYPE, "the type of this literal isn't known here; write it, as in `u8.[1, 2]`")  \
     X(DIAG_LITERAL_COUNT, "expected the length of `%U`, found %c elements")                         \
     X(DIAG_NOT_ARRAY, "`%U` is not an array, so an array literal can't build it")                   \

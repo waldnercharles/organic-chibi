@@ -3261,14 +3261,16 @@ large_want(const char *name, int64_t a, int64_t b)
     return a;
 }
 
+typedef int64_t Want(const char *, int64_t, int64_t);
+
 static bool
-matches_by_hand(Program *p, const char *const *names, size_t count)
+matches_by_hand(Program *p, const char *const *names, size_t count, Want *rule)
 {
     for (size_t f = 0; f < count; f++) {
         for (int64_t a = -3; a < 300; a += 37) {
             for (int64_t b = -3; b < 9; b++) {
                 int64_t got = ((I2 *)fn(p, names[f]))(a, b);
-                int64_t want = large_want(names[f], a, b);
+                int64_t want = rule(names[f], a, b);
                 if (got != want) {
                     fprintf(
                         stderr,
@@ -3343,14 +3345,15 @@ TEST_CASE(large_structs)
     REQUIRE(mix == 777);
 
     size_t count = sizeof LARGE_STRUCT_FUNCTIONS / sizeof LARGE_STRUCT_FUNCTIONS[0];
-    REQUIRE(matches_by_hand(&p, LARGE_STRUCT_FUNCTIONS, count));
+    REQUIRE(matches_by_hand(&p, LARGE_STRUCT_FUNCTIONS, count, large_want));
     REQUIRE(agree_on_grid(&p, LARGE_STRUCT_FUNCTIONS, count));
 
     native_replace(&p.n, decl_named(&p, "eW"), (void *)c_eW);
     native_replace(&p.n, decl_named(&p, "eBig"), (void *)c_eBig);
     native_replace(&p.n, decl_named(&p, "see"), (void *)c_see);
     native_replace(&p.n, decl_named(&p, "seeWA"), (void *)c_seeWA);
-    REQUIRE(matches_by_hand(&p, SEE_FUNCTIONS, sizeof SEE_FUNCTIONS / sizeof SEE_FUNCTIONS[0]));
+    size_t sees = sizeof SEE_FUNCTIONS / sizeof SEE_FUNCTIONS[0];
+    REQUIRE(matches_by_hand(&p, SEE_FUNCTIONS, sees, large_want));
     CW cw = { 5, 6, 7 };
     REQUIRE(((int64_t(*)(CW))fn(&p, "seeParam"))(cw) == 999 && cw.a == 5);
     REQUIRE(((int64_t(*)(CW *))fn(&p, "seeDeref"))(&cw) == 5 && cw.a == 5);
@@ -3398,6 +3401,407 @@ TEST_CASE(constant_conditions)
     REQUIRE(((I1 *)fn(&p, "u"))(7) == 1007);
     REQUIRE(((I1 *)fn(&p, "v"))(4) == 8);
     REQUIRE(((I1 *)fn(&p, "w"))(4) == 5);
+    release_program(&p);
+    return true;
+}
+
+static const char CONSTANT_TABLES[] =
+    "const squares := int.[0, 1, 4, 9, 16, 25, 36, 49]\n"
+    "const bytes := u8.[1, 200, 255, 0, 17, 128, 64, 3]\n"
+    "const odd := u8.[5, 6, 7]\n"
+    "const signed := i8.[-128, -1, 0, 1, 127, -50, 50, 7]\n"
+    "const halves := i16.[-30000, -2, 2, 30000]\n"
+    "const words := u32.[4000000000, 1, 2, 3]\n"
+    "const floats := f64.[0.5, -1.25, 3.0, 100.0]\n"
+    "const singles := f32.[1.5, -2.5, 0.25, 8.0]\n"
+    "const flags := bool.[true, false, false, true]\n"
+    "const colors := Color.[.red, .green, .blue, .green]\n"
+    "const grid := [3]int.[.[1, 2, 3], .[4, 5, 6], .[7, 8, 9], .[10, 11, 12]]\n"
+    "const same := grid\n"
+    "const origin := Point.{ 3, -4 }\n"
+    "const corners := Point.[.{ 0, 0 }, .{ 10, 0 }, .{ 10, 10 }, origin]\n"
+    "const box := Box.{ .lo = .{ 1, 2 }, .hi = .{ 30, 40 } }\n"
+    "const deep := Deep.{ .tag = 9, .a = .[-1, 2, -3] }\n"
+    "const wide := Wide.{ 1, 2, 3 }\n"
+    "const huge := Huge.{ .head = 5, .tail = 9 }\n"
+    "const far := Mega.{ .last = 77 }\n"
+    "const after := i16.[-7, 70]\n"
+    "const empty := Empty.{}\n"
+    "const scale := 3\n"
+    "const scaled := int.[scale, scale * scale, -scale]\n"
+    "const typed: [3]u8 = .[7, 8, 9]\n"
+    "const named: Point = .{ .y = 5, .x = 6 }\n"
+    "const nested := [2]Point.[.[.{ 1, 2 }, .{ 3, 4 }], .[.{ 5, 6 }, .{ 7, 8 }]]\n"
+    "\n"
+    "enum Color: u8 { red = 1, green = 2, blue = 3 }\n"
+    "struct Point { x: int, y: int }\n"
+    "struct Box { lo: Point, hi: Point }\n"
+    "struct Deep { tag: int, w: f32 = 0.5, p: Point, a: [3]i16, k: u8 = 200 }\n"
+    "struct Wide { a: int, b: int, c: int }\n"
+    "struct Huge { head: int, pad: [1000]int, tail: int }\n"
+    "struct Mega { pad: [200000]int, last: int }\n"
+    "struct Empty {}\n"
+    "\n"
+    "fn addP(p: Point, k: int) -> int {\n"
+    "    return p.x + p.y * k\n"
+    "}\n"
+    "\n"
+    "fn sumW(w: Wide, k: int) -> int {\n"
+    "    return w.a * 100 + w.b * 10 + w.c + k\n"
+    "}\n"
+    "\n"
+    "fn pick(i: int) -> Point {\n"
+    "    return corners[i & 3]\n"
+    "}\n"
+    "\n"
+    "fn wideOf() -> Wide {\n"
+    "    return wide\n"
+    "}\n"
+    "\n"
+    "fn hugeSum(h: Huge, k: int) -> int {\n"
+    "    return h.head + h.tail * k + h.pad[k & 7]\n"
+    "}\n"
+    "\n"
+    "fn square(a: int, b: int) -> int {\n"
+    "    return squares[a & 7] + b\n"
+    "}\n"
+    "\n"
+    "fn byteAt(a: int, b: int) -> int {\n"
+    "    return int(bytes[a & 7]) * 10 + b\n"
+    "}\n"
+    "\n"
+    "fn oddAt(a: int, b: int) -> int {\n"
+    "    return int(odd[(a & 3) % 3]) + b\n"
+    "}\n"
+    "\n"
+    "fn signedAt(a: int, b: int) -> int {\n"
+    "    return int(signed[a & 7]) * 10 + b\n"
+    "}\n"
+    "\n"
+    "fn halfAt(a: int, b: int) -> int {\n"
+    "    return int(halves[a & 3]) + b\n"
+    "}\n"
+    "\n"
+    "fn wordAt(a: int, b: int) -> int {\n"
+    "    return int(words[a & 3]) + b\n"
+    "}\n"
+    "\n"
+    "fn floatAt(a: int, b: int) -> int {\n"
+    "    return int(floats[a & 3] * 4.0) + b\n"
+    "}\n"
+    "\n"
+    "fn singleAt(a: int, b: int) -> int {\n"
+    "    return int(f64(singles[a & 3]) * 4.0) + b\n"
+    "}\n"
+    "\n"
+    "fn flagAt(a: int, b: int) -> int {\n"
+    "    if flags[a & 3] {\n"
+    "        return 1000 + b\n"
+    "    }\n"
+    "    return b\n"
+    "}\n"
+    "\n"
+    "fn colorAt(a: int, b: int) -> int {\n"
+    "    c := colors[a & 3]\n"
+    "    if c == .red {\n"
+    "        return 100 + b\n"
+    "    }\n"
+    "    if c == .green {\n"
+    "        return 200 + b\n"
+    "    }\n"
+    "    return 300 + b\n"
+    "}\n"
+    "\n"
+    "fn gridAt(a: int, b: int) -> int {\n"
+    "    return grid[a & 3][(b & 3) % 3] * 100 + same[(a + 1) & 3][(b & 3) % 3]\n"
+    "}\n"
+    "\n"
+    "fn rowSum(a: int, b: int) -> int {\n"
+    "    s := 0\n"
+    "    for v in grid[a & 3] {\n"
+    "        s += v\n"
+    "    }\n"
+    "    return s * 10 + b\n"
+    "}\n"
+    "\n"
+    "fn allSum(a: int, b: int) -> int {\n"
+    "    s := 0\n"
+    "    for row, i in grid {\n"
+    "        for v in row {\n"
+    "            s += v * (i + 1)\n"
+    "        }\n"
+    "    }\n"
+    "    return s + a + b\n"
+    "}\n"
+    "\n"
+    "fn pointAt(a: int, b: int) -> int {\n"
+    "    p := corners[a & 3]\n"
+    "    return p.x * 100 + p.y + b\n"
+    "}\n"
+    "\n"
+    "fn originAt(a: int, b: int) -> int {\n"
+    "    return origin.x * 1000 + origin.y + a + b\n"
+    "}\n"
+    "\n"
+    "fn boxArea(a: int, b: int) -> int {\n"
+    "    return (box.hi.x - box.lo.x) * (box.hi.y - box.lo.y) + a * b\n"
+    "}\n"
+    "\n"
+    "fn deepAt(a: int, b: int) -> int {\n"
+    "    return deep.tag * 1000 + int(deep.w * 4.0) * 100 + deep.p.x + int(deep.a[(a & 3) % 3]) * 10 + int(deep.k) + b\n"
+    "}\n"
+    "\n"
+    "fn passPoint(a: int, b: int) -> int {\n"
+    "    return addP(corners[a & 3], b)\n"
+    "}\n"
+    "\n"
+    "fn passWide(a: int, b: int) -> int {\n"
+    "    return sumW(wide, a) + b\n"
+    "}\n"
+    "\n"
+    "fn retPoint(a: int, b: int) -> int {\n"
+    "    p := pick(a)\n"
+    "    return p.x * 7 + p.y + b\n"
+    "}\n"
+    "\n"
+    "fn retWide(a: int, b: int) -> int {\n"
+    "    w := wideOf()\n"
+    "    return w.a + w.b * 10 + w.c * 100 + a + b\n"
+    "}\n"
+    "\n"
+    "fn copyChange(a: int, b: int) -> int {\n"
+    "    p := origin\n"
+    "    p.x = a\n"
+    "    p.y += b\n"
+    "    return p.x * 100 + p.y + origin.x * 10000 + origin.y * 1000000\n"
+    "}\n"
+    "\n"
+    "fn arrayCopy(a: int, b: int) -> int {\n"
+    "    t := squares\n"
+    "    t[a & 7] = b\n"
+    "    return t[a & 7] * 1000 + squares[a & 7]\n"
+    "}\n"
+    "\n"
+    "fn hugeAt(a: int, b: int) -> int {\n"
+    "    return huge.tail * 10 + huge.head + huge.pad[a & 511] + int(after[a & 1]) + b\n"
+    "}\n"
+    "\n"
+    "fn passHuge(a: int, b: int) -> int {\n"
+    "    return hugeSum(huge, a) + b\n"
+    "}\n"
+    "\n"
+    "fn farAt(a: int, b: int) -> int {\n"
+    "    return far.last * 1000 + far.pad[a & 0xFFFF] + int(after[a & 1]) + b\n"
+    "}\n"
+    "\n"
+    "fn scaledAt(a: int, b: int) -> int {\n"
+    "    return scaled[(a & 3) % 3] * 10 + b\n"
+    "}\n"
+    "\n"
+    "fn annotated(a: int, b: int) -> int {\n"
+    "    return int(typed[(a & 3) % 3]) * 100 + named.x * 10 + named.y + b\n"
+    "}\n"
+    "\n"
+    "fn nestedAt(a: int, b: int) -> int {\n"
+    "    p := nested[a & 1][b & 1]\n"
+    "    return p.x * 10 + p.y\n"
+    "}\n"
+    "\n"
+    "fn lengths(a: int, b: int) -> int {\n"
+    "    return squares.len * 100 + grid.len * 10 + grid[a & 3].len + b\n"
+    "}\n"
+    "\n"
+    "fn emptyAt(a: int, b: int) -> int {\n"
+    "    e := empty\n"
+    "    _ = e\n"
+    "    return a - b\n"
+    "}\n"
+    "\n"
+    "fn loopTables(a: int, b: int) -> int {\n"
+    "    s := 0\n"
+    "    i := 0\n"
+    "    while i < 8 {\n"
+    "        s += squares[i] * int(bytes[(i + a) & 7]) + int(signed[i]) * b\n"
+    "        i += 1\n"
+    "    }\n"
+    "    return s\n"
+    "}\n"
+    "\n"
+    "fn trapIndex(a: int, b: int) -> int {\n"
+    "    return squares[a] + b\n"
+    "}\n"
+    "\n"
+    "fn trapRow(a: int, b: int) -> int {\n"
+    "    return grid[a][b]\n"
+    "}\n";
+
+static const char *const CONSTANT_TABLE_FUNCTIONS[] = {
+    "square",  "byteAt",     "oddAt",     "signedAt", "halfAt",
+    "wordAt",  "floatAt",    "singleAt",  "flagAt",   "colorAt",
+    "gridAt",  "rowSum",     "allSum",    "pointAt",  "originAt",
+    "boxArea", "deepAt",     "passPoint", "passWide", "retPoint",
+    "retWide", "copyChange", "arrayCopy", "hugeAt",   "passHuge",
+    "farAt",   "scaledAt",   "annotated", "nestedAt", "lengths",
+    "emptyAt", "loopTables",
+};
+
+static const char *const ALIGNED_CONSTANTS[] = {
+    "halves", "words", "floats", "singles", "grid",   "origin",
+    "deep",   "huge",  "far",    "after",   "scaled", "nested",
+};
+
+static const char *const CONSTANT_TABLE_TRAPS[] = { "trapIndex", "trapRow" };
+
+static int64_t
+table_want(const char *name, int64_t a, int64_t b)
+{
+    static const int64_t bytes[] = { 1, 200, 255, 0, 17, 128, 64, 3 };
+    static const int64_t signed_bytes[] = { -128, -1, 0, 1, 127, -50, 50, 7 };
+    static const int64_t halves[] = { -30000, -2, 2, 30000 };
+    static const int64_t words[] = { 4000000000, 1, 2, 3 };
+    static const int64_t floats_by_4[] = { 2, -5, 12, 400 };
+    static const int64_t singles_by_4[] = { 6, -10, 1, 32 };
+    static const int64_t colors[] = { 100, 200, 300, 200 };
+    static const int64_t corner_x[] = { 0, 10, 10, 3 };
+    static const int64_t corner_y[] = { 0, 0, 10, -4 };
+    static const int64_t deep_a[] = { -1, 2, -3 };
+    static const int64_t scaled[] = { 3, 9, -3 };
+    static const int64_t after[] = { -7, 70 };
+
+    int64_t i = a & 7;
+    int64_t r = a & 3;
+    int64_t c = (b & 3) % 3;
+    if (strcmp(name, "square") == 0) {
+        return i * i + b;
+    }
+    if (strcmp(name, "byteAt") == 0) {
+        return bytes[i] * 10 + b;
+    }
+    if (strcmp(name, "oddAt") == 0) {
+        return 5 + r % 3 + b;
+    }
+    if (strcmp(name, "signedAt") == 0) {
+        return signed_bytes[i] * 10 + b;
+    }
+    if (strcmp(name, "halfAt") == 0) {
+        return halves[r] + b;
+    }
+    if (strcmp(name, "wordAt") == 0) {
+        return words[r] + b;
+    }
+    if (strcmp(name, "floatAt") == 0) {
+        return floats_by_4[r] + b;
+    }
+    if (strcmp(name, "singleAt") == 0) {
+        return singles_by_4[r] + b;
+    }
+    if (strcmp(name, "flagAt") == 0) {
+        return r == 0 || r == 3 ? 1000 + b : b;
+    }
+    if (strcmp(name, "colorAt") == 0) {
+        return colors[r] + b;
+    }
+    if (strcmp(name, "gridAt") == 0) {
+        return (3 * r + c + 1) * 100 + 3 * ((a + 1) & 3) + c + 1;
+    }
+    if (strcmp(name, "rowSum") == 0) {
+        return (9 * r + 6) * 10 + b;
+    }
+    if (strcmp(name, "allSum") == 0) {
+        return 240 + a + b;
+    }
+    if (strcmp(name, "pointAt") == 0) {
+        return corner_x[r] * 100 + corner_y[r] + b;
+    }
+    if (strcmp(name, "originAt") == 0) {
+        return 2996 + a + b;
+    }
+    if (strcmp(name, "boxArea") == 0) {
+        return 1102 + a * b;
+    }
+    if (strcmp(name, "deepAt") == 0) {
+        return 9400 + deep_a[r % 3] * 10 + b;
+    }
+    if (strcmp(name, "passPoint") == 0) {
+        return corner_x[r] + corner_y[r] * b;
+    }
+    if (strcmp(name, "passWide") == 0) {
+        return 123 + a + b;
+    }
+    if (strcmp(name, "retPoint") == 0) {
+        return corner_x[r] * 7 + corner_y[r] + b;
+    }
+    if (strcmp(name, "retWide") == 0) {
+        return 321 + a + b;
+    }
+    if (strcmp(name, "copyChange") == 0) {
+        return a * 100 + b - 4 + 30000 - 4000000;
+    }
+    if (strcmp(name, "arrayCopy") == 0) {
+        return b * 1000 + i * i;
+    }
+    if (strcmp(name, "hugeAt") == 0) {
+        return 95 + after[a & 1] + b;
+    }
+    if (strcmp(name, "passHuge") == 0) {
+        return 5 + 9 * a + b;
+    }
+    if (strcmp(name, "farAt") == 0) {
+        return 77000 + after[a & 1] + b;
+    }
+    if (strcmp(name, "scaledAt") == 0) {
+        return scaled[r % 3] * 10 + b;
+    }
+    if (strcmp(name, "annotated") == 0) {
+        return (7 + r % 3) * 100 + 65 + b;
+    }
+    if (strcmp(name, "nestedAt") == 0) {
+        int64_t x = 1 + 4 * (a & 1) + 2 * (b & 1);
+        return 11 * x + 1;
+    }
+    if (strcmp(name, "lengths") == 0) {
+        return 843 + b;
+    }
+    if (strcmp(name, "emptyAt") == 0) {
+        return a - b;
+    }
+    if (strcmp(name, "loopTables") == 0) {
+        int64_t total = 6 * b;
+        for (int64_t k = 0; k < 8; k++) {
+            total += k * k * bytes[(k + a) & 7];
+        }
+        return total;
+    }
+    return a;
+}
+
+TEST_CASE(constant_tables)
+{
+    Program p;
+    REQUIRE(build(&p, CONSTANT_TABLES));
+
+    for (size_t k = 0; k < sizeof ALIGNED_CONSTANTS / sizeof ALIGNED_CONSTANTS[0]; k++) {
+        u32 decl = decl_named(&p, ALIGNED_CONSTANTS[k]);
+        REQUIRE(p.c.decls.values[decl] % check_type_align(&p.c, p.c.decls.types[decl]) == 0);
+    }
+
+    size_t count = sizeof CONSTANT_TABLE_FUNCTIONS /
+                   sizeof CONSTANT_TABLE_FUNCTIONS[0];
+    REQUIRE(matches_by_hand(&p, CONSTANT_TABLE_FUNCTIONS, count, table_want));
+    REQUIRE(agree_on_grid(&p, CONSTANT_TABLE_FUNCTIONS, count));
+    REQUIRE(agree_on_grid(&p, CONSTANT_TABLE_TRAPS, 2));
+
+    CW w = ((CW(*)(void))fn(&p, "wideOf"))();
+    REQUIRE(w.a == 1 && w.b == 2 && w.c == 3);
+
+    int64_t r = 0;
+    REQUIRE(call_i2((I2 *)fn(&p, "trapIndex"), 7, 1, &r) == 0 && r == 50);
+    REQUIRE(call_i2((I2 *)fn(&p, "trapIndex"), 8, 0, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "trapIndex"), -1, 0, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "trapRow"), 3, 2, &r) == 0 && r == 12);
+    REQUIRE(call_i2((I2 *)fn(&p, "trapRow"), 4, 0, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "trapRow"), 0, 3, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "trapRow"), -1, 0, &r) == TRAP_BOUNDS);
     release_program(&p);
     return true;
 }
@@ -4015,6 +4419,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(left_to_right);
     RUN_TEST_CASE(large_structs);
     RUN_TEST_CASE(constant_conditions);
+    RUN_TEST_CASE(constant_tables);
     RUN_TEST_CASE(deep_logic);
     RUN_TEST_CASE(small_integers);
     RUN_TEST_CASE(wide_integers);

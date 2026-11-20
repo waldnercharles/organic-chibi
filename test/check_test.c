@@ -127,6 +127,42 @@ static const Case DECLARATIONS[] = {
     { "struct S { f: fn(*int, []u8) -> ?int, g: fn(*int, []u8) -> ?int }\n",
       "struct S { f: fn(*int, []u8) -> ?int, g: fn(*int, []u8) -> ?int }\n" },
     { "package geo\nimport \"std/fmt\"\nconst X := 1\n", "const X = 1\n" },
+    {
+        "const T := u8.[1, 2, 255]\n"
+        "const S := i8.[-1, -128, 127]\n"
+        "const F := f32.[0.5, -2]\n"
+        "const B := bool.[true, false]\n"
+        "const G := [2]i16.[.[1, -2], .[3, -4]]\n"
+        "const H := G\n",
+        "const T: [3]u8 = .[1, 2, 255]\n"
+        "const S: [3]i8 = .[-1, -128, 127]\n"
+        "const F: [2]f32 = .[0.5, -2]\n"
+        "const B: [2]bool = .[true, false]\n"
+        "const G: [2][2]i16 = .[.[1, -2], .[3, -4]]\n"
+        "const H: [2][2]i16 = .[.[1, -2], .[3, -4]]\n",
+    },
+    {
+        "const P := Box.{ .hi = .{ 3, 4 } }\n"
+        "const Q: Box = .{ .lo = .{ .y = -1, .x = 2 } }\n"
+        "const E := Empty.{}\n"
+        "const C := Color.[.blue, .red]\n"
+        "const Z := Text.{ .n = 4 }\n"
+        "struct Box { lo: Point, hi: Point }\n"
+        "struct Point { x: int, y: int = 7 }\n"
+        "struct Empty {}\n"
+        "struct Text { s: []u8, n: int }\n"
+        "enum Color: u8 { red = 1, blue = 2 }\n",
+        "const P: Box = .{ .{ 0, 7 }, .{ 3, 4 } }\n"
+        "const Q: Box = .{ .{ 2, -1 }, .{ 0, 7 } }\n"
+        "const E: Empty = .{}\n"
+        "const C: [2]Color = .[.blue, .red]\n"
+        "const Z: Text = .{ .[], 4 }\n"
+        "struct Box { lo: Point, hi: Point }\n"
+        "struct Point { x: int, y: int = 7 }\n"
+        "struct Empty {}\n"
+        "struct Text { s: []u8, n: int }\n"
+        "enum Color: u8 { red = 1, blue = 2 }\n",
+    },
 };
 
 static const Case ERRORS[] = {
@@ -422,7 +458,7 @@ static const Case ERRORS[] = {
         "    v.x += 1.5\n"
         "    return 0\n"
         "}\n",
-        "a:7:44: the checker doesn't support this yet\n"
+        "a:7:25: the checker doesn't support this yet\n"
         "a:23:11: the type of this literal isn't known here; write it, as in "
         "`Point.{ 1, 2 }`\n"
         "a:24:10: wrong number of fields: expected 2, found 1\n"
@@ -597,6 +633,87 @@ static const Case ERRORS[] = {
         "fn ok(p: P) -> P\n"
         "fn two(p: P) -> L\n"
         "fn errs(p: P, q: *P) -> i32\n",
+    },
+    {
+        "const A := int.[1, f()]\n"
+        "const B: []u8 = .[1, 2]\n"
+        "const C := Big.{}\n"
+        "const D := P.x\n"
+        "const E := T[1]\n"
+        "const F := T.len\n"
+        "const G := u8.[300]\n"
+        "const H := Point.[P, .{ 1.5, 2 }]\n"
+        "const P := Point.{ 1, 2 }\n"
+        "const T := u8.[1, 2]\n"
+        "\n"
+        "struct Big { a: [1 << 29]u8 }\n"
+        "struct Point { x: int, y: int }\n"
+        "struct Line { p: Point = .{ 1, 2 } }\n"
+        "\n"
+        "fn f() -> int {\n"
+        "    return 1\n"
+        "}\n"
+        "\n"
+        "fn g(p: Point = P) -> int {\n"
+        "    return p.x\n"
+        "}\n",
+        "a:1:20: `f` is a function, so it can't be used here\n"
+        "a:2:7: `[2]u8` and `[]u8` don't mix without a conversion\n"
+        "a:3:12: constants can't take more than 256 MB in all\n"
+        "a:4:14: the checker doesn't support this yet\n"
+        "a:5:13: the checker doesn't support this yet\n"
+        "a:6:14: the checker doesn't support this yet\n"
+        "a:7:16: 300 does not fit in `u8`\n"
+        "a:8:25: 1.5 does not fit in `int`\n"
+        "a:14:15: the checker doesn't support this yet\n"
+        "a:20:6: the checker doesn't support this yet\n"
+        "const A = ?\n"
+        "const B = ?\n"
+        "const C = ?\n"
+        "const D = ?\n"
+        "const E = ?\n"
+        "const F = ?\n"
+        "const G = ?\n"
+        "const H = ?\n"
+        "const P: Point = .{ 1, 2 }\n"
+        "const T: [2]u8 = .[1, 2]\n"
+        "struct Big { a: [536870912]u8 }\n"
+        "struct Point { x: int, y: int }\n"
+        "struct Line { p: Point }\n"
+        "fn f() -> int\n"
+        "fn g(p: Point) -> int\n",
+    },
+    {
+        "const T := u8.[1, 2, 3]\n"
+        "const P := Point.{ 1, 2 }\n"
+        "\n"
+        "struct Point { x: int, y: int }\n"
+        "struct S { a: [4]int }\n"
+        "\n"
+        "fn h(i: int, p: S) {\n"
+        "    T[i] = 5\n"
+        "    P.x += 1\n"
+        "    P = Point.{ 3, 4 }\n"
+        "    q := &T\n"
+        "    r := &P.x\n"
+        "    s := T[0..2]\n"
+        "    t := p.a[0..2]\n"
+        "    for v in T {\n"
+        "        _ = v\n"
+        "    }\n"
+        "}\n",
+        "a:8:5: `T` is a constant, so it can't be assigned\n"
+        "a:9:7: `P` is a constant, so it can't be assigned\n"
+        "a:10:5: `P` is a constant, so it can't be assigned\n"
+        "a:11:11: `T` is a constant, so `&` can't take its address\n"
+        "a:12:13: `P` is a constant, so `&` can't take its address\n"
+        "a:13:10: `T` is a constant, so a slice can't point into it\n"
+        "a:14:12: `p` is a parameter, so a slice can't point into it\n"
+        "const T: [3]u8 = .[1, 2, 3]\n"
+        "const P: Point = .{ 1, 2 }\n"
+        "struct Point { x: int, y: int }\n"
+        "struct S { a: [4]int }\n"
+        "fn h(i: int, p: S) -> void\n",
     },
 };
 
@@ -3346,6 +3463,38 @@ static const Case BODIES[] = {
         "    %77 = addr *W $9\n"
         "    ret W %77\n",
     },
+    {
+        "const T := u8.[1, 2, 3]\n"
+        "const W := Wide.{ 1, 2, 3 }\n"
+        "\n"
+        "struct Wide { a: int, b: int, c: int }\n"
+        "\n"
+        "fn g(w: Wide) -> int {\n"
+        "    return w.b\n"
+        "}\n"
+        "\n"
+        "fn f(i: int) -> int {\n"
+        "    return int(T[i]) + g(W)\n"
+        "}\n",
+        "fn g(w: Wide) -> int\n"
+        "    slots: w: Wide\n"
+        "    %0 = addr *Wide w\n"
+        "    %1 = field *int %0, .b\n"
+        "    %2 = load-at int %1\n"
+        "    ret int %2\n"
+        "fn f(i: int) -> int\n"
+        "    slots: i: int\n"
+        "    %0 = data *[3]u8 T\n"
+        "    %1 = load int i\n"
+        "    %2 = index *u8 %0, %1\n"
+        "    %3 = load-at u8 %2\n"
+        "    %4 = convert int %3\n"
+        "    %5 = data *Wide W\n"
+        "    %6 = load-at Wide %5\n"
+        "    %7 = call int g(%6)\n"
+        "    %8 = add int %4, %7\n"
+        "    ret int %8\n",
+    },
 };
 
 TEST_CASE(declarations)
@@ -3386,6 +3535,26 @@ TEST_CASE(files)
         "b:3:7: `Dup` is already declared at a:3:7\n"
         "const A = 42\nstruct S { t: T }\nconst Dup = 1\nconst B = 21\nstruct "
         "T { s: S }\nconst Dup = 2\n"
+    ));
+    return true;
+}
+
+TEST_CASE(constants_across_files)
+{
+    const char *texts[] = {
+        "const A := 1\n",
+        "const B: [2][2]int = .[.[1, 2], .[3, 4]]\n"
+        "const P := Pair.{ .a = .[5, 6] }\n"
+        "struct Pair { a: [2]u8 }\n",
+    };
+    REQUIRE(checks_to(
+        texts,
+        2,
+        2,
+        "const A = 1\n"
+        "const B: [2][2]int = .[.[1, 2], .[3, 4]]\n"
+        "const P: Pair = .{ .[5, 6] }\n"
+        "struct Pair { a: [2]u8 }\n"
     ));
     return true;
 }
@@ -3444,6 +3613,7 @@ TEST_SUITE(check_tests)
     RUN_TEST_CASE(errors);
     RUN_TEST_CASE(bodies);
     RUN_TEST_CASE(files);
+    RUN_TEST_CASE(constants_across_files);
     RUN_TEST_CASE(entry_file);
     RUN_TEST_CASE(depth_limit);
 }
