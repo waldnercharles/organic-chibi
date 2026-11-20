@@ -74,3 +74,5 @@ For example, `score := load_score()` in a library file.
   - Cons: every read of such a global first checks whether it has been initialized, which is a hidden branch on a hot path.
 
 **Recommendation: A.** Moving to B later breaks no code. C conflicts with the goal of code that does no hidden work.
+
+**Decided 2026-11-19: A** (the Language row of that date in [decisions.md](../decisions.md)).
