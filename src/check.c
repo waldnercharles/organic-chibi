@@ -33,6 +33,7 @@ enum
 enum
 {
     DATA_LIMIT = 1u << 28,
+    GLOBALS_LIMIT = 1u << 31,
 };
 
 enum
@@ -82,9 +83,11 @@ static const u8 is_marker[NNODES] = {
 };
 
 static const u8 decl_kinds[NNODES] = {
-    [NODE_CONST_INIT] = DECL_CONST, [NODE_CONST_TYPE_INIT] = DECL_CONST,
-    [NODE_STRUCT] = DECL_STRUCT,    [NODE_ENUM] = DECL_ENUM,
-    [NODE_UNION] = DECL_UNION,      [NODE_FN] = DECL_FN,
+    [NODE_CONST_INIT] = DECL_CONST,  [NODE_CONST_TYPE_INIT] = DECL_CONST,
+    [NODE_STRUCT] = DECL_STRUCT,     [NODE_ENUM] = DECL_ENUM,
+    [NODE_UNION] = DECL_UNION,       [NODE_FN] = DECL_FN,
+    [NODE_VAR_INIT] = DECL_VAR,      [NODE_VAR_TYPE] = DECL_VAR,
+    [NODE_VAR_TYPE_INIT] = DECL_VAR,
 };
 
 static const u8 operator_classes[NNODES] = {
@@ -3830,26 +3833,73 @@ reserve_data(Checker *c, u32 file, u32 token, u32 type)
     return at;
 }
 
-static void
-put_data(Checker *c, u32 at, u32 type, Operand v)
+static u64
+global_size(Checker *c, u32 type)
 {
     u64 size = check_type_size(c, type);
-    if (is_aggregate(c, type)) {
-        memcpy(c->ir.data + at, c->ir.data + value_of(v), size);
-        return;
+    return size ? size : 1;
+}
+
+static u32
+reserve_global(Checker *c, u32 file, u32 token, u32 type)
+{
+    Ir *ir = &c->ir;
+    u64 size = global_size(c, type);
+    u32 align = check_type_align(c, type);
+    u32 at = (ir->nglobals + align - 1) & ~(align - 1);
+    u64 used = (u64)at + c->zeroed + 16;
+    if (used > GLOBALS_LIMIT || size > GLOBALS_LIMIT - used) {
+        report(c, file, token, DIAG_GLOBALS_TOO_LARGE, 0, 0);
+        return NO_SLOT;
     }
-    u64 bits = constant_bits(c, v);
-    memcpy(c->ir.data + at, &bits, size);
+
+    u32 end = at + (u32)size;
+    if (end >= ir->globals_cap) {
+        ir->globals_cap = end < GLOBALS_LIMIT / 2 ? 2 * end + 64 : GLOBALS_LIMIT;
+        ir->globals = resize(ir->globals, ir->globals_cap, 1);
+    }
+    memset(ir->globals + ir->nglobals, 0, end - ir->nglobals);
+    ir->nglobals = end;
+    return at;
+}
+
+static u32
+reserve_zeroed(Checker *c, u32 file, u32 token, u32 type)
+{
+    u64 size = global_size(c, type);
+    u32 align = check_type_align(c, type);
+    u32 at = (c->zeroed + align - 1) & ~(align - 1);
+    u64 used = (u64)at + c->ir.nglobals + 16;
+    if (used > GLOBALS_LIMIT || size > GLOBALS_LIMIT - used) {
+        report(c, file, token, DIAG_GLOBALS_TOO_LARGE, 0, 0);
+        return NO_SLOT;
+    }
+
+    c->zeroed = at + (u32)size;
+    c->zeroed_align = align > c->zeroed_align ? align : c->zeroed_align;
+    return at;
 }
 
 static void
-put_defaults(Checker *c, u32 at, u32 type)
+put_data(Checker *c, u8 *to, u32 type, Operand v)
+{
+    u64 size = check_type_size(c, type);
+    if (is_aggregate(c, type)) {
+        memcpy(to, c->ir.data + value_of(v), size);
+        return;
+    }
+    u64 bits = constant_bits(c, v);
+    memcpy(to, &bits, size);
+}
+
+static void
+put_defaults(Checker *c, u8 *to, u32 type)
 {
     if (is_array(c, type)) {
         u32 elem = c->types.arg0[type];
         u64 size = check_type_size(c, elem);
         for (u64 k = 0; k < c->types.arg1[type]; k++) {
-            put_defaults(c, at + (u32)(k * size), elem);
+            put_defaults(c, to + k * size, elem);
         }
         return;
     }
@@ -3862,7 +3912,7 @@ put_defaults(Checker *c, u32 at, u32 type)
         if (!sets_default(c, m)) {
             continue;
         }
-        u32 field = at + (u32)check_field_offset(c, field_layout(c, decl, k));
+        u8 *field = to + check_field_offset(c, field_layout(c, decl, k));
         if (m.value < MEMBER_NONE) {
             put_data(c, field, m.type, (Operand){ m.type, m.value });
         } else {
@@ -3909,7 +3959,7 @@ constant_array(Checker *c, u32 file, u8 kind)
 
     u32 at = !ok ? NO_SLOT : adopt ? first : reserve_data(c, file, token, type);
     for (u32 k = 0; at != NO_SLOT && !adopt && k < n; k++) {
-        put_data(c, at + (u32)(k * size), elem, c->stack[m + 1 + k]);
+        put_data(c, c->ir.data + at + k * size, elem, c->stack[m + 1 + k]);
     }
 
     c->sp = base;
@@ -3929,7 +3979,7 @@ constant_struct(Checker *c, u32 file, u8 kind)
 
     u32 at = ok ? reserve_data(c, file, token, type) : NO_SLOT;
     if (at != NO_SLOT) {
-        put_defaults(c, at, type);
+        put_defaults(c, c->ir.data + at, type);
     }
 
     u32 decl = c->types.arg0[type];
@@ -3951,7 +4001,7 @@ constant_struct(Checker *c, u32 file, u8 kind)
             at = NO_SLOT;
             continue;
         }
-        put_data(c, at + (u32)check_field_offset(c, field_layout(c, decl, member)), field, v);
+        put_data(c, c->ir.data + at + check_field_offset(c, field_layout(c, decl, member)), field, v);
     }
 
     c->sp = base;
@@ -5051,6 +5101,37 @@ data_place(Checker *c, u32 decl)
     return (Operand){ OPERAND_ADDRESS, REF_VALUE | at };
 }
 
+static NOINLINE Operand
+global_place(Checker *c, u32 file, u32 node, u32 decl)
+{
+    const ParsedFile *f = &c->files[file];
+    u32 token = f->nodes.tokens[node];
+    if (!c->body.code) {
+        report(c, file, token, DIAG_NOT_CONSTANT, 0, 0);
+        return poison;
+    }
+    need(c, decl, file, token);
+    u32 type = c->decls.types[decl];
+    if (type == TYPE_ID_NONE) {
+        return poison;
+    }
+
+    u32 at = emit(c, IR_GLOBAL, pointer_type(c, type), c->decls.values[decl], decl);
+    Operand r = { OPERAND_ADDRESS, REF_VALUE | at };
+    u8 next = f->nodes.kinds[node + 1];
+    if (next == NODE_VALUE || next == NODE_ADDR) {
+        return r;
+    }
+    if (!is_aggregate(c, type)) {
+        return load_at(c, type, at);
+    }
+    u8 after = f->tokens.kinds[token + 1];
+    if (after != TK_LBRACK && after != TK_PERIOD) {
+        note_unread(c, r);
+    }
+    return r;
+}
+
 static Operand
 resolve_name(Checker *c, u32 file, u32 node)
 {
@@ -5082,6 +5163,7 @@ resolve_name(Checker *c, u32 file, u32 node)
         case DECL_FN:
             report(c, file, token, DIAG_FN_VALUE, 0, 0);
             return poison;
+        case DECL_VAR: return global_place(c, file, node, decl);
         default: assert(false && "unknown declaration kind"); return poison;
     }
 }
@@ -5575,6 +5657,75 @@ finish_signature(Checker *c, u32 decl)
     c->sp = m;
 }
 
+static NOINLINE void
+set_global(Checker *c, u32 decl, u32 node)
+{
+    Decls *d = &c->decls;
+    u32 file = d->files[decl];
+    const ParsedFile *f = &c->files[file];
+    u32 token = f->nodes.tokens[node];
+    u8 kind = f->nodes.kinds[node];
+
+    Operand v = { TYPE_ID_UNDEFINED, 0 };
+    u32 v_token = token;
+    if (kind != NODE_VAR_TYPE) {
+        v_token = c->stack_tokens[c->sp - 1];
+        v = pop(c);
+    }
+    u32 t_token = v_token;
+    u32 t = TYPE_ID_NONE;
+    if (kind == NODE_VAR_INIT) {
+        t = value_type(c, file, v_token, v);
+    } else {
+        if (kind == NODE_VAR_TYPE_INIT) {
+            pop(c);
+        }
+        t_token = c->stack_tokens[c->sp - 1];
+        t = type_operand(c, file, t_token, pop(c));
+    }
+
+    d->types[decl] = TYPE_ID_NONE;
+    if (t == TYPE_ID_NONE) {
+        return;
+    }
+    claim_contained(c, t, file, t_token);
+    if (!has_layout(c, t)) {
+        report(c, file, t_token, DIAG_UNSUPPORTED, 0, 0);
+        return;
+    }
+
+    u32 elem = t;
+    while (is_array(c, elem)) {
+        elem = c->types.arg0[elem];
+    }
+    bool given = kind != NODE_VAR_TYPE && v.type != TYPE_ID_UNDEFINED;
+    if (!given && kind == NODE_VAR_TYPE && !can_zero(c, file, token, elem)) {
+        return;
+    }
+    Operand x = given ? constant_item(c, file, v_token, v, t) : v;
+    if (x.type == TYPE_ID_NONE) {
+        return;
+    }
+
+    u32 at;
+    if (given || (kind == NODE_VAR_TYPE && has_defaults(c, elem))) {
+        at = reserve_global(c, file, token, t);
+        if (at != NO_SLOT && given) {
+            put_data(c, c->ir.globals + at, t, x);
+        } else if (at != NO_SLOT) {
+            put_defaults(c, c->ir.globals + at, t);
+        }
+    } else {
+        at = reserve_zeroed(c, file, token, t);
+        d->flags[decl] |= DECL_ZEROED;
+    }
+    if (at == NO_SLOT) {
+        return;
+    }
+    d->types[decl] = t;
+    d->values[decl] = at;
+}
+
 static void
 check_decl(Checker *c, u32 decl)
 {
@@ -5589,9 +5740,12 @@ check_decl(Checker *c, u32 decl)
     c->claims[c->nclaims++] = decl;
     reserve_stack(c, root - first + 1);
 
-    walk(c, decl, first, root + 1);
+    bool global = d->kinds[decl] == DECL_VAR;
+    walk(c, decl, first, root + !global);
     if (d->kinds[decl] == DECL_FN) {
         finish_signature(c, decl);
+    } else if (global) {
+        set_global(c, decl, root);
     }
 
     assert(c->sp == base);
@@ -5861,11 +6015,13 @@ declare(Checker *c)
             }
 
             u8 kind = decl_kinds[kinds[root]];
+            if (kind == DECL_VAR && file->entry) {
+                report(c, f, tokens[root], DIAG_UNSUPPORTED, 0, 0);
+                first = end;
+                continue;
+            }
             if (kind == DECL_NONE) {
-                if (kinds[root] == NODE_VAR_INIT || kinds[root] == NODE_VAR_TYPE ||
-                    kinds[root] == NODE_VAR_TYPE_INIT) {
-                    report(c, f, tokens[root], DIAG_UNSUPPORTED, 0, 0);
-                } else if (kinds[root] != NODE_PACKAGE && kinds[root] != NODE_IMPORT_DECL) {
+                if (kinds[root] != NODE_PACKAGE && kinds[root] != NODE_IMPORT_DECL) {
                     report(c, f, tokens[first], file->entry ? DIAG_UNSUPPORTED : DIAG_CODE_OUTSIDE_ENTRY, 0, 0);
                 }
                 first = end;
@@ -5961,6 +6117,21 @@ check_init(Checker *c, const Names *names)
     c->builders = calloc(CHECK_MAX_DEPTH, sizeof *c->builders);
 }
 
+static void
+place_zeroed(Checker *c)
+{
+    Decls *d = &c->decls;
+    Ir *ir = &c->ir;
+    u32 base = (ir->nglobals + c->zeroed_align - 1) & ~(c->zeroed_align - 1);
+    assert((u64)base + c->zeroed <= GLOBALS_LIMIT);
+    for (u32 decl = 1; decl < d->count; decl++) {
+        if (d->kinds[decl] == DECL_VAR && (d->flags[decl] & DECL_ZEROED)) {
+            d->values[decl] += base;
+        }
+    }
+    ir->globals_size = base + c->zeroed;
+}
+
 void
 check_package(Checker *c, const ParsedFile *files, u32 nfiles)
 {
@@ -6005,6 +6176,10 @@ check_package(Checker *c, const ParsedFile *files, u32 nfiles)
         if (d->phases[decl] < PHASE_RESOLVED) {
             check_decl(c, decl);
         }
+    }
+    c->ir.globals_size = c->ir.nglobals;
+    if (c->zeroed_align) {
+        place_zeroed(c);
     }
     u32 nodes = 0;
     for (u32 f = 0; f < nfiles; f++) {
@@ -6147,16 +6322,15 @@ print_bits(FILE *out, const Checker *c, u32 type, u64 bits)
 }
 
 static void
-print_data(FILE *out, const Checker *c, u32 type, u32 at)
+print_data(FILE *out, const Checker *c, const u8 *data, u32 type)
 {
-    const u8 *data = c->ir.data + at;
     if (is_array(c, type)) {
         u32 elem = c->types.arg0[type];
         u64 size = check_type_size(c, elem);
         fputs(".[", out);
         for (u64 k = 0; k < c->types.arg1[type]; k++) {
             fputs(k ? ", " : "", out);
-            print_data(out, c, elem, at + (u32)(k * size));
+            print_data(out, c, data + k * size, elem);
         }
         fputc(']', out);
         return;
@@ -6168,8 +6342,8 @@ print_data(FILE *out, const Checker *c, u32 type, u32 at)
         fputs(count ? ".{ " : ".{}", out);
         for (u32 k = first; k < first + count; k++) {
             fputs(k > first ? ", " : "", out);
-            u32 offset = (u32)check_field_offset(c, field_layout(c, decl, k));
-            print_data(out, c, c->members[k].type, at + offset);
+            u64 offset = check_field_offset(c, field_layout(c, decl, k));
+            print_data(out, c, data + offset, c->members[k].type);
         }
         fputs(count ? " }" : "", out);
         return;
@@ -6198,7 +6372,7 @@ print_constant(FILE *out, const Checker *c, u32 type, u32 value)
 {
     u8 kind = c->types.kinds[type];
     if (is_aggregate(c, type)) {
-        print_data(out, c, type, value);
+        print_data(out, c, c->ir.data + value, type);
     } else if (type == TYPE_ID_BOOL) {
         fputs(exact_sign(&c->exacts, value) ? "true" : "false", out);
     } else if (kind == TYPE_FLOAT) {
@@ -6345,6 +6519,19 @@ print_decl(FILE *out, const Checker *c, u32 decl)
             fputs(" -> ", out);
             print_type(out, c, (u32)c->types.arg1[type]);
             break;
+        case DECL_VAR:
+            print_name(out, c, d->names[decl]);
+            if (type == TYPE_ID_NONE) {
+                fputs(" = ?", out);
+                break;
+            }
+            fputs(": ", out);
+            print_type(out, c, type);
+            if (!(d->flags[decl] & DECL_ZEROED)) {
+                fputs(" = ", out);
+                print_data(out, c, c->ir.globals + d->values[decl], type);
+            }
+            break;
         default: assert(false && "unknown declaration kind");
     }
     fputc('\n', out);
@@ -6435,6 +6622,7 @@ print_function(FILE *out, const Checker *c, const IrFunc *fn)
                 print_slot(out, c, fn, a);
                 break;
             case IR_DATA:
+            case IR_GLOBAL:
                 fputc(' ', out);
                 print_type(out, c, type);
                 fputc(' ', out);
@@ -6666,6 +6854,7 @@ check_free(Checker *c)
     free(c->builders);
     free(c->ir.funcs);
     free(c->ir.data);
+    free(c->ir.globals);
 
     exacts_free(&c->exacts);
     free(c->package_names);

@@ -47,7 +47,7 @@ check_text(Program *p, const char *text)
 
     p->file = (ParsedFile){ "a",   src,        tokens,
                             nodes, (u32)count, (u32)parser.top_count,
-                            true };
+                            false };
     check_init(&p->c, &p->lx.names);
     check_package(&p->c, &p->file, 1);
     if (p->c.ndiags) {
@@ -4403,6 +4403,398 @@ TEST_CASE(narrow_parameters)
     return true;
 }
 
+static const char GLOBALS[] =
+    "counter := 5\n"
+    "small: i8 = -5\n"
+    "byte: u8 = 200\n"
+    "half: i16 = -300\n"
+    "word: u32 = 4000000000\n"
+    "wide: u64\n"
+    "bits: [3]u8\n"
+    "ratio: f64 = 1.5\n"
+    "single: f32 = 2.5\n"
+    "flag := true\n"
+    "mode := Mode.run\n"
+    "origin: Point\n"
+    "corner: Point = .{ 3, 4 }\n"
+    "grid: [3]Point\n"
+    "table := int.[10, 20, 30, 40]\n"
+    "zeros: [8]int\n"
+    "raw: [2]Point = undefined\n"
+    "pad: [100000]int\n"
+    "after := 77\n"
+    "view: []int\n"
+    "big: Big\n"
+    "copy := T\n"
+    "tail: u8 = 9\n"
+    "\n"
+    "const T := int.[1, 2, 3]\n"
+    "\n"
+    "enum Mode: u8 { idle = 0, run = 1, stop = 2 }\n"
+    "struct Point { x: int, y: int = 7 }\n"
+    "struct Big { a: int, b: int, c: int, d: int }\n"
+    "\n"
+    "fn incCounter() -> int {\n"
+    "    counter += 1\n"
+    "    return counter\n"
+    "}\n"
+    "\n"
+    "fn bump(a: int, b: int) -> int {\n"
+    "    counter += a\n"
+    "    return counter * 10 + b\n"
+    "}\n"
+    "\n"
+    "fn getCounter(a: int, b: int) -> int {\n"
+    "    return counter + b\n"
+    "}\n"
+    "\n"
+    "fn narrow(a: int, b: int) -> int {\n"
+    "    return int(small) * 1000 + int(byte) + int(half) + int(word) + int(wide) + int(tail) + b\n"
+    "}\n"
+    "\n"
+    "fn setNarrow(a: int, b: int) -> int {\n"
+    "    small = -7\n"
+    "    byte = 255\n"
+    "    half = 30000\n"
+    "    word = 7\n"
+    "    wide = 1 << 40\n"
+    "    tail = 1\n"
+    "    return narrow(a, b)\n"
+    "}\n"
+    "\n"
+    "fn floats(a: int, b: int) -> int {\n"
+    "    ratio = 1.5\n"
+    "    single = 2.5\n"
+    "    ratio = ratio * 2.0 + f64(a)\n"
+    "    single += 0.5\n"
+    "    return int(ratio * 4.0) + int(f64(single) * 2.0) + b\n"
+    "}\n"
+    "\n"
+    "fn flagMode(a: int, b: int) -> int {\n"
+    "    flag = (a & 1) == 0\n"
+    "    mode = .stop\n"
+    "    if b > 3 {\n"
+    "        mode = .idle\n"
+    "    }\n"
+    "    r := b\n"
+    "    if flag {\n"
+    "        r += 1000\n"
+    "    }\n"
+    "    if mode == .stop {\n"
+    "        r += 100\n"
+    "    }\n"
+    "    return r\n"
+    "}\n"
+    "\n"
+    "fn moveCorner(a: int, b: int) -> int {\n"
+    "    corner.x = a\n"
+    "    corner = Point.{ corner.x + 1, b }\n"
+    "    return corner.x * 1000 + corner.y\n"
+    "}\n"
+    "\n"
+    "fn tableAt(a: int, b: int) -> int {\n"
+    "    table = int.[10, 20, 30, 40]\n"
+    "    return table[a & 3] + b\n"
+    "}\n"
+    "\n"
+    "fn tableSet(a: int, b: int) -> int {\n"
+    "    table = int.[10, 20, 30, 40]\n"
+    "    table[a & 3] = b\n"
+    "    return table[0] + table[1] + table[2] + table[3]\n"
+    "}\n"
+    "\n"
+    "fn tableTrap(a: int, b: int) -> int {\n"
+    "    return table[a] + b\n"
+    "}\n"
+    "\n"
+    "fn defaults(a: int, b: int) -> int {\n"
+    "    g := grid[(a & 3) % 3]\n"
+    "    return g.y * 10 + g.x + raw[a & 1].y + raw[b & 1].x + zeros[a & 7] + origin.y * 100 + b\n"
+    "}\n"
+    "\n"
+    "fn padAt(a: int, b: int) -> int {\n"
+    "    pad[99999] = a\n"
+    "    pad[0] = b\n"
+    "    return after + pad[99999] * 10 + pad[0]\n"
+    "}\n"
+    "\n"
+    "fn viewSum(a: int, b: int) -> int {\n"
+    "    table = int.[10, 20, 30, 40]\n"
+    "    view = table[1..3]\n"
+    "    view[0] = a\n"
+    "    return table[1] + view.len * 100 + table[2] + b\n"
+    "}\n"
+    "\n"
+    "fn viaPointer(a: int, b: int) -> int {\n"
+    "    p := &counter\n"
+    "    p.* = a\n"
+    "    q := &corner.y\n"
+    "    q.* = b\n"
+    "    return counter * 100 + corner.y\n"
+    "}\n"
+    "\n"
+    "fn sneaky(x: Big, k: int) -> int {\n"
+    "    big.a = 100\n"
+    "    return x.a * 10 + k\n"
+    "}\n"
+    "\n"
+    "fn passBig(a: int, b: int) -> int {\n"
+    "    big.a = a\n"
+    "    return sneaky(big, b) + big.a * 1000\n"
+    "}\n"
+    "\n"
+    "fn bumpBig() -> int {\n"
+    "    big.b = big.b + 1\n"
+    "    return big.b\n"
+    "}\n"
+    "\n"
+    "fn first(x: Big, k: int) -> int {\n"
+    "    return x.b * 1000 + k\n"
+    "}\n"
+    "\n"
+    "fn leftToRight(a: int, b: int) -> int {\n"
+    "    big.b = a\n"
+    "    return first(big, bumpBig())\n"
+    "}\n"
+    "\n"
+    "fn bumpCorner() -> int {\n"
+    "    corner.x += 1\n"
+    "    return corner.x\n"
+    "}\n"
+    "\n"
+    "fn firstP(p: Point, k: int) -> int {\n"
+    "    return p.x * 1000 + k\n"
+    "}\n"
+    "\n"
+    "fn leftToRightSmall(a: int, b: int) -> int {\n"
+    "    corner.x = a\n"
+    "    return firstP(corner, bumpCorner())\n"
+    "}\n"
+    "\n"
+    "fn scalarOrder(a: int, b: int) -> int {\n"
+    "    counter = a\n"
+    "    return counter * 100 + incCounter()\n"
+    "}\n"
+    "\n"
+    "fn localCopy(a: int, b: int) -> int {\n"
+    "    corner = Point.{ 3, 4 }\n"
+    "    l := corner\n"
+    "    l.x = a\n"
+    "    corner.y = b\n"
+    "    return l.x * 100 + l.y * 10 + corner.x + corner.y * 1000\n"
+    "}\n"
+    "\n"
+    "fn copyAt(a: int, b: int) -> int {\n"
+    "    copy[0] = a\n"
+    "    return copy[0] + T[0] * 10 + copy[2] * 100 + b\n"
+    "}\n"
+    "\n"
+    "fn loopTable(a: int, b: int) -> int {\n"
+    "    table = int.[1, 2, 3, 4]\n"
+    "    s := 0\n"
+    "    for x in table {\n"
+    "        s += x\n"
+    "    }\n"
+    "    return s * 10 + b\n"
+    "}\n"
+    "\n"
+    "fn sumP(p: *[4]int) -> int {\n"
+    "    return p.*[0] + p.*[1] + p.*[2] + p.*[3]\n"
+    "}\n"
+    "\n"
+    "fn passTable(a: int, b: int) -> int {\n"
+    "    table = int.[10, 20, 30, 40]\n"
+    "    table[a & 3] = 0\n"
+    "    return sumP(&table) + b\n"
+    "}\n"
+    "\n"
+    "fn cornerOf() -> Point {\n"
+    "    return corner\n"
+    "}\n"
+    "\n"
+    "fn bigOf() -> Big {\n"
+    "    return big\n"
+    "}\n"
+    "\n"
+    "fn counterAt() -> *int {\n"
+    "    return &counter\n"
+    "}\n"
+    "\n"
+    "fn cornerAt() -> *Point {\n"
+    "    return &corner\n"
+    "}\n";
+
+typedef struct
+{
+    int64_t x, y;
+} CPoint;
+
+typedef struct
+{
+    int64_t a, b, c, d;
+} CQuad;
+
+static const char *const GLOBAL_FUNCTIONS[] = {
+    "setNarrow",   "floats",      "flagMode",         "moveCorner", "tableAt",
+    "tableSet",    "defaults",    "padAt",            "viewSum",    "viaPointer",
+    "passBig",     "leftToRight", "leftToRightSmall", "scalarOrder", "localCopy",
+    "copyAt",      "loopTable",   "passTable",
+};
+
+static const char *const STATEFUL_GLOBALS[] = { "bump", "getCounter", "narrow", "tableTrap" };
+
+static const char *const ALIGNED_GLOBALS[] = {
+    "counter", "small",  "byte",   "half", "word",  "wide", "bits", "ratio", "single",
+    "flag",    "mode",   "origin", "corner", "grid", "table", "zeros", "raw", "pad",
+    "after",   "view",   "big",    "copy", "tail",
+};
+
+static int64_t
+globals_want(const char *name, int64_t a, int64_t b)
+{
+    static const int64_t table[] = { 10, 20, 30, 40 };
+
+    if (strcmp(name, "setNarrow") == 0) {
+        return -7000 + 255 + 30000 + 7 + ((int64_t)1 << 40) + 1 + b;
+    }
+    if (strcmp(name, "floats") == 0) {
+        return 12 + 4 * a + 6 + b;
+    }
+    if (strcmp(name, "flagMode") == 0) {
+        return b + ((a & 1) == 0 ? 1000 : 0) + (b <= 3 ? 100 : 0);
+    }
+    if (strcmp(name, "moveCorner") == 0) {
+        return (a + 1) * 1000 + b;
+    }
+    if (strcmp(name, "tableAt") == 0) {
+        return table[a & 3] + b;
+    }
+    if (strcmp(name, "tableSet") == 0 || strcmp(name, "passTable") == 0) {
+        return 100 - table[a & 3] + b;
+    }
+    if (strcmp(name, "defaults") == 0) {
+        return 770 + b;
+    }
+    if (strcmp(name, "padAt") == 0) {
+        return 77 + a * 10 + b;
+    }
+    if (strcmp(name, "viewSum") == 0) {
+        return a + 230 + b;
+    }
+    if (strcmp(name, "viaPointer") == 0) {
+        return a * 100 + b;
+    }
+    if (strcmp(name, "passBig") == 0) {
+        return a * 10 + b + 100000;
+    }
+    if (strcmp(name, "leftToRight") == 0 || strcmp(name, "leftToRightSmall") == 0) {
+        return a * 1000 + a + 1;
+    }
+    if (strcmp(name, "scalarOrder") == 0) {
+        return a * 100 + a + 1;
+    }
+    if (strcmp(name, "localCopy") == 0) {
+        return a * 100 + 43 + b * 1000;
+    }
+    if (strcmp(name, "copyAt") == 0) {
+        return a + 310 + b;
+    }
+    if (strcmp(name, "loopTable") == 0) {
+        return 100 + b;
+    }
+    abort();
+}
+
+static const char EMPTY_GLOBALS[] =
+    "empty: [0]int\n"
+    "none: Z\n"
+    "struct Z {}\n"
+    "\n"
+    "fn emptyAt() -> *[0]int {\n"
+    "    return &empty\n"
+    "}\n"
+    "\n"
+    "fn noneAt() -> *Z {\n"
+    "    return &none\n"
+    "}\n";
+
+TEST_CASE(empty_globals)
+{
+    Program p;
+    REQUIRE(build(&p, EMPTY_GLOBALS));
+
+    void *empty = ((void *(*)(void))fn(&p, "emptyAt"))();
+    void *none = ((void *(*)(void))fn(&p, "noneAt"))();
+    REQUIRE(empty && none && empty != none);
+    release_program(&p);
+    return true;
+}
+
+TEST_CASE(globals)
+{
+    Program p;
+    REQUIRE(build(&p, GLOBALS));
+
+    const Ir *ir = &p.c.ir;
+    for (size_t k = 0; k < sizeof ALIGNED_GLOBALS / sizeof ALIGNED_GLOBALS[0]; k++) {
+        u32 decl = decl_named(&p, ALIGNED_GLOBALS[k]);
+        u32 type = p.c.decls.types[decl];
+        u32 at = p.c.decls.values[decl];
+        REQUIRE(at % check_type_align(&p.c, type) == 0);
+        REQUIRE(at + check_type_size(&p.c, type) <= ir->globals_size);
+    }
+    REQUIRE(p.c.decls.values[decl_named(&p, "after")] < ir->nglobals);
+    REQUIRE(p.c.decls.values[decl_named(&p, "pad")] >= ir->nglobals);
+    REQUIRE(p.c.decls.values[decl_named(&p, "zeros")] >= ir->nglobals);
+    REQUIRE(p.c.decls.values[decl_named(&p, "grid")] < ir->nglobals);
+
+    int64_t after = 0;
+    memcpy(&after, p.n.globals + p.c.decls.values[decl_named(&p, "after")], sizeof after);
+    REQUIRE(after == 77);
+
+    I2 *get = (I2 *)fn(&p, "getCounter");
+    I2 *bump = (I2 *)fn(&p, "bump");
+    REQUIRE(get(0, 0) == 5);
+    REQUIRE(((I2 *)fn(&p, "narrow"))(0, 0) == 3999994909);
+    REQUIRE(bump(1, 0) == 60);
+    REQUIRE(bump(2, 3) == 83);
+    REQUIRE(get(0, 1) == 9);
+
+    int64_t *counter = ((int64_t * (*)(void)) fn(&p, "counterAt"))();
+    REQUIRE((u8 *)counter == p.n.globals + p.c.decls.values[decl_named(&p, "counter")]);
+    *counter = 42;
+    REQUIRE(get(0, 0) == 42);
+
+    CPoint *corner = ((CPoint * (*)(void)) fn(&p, "cornerAt"))();
+    REQUIRE(corner->x == 3 && corner->y == 4);
+    corner->x = 11;
+    corner->y = 12;
+    CPoint c = ((CPoint(*)(void))fn(&p, "cornerOf"))();
+    REQUIRE(c.x == 11 && c.y == 12);
+
+    int64_t r = 0;
+    REQUIRE(call_i2((I2 *)fn(&p, "tableAt"), 0, 0, &r) == 0 && r == 10);
+    REQUIRE(call_i2((I2 *)fn(&p, "tableTrap"), 3, 1, &r) == 0 && r == 41);
+    REQUIRE(call_i2((I2 *)fn(&p, "tableTrap"), 4, 0, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "tableTrap"), -1, 0, &r) == TRAP_BOUNDS);
+
+    size_t count = sizeof GLOBAL_FUNCTIONS / sizeof GLOBAL_FUNCTIONS[0];
+    REQUIRE(matches_by_hand(&p, GLOBAL_FUNCTIONS, count, globals_want));
+
+    CQuad q = ((CQuad(*)(void))fn(&p, "bigOf"))();
+    REQUIRE(q.a == 100 && q.c == 0 && q.d == 0);
+    release_program(&p);
+
+    REQUIRE(build(&p, GLOBALS));
+    REQUIRE(agree_on_grid(&p, GLOBAL_FUNCTIONS, count));
+    release_program(&p);
+
+    REQUIRE(build(&p, GLOBALS));
+    REQUIRE(agree_on_grid(&p, STATEFUL_GLOBALS, sizeof STATEFUL_GLOBALS / sizeof STATEFUL_GLOBALS[0]));
+    release_program(&p);
+    return true;
+}
+
 TEST_SUITE(arm64_tests)
 {
     RUN_TEST_CASE(narrow_parameters);
@@ -4420,6 +4812,8 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(large_structs);
     RUN_TEST_CASE(constant_conditions);
     RUN_TEST_CASE(constant_tables);
+    RUN_TEST_CASE(globals);
+    RUN_TEST_CASE(empty_globals);
     RUN_TEST_CASE(deep_logic);
     RUN_TEST_CASE(small_integers);
     RUN_TEST_CASE(wide_integers);

@@ -163,6 +163,40 @@ static const Case DECLARATIONS[] = {
         "struct Text { s: []u8, n: int }\n"
         "enum Color: u8 { red = 1, blue = 2 }\n",
     },
+    {
+        "counter := 5\n"
+        "ratio: f64 = 1.5\n"
+        "flag := false\n"
+        "mode := Mode.blue\n"
+        "small: i8 = -5\n"
+        "origin: Point\n"
+        "corner: Point = .{ 3, 4 }\n"
+        "grid: [2]Point\n"
+        "zeros: [4]int\n"
+        "raw: [2]Point = undefined\n"
+        "view: []u8\n"
+        "same := T\n"
+        "named: Point = .{ .y = 1, .x = 2 }\n"
+        "const T := int.[1, 2]\n"
+        "struct Point { x: int, y: int = 7 }\n"
+        "enum Mode: u8 { red = 1, blue = 2 }\n",
+        "counter: int = 5\n"
+        "ratio: f64 = 1.5\n"
+        "flag: bool = false\n"
+        "mode: Mode = .blue\n"
+        "small: i8 = -5\n"
+        "origin: Point = .{ 0, 7 }\n"
+        "corner: Point = .{ 3, 4 }\n"
+        "grid: [2]Point = .[.{ 0, 7 }, .{ 0, 7 }]\n"
+        "zeros: [4]int\n"
+        "raw: [2]Point\n"
+        "view: []u8\n"
+        "same: [2]int = .[1, 2]\n"
+        "named: Point = .{ 2, 1 }\n"
+        "const T: [2]int = .[1, 2]\n"
+        "struct Point { x: int, y: int = 7 }\n"
+        "enum Mode: u8 { red = 1, blue = 2 }\n",
+    },
 };
 
 static const Case ERRORS[] = {
@@ -248,12 +282,11 @@ static const Case ERRORS[] = {
       "a = 0 }\nunion G { a }\n" },
     { "x := 5\nif x {}\nconst F := 1.5\nstruct S { a: geo.Point, union { i: "
       "int } }\nfn h(x) {}\n",
-      "a:1:1: the checker doesn't support this yet\n"
       "a:2:1: only the file you run may contain code\n"
       "a:4:15: unknown name `geo`\n"
       "a:4:26: the checker doesn't support this yet\n"
       "a:5:6: the checker doesn't support this yet\n"
-      "const F = 1.5\nstruct S { a: ? }\nfn h() -> void\n" },
+      "x: int = 5\nconst F = 1.5\nstruct S { a: ? }\nfn h() -> void\n" },
     {
         "fn errs(n: int, f: f32) -> int {\n"
         "    a: [3]int\n"
@@ -524,7 +557,7 @@ static const Case ERRORS[] = {
         "a:12:12: `[]u8` doesn't support `+=`\n"
         "a:13:9: `*[]u8` can't be indexed\n"
         "a:14:12: `[]u8` has no member `foo`\n"
-        "a:15:12: only a local, a field, an element or `p.*` can be assigned "
+        "a:15:12: only a variable, a field, an element or `p.*` can be assigned "
         "to\n"
         "a:16:25: the checker doesn't support this yet\n"
         "a:17:28: the checker doesn't support this yet\n"
@@ -714,6 +747,57 @@ static const Case ERRORS[] = {
         "struct Point { x: int, y: int }\n"
         "struct S { a: [4]int }\n"
         "fn h(i: int, p: S) -> void\n",
+    },
+    {
+        "counter := 5\n"
+        "const C := counter\n"
+        "copy := counter\n"
+        "n: [counter]int\n"
+        "p: *int\n"
+        "s: []u8 = .[1, 2]\n"
+        "m: Mode\n"
+        "head: Node\n"
+        "huge: [1 << 30]int\n"
+        "a1: [1 << 27]int\n"
+        "a2: [1 << 27]int\n"
+        "enum Mode: u8 { red = 1 }\n"
+        "struct Node { next: *Node }\n",
+        "a:2:12: expected a constant\n"
+        "a:3:9: expected a constant\n"
+        "a:4:5: expected a constant\n"
+        "a:5:1: `*int` is never nil, so this needs a value\n"
+        "a:6:12: `[2]u8` and `[]u8` don't mix without a conversion\n"
+        "a:7:1: `Mode` has no member with the value 0, so this needs a value\n"
+        "a:8:1: `Node` has no zero value because of its field `next`, so this needs a value\n"
+        "a:9:1: globals can't take more than 2 GB in all\n"
+        "a:11:1: globals can't take more than 2 GB in all\n"
+        "counter: int = 5\n"
+        "const C = ?\n"
+        "copy = ?\n"
+        "n = ?\n"
+        "p = ?\n"
+        "s = ?\n"
+        "m = ?\n"
+        "head = ?\n"
+        "huge = ?\n"
+        "a1: [134217728]int\n"
+        "a2 = ?\n"
+        "enum Mode: u8 { red = 1 }\n"
+        "struct Node { next: *Node }\n",
+    },
+    {
+        "struct D { x: int = 1 }\n"
+        "z: [(1 << 28) - 8]int\n"
+        "d: [8]D\n"
+        "w: [2]D\n"
+        "e: [1 << 32]D\n",
+        "a:3:1: globals can't take more than 2 GB in all\n"
+        "a:5:1: globals can't take more than 2 GB in all\n"
+        "struct D { x: int = 1 }\n"
+        "z: [268435448]int\n"
+        "d = ?\n"
+        "w: [2]D = .[.{ 1 }, .{ 1 }]\n"
+        "e = ?\n",
     },
 };
 
@@ -1029,7 +1113,7 @@ static const Case BODIES[] = {
         "a:23:4: `cyc` depends on itself\n"
         "a:26:5: wrong number of arguments: expected 1, found 2\n"
         "a:27:10: `calls` is a function, so it can't be used here\n"
-        "a:28:5: only a local, a field, an element or `p.*` can be assigned "
+        "a:28:5: only a variable, a field, an element or `p.*` can be assigned "
         "to\n"
         "a:29:5: expected a function or a type\n"
         "a:30:13: 300 does not fit in `u8`\n"
@@ -2284,11 +2368,11 @@ static const Case BODIES[] = {
         "}\n",
         "a:5:14: `i` is a loop variable, so `&` can't take its address\n"
         "a:7:10: `p` is a parameter, so `&` can't take its address\n"
-        "a:8:10: only a local, a field, an element or `p.*` has an address\n"
+        "a:8:10: only a variable, a field, an element or `p.*` has an address\n"
         "a:9:10: `int` is not a pointer, so `.*` can't follow it\n"
         "a:10:5: `*int` is never nil, so this needs a value\n"
         "a:12:6: `int` is not a pointer, so `.*` can't follow it\n"
-        "a:13:13: only a local, a field, an element or `p.*` has an address\n"
+        "a:13:13: only a variable, a field, an element or `p.*` has an address\n"
         "a:14:11: `bool` and `int` don't mix without a conversion\n"
         "a:16:11: `*int` doesn't support `<`\n"
         "fn errs(p: int, k: *int, s: *Point) -> bool\n"
@@ -3495,6 +3579,88 @@ static const Case BODIES[] = {
         "    %8 = add int %4, %7\n"
         "    ret int %8\n",
     },
+    {
+        "counter := 5\n"
+        "corner: Point = .{ 3, 4 }\n"
+        "big: Big\n"
+        "struct Point { x: int, y: int = 7 }\n"
+        "struct Big { a: int, b: int, c: int }\n"
+        "\n"
+        "fn g(b: Big, k: int) -> int {\n"
+        "    return b.a + k\n"
+        "}\n"
+        "\n"
+        "fn bump() -> int {\n"
+        "    counter += 1\n"
+        "    return counter\n"
+        "}\n"
+        "\n"
+        "fn f(i: int) -> int {\n"
+        "    counter += i\n"
+        "    corner.x = counter\n"
+        "    p := &corner.y\n"
+        "    p.* = 2\n"
+        "    big.a = i\n"
+        "    return g(big, bump()) + counter\n"
+        "}\n",
+        "fn g(b: Big, k: int) -> int\n"
+        "    slots: b: Big, k: int\n"
+        "    %0 = addr *Big b\n"
+        "    %1 = field *int %0, .a\n"
+        "    %2 = load-at int %1\n"
+        "    %3 = load int k\n"
+        "    %4 = add int %2, %3\n"
+        "    ret int %4\n"
+        "fn bump() -> int\n"
+        "    slots: $0: *int\n"
+        "    %0 = global *int counter\n"
+        "    store *int $0, %0\n"
+        "    %2 = load *int $0\n"
+        "    %3 = load-at int %2\n"
+        "    %4 = add int %3, 1\n"
+        "    %5 = load *int $0\n"
+        "    store-at int %5, %4\n"
+        "    %7 = global *int counter\n"
+        "    %8 = load-at int %7\n"
+        "    ret int %8\n"
+        "fn f(i: int) -> int\n"
+        "    slots: i: int, $1: *int, p: *int, $3: Big\n"
+        "    %0 = global *int counter\n"
+        "    %1 = load int i\n"
+        "    store *int $1, %0\n"
+        "    %3 = load *int $1\n"
+        "    %4 = load-at int %3\n"
+        "    %5 = add int %4, %1\n"
+        "    %6 = load *int $1\n"
+        "    store-at int %6, %5\n"
+        "    %8 = global *Point corner\n"
+        "    %9 = field *int %8, .x\n"
+        "    %10 = global *int counter\n"
+        "    %11 = load-at int %10\n"
+        "    store-at int %9, %11\n"
+        "    %13 = global *Point corner\n"
+        "    %14 = field *int %13, .y\n"
+        "    store *int p, %14\n"
+        "    %16 = load *int p\n"
+        "    store-at int %16, 2\n"
+        "    %18 = global *Big big\n"
+        "    %19 = field *int %18, .a\n"
+        "    %20 = load int i\n"
+        "    store-at int %19, %20\n"
+        "    %22 = global *Big big\n"
+        "    %23 = addr *Big $3\n"
+        "    nop\n"
+        "    nop\n"
+        "    copy Big %23, %22\n"
+        "    %27 = call int bump()\n"
+        "    %28 = addr *Big $3\n"
+        "    %29 = load-at Big %28, $3\n"
+        "    %30 = call int g(%29, %27)\n"
+        "    %31 = global *int counter\n"
+        "    %32 = load-at int %31\n"
+        "    %33 = add int %30, %32\n"
+        "    ret int %33\n",
+    },
 };
 
 TEST_CASE(declarations)
@@ -3559,11 +3725,48 @@ TEST_CASE(constants_across_files)
     return true;
 }
 
+TEST_CASE(globals_across_files)
+{
+    const char *texts[] = {
+        "fn f() -> int {\n"
+        "    return g.x + n\n"
+        "}\n"
+        "struct P { x: int = 3 }\n",
+        "g: P\n"
+        "n := 4\n",
+    };
+    REQUIRE(checks_to(
+        texts,
+        2,
+        2,
+        "fn f() -> int\n"
+        "struct P { x: int = 3 }\n"
+        "g: P = .{ 3 }\n"
+        "n: int = 4\n"
+    ));
+    REQUIRE(compiles_to(
+        texts,
+        2,
+        2,
+        true,
+        "fn f() -> int\n"
+        "    slots:\n"
+        "    %0 = global *P g\n"
+        "    %1 = field *int %0, .x\n"
+        "    %2 = load-at int %1\n"
+        "    %3 = global *int n\n"
+        "    %4 = load-at int %3\n"
+        "    %5 = add int %2, %4\n"
+        "    ret int %5\n"
+    ));
+    return true;
+}
+
 TEST_CASE(entry_file)
 {
     const char *texts[] = {
         "import \"std/fmt\"\nfmt.print(1)\nif ready { go() }\ntotal += "
-        "1\nconst A := 1\n",
+        "1\nconst A := 1\nlocal := 2\n",
         "struct Player { hp: int }\nfmt.print(2)\nscore := 5\n",
     };
     REQUIRE(checks_to(
@@ -3573,9 +3776,9 @@ TEST_CASE(entry_file)
         "a:2:1: the checker doesn't support this yet\n"
         "a:3:1: the checker doesn't support this yet\n"
         "a:4:1: the checker doesn't support this yet\n"
+        "a:6:1: the checker doesn't support this yet\n"
         "b:2:1: only the file you run may contain code\n"
-        "b:3:1: the checker doesn't support this yet\n"
-        "const A = 1\nstruct Player { hp: int }\n"
+        "const A = 1\nstruct Player { hp: int }\nscore: int = 5\n"
     ));
     return true;
 }
@@ -3614,6 +3817,7 @@ TEST_SUITE(check_tests)
     RUN_TEST_CASE(bodies);
     RUN_TEST_CASE(files);
     RUN_TEST_CASE(constants_across_files);
+    RUN_TEST_CASE(globals_across_files);
     RUN_TEST_CASE(entry_file);
     RUN_TEST_CASE(depth_limit);
 }

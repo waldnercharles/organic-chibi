@@ -41,6 +41,7 @@
     X(IR_CONVERT, "convert")                                                   \
     X(IR_NARROW, "narrow")                                                     \
     X(IR_TRUNCATE, "truncate")                                                 \
+    X(IR_GLOBAL, "global")                                                     \
     X(IR_CALL, "call")                                                         \
     X(IR_STORE, "store")                                                       \
     X(IR_STORE_AT, "store-at")                                                 \
@@ -141,6 +142,10 @@ typedef struct
     u8 *data;
     u32 ndata;
     u32 data_cap;
+    u8 *globals;
+    u32 nglobals;
+    u32 globals_cap;
+    u32 globals_size;
 } Ir;
 
 #endif

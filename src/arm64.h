@@ -22,6 +22,8 @@ typedef struct
     u32 nentries;
     u32 *code;
     size_t words;
+    u8 *globals;
+    size_t globals_size;
     const char *error;
 } Native;
 

@@ -84,6 +84,7 @@ typedef enum
     DECL_ENUM,
     DECL_UNION,
     DECL_FN,
+    DECL_VAR,
 } DeclKind;
 
 enum
@@ -95,6 +96,7 @@ enum
     DECL_STORED = 16,
     DECL_DEFAULTS = 32,
     DECL_NO_ZERO = 64,
+    DECL_ZEROED = 128,
 };
 
 enum
@@ -122,6 +124,7 @@ enum
     X(DIAG_TOO_LARGE, "an integer constant must fit in 512 bits")                                   \
     X(DIAG_FLOAT_TOO_LARGE, "a float constant must fit in 4,095 bits as an exact fraction")          \
     X(DIAG_DATA_TOO_LARGE, "constants can't take more than 256 MB in all")                          \
+    X(DIAG_GLOBALS_TOO_LARGE, "globals can't take more than 2 GB in all")                           \
     X(DIAG_DOES_NOT_FIT, "%v does not fit in `%U`")                                                 \
     X(DIAG_MISMATCH, "`%T` and `%U` don't mix without a conversion")                                \
     X(DIAG_DIVIDE_BY_ZERO, "division by zero")                                                      \
@@ -134,12 +137,12 @@ enum
     X(DIAG_NOT_VALUE, "expected a value")                                                           \
     X(DIAG_NOT_BOOL, "expected `bool`, found `%T`")                                                 \
     X(DIAG_BAD_OPERATOR, "`%T` doesn't support `%t`")                                               \
-    X(DIAG_NOT_ASSIGNABLE, "only a local, a field, an element or `p.*` can be assigned to")         \
+    X(DIAG_NOT_ASSIGNABLE, "only a variable, a field, an element or `p.*` can be assigned to")      \
     X(DIAG_ASSIGN_PARAM, "`%n` is a parameter, so it can't be assigned")                            \
     X(DIAG_ASSIGN_LOOP_VARIABLE, "`%n` is a loop variable, so it can't be assigned")                \
     X(DIAG_ASSIGN_CONSTANT, "`%n` is a constant, so it can't be assigned")                          \
     X(DIAG_ASSIGN_RESULT, "a call's result can't be assigned; copy it to a local to change it")     \
-    X(DIAG_NOT_ADDRESSABLE, "only a local, a field, an element or `p.*` has an address")            \
+    X(DIAG_NOT_ADDRESSABLE, "only a variable, a field, an element or `p.*` has an address")         \
     X(DIAG_ADDRESS_PARAM, "`%n` is a parameter, so `&` can't take its address")                     \
     X(DIAG_ADDRESS_LOOP_VARIABLE, "`%n` is a loop variable, so `&` can't take its address")         \
     X(DIAG_ADDRESS_CONSTANT, "`%n` is a constant, so `&` can't take its address")                   \
@@ -414,6 +417,8 @@ typedef struct
     u32 *member_slots;
     u32 member_mask;
     u32 member_count;
+    u32 zeroed;
+    u32 zeroed_align;
 } Checker;
 
 void check_init(Checker *c, const Names *names);

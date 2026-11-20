@@ -226,6 +226,11 @@ ir_reference_init(IrReference *r, const Checker *c)
         }
         r->frames[f] = (u32)size;
     }
+
+    r->globals = calloc(ir->globals_size + 1, 1);
+    if (ir->nglobals) {
+        memcpy(r->globals, ir->globals, ir->nglobals);
+    }
 }
 
 void
@@ -236,6 +241,7 @@ ir_reference_free(IrReference *r)
     free(r->opens);
     free(r->offsets);
     free(r->frames);
+    free(r->globals);
 }
 
 static int
@@ -299,6 +305,7 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
             }
             case IR_ADDR: v = (u64)(uintptr_t)(frame + offsets[a]); break;
             case IR_DATA: v = (u64)(uintptr_t)(c->ir.data + a); break;
+            case IR_GLOBAL: v = (u64)(uintptr_t)(r->globals + a); break;
             case IR_INDEX: {
                 u32 base = OPERAND_TYPE(a);
                 __int128 k = wide(OPERAND(b), ty(c, OPERAND_TYPE(b)));

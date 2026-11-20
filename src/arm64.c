@@ -227,6 +227,7 @@ typedef struct
     const IrFunc *fn;
     const u8 *info;
     const u8 *data;
+    u8 *globals;
     u32 *code;
     u32 *at;
     u8 *regs;
@@ -806,6 +807,13 @@ data_address(Emit *e, u32 i, u32 type, u32 offset)
     if (to & 0xFFF) {
         put(e, SF | OP_ADD_IMM | (u32)(to & 0xFFF) << 10 | d << 5 | d);
     }
+}
+
+static NOINLINE void
+global_address(Emit *e, u32 i, u32 type, u32 offset)
+{
+    u32 d = result(e, i, e->info[type]);
+    mov_imm(e, d, (u64)(uintptr_t)(e->globals + offset), SF);
 }
 
 static u32
@@ -3094,6 +3102,7 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                 sp_address(e, result(e, i, e->info[type]), e->slot_offsets[a]);
                 break;
             case IR_DATA: data_address(e, i, type, a); break;
+            case IR_GLOBAL: global_address(e, i, type, a); break;
             case IR_LOAD_AT: {
                 u8 t = e->info[type];
                 if (t & INFO_MEMORY) {
@@ -3407,6 +3416,20 @@ arm64_compile(Native *n, const Checker *c)
     n->nentries = c->decls.count;
     n->code = (u32 *)(n->memory + code);
 
+    if (ir->globals_size) {
+        size_t globals_size = ((size_t)ir->globals_size + page - 1) & ~(page - 1);
+        void *globals = mmap(NULL, globals_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+        if (globals == MAP_FAILED) {
+            n->error = "can't map memory for globals";
+            return false;
+        }
+        n->globals = globals;
+        n->globals_size = globals_size;
+        if (ir->nglobals) {
+            memcpy(n->globals, ir->globals, ir->nglobals);
+        }
+    }
+
     u8 *info = malloc(c->types.count);
     for (u32 t = 0; t < c->types.count; t++) {
         info[t] = type_info(c, t);
@@ -3416,7 +3439,11 @@ arm64_compile(Native *n, const Checker *c)
     if (ir->ndata) {
         memcpy(n->memory + table, ir->data, ir->ndata);
     }
-    Emit e = { .c = c, .ir = &ir->code, .info = info, .data = n->memory + table };
+    Emit e = { .c = c,
+               .ir = &ir->code,
+               .info = info,
+               .data = n->memory + table,
+               .globals = n->globals };
     for (u32 f = 0; f < ir->nfuncs && !e.error; f++) {
         const IrFunc *fn = &ir->funcs[f];
         n->words = (n->words + 3) & ~(size_t)3;
@@ -3472,6 +3499,9 @@ native_free(Native *n)
 {
     if (n->memory) {
         munmap(n->memory, n->size);
+    }
+    if (n->globals) {
+        munmap(n->globals, n->globals_size);
     }
     *n = (Native){ 0 };
 }
