@@ -43,6 +43,7 @@
     X(IR_TRUNCATE, "truncate")                                                 \
     X(IR_GLOBAL, "global")                                                     \
     X(IR_CALL, "call")                                                         \
+    X(IR_CALL_C, "call-c")                                                     \
     X(IR_STORE, "store")                                                       \
     X(IR_STORE_AT, "store-at")                                                 \
     X(IR_STORE_PAIR, "store-pair")                                             \

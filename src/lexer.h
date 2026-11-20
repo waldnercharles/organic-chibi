@@ -39,6 +39,7 @@
     KW(TK_OR, "or")                                                            \
     KW(TK_CONST, "const")                                                      \
     KW(TK_EXPORT, "export")                                                    \
+    KW(TK_EXTERN, "extern")                                                    \
     KW(TK_UNDEFINED, "undefined")                                              \
     KW(TK_TRY, "try")                                                          \
     KW(TK_CATCH, "catch")                                                      \

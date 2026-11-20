@@ -101,6 +101,16 @@ enum
 
 enum
 {
+    NO_BODY = UINT32_MAX,
+};
+
+enum
+{
+    FN_C_CALL = 1ull << 32,
+};
+
+enum
+{
     PHASE_NONE,
     PHASE_DECLARED,
     PHASE_RESOLVED,
@@ -121,6 +131,7 @@ enum
     X(DIAG_NOT_CONSTANT, "expected a constant")                                                     \
     X(DIAG_NOT_INTEGER, "expected an integer type")                                                 \
     X(DIAG_FN_VALUE, "`%t` is a function, so it can't be used here")                                \
+    X(DIAG_NOT_C, "C has no `%U`, so an `extern fn` can't pass or return it")                       \
     X(DIAG_TOO_LARGE, "an integer constant must fit in 512 bits")                                   \
     X(DIAG_FLOAT_TOO_LARGE, "a float constant must fit in 4,095 bits as an exact fraction")          \
     X(DIAG_DATA_TOO_LARGE, "constants can't take more than 256 MB in all")                          \

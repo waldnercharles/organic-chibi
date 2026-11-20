@@ -1041,22 +1041,17 @@ parse_params(Parser *p)
     }
 }
 
-static void
-parse_function(Parser *p, bool named)
+static int
+parse_signature(Parser *p, bool named)
 {
-    if (!descend(p)) {
-        return;
-    }
-
     emit(p, NODE_FN_START, p->pos++);
-    int name = p->pos;
     if (named) {
         p->pos++;
     }
 
     if (p->tokens.kinds[p->pos] != TK_LPAREN) {
         fail(p, "expected `(`");
-        return;
+        return -1;
     }
     p->pos++;
     p->brackets++;
@@ -1064,7 +1059,7 @@ parse_function(Parser *p, bool named)
     p->brackets--;
     if (p->tokens.kinds[p->pos] != TK_RPAREN) {
         fail(p, "expected `,` or `)`");
-        return;
+        return -1;
     }
     int close = p->pos++;
 
@@ -1072,6 +1067,21 @@ parse_function(Parser *p, bool named)
         int arrow = p->pos++;
         parse_type(p);
         emit(p, NODE_FN_RETURN, arrow);
+    }
+    return close;
+}
+
+static void
+parse_function(Parser *p, bool named)
+{
+    if (!descend(p)) {
+        return;
+    }
+
+    int name = p->pos + 1;
+    int close = parse_signature(p, named);
+    if (close < 0) {
+        return;
     }
 
     int body = p->pos;
@@ -1366,6 +1376,28 @@ parse_export(Parser *p)
 }
 
 static NOINLINE void
+parse_extern(Parser *p)
+{
+    int at = p->pos;
+    if (p->tokens.kinds[at + 1] != TK_FN || p->tokens.kinds[at + 2] != TK_IDENT) {
+        fail(p, "`extern` must come before `fn`");
+        return;
+    }
+
+    p->pos++;
+    if (parse_signature(p, true) < 0) {
+        return;
+    }
+    TokenKind next = p->tokens.kinds[p->pos];
+    if (next == TK_LBRACE || next == TK_FAT_ARROW) {
+        fail(p, "an `extern fn` has no body");
+        return;
+    }
+    emit(p, NODE_FN, at + 2);
+    emit(p, NODE_EXTERN, at);
+}
+
+static NOINLINE void
 parse_pub(Parser *p)
 {
     int at = p->pos;
@@ -1373,7 +1405,7 @@ parse_pub(Parser *p)
     TokenKind after = p->tokens.kinds[at + 2];
     bool declaration = kind == TK_STRUCT || kind == TK_ENUM || kind == TK_UNION ||
                        kind == TK_CONST || kind == TK_EXPORT ||
-                       (kind == TK_FN && after == TK_IDENT) ||
+                       kind == TK_EXTERN || (kind == TK_FN && after == TK_IDENT) ||
                        (kind == TK_IDENT && (after == TK_DASSIGN || after == TK_COLON));
     if (!declaration) {
         fail(p, "`pub` must come before a declaration");
@@ -1422,6 +1454,7 @@ parse_statement(Parser *p)
         case TK_IMPORT: parse_import(p); return;
         case TK_PUB: parse_pub(p); return;
         case TK_EXPORT: parse_export(p); return;
+        case TK_EXTERN: parse_extern(p); return;
         case TK_FN:
             if (p->tokens.kinds[p->pos + 1] == TK_IDENT) {
                 parse_function(p, true);

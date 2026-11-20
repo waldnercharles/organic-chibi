@@ -3,6 +3,7 @@
 #include "arm64.h"
 
 #include <assert.h>
+#include <dlfcn.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -271,6 +272,7 @@ typedef struct
     u32 result_at;
     bool called;
     bool context_saved;
+    void *process;
     Open *open;
     u32 nopen;
     u32 open_cap;
@@ -749,10 +751,10 @@ aliased(const Emit *e, u32 h)
 }
 
 static NOINLINE u32
-late_arg(Emit *e, const u32 *args, u32 v, u8 info)
+late_arg(Emit *e, const u32 *args, u32 v, u8 info, u32 ints)
 {
     bool fl = is_float(info);
-    u32 same = fl ? 0 : FIRST_INT_ARG;
+    u32 same = fl ? 0 : ints;
     for (u32 j = 1; j <= args[0] && same < 8; j++) {
         if (args[j] == v) {
             add_alias(e, v, (fl ? 32 : 0) + same, info);
@@ -784,10 +786,11 @@ result(Emit *e, u32 v, u8 info)
         } else if (kind == IR_RET && e->ir->as[at] == v && e->ir->types[at] != TYPE_ID_VOID) {
             add_alias(e, v, is_float(info) ? 32 : 0, info);
             return 0;
-        } else if (kind == IR_CALL) {
+        } else if (kind == IR_CALL || kind == IR_CALL_C) {
             const u32 *args = e->ir->extra + e->fn->first_extra + e->ir->bs[at];
+            u32 ints = kind == IR_CALL ? FIRST_INT_ARG : 0;
             bool fl = is_float(info);
-            u32 same = fl ? 0 : FIRST_INT_ARG;
+            u32 same = fl ? 0 : ints;
             for (u32 j = 1; j <= args[0] && same < 8; j++) {
                 if (args[j] == v) {
                     add_alias(e, v, (fl ? 32 : 0) + same, info);
@@ -795,7 +798,7 @@ result(Emit *e, u32 v, u8 info)
                 }
                 u8 t = operand_info(e, args[j]);
                 if (t & INFO_MEMORY) {
-                    return late_arg(e, args, v, info);
+                    return late_arg(e, args, v, info, ints);
                 }
                 same += is_float(t) == fl;
             }
@@ -992,6 +995,18 @@ static u32
 extension(u32 bits, bool s)
 {
     return (bits == 8 ? 0u : bits == 16 ? 1u : 2u) | (s ? 4u : 0u);
+}
+
+static void
+take_from_c(Emit *e, u8 info, u32 d, u32 r)
+{
+    if (bits_of(info) < 32) {
+        put(e, extend_op(info) | r << 5 | d);
+    } else if (bits_of(info) == 32) {
+        put(e, OP_ORR | r << 16 | ZR << 5 | d);
+    } else {
+        mov(e, SF, d, r);
+    }
 }
 
 static void
@@ -1869,7 +1884,7 @@ consumed_next(const Emit *e, u32 v)
         return false;
     }
     u8 kind = e->ir->kinds[e->fn->first + v + 1];
-    return kind == IR_STORE || kind == IR_RET || kind == IR_CALL;
+    return kind == IR_STORE || kind == IR_RET || kind == IR_CALL || kind == IR_CALL_C;
 }
 
 static u32
@@ -2347,7 +2362,6 @@ pass_struct(Emit *e, u32 v, u32 ints, u32 floats)
     u32 regs = check_struct_regs(e->c, type);
     u32 first = regs & REGS_FLOAT ? floats : ints;
     if (first + (regs & REGS_COUNT) > 8) {
-        e->error = "a call passes more than 7 integer or 8 float arguments";
         return 0;
     }
     if (regs & REGS_POINTER) {
@@ -2361,9 +2375,9 @@ pass_struct(Emit *e, u32 v, u32 ints, u32 floats)
 }
 
 static NOINLINE bool
-pass_args(Emit *e, const u32 *args)
+pass_args(Emit *e, const u32 *args, u32 ints)
 {
-    u32 ints = FIRST_INT_ARG, floats = 0;
+    u32 floats = 0;
     e->copied = 0;
     for (u32 j = 1; j <= args[0]; j++) {
         u8 at = operand_info(e, args[j]);
@@ -2379,7 +2393,6 @@ pass_args(Emit *e, const u32 *args)
         bool fl = is_float(at);
         u32 d = fl ? floats++ : ints++;
         if (d >= 8) {
-            e->error = "a call passes more than 7 integer or 8 float arguments";
             return false;
         }
         move_into(e, d, args[j], fl);
@@ -2420,12 +2433,44 @@ inside_loop(const Emit *e)
     return false;
 }
 
-static void
-call(Emit *e, u32 i, u32 type, u32 decl, u32 b, const Native *n)
+static NOINLINE bool
+bind_c(Emit *e, const Native *n, u32 decl)
 {
+    Name name = names_get(e->c->names, e->c->decls.names[decl]);
+    char symbol[256];
+    if (name.len >= sizeof symbol) {
+        e->error = "the name of an `extern fn` is longer than 255 bytes";
+        return false;
+    }
+    memcpy(symbol, name.text, name.len);
+    symbol[name.len] = 0;
+
+    if (!e->process) {
+        e->process = dlopen(NULL, RTLD_LAZY);
+    }
+    void *address = dlsym(e->process, symbol);
+    if (!address) {
+        e->error = "an `extern fn` names a C function that is not loaded";
+        return false;
+    }
+    n->entries[decl] = (u64)(uintptr_t)address;
+    return true;
+}
+
+static void
+call(Emit *e, u32 i, u32 type, u32 decl, u32 b, const Native *n, u32 ints)
+{
+    assert((ints == 0) == (e->c->decls.bodies[decl] == NO_BODY));
     u8 t = e->info[type];
     const u32 *args = e->ir->extra + e->fn->first_extra + b;
-    if (!pass_args(e, args)) {
+    if (!ints && !n->entries[decl] && !bind_c(e, n, decl)) {
+        return;
+    }
+    if (!pass_args(e, args, ints)) {
+        e->error = ints
+                     ? "a call passes more than 7 integer or 8 float arguments"
+                     : "a call into C passes more than 8 integer or 8 float "
+                       "arguments";
         return;
     }
     save_for_call(e, ~e->free_int & INT_POOL, false);
@@ -2433,7 +2478,7 @@ call(Emit *e, u32 i, u32 type, u32 decl, u32 b, const Native *n)
     if (t & INFO_MEMORY) {
         point_result(e, type, args[args[0] + 1]);
     }
-    if (e->called || inside_loop(e)) {
+    if (ints && (e->called || inside_loop(e))) {
         put(e, OP_LOAD_CONTEXT);
         e->context_saved = true;
     }
@@ -2462,6 +2507,8 @@ call(Emit *e, u32 i, u32 type, u32 decl, u32 b, const Native *n)
         u32 d = result(e, i, e->info[type]);
         if (fl) {
             fmov(e, d, 0);
+        } else if (ints == 0) {
+            take_from_c(e, t, d, 0);
         } else {
             mov(e, SF, d, 0);
         }
@@ -3070,12 +3117,8 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
         if (h != NO_REG) {
             if (fl) {
                 fmov(e, h & 31u, r);
-            } else if (bits_of(info) < 32) {
-                put(e, extend_op(info) | r << 5 | h);
-            } else if (bits_of(info) == 32) {
-                put(e, OP_ORR | r << 16 | ZR << 5 | h);
             } else {
-                mov(e, SF, h, r);
+                take_from_c(e, info, h, r);
             }
         } else if (slots[p].weight) {
             store_typed(e, type, r, e->slot_offsets[p]);
@@ -3192,7 +3235,10 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
             case IR_CONVERT: convert(e, i, type, a); break;
             case IR_NARROW: narrow(e, i, type, a); break;
             case IR_TRUNCATE: truncate_to(e, i, type, a); break;
-            case IR_CALL: call(e, i, type, a, b, n); break;
+            case IR_CALL:
+            case IR_CALL_C:
+                call(e, i, type, a, b, n, kind == IR_CALL ? FIRST_INT_ARG : 0);
+                break;
             case IR_DROP: release(e, a); break;
             case IR_RET:
                 if (e->info[type] & INFO_PAIR) {
@@ -3504,6 +3550,9 @@ arm64_compile(Native *n, const Checker *c)
     free(e.branches);
     free(e.arm_at);
     free(e.ranges);
+    if (e.process) {
+        dlclose(e.process);
+    }
     n->error = e.error;
     return e.error == NULL;
 }

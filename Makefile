@@ -18,8 +18,8 @@ PROFDATA ?= llvm-profdata
 WARN  := -std=c23 -Wall -Wextra -Werror
 FAST  := $(WARN) -O3 -flto -falign-functions=64 $(HOST)
 BENCH := $(FAST) -DNDEBUG -pthread
-SAFE  := $(WARN) -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer $(CPU)
-ARM64 := $(WARN) -g -O1 -fsanitize=undefined -fsanitize-trap=all -fno-omit-frame-pointer --target=aarch64-linux-gnu
+SAFE  := $(WARN) -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -rdynamic $(CPU)
+ARM64 := $(WARN) -g -O1 -fsanitize=undefined -fsanitize-trap=all -fno-omit-frame-pointer -rdynamic --target=aarch64-linux-gnu
 
 SRC       := $(filter-out src/main.c, $(wildcard src/*.c vendor/*/*.c))
 TEST_SRC  := test/*.c test/random/*.c $(SRC)

@@ -5041,9 +5041,352 @@ TEST_CASE(hidden_context)
     return true;
 }
 
+static const char CALLS_INTO_C
+    [] = "struct P { x: int, y: int }\n"
+         "struct W { a: int, b: int, c: int }\n"
+         "\n"
+         "const table := W.{ 7, 8, 9 }\n"
+         "\n"
+         "extern fn labs(x: i64) -> i64\n"
+         "extern fn memset(p: *[8]u8, c: i32, n: u64) -> *[8]u8\n"
+         "extern fn chibi_c_eight(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: "
+         "int) -> int\n"
+         "extern fn chibi_c_mixed(a: i8, b: f64, c: u16, d: f32, e: i32, f: bool) -> f64\n"
+         "extern fn chibi_c_registers(a: i8, b: u16, c: i32, d: bool, e: u32)\n"
+         "extern fn chibi_c_u8() -> u8\n"
+         "extern fn chibi_c_i8() -> i8\n"
+         "extern fn chibi_c_u16() -> u16\n"
+         "extern fn chibi_c_i16() -> i16\n"
+         "extern fn chibi_c_u32() -> u32\n"
+         "extern fn chibi_c_i32() -> i32\n"
+         "extern fn chibi_c_bool(x: int) -> bool\n"
+         "extern fn chibi_c_point(p: P, k: int) -> P\n"
+         "extern fn chibi_c_scribble(w: W) -> int\n"
+         "extern fn chibi_c_wide(k: int) -> W\n"
+         "pub extern fn chibi_c_tick()\n"
+         "\n"
+         "fn h(x: int) -> int {\n"
+         "    return x\n"
+         "}\n"
+         "\n"
+         "fn after_c(x: int) -> int {\n"
+         "    return h(labs(x)) + 1\n"
+         "}\n"
+         "\n"
+         "fn only_c(x: int) -> int {\n"
+         "    return labs(x) + labs(x - 10)\n"
+         "}\n"
+         "\n"
+         "fn c_in_loop(n: int) -> int {\n"
+         "    s := 0\n"
+         "    for i in 0..n {\n"
+         "        s += labs(i - 5)\n"
+         "    }\n"
+         "    return s\n"
+         "}\n"
+         "\n"
+         "fn h_in_loop(n: int) -> int {\n"
+         "    s := 0\n"
+         "    for i in 0..n {\n"
+         "        s += h(labs(i - 3))\n"
+         "    }\n"
+         "    return s\n"
+         "}\n"
+         "\n"
+         "fn h_then_c(x: int) -> int {\n"
+         "    return h(x) + labs(x - 100)\n"
+         "}\n"
+         "\n"
+         "fn eight(x: int) -> int {\n"
+         "    return chibi_c_eight(x + 1, x * 2, x - 3, 4, x + 5, 6, x * 7, x + 8)\n"
+         "}\n"
+         "\n"
+         "fn mixed(x: int) -> f64 {\n"
+         "    return chibi_c_mixed(i8(x) - 5, f64(x) * 0.5, u16(x) + 300, f32(x) + 1.5, i32(x) * "
+         "-7, x > 3)\n"
+         "}\n"
+         "\n"
+         "fn registers(x: int) {\n"
+         "    chibi_c_registers(i8(x) - 10, u16(x) * 1000, i32(x) - 100, x > 2, u32(x) * "
+         "200000000)\n"
+         "}\n"
+         "\n"
+         "fn ret_u8() -> u8 {\n"
+         "    return chibi_c_u8()\n"
+         "}\n"
+         "\n"
+         "fn ret_i8() -> i8 {\n"
+         "    return chibi_c_i8()\n"
+         "}\n"
+         "\n"
+         "fn ret_u16() -> u16 {\n"
+         "    return chibi_c_u16()\n"
+         "}\n"
+         "\n"
+         "fn ret_i16() -> i16 {\n"
+         "    return chibi_c_i16()\n"
+         "}\n"
+         "\n"
+         "fn ret_u32() -> u32 {\n"
+         "    return chibi_c_u32()\n"
+         "}\n"
+         "\n"
+         "fn ret_i32() -> i32 {\n"
+         "    return chibi_c_i32()\n"
+         "}\n"
+         "\n"
+         "fn ret_bool(x: int) -> bool {\n"
+         "    return chibi_c_bool(x)\n"
+         "}\n"
+         "\n"
+         "fn narrow_math() -> int {\n"
+         "    return int(chibi_c_u8() / 3) + int(chibi_c_i8() / 3) * 10 + int(chibi_c_u16() / 7) "
+         "+ int(chibi_c_i16() / 3) + int(chibi_c_u32() / 5) + int(chibi_c_i32() / 2)\n"
+         "}\n"
+         "\n"
+         "fn truth(x: int) -> int {\n"
+         "    if chibi_c_bool(x) {\n"
+         "        return 1\n"
+         "    }\n"
+         "    return 0\n"
+         "}\n"
+         "\n"
+         "fn point(x: int) -> int {\n"
+         "    p := chibi_c_point(P.{ x, x + 1 }, 3)\n"
+         "    return p.x * 100 + p.y\n"
+         "}\n"
+         "\n"
+         "fn scribble(x: int) -> int {\n"
+         "    w := W.{ x, 2, 3 }\n"
+         "    s := chibi_c_scribble(w)\n"
+         "    return s * 1000 + w.a + w.b + w.c\n"
+         "}\n"
+         "\n"
+         "fn from_table() -> int {\n"
+         "    return chibi_c_scribble(table) * 10000 + chibi_c_scribble(table)\n"
+         "}\n"
+         "\n"
+         "fn wide(x: int) -> int {\n"
+         "    w := chibi_c_wide(x)\n"
+         "    return w.a + w.b * 10 + w.c * 100\n"
+         "}\n"
+         "\n"
+         "fn ticks(n: int) -> int {\n"
+         "    for i in 0..n {\n"
+         "        chibi_c_tick()\n"
+         "    }\n"
+         "    return n\n"
+         "}\n"
+         "\n"
+         "fn fill(x: int) -> int {\n"
+         "    buf: [8]u8\n"
+         "    _ = memset(&buf, i32(x), 8)\n"
+         "    s := 0\n"
+         "    for b in buf {\n"
+         "        s += int(b)\n"
+         "    }\n"
+         "    return s\n"
+         "}\n";
+
+typedef uint64_t R0(void *);
+typedef uint64_t R1(void *, int64_t);
+typedef void V1(void *, int64_t);
+typedef double DI(void *, int64_t);
+
+enum
+{
+    WORD_MOV_X7 = 0xAA0003E7u,
+    MOV_FROM = 0x001F0000u,
+};
+
+uint64_t chibi_c_seen[5];
+int64_t chibi_c_ticks;
+
+int64_t
+chibi_c_eight(int64_t a, int64_t b, int64_t c, int64_t d, int64_t e, int64_t f, int64_t g, int64_t h)
+{
+    return a + 2 * b + 3 * c + 4 * d + 5 * e + 6 * f + 7 * g + 8 * h;
+}
+
+double
+chibi_c_mixed(int8_t a, double b, uint16_t c, float d, int32_t e, bool f)
+{
+    return a + b * 2 + c * 3 + d * 4 + e * 5 + (f ? 1000 : 0);
+}
+
+void
+chibi_c_registers(uint64_t a, uint64_t b, uint64_t c, uint64_t d, uint64_t e)
+{
+    chibi_c_seen[0] = a;
+    chibi_c_seen[1] = b;
+    chibi_c_seen[2] = c;
+    chibi_c_seen[3] = d;
+    chibi_c_seen[4] = e;
+}
+
+uint64_t
+chibi_c_u8(void)
+{
+    return 0xDEADBEEFCAFE0105u;
+}
+
+uint64_t
+chibi_c_i8(void)
+{
+    return 0x123456789ABCDE80u;
+}
+
+uint64_t
+chibi_c_u16(void)
+{
+    return 0xFFFFFFFFFFFF8001u;
+}
+
+uint64_t
+chibi_c_i16(void)
+{
+    return 0x0000000100008000u;
+}
+
+uint64_t
+chibi_c_u32(void)
+{
+    return 0xFFFFFFFF80000007u;
+}
+
+uint64_t
+chibi_c_i32(void)
+{
+    return 0x00000001FFFFFFF9u;
+}
+
+uint64_t
+chibi_c_bool(int64_t x)
+{
+    return 0xFFFFFFFFFFFFFF00u | (uint64_t)(x & 1);
+}
+
+CPoint
+chibi_c_point(CPoint p, int64_t k)
+{
+    return (CPoint){ p.x + k, p.y * k };
+}
+
+int64_t
+chibi_c_scribble(CW w)
+{
+    int64_t s = w.a + w.b * 10 + w.c * 100;
+    volatile CW *v = &w;
+    v->a = 900;
+    v->b = 800;
+    v->c = 700;
+    return s;
+}
+
+CW
+chibi_c_wide(int64_t k)
+{
+    return (CW){ k, k + 1, k + 2 };
+}
+
+void
+chibi_c_tick(void)
+{
+    chibi_c_ticks++;
+}
+
+static const char *const C_CALL_LIMITS[][2] = {
+    { "extern fn chibi_c_eight(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: "
+      "int, i: int) -> int\n"
+      "fn g() -> int {\n"
+      "    return chibi_c_eight(1, 2, 3, 4, 5, 6, 7, 8, 9)\n"
+      "}\n",
+      "a call into C passes more than 8 integer or 8 float arguments" },
+    { "struct P { a: int, b: int }\n"
+      "extern fn chibi_c_point(a: int, b: int, c: int, d: int, e: int, f: int, g: int, p: P) "
+      "-> int\n"
+      "fn g() -> int {\n"
+      "    return chibi_c_point(1, 2, 3, 4, 5, 6, 7, .{ 8, 9 })\n"
+      "}\n",
+      "a call into C passes more than 8 integer or 8 float arguments" },
+    { "extern fn chibi_c_nowhere() -> int\n"
+      "fn g() -> int {\n"
+      "    return chibi_c_nowhere()\n"
+      "}\n",
+      "an `extern fn` names a C function that is not loaded" },
+};
+
+TEST_CASE(calls_into_c)
+{
+    Program p;
+    REQUIRE(build(&p, CALLS_INTO_C));
+    native_replace(&p.n, decl_named(&p, "h"), (void *)c_h);
+
+    REQUIRE(keeps_context(&p, "after_c", 1));
+    REQUIRE(keeps_context(&p, "only_c", 0));
+    REQUIRE(keeps_context(&p, "c_in_loop", 0));
+    REQUIRE(keeps_context(&p, "h_in_loop", 1));
+    REQUIRE(keeps_context(&p, "h_then_c", 0));
+    REQUIRE(keeps_context(&p, "eight", 0));
+    REQUIRE(count_words(&p, "eight", WORD_MOV_X7, MOV_FROM) == 0);
+
+    lost_contexts = 0;
+    for (int64_t x = 0; x < 20; x++) {
+        int64_t around = 0, spread = 0;
+        for (int64_t i = 0; i < x; i++) {
+            around += llabs(i - 5);
+            spread += 3 * llabs(i - 3) + 1;
+        }
+        REQUIRE(((I1 *)fn(&p, "after_c"))(CONTEXT, -x) == 3 * x + 2);
+        REQUIRE(((I1 *)fn(&p, "only_c"))(CONTEXT, x) == x + llabs(x - 10));
+        REQUIRE(((I1 *)fn(&p, "c_in_loop"))(CONTEXT, x) == around);
+        REQUIRE(((I1 *)fn(&p, "h_in_loop"))(CONTEXT, x) == spread);
+        REQUIRE(((I1 *)fn(&p, "h_then_c"))(CONTEXT, x) == 3 * x + 1 + 100 - x);
+        REQUIRE(((I1 *)fn(&p, "eight"))(CONTEXT, x) == 70 * x + 133);
+        REQUIRE(((DI *)fn(&p, "mixed"))(CONTEXT, x) == -26.0 * (double)x + 901 + (x > 3 ? 1000 : 0));
+        REQUIRE(((I1 *)fn(&p, "truth"))(CONTEXT, x) == (x & 1));
+        REQUIRE(((R1 *)fn(&p, "ret_bool"))(CONTEXT, x) == (uint64_t)(x & 1));
+        REQUIRE(((I1 *)fn(&p, "point"))(CONTEXT, x) == 103 * x + 303);
+        REQUIRE(((I1 *)fn(&p, "scribble"))(CONTEXT, x) == 1001 * x + 320005);
+        REQUIRE(((I1 *)fn(&p, "wide"))(CONTEXT, x) == 111 * x + 210);
+        REQUIRE(((I1 *)fn(&p, "fill"))(CONTEXT, x) == 8 * x);
+
+        ((V1 *)fn(&p, "registers"))(CONTEXT, x);
+        REQUIRE((uint32_t)chibi_c_seen[0] == (uint32_t)(int32_t)(int8_t)(x - 10));
+        REQUIRE((uint32_t)chibi_c_seen[1] == (uint32_t)(x * 1000));
+        REQUIRE((uint32_t)chibi_c_seen[2] == (uint32_t)(int32_t)(x - 100));
+        REQUIRE((uint32_t)chibi_c_seen[3] == (uint32_t)(x > 2));
+        REQUIRE((uint32_t)chibi_c_seen[4] == (uint32_t)(x * 200000000u));
+
+        int64_t before = chibi_c_ticks;
+        REQUIRE(((I1 *)fn(&p, "ticks"))(CONTEXT, x) == x);
+        REQUIRE(chibi_c_ticks == before + x);
+    }
+    REQUIRE(lost_contexts == 0);
+
+    REQUIRE(((R0 *)fn(&p, "ret_u8"))(CONTEXT) == 0x05u);
+    REQUIRE(((R0 *)fn(&p, "ret_i8"))(CONTEXT) == 0xFFFFFF80u);
+    REQUIRE(((R0 *)fn(&p, "ret_u16"))(CONTEXT) == 0x8001u);
+    REQUIRE(((R0 *)fn(&p, "ret_i16"))(CONTEXT) == 0xFFFF8000u);
+    REQUIRE(((R0 *)fn(&p, "ret_u32"))(CONTEXT) == 0x80000007u);
+    REQUIRE(((R0 *)fn(&p, "ret_i32"))(CONTEXT) == 0xFFFFFFF9u);
+    REQUIRE(((I0 *)fn(&p, "narrow_math"))(CONTEXT) == 429490068);
+    REQUIRE(((I0 *)fn(&p, "from_table"))(CONTEXT) == 9870987);
+    REQUIRE(((I0 *)fn(&p, "from_table"))(CONTEXT) == 9870987);
+    release_program(&p);
+
+    for (size_t k = 0; k < sizeof C_CALL_LIMITS / sizeof C_CALL_LIMITS[0]; k++) {
+        REQUIRE(check_text(&p, C_CALL_LIMITS[k][0]));
+        REQUIRE(!arm64_compile(&p.n, &p.c) && strcmp(p.n.error, C_CALL_LIMITS[k][1]) == 0);
+        release_program(&p);
+    }
+    return true;
+}
+
 TEST_SUITE(arm64_tests)
 {
     RUN_TEST_CASE(hidden_context);
+    RUN_TEST_CASE(calls_into_c);
     RUN_TEST_CASE(narrow_parameters);
     RUN_TEST_CASE(constant_division);
     RUN_TEST_CASE(differential);

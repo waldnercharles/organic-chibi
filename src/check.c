@@ -351,7 +351,7 @@ intern_type(Checker *c, u8 kind, u32 arg0, u64 arg1)
 }
 
 static u32
-fn_type(Checker *c, u32 list, u32 ret)
+fn_type(Checker *c, u32 list, u64 ret)
 {
     u32 id = intern_type(c, TYPE_FN, list, ret);
     if (c->types.arg0[id] != list) {
@@ -2604,9 +2604,9 @@ slot_may_change(Checker *c, u32 slot)
 }
 
 static NOINLINE u32
-copy_root(Checker *c, Operand v, u32 type, u32 *copies)
+copy_root(Checker *c, Operand v, u32 type, u32 *copies, bool writes)
 {
-    u32 slot = place_root(c, v);
+    u32 slot = writes ? NO_SLOT : place_root(c, v);
     if (slot_may_change(c, slot)) {
         *copies += (u32)((check_type_size(c, type) + 7) & ~(u64)7);
     }
@@ -2646,6 +2646,7 @@ call_compound(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg
     const Decls *d = &c->decls;
     u32 fn = d->types[decl];
     u32 ret = (u32)c->types.arg1[fn];
+    bool to_c = c->types.arg1[fn] & FN_C_CALL;
     if (!is_passed(c, ret)) {
         report_unpassed(c, file, token, ret);
         return poison;
@@ -2693,7 +2694,7 @@ call_compound(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg
                 v = (Operand){ OPERAND_LOCAL, copy };
             }
             u32 root = check_struct_regs(c, type) & REGS_POINTER
-                         ? copy_root(c, v, type, &copies)
+                         ? copy_root(c, v, type, &copies, to_c)
                          : 0;
             u32 address = place_address(c, v);
             code->extra[w++] = emit(c, IR_LOAD_AT, type, address, root);
@@ -2720,7 +2721,7 @@ call_compound(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg
     if (c->nunread != c->unread_done) {
         reserve_copies(c, first_arg - 2);
     }
-    u32 i = emit(c, IR_CALL, ret, decl, relative);
+    u32 i = emit(c, to_c ? IR_CALL_C : IR_CALL, ret, decl, relative);
     c->body.calls++;
     drop_unread(c, first_arg - 2);
     if (is_slice(c, ret)) {
@@ -2742,6 +2743,7 @@ call_fn(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg, u32 
     if (ret == TYPE_ID_INFERRED || ret == TYPE_ID_NONE) {
         return poison;
     }
+    bool to_c = c->types.arg1[fn] & FN_C_CALL;
 
     u32 list = c->types.arg0[fn];
     u32 n = c->lists[list];
@@ -2785,7 +2787,7 @@ call_fn(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg, u32 
     if (c->nunread != c->unread_done) {
         reserve_copies(c, first_arg - 2);
     }
-    u32 i = emit(c, IR_CALL, ret, decl, relative);
+    u32 i = emit(c, to_c ? IR_CALL_C : IR_CALL, ret, decl, relative);
     c->body.calls++;
     return ret == TYPE_ID_VOID ? (Operand){ TYPE_ID_VOID, 0 }
                                : (Operand){ ret, REF_VALUE | i };
@@ -5630,12 +5632,17 @@ static void
 finish_signature(Checker *c, u32 decl)
 {
     u32 file = c->decls.files[decl];
+    bool external = c->decls.bodies[decl] == NO_BODY;
     u32 m = list_start(c, NODE_FN_START);
-    u32 ret = c->decls.flags[decl] & (DECL_PUB | DECL_EXPORT) ? TYPE_ID_VOID
-                                                              : TYPE_ID_INFERRED;
+    u32 ret = c->decls.flags[decl] & (DECL_PUB | DECL_EXPORT) || external
+                ? TYPE_ID_VOID
+                : TYPE_ID_INFERRED;
     u32 end = c->sp;
     if (end > m + 1 && c->stack[end - 1].type == OPERAND_RETURN) {
         ret = c->stack[--end].ref;
+        if (external && (is_slice(c, ret) || is_array(c, ret))) {
+            report(c, file, c->stack_tokens[end], DIAG_NOT_C, 0, ret);
+        }
     }
 
     c->sp = end;
@@ -5644,12 +5651,15 @@ finish_signature(Checker *c, u32 decl)
     u32 list = reserve_list(c, count);
     bool compound = is_compound(c, ret);
     for (u32 i = 0; i < count; i++) {
-        u32 type = c->members[first + i].type;
-        c->lists[list + 1 + i] = type;
-        compound |= is_compound(c, type);
+        Member p = c->members[first + i];
+        c->lists[list + 1 + i] = p.type;
+        compound |= is_compound(c, p.type);
+        if (external && (is_slice(c, p.type) || is_array(c, p.type))) {
+            report(c, file, c->files[file].nodes.tokens[p.node], DIAG_NOT_C, 0, p.type);
+        }
     }
 
-    c->decls.types[decl] = fn_type(c, list, ret);
+    c->decls.types[decl] = fn_type(c, list, ret | (external ? FN_C_CALL : 0));
     c->decls.flags[decl] |= compound ? DECL_COMPOUND : 0;
     c->decls.members[decl] = first;
     c->decls.member_counts[decl] = count;
@@ -5741,7 +5751,8 @@ check_decl(Checker *c, u32 decl)
     reserve_stack(c, root - first + 1);
 
     bool global = d->kinds[decl] == DECL_VAR;
-    walk(c, decl, first, root + !global);
+    bool external = d->bodies[decl] == NO_BODY;
+    walk(c, decl, first, root + !(global || external));
     if (d->kinds[decl] == DECL_FN) {
         finish_signature(c, decl);
     } else if (global) {
@@ -5751,7 +5762,7 @@ check_decl(Checker *c, u32 decl)
     assert(c->sp == base);
     c->nclaims--;
     d->busy[decl] = 0;
-    d->phases[decl] = PHASE_RESOLVED;
+    d->phases[decl] = external ? PHASE_CHECKED : PHASE_RESOLVED;
     c->body = outer;
 }
 
@@ -6009,8 +6020,13 @@ declare(Checker *c)
             u32 end = file->nodes.top_ends[s];
             u32 root = end - 1;
             u8 flags = 0;
-            while (kinds[root] == NODE_PUB || kinds[root] == NODE_EXPORT) {
-                flags |= kinds[root] == NODE_PUB ? DECL_PUB : DECL_EXPORT;
+            bool external = false;
+            while (kinds[root] == NODE_PUB || kinds[root] == NODE_EXPORT ||
+                   kinds[root] == NODE_EXTERN) {
+                flags |= kinds[root] == NODE_PUB    ? DECL_PUB
+                       : kinds[root] == NODE_EXPORT ? DECL_EXPORT
+                                                    : 0;
+                external |= kinds[root] == NODE_EXTERN;
                 root--;
             }
 
@@ -6043,6 +6059,9 @@ declare(Checker *c)
             d->firsts[id] = first;
             d->roots[id] = root;
             d->phases[id] = PHASE_DECLARED;
+            if (external) {
+                d->bodies[id] = NO_BODY;
+            }
             if (kind == DECL_STRUCT || kind == DECL_ENUM || kind == DECL_UNION) {
                 u8 type_kind = kind == DECL_STRUCT ? TYPE_STRUCT
                              : kind == DECL_ENUM   ? TYPE_ENUM
@@ -6512,7 +6531,7 @@ print_decl(FILE *out, const Checker *c, u32 decl)
             print_members(out, c, decl, " { ", " }");
             break;
         case DECL_FN:
-            fputs("fn ", out);
+            fputs(d->bodies[decl] == NO_BODY ? "extern fn " : "fn ", out);
             print_name(out, c, d->names[decl]);
             fputs(d->member_counts[decl] ? "" : "()", out);
             print_members(out, c, decl, "(", ")");
@@ -6606,7 +6625,7 @@ print_function(FILE *out, const Checker *c, const IrFunc *fn)
         fprintf(out, "%*s", 4 * depth, "");
 
         bool value = kind < IR_CALL ||
-                     (kind == IR_CALL && type != TYPE_ID_VOID && !is_struct(c, type)) ||
+                     (kind <= IR_CALL_C && type != TYPE_ID_VOID && !is_struct(c, type)) ||
                      (kind == IR_END && type != TYPE_ID_NONE);
         if (value) {
             fprintf(out, "%%%u = ", i);
@@ -6660,7 +6679,8 @@ print_function(FILE *out, const Checker *c, const IrFunc *fn)
                 fputc(' ', out);
                 print_operand(out, c, fn, a);
                 break;
-            case IR_CALL: {
+            case IR_CALL:
+            case IR_CALL_C: {
                 fputc(' ', out);
                 print_type(out, c, type);
                 fputc(' ', out);

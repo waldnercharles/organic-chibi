@@ -122,6 +122,9 @@ static const Case DECLARATIONS[] = {
       "{}\nexport fn tick(dt: f32) {}\n",
       "pub fn load(path: []u8) -> !void\nfn quiet() -> void\npub fn run() -> "
       "void\nexport fn tick(dt: f32) -> void\n" },
+    { "extern fn labs(x: i64) -> i64\npub extern fn quit()\nfn f(x: int) -> int {\n    "
+      "return labs(x)\n}\n",
+      "extern fn labs(x: int) -> int\npub extern fn quit() -> void\nfn f(x: int) -> int\n" },
     { "fn g(cb: fn(int, x: f32) -> u8, h: fn(), k: u8 = 9) => 0\n",
       "fn g(cb: fn(int, f32) -> u8, h: fn() -> void, k: u8 = 9) -> int\n" },
     { "struct S { f: fn(*int, []u8) -> ?int, g: fn(*int, []u8) -> ?int }\n",
@@ -200,6 +203,15 @@ static const Case DECLARATIONS[] = {
 };
 
 static const Case ERRORS[] = {
+    { "extern fn f(s: []u8, a: [2]int) -> [3]u8\n",
+      "a:1:13: C has no `[]u8`, so an `extern fn` can't pass or return it\n"
+      "a:1:22: C has no `[2]int`, so an `extern fn` can't pass or return it\n"
+      "a:1:33: C has no `[3]u8`, so an `extern fn` can't pass or return it\n"
+      "extern fn f(s: []u8, a: [2]int) -> [3]u8\n" },
+    { "fn g() {\n    extern fn h()\n}\n",
+      "a:2:5: the checker doesn't support this yet\n"
+      "a:2:15: the checker doesn't support this yet\n"
+      "fn g() -> void\n" },
     { "const A := B + 1\nconst B := A * 2\nconst C := C\n",
       "a:1:7: `A` depends on itself through `B`\n"
       "a:3:7: `C` depends on itself\n"
@@ -802,6 +814,13 @@ static const Case ERRORS[] = {
 };
 
 static const Case BODIES[] = {
+    { "extern fn labs(x: i64) -> i64\nfn f(x: int) -> int {\n    return labs(x) + 1\n}\n",
+      "fn f(x: int) -> int\n"
+      "    slots: x: int\n"
+      "    %0 = load int x\n"
+      "    %1 = call-c int labs(%0)\n"
+      "    %2 = add int %1, 1\n"
+      "    ret int %2\n" },
     {
         "fn sum(n: int) -> int {\n"
         "    total := 0\n"

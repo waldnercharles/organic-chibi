@@ -89,8 +89,8 @@ static const struct
     { "in", TK_IN },           { "bitcast", TK_BITCAST },
     { "and", TK_AND },         { "or", TK_OR },
     { "const", TK_CONST },     { "export", TK_EXPORT },
-    { "undefined", TK_UNDEFINED }, { "try", TK_TRY },
-    { "catch", TK_CATCH },
+    { "extern", TK_EXTERN },   { "undefined", TK_UNDEFINED },
+    { "try", TK_TRY },         { "catch", TK_CATCH },
 };
 // clang-format on
 

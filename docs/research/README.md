@@ -77,13 +77,14 @@ Updated 2026-11-20. Built so far:
 - step 3d.9, the hidden context: every chibi function receives it in `x0` and passes it to the functions it calls, and integer arguments start at `x1` (rank 7, decided 2026-11-18 and 2026-11-20).
 - step 3g.1, constant tables: top-level `const` arrays and structs, built at compile time into a buffer that the backend maps beside the code, and read in function bodies through `data` places.
 - step 3g.2, global variables: top-level `name := value` and `name: T` in library files, starting at compile time from an image that the backend maps read-write, with globals that need only zero bytes placed after it, and read and written in function bodies through `global` places.
+- step 3h.1, calls into C: `extern fn` declarations without bodies, called with C's convention and no context, and found by name in the running process.
 
 [checker-and-ir.md](checker-and-ir.md) section 8 has the details and the measurements.
 
 The goal now is self-hosting: translate the compiler into chibi, then use the compiler as the benchmark that chibi improves against (the Compiler rows of 2026-11-16 and 2026-11-17). The order:
 1. **Step 3d:** built (steps 3d.1 to 3d.9). Options A and C of question 14 were timed on 2026-11-19, on x86-64 ([experiments/slice-lowering](../../experiments/slice-lowering/README.md)): C was at least as fast as A on every kernel, and 21–28% faster on a loop that re-slices as a lexer does, so 3d builds C, and step 3d.3 built slices that way. The same kernels still need timing on the owner's M4 Pro. A cloud container runs the arm64 backend's tests under qemu (`make test`), but can't time arm64 code.
 2. Globals and constant tables: built (steps 3g.1 and 3g.2).
-3. Calling C and being called from C.
+3. Calling C and being called from C: calls into C are built (step 3h.1). Next come stack arguments and C's variadic calls, callbacks that C calls, and `export fn` with the entry point.
 4. SIMD types, and the bit-scan and overflow builtins.
 5. The C backend, the C-to-chibi translator and the bootstrap check.
 6. Then steps 3c, 3e, 3f, 4 and 5, and the spike of cppgm's LowIR as the release backend (the Compiler row of 2026-11-19).
@@ -105,7 +106,7 @@ Updated 2026-11-20. The owner's answers are in [../decisions.md](../decisions.md
    - What a hot reload does to a global. Rank 6 (2.6) proposes that it keeps its current value and that a new global starts with its compile-time bytes; the hot reload design decides.
 3. **Calling C, and being called from C.**
    - The details of the hidden context (rank 7, decided 2026-11-18): what it holds, how a callback for C is spelled, and where an adapter finds a default context. Prior art from Jai, Odin, Go, OCaml, HotSpot, Swift and Koka is in [adopt-or-settle.md](adopt-or-settle.md) 2.7.
-   - C imports: where defines, include paths and libraries are given, and `extern fn` for C declarations without bodies ([syntax-options-effects.md](syntax-options-effects.md) 10a).
+   - C imports: where defines, include paths and libraries are given ([syntax-options-effects.md](syntax-options-effects.md) 10a). Step 3h.1 built `extern fn` for C declarations without bodies, as 10a recommends; its rules open to review are in [checker-and-ir.md](checker-and-ir.md) section 8.
    - `export fn`: C names, slices in exported signatures, and `export` on globals (10b).
    - Variadic functions: `..` for C's variadic tail, which calls to `printf` need, and `xs: ..T` for chibi functions (4e).
    - Function values, which callbacks such as `qsort`'s need (rank 13, 2.13).
@@ -138,7 +139,8 @@ Built by the research thread and open to the owner's review, as their rows in de
 - the `nop` reserved before a value that may widen (Compiler, 2026-11-15);
 - the IR `switch` layout, and `Color(n)` as a `narrow` (Compiler, 2026-11-16);
 - the arm64 jump-table thresholds (Compiler, 2026-11-16);
-- three points of step 3b: an enum used without a value needs a member whose value is 0, a range label needs an integer switch, and `continue sw value` is an error until question 9 is decided (Language, 2026-11-16).
+- three points of step 3b: an enum used without a value needs a member whose value is 0, a range label needs an integer switch, and `continue sw value` is an error until question 9 is decided (Language, 2026-11-16);
+- `extern fn` for C functions without bodies, and how step 3h.1 calls them (Language, 2026-11-20).
 
 ## Syntax option sheets: how they fit together (2026-11-10)
 

@@ -130,6 +130,7 @@
     NODE(NODE_IMPORT_DECL, 0, "import")                                        \
     NODE(NODE_PUB, 1, "pub")                                                   \
     NODE(NODE_EXPORT, 1, "export")                                             \
+    NODE(NODE_EXTERN, 1, "extern")                                             \
     LIST(NODE_CALL, NODE_CALL_ARGS, 1, "call")                                 \
     LIST(NODE_BLOCK, NODE_BLOCK_START, 0, "block")                             \
     LIST(NODE_IF, NODE_IF_START, 0, "if")                                      \
