@@ -4261,9 +4261,13 @@ TEST_CASE(bitcasts)
 }
 
 static const char *const OPTIONAL_FUNCTIONS[] = {
-    "opt_list",    "opt_unwrap", "opt_or_else", "opt_assign", "opt_compare",
-    "opt_bitcast", "opt_struct", "opt_chain",   "opt_global", "opt_copies",
-    "opt_high",    "opt_literal",
+    "opt_list",          "opt_unwrap",      "opt_or_else",
+    "opt_assign",        "opt_compare",     "opt_bitcast",
+    "opt_struct",        "opt_chain",       "opt_global",
+    "opt_copies",        "opt_high",        "opt_literal",
+    "opt_narrow_list",   "opt_narrow_else", "opt_narrow_assign",
+    "opt_narrow_loops",  "opt_narrow_or",   "opt_narrow_not",
+    "opt_narrow_nested",
 };
 
 static const CallCase OPTIONAL_CASES[] = {
@@ -4312,6 +4316,38 @@ static const CallCase OPTIONAL_CASES[] = {
     { "opt_literal", 5, 0, 510605, 0 },
     { "opt_literal", -1, 2, 25535855, 0 },
     { "opt_literal", 200, 4, 20020007, 0 },
+    { "opt_narrow_list", 0, 9, 0, 0 },
+    { "opt_narrow_list", 3, 2, -184, 0 },
+    { "opt_narrow_list", 3, 52, 52138, 0 },
+    { "opt_narrow_list", 2, 70, 60000, 0 },
+    { "opt_narrow_list", -1, 45, 375, 0 },
+    { "opt_narrow_else", 3, 4, 300343, 0 },
+    { "opt_narrow_else", 3, -1, 300032, 0 },
+    { "opt_narrow_else", -2, 5, 1, 0 },
+    { "opt_narrow_else", 0, 0, 1, 0 },
+    { "opt_narrow_assign", 5, 3, 4205, 0 },
+    { "opt_narrow_assign", 2, 7, 6895, 0 },
+    { "opt_narrow_assign", 4, -1, 804, 0 },
+    { "opt_narrow_assign", -3, -3, -600, 0 },
+    { "opt_narrow_loops", 2, 1, 120220, 0 },
+    { "opt_narrow_loops", 3, 0, 180305, 0 },
+    { "opt_narrow_loops", 4, 5, -1000, 0 },
+    { "opt_narrow_loops", 7, 6, 5, 0 },
+    { "opt_narrow_loops", -1, 3, 19905, 0 },
+    { "opt_narrow_or", 5, 3, 502, 0 },
+    { "opt_narrow_or", 2, 9, 7, 0 },
+    { "opt_narrow_or", 0, 4, 7, 0 },
+    { "opt_narrow_or", 6, 0, 7, 0 },
+    { "opt_narrow_or", -1, -8, -93, 0 },
+    { "opt_narrow_not", 3, 4, 3344, 0 },
+    { "opt_narrow_not", 3, 1, 311, 0 },
+    { "opt_narrow_not", 3, -1, 41, 0 },
+    { "opt_narrow_not", -2, 5, -69, 0 },
+    { "opt_narrow_not", 5, 2, 522, 0 },
+    { "opt_narrow_nested", 3, 1, 1334, 0 },
+    { "opt_narrow_nested", -2, 5, 780, 0 },
+    { "opt_narrow_nested", 4, 0, -1, 0 },
+    { "opt_narrow_nested", 0, 2, 1000, 0 },
 };
 
 TEST_CASE(optionals)

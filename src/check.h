@@ -185,7 +185,7 @@ enum
     X(DIAG_NEVER_NIL, "`%U` is never nil, so this needs a value")                                   \
     X(DIAG_NIL_MISMATCH, "`%U` is never nil")                                                       \
     X(DIAG_NIL_TYPE, "`nil` needs a type here, as in `p: ?*T = nil`")                               \
-    X(DIAG_MAYBE_NIL, "`%T` may be nil, so it needs `!!` or `?\?` first")                            \
+    X(DIAG_MAYBE_NIL, "`%T` may be nil, so it needs `!!`, `?\?` or a check against `nil` first")    \
     X(DIAG_NOT_OPTIONAL, "`%T` is never nil, so `%t` does nothing")                                 \
     X(DIAG_ALWAYS_NIL, "this is always `nil`, so `!!` always traps")                                \
     X(DIAG_NOT_INDEXABLE, "`%T` can't be indexed")                                                  \
@@ -317,6 +317,7 @@ typedef struct
     u32 label;
     u32 type;
     u32 marker;
+    u32 facts;
     Peers peers;
 } Loop;
 
@@ -347,6 +348,7 @@ typedef struct
     u32 default_token;
     u32 label;
     u32 loop;
+    u32 facts;
     bool value;
     bool before;
     bool reaches;
@@ -373,8 +375,15 @@ typedef struct
     u32 blocks;
     u32 copies;
     u32 stack_args;
+    u32 facts;
+    u32 tests;
+    u32 addressed;
+    u8 *narrowed;
+    u32 narrowed_cap;
     bool reachable;
     bool returns_value;
+    bool narrows;
+    bool scanned;
 } Body;
 
 typedef struct
@@ -469,6 +478,15 @@ typedef struct
     Switch *switches;
     u32 nswitches;
     u32 switches_cap;
+    u32 *facts;
+    u32 nfacts;
+    u32 facts_cap;
+    u32 *tests;
+    u32 ntests;
+    u32 tests_cap;
+    u32 *addressed;
+    u32 naddressed;
+    u32 addressed_cap;
     u64 *member_keys;
     u32 *member_slots;
     u32 member_mask;
