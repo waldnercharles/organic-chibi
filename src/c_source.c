@@ -76,6 +76,15 @@ c_source_prelude(FILE *out)
         "    int64_t len;\n"
         "} chibi_slice;\n"
         "\n"
+        "typedef uint8_t chibi_u8x16 __attribute__((vector_size(16)));\n"
+        "typedef int8_t chibi_i8x16 __attribute__((vector_size(16)));\n"
+        "typedef uint16_t chibi_u16x8 __attribute__((vector_size(16)));\n"
+        "typedef int16_t chibi_i16x8 __attribute__((vector_size(16)));\n"
+        "typedef uint32_t chibi_u32x4 __attribute__((vector_size(16)));\n"
+        "typedef int32_t chibi_i32x4 __attribute__((vector_size(16)));\n"
+        "typedef uint64_t chibi_u64x2 __attribute__((vector_size(16)));\n"
+        "typedef int64_t chibi_i64x2 __attribute__((vector_size(16)));\n"
+        "\n"
         "__attribute__((noreturn, cold)) void chibi_trap(int kind);\n"
         "extern void *chibi_context;\n",
         out
@@ -110,10 +119,24 @@ scalar_name(Scalar t)
     return ints[t.sign][__builtin_ctz(t.bits) - 3];
 }
 
-static const char *
-wide_name(Scalar t)
+static NOINLINE const char *
+vector_name(const Checker *c, u32 type, bool wide)
 {
-    return t.bits <= 32 ? "uint32_t" : "uint64_t";
+    static const char *const vectors[2][4] = {
+        { "chibi_u8x16", "chibi_u16x8", "chibi_u32x4", "chibi_u64x2" },
+        { "chibi_i8x16", "chibi_i16x8", "chibi_i32x4", "chibi_i64x2" },
+    };
+    Scalar lane = scalar_of(c, c->types.arg0[type]);
+    return vectors[lane.sign && !wide][__builtin_ctz(lane.bits) - 3];
+}
+
+static const char *
+wide_name(const Checker *c, u32 type)
+{
+    if (c->types.kinds[type] == TYPE_VECTOR) {
+        return vector_name(c, type, true);
+    }
+    return scalar_of(c, type).bits <= 32 ? "uint32_t" : "uint64_t";
 }
 
 static bool
@@ -127,6 +150,9 @@ is_address(const Checker *c, u32 type)
 static const char *
 value_name(const Checker *c, u32 type)
 {
+    if (c->types.kinds[type] == TYPE_VECTOR) {
+        return vector_name(c, type, false);
+    }
     return is_address(c, type) ? "uint8_t *" : scalar_name(scalar_of(c, type));
 }
 
@@ -142,39 +168,145 @@ element_of(const Checker *c, u32 type)
 static const char *
 unsupported(const Checker *c)
 {
-    const char *vectors = "the C backend doesn't support vectors yet";
     for (u32 d = 1; d < c->decls.count; d++) {
-        u8 kind = c->decls.kinds[d];
         u32 type = c->decls.types[d];
-        if (kind == DECL_FN && c->decls.bodies[d] == NO_BODY &&
+        if (c->decls.kinds[d] == DECL_FN && c->decls.bodies[d] == NO_BODY &&
             (c->types.arg1[type] & FN_VARIADIC) && c->lists[c->types.arg0[type]] == 0) {
             return "C11 can't declare an `extern fn` that takes only `..`";
         }
-        if (kind != DECL_STRUCT || !(c->decls.flags[d] & DECL_STORED)) {
-            continue;
-        }
-        u32 first = c->decls.members[d];
-        for (u32 i = first; i < first + c->decls.member_counts[d]; i++) {
-            if (c->types.kinds[element_of(c, c->members[i].type)] == TYPE_VECTOR) {
-                return vectors;
-            }
-        }
-    }
-
-    const IrCode *code = &c->ir.code;
-    for (u32 s = 0; s < code->nslots; s++) {
-        if (c->types.kinds[element_of(c, code->slots[s].type)] == TYPE_VECTOR) {
-            return vectors;
-        }
-    }
-    for (u32 g = 0; g < code->count; g++) {
-        u8 kind = code->kinds[g];
-        if (kind == IR_SPLAT || kind == IR_LOOKUP || kind == IR_TOP_BITS ||
-            c->types.kinds[code->types[g]] == TYPE_VECTOR) {
-            return vectors;
-        }
     }
     return NULL;
+}
+
+static bool
+needs_vector_helpers(const IrCode *code)
+{
+    for (u32 g = 0; g < code->count; g++) {
+        if (code->kinds[g] == IR_LOOKUP || code->kinds[g] == IR_TOP_BITS) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void
+put_vector_helpers(FILE *out)
+{
+    fputs(
+        "\n"
+        "#ifndef CHIBI_VECTORS\n"
+        "#define CHIBI_VECTORS\n"
+        "\n"
+        "#if defined(__aarch64__) && !defined(CHIBI_SIMD_GENERIC)\n"
+        "#define CHIBI_NEON 1\n"
+        "#include <arm_neon.h>\n"
+        "#elif defined(__SSE2__) && !defined(CHIBI_SIMD_GENERIC)\n"
+        "#define CHIBI_SSE2 1\n"
+        "#include <emmintrin.h>\n"
+        "#ifdef __SSSE3__\n"
+        "#define CHIBI_SSSE3 1\n"
+        "#include <tmmintrin.h>\n"
+        "#endif\n"
+        "#endif\n"
+        "\n"
+        "static inline __attribute__((unused)) chibi_u8x16\n"
+        "chibi_lookup(chibi_u8x16 t, chibi_u8x16 i)\n"
+        "{\n"
+        "#if defined(CHIBI_NEON)\n"
+        "    return (chibi_u8x16)vqtbl1q_u8((uint8x16_t)t, (uint8x16_t)i);\n"
+        "#elif defined(CHIBI_SSSE3)\n"
+        "    return (chibi_u8x16)_mm_shuffle_epi8("
+        "(__m128i)t, _mm_adds_epu8((__m128i)i, _mm_set1_epi8(0x70)));\n"
+        "#else\n"
+        "    chibi_u8x16 r;\n"
+        "    for (int k = 0; k < 16; k++) {\n"
+        "        r[k] = i[k] < 16 ? t[i[k]] : 0;\n"
+        "    }\n"
+        "    return r;\n"
+        "#endif\n"
+        "}\n"
+        "\n"
+        "static inline __attribute__((unused)) uint16_t\n"
+        "chibi_top_bits_x16(chibi_u8x16 v)\n"
+        "{\n"
+        "#if defined(CHIBI_NEON)\n"
+        "    uint16x8_t a = "
+        "vreinterpretq_u16_u8(vshrq_n_u8((uint8x16_t)v, 7));\n"
+        "    uint32x4_t b = vreinterpretq_u32_u16(vsraq_n_u16(a, a, 7));\n"
+        "    uint64x2_t c = vreinterpretq_u64_u32(vsraq_n_u32(b, b, 14));\n"
+        "    uint8x16_t d = vreinterpretq_u8_u64(vsraq_n_u64(c, c, 28));\n"
+        "    return (uint16_t)(vgetq_lane_u8(d, 0) | "
+        "vgetq_lane_u8(d, 8) << 8);\n"
+        "#elif defined(CHIBI_SSE2)\n"
+        "    return (uint16_t)_mm_movemask_epi8((__m128i)v);\n"
+        "#else\n"
+        "    uint16_t m = 0;\n"
+        "    for (int k = 0; k < 16; k++) {\n"
+        "        m |= (uint16_t)(v[k] >> 7 << k);\n"
+        "    }\n"
+        "    return m;\n"
+        "#endif\n"
+        "}\n"
+        "\n"
+        "static inline __attribute__((unused)) uint8_t\n"
+        "chibi_top_bits_x8(chibi_u16x8 v)\n"
+        "{\n"
+        "#if defined(CHIBI_NEON)\n"
+        "    uint32x4_t a = "
+        "vreinterpretq_u32_u16(vshrq_n_u16((uint16x8_t)v, 15));\n"
+        "    uint64x2_t b = vreinterpretq_u64_u32(vsraq_n_u32(a, a, 15));\n"
+        "    uint8x16_t c = vreinterpretq_u8_u64(vsraq_n_u64(b, b, 30));\n"
+        "    return (uint8_t)(vgetq_lane_u8(c, 0) | "
+        "vgetq_lane_u8(c, 8) << 4);\n"
+        "#elif defined(CHIBI_SSE2)\n"
+        "    return (uint8_t)_mm_movemask_epi8(_mm_packs_epi16((__m128i)v, "
+        "_mm_setzero_si128()));\n"
+        "#else\n"
+        "    uint8_t m = 0;\n"
+        "    for (int k = 0; k < 8; k++) {\n"
+        "        m |= (uint8_t)(v[k] >> 15 << k);\n"
+        "    }\n"
+        "    return m;\n"
+        "#endif\n"
+        "}\n"
+        "\n"
+        "static inline __attribute__((unused)) uint8_t\n"
+        "chibi_top_bits_x4(chibi_u32x4 v)\n"
+        "{\n"
+        "#if defined(CHIBI_NEON)\n"
+        "    uint64x2_t a = "
+        "vreinterpretq_u64_u32(vshrq_n_u32((uint32x4_t)v, 31));\n"
+        "    uint8x16_t b = vreinterpretq_u8_u64(vsraq_n_u64(a, a, 31));\n"
+        "    return (uint8_t)(vgetq_lane_u8(b, 0) | "
+        "vgetq_lane_u8(b, 8) << 2);\n"
+        "#elif defined(CHIBI_SSE2)\n"
+        "    return (uint8_t)_mm_movemask_ps(_mm_castsi128_ps((__m128i)v));\n"
+        "#else\n"
+        "    uint8_t m = 0;\n"
+        "    for (int k = 0; k < 4; k++) {\n"
+        "        m |= (uint8_t)(v[k] >> 31 << k);\n"
+        "    }\n"
+        "    return m;\n"
+        "#endif\n"
+        "}\n"
+        "\n"
+        "static inline __attribute__((unused)) uint8_t\n"
+        "chibi_top_bits_x2(chibi_u64x2 v)\n"
+        "{\n"
+        "#if defined(CHIBI_NEON)\n"
+        "    uint64x2_t a = vshrq_n_u64((uint64x2_t)v, 63);\n"
+        "    return (uint8_t)(vgetq_lane_u64(a, 0) | "
+        "vgetq_lane_u64(a, 1) << 1);\n"
+        "#elif defined(CHIBI_SSE2)\n"
+        "    return (uint8_t)_mm_movemask_pd(_mm_castsi128_pd((__m128i)v));\n"
+        "#else\n"
+        "    return (uint8_t)(v[0] >> 63 | v[1] >> 63 << 1);\n"
+        "#endif\n"
+        "}\n"
+        "\n"
+        "#endif\n",
+        out
+    );
 }
 
 static u32
@@ -182,8 +314,14 @@ value_type(const Source *s, u32 i)
 {
     u32 g = s->fn->first + i;
     u8 kind = s->code->kinds[g];
-    return kind >= IR_EQ && kind <= IR_MUL_OVERFLOWS ? TYPE_ID_BOOL
-                                                     : s->code->types[g];
+    u32 type = s->code->types[g];
+    if (kind >= IR_EQ && kind <= IR_MUL_OVERFLOWS) {
+        return s->c->types.kinds[type] == TYPE_VECTOR ? type : TYPE_ID_BOOL;
+    }
+    if (kind == IR_TOP_BITS) {
+        return s->c->types.arg1[type] == 16 ? TYPE_ID_U16 : TYPE_ID_U8;
+    }
+    return type;
 }
 
 static bool
@@ -207,13 +345,23 @@ extra(const Source *s, u32 b)
 static void
 put_constant(Source *s, u64 bits, u32 type)
 {
+    const Checker *c = s->c;
     FILE *out = s->out;
-    if (is_address(s->c, type)) {
+    if (is_address(c, type)) {
         fprintf(out, "(uint8_t *)(uintptr_t)%lluu", (unsigned long long)bits);
         return;
     }
+    if (c->types.kinds[type] == TYPE_VECTOR) {
+        fprintf(out, "(%s){ ", value_name(c, type));
+        for (u64 k = 0; k < c->types.arg1[type]; k++) {
+            fputs(k ? ", " : "", out);
+            put_constant(s, bits, c->types.arg0[type]);
+        }
+        fputs(" }", out);
+        return;
+    }
 
-    Scalar t = scalar_of(s->c, type);
+    Scalar t = scalar_of(c, type);
     if (t.fl) {
         double d;
         if (t.bits == 32) {
@@ -612,12 +760,13 @@ put_divide(Source *s, u32 i, u8 kind, u32 type, u32 a, u32 b)
 static void
 put_shift(Source *s, u32 i, u8 kind, u32 type, u32 a, u32 b)
 {
-    Scalar t = scalar_of(s->c, type);
+    const Checker *c = s->c;
+    u32 lane = c->types.kinds[type] == TYPE_VECTOR ? c->types.arg0[type] : type;
     if (!(b & IR_CONST)) {
-        put_line(s, "if ((uint64_t)%o >= %u) %T;", b, t.bits, TRAP_SHIFT);
+        put_line(s, "if ((uint64_t)%o >= %u) %T;", b, scalar_of(c, lane).bits, TRAP_SHIFT);
     }
     if (kind == IR_SHL) {
-        put_line(s, "v%u = (%t)((%c)%o << %o);", i, type, wide_name(t), a, b);
+        put_line(s, "v%u = (%t)((%c)%o << %o);", i, type, wide_name(c, type), a, b);
     } else {
         put_line(s, "v%u = %o >> %o;", i, a, b);
     }
@@ -714,6 +863,18 @@ put_convert(Source *s, u32 i, u8 kind, u32 type, u32 a, u32 b)
     if (kind == IR_NARROW && c->types.kinds[type] == TYPE_ENUM) {
         put_members(s, i, type, extra(s, b));
     }
+}
+
+static void
+put_splat(Source *s, u32 i, u32 type, u32 a)
+{
+    indent(s);
+    fprintf(s->out, "v%u = (%s){ ", i, value_name(s->c, type));
+    for (u64 k = 0; k < s->c->types.arg1[type]; k++) {
+        fputs(k ? ", " : "", s->out);
+        put_operand(s, a);
+    }
+    fputs(" };\n", s->out);
 }
 
 static void
@@ -893,7 +1054,7 @@ put_instruction(Source *s, u32 i)
         case IR_ADD_WRAP:
         case IR_SUB_WRAP:
         case IR_MUL_WRAP: {
-            const char *w = wide_name(scalar_of(c, type));
+            const char *w = wide_name(c, type);
             put_line(s, "v%u = (%t)((%c)%o %c (%c)%o);", i, type, w, a, operators[kind], w, b);
             break;
         }
@@ -912,7 +1073,7 @@ put_instruction(Source *s, u32 i)
             }
             break;
         case IR_NEG_WRAP:
-            put_line(s, "v%u = (%t)-(%c)%o;", i, type, wide_name(scalar_of(c, type)), a);
+            put_line(s, "v%u = (%t)-(%c)%o;", i, type, wide_name(c, type), a);
             break;
         case IR_NOT: put_line(s, "v%u = !%o;", i, a); break;
         case IR_BIT_NOT: put_line(s, "v%u = (%t)~%o;", i, type, a); break;
@@ -925,7 +1086,11 @@ put_instruction(Source *s, u32 i)
         case IR_LE:
         case IR_GT:
         case IR_GE:
-            put_line(s, "v%u = %o %c %o;", i, a, operators[kind], b);
+            if (c->types.kinds[type] == TYPE_VECTOR) {
+                put_line(s, "v%u = (%t)(%o %c %o);", i, type, a, operators[kind], b);
+            } else {
+                put_line(s, "v%u = %o %c %o;", i, a, operators[kind], b);
+            }
             break;
         case IR_ADD_OVERFLOWS:
         case IR_SUB_OVERFLOWS:
@@ -935,12 +1100,30 @@ put_instruction(Source *s, u32 i)
         case IR_CONVERT:
         case IR_NARROW:
         case IR_TRUNCATE: put_convert(s, i, kind, type, a, b); break;
+        case IR_SPLAT: put_splat(s, i, type, a); break;
+        case IR_LOOKUP:
+            put_line(s, "v%u = (%t)chibi_lookup((chibi_u8x16)%o, (chibi_u8x16)%o);", i, type, a, b);
+            break;
+        case IR_TOP_BITS:
+            put_line(
+                s,
+                "v%u = chibi_top_bits_x%u((%c)%o);",
+                i,
+                (u32)c->types.arg1[type],
+                wide_name(c, type),
+                a
+            );
+            break;
         case IR_CALLBACK: put_line(s, "v%u = (uint8_t *)%e;", i, b); break;
         case IR_CALL:
         case IR_CALL_C: put_call(s, i, kind, type, a, extra(s, b)); break;
         case IR_STORE: put_line(s, "%s = %o;", a, b); break;
         case IR_STORE_AT:
-            put_line(s, "__builtin_memcpy(%o, &(%t){ %o }, sizeof(%t));", a, type, b, type);
+            if (c->types.kinds[type] == TYPE_VECTOR) {
+                put_line(s, "__builtin_memcpy(%o, &%o, sizeof(%t));", a, b, type);
+            } else {
+                put_line(s, "__builtin_memcpy(%o, &(%t){ %o }, sizeof(%t));", a, type, b, type);
+            }
             break;
         case IR_STORE_PAIR: {
             const u32 *x = extra(s, b);
@@ -1057,6 +1240,9 @@ c_source_package(FILE *out, const Checker *c, const char *prefix)
                  .arms = words + 5 * cap,
                  .labels = labels };
 
+    if (needs_vector_helpers(&ir->code)) {
+        put_vector_helpers(out);
+    }
     for (u32 d = 1; d < c->decls.count; d++) {
         if (c->decls.kinds[d] == DECL_STRUCT &&
             (c->decls.flags[d] & DECL_STORED) && !done[d]) {

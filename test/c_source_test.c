@@ -5,6 +5,7 @@
 #include "backend_programs.h"
 #include "ir_reference.h"
 #include "random/program.h"
+#include "vectors.h"
 
 #include <assert.h>
 #include <dlfcn.h>
@@ -24,21 +25,6 @@ typedef struct
 } Package;
 
 static const char *const UNSUPPORTED[][2] = {
-    { "struct V { v: u32x4, n: int }\n"
-      "fn f(a: int) -> int {\n"
-      "    x: V\n"
-      "    x.n = a\n"
-      "    return x.n\n"
-      "}\n",
-      "the C backend doesn't support vectors yet" },
-    { "fn f(a: u32x4) -> int {\n"
-      "    return 1\n"
-      "}\n",
-      "the C backend doesn't support vectors yet" },
-    { "fn f() -> int {\n"
-      "    return int(top_bits(u32x4.{ 1, 2, 3, 4 } == u32x4.{ 1, 0, 3, 0 }))\n"
-      "}\n",
-      "the C backend doesn't support vectors yet" },
     { "extern fn tally(..) -> int\n"
       "fn f(a: int) -> int {\n"
       "    return tally(a, 2)\n"
@@ -145,7 +131,8 @@ TEST_CASE(emits_doubling_structs)
 #define FLAGS                                                                  \
     "-std=c11 -O2 -fPIC -Wall -Wextra -Werror -Wno-unused-parameter "          \
     "-Wno-unused-variable -Wno-unused-but-set-variable -Wno-type-limits "      \
-    "-fsanitize=undefined -fno-sanitize-recover=all -DCHIBI_FN="
+    "-fno-lax-vector-conversions -fsanitize=undefined "                        \
+    "-fno-sanitize-recover=all -DCHIBI_FN="
 
 enum
 {
@@ -647,11 +634,11 @@ grid_program(u32 k)
 }
 
 static bool
-open_build(Build *b)
+open_build(Build *b, u32 files)
 {
     *b = (Build){ .dir = "/tmp/chibi-c-XXXXXX" };
     long cpus = sysconf(_SC_NPROCESSORS_ONLN);
-    b->jobs = cpus < 1 ? 1 : cpus > MAX_JOBS ? MAX_JOBS : (u32)cpus;
+    b->jobs = files ? files : cpus < 1 ? 1 : cpus > MAX_JOBS ? MAX_JOBS : (u32)cpus;
     if (!mkdtemp(b->dir)) {
         return false;
     }
@@ -665,8 +652,44 @@ open_build(Build *b)
     return true;
 }
 
+static const char *
+integer_name(u32 type)
+{
+    static const char *const integers[] = {
+        [TYPE_ID_BOOL] = "uint8_t", [TYPE_ID_I8] = "int8_t", [TYPE_ID_I16] = "int16_t",
+        [TYPE_ID_I32] = "int32_t", [TYPE_ID_I64] = "int64_t", [TYPE_ID_U8] = "uint8_t",
+        [TYPE_ID_U16] = "uint16_t", [TYPE_ID_U32] = "uint32_t", [TYPE_ID_U64] = "uint64_t",
+    };
+    return type < sizeof integers / sizeof integers[0] ? integers[type] : NULL;
+}
+
+static void
+put_wrappers(FILE *out, const Package *p, const char *prefix)
+{
+    const Checker *c = &p->c;
+    for (u32 f = 0; f < c->ir.nfuncs; f++) {
+        const IrFunc *fn = &c->ir.funcs[f];
+        const IrSlot *slots = c->ir.code.slots + fn->first_slot;
+        bool plain = fn->nparams <= 4 && integer_name((u32)c->types.arg1[c->decls.types[fn->decl]]);
+        for (u32 s = 0; s < fn->nparams; s++) {
+            plain &= integer_name(slots[s].type) != NULL;
+        }
+        if (!plain) {
+            continue;
+        }
+
+        Name n = names_get(&p->lx.names, c->decls.names[fn->decl]);
+        fprintf(out, "\nint64_t w%s%.*s(void *ctx, int64_t a0, int64_t a1, int64_t a2, int64_t a3)\n", prefix, (int)n.len, n.text);
+        fprintf(out, "{\n    return (int64_t)%s%.*s(ctx", prefix, (int)n.len, n.text);
+        for (u32 s = 0; s < fn->nparams; s++) {
+            fprintf(out, ", (%s)a%u", integer_name(slots[s].type), s);
+        }
+        fputs(");\n}\n", out);
+    }
+}
+
 static bool
-add_package(Build *b, u32 k, const char *text, char tag)
+add_package(Build *b, u32 k, const char *text, char tag, bool wrap)
 {
     Package p;
     bool ok = check_source(&p, text);
@@ -677,6 +700,8 @@ add_package(Build *b, u32 k, const char *text, char tag)
         if (error) {
             fprintf(stderr, "c_source test: %s\n%s", error, text);
             ok = false;
+        } else if (wrap) {
+            put_wrappers(b->outs[k % b->jobs], &p, prefix);
         }
     }
     release(&p);
@@ -684,7 +709,7 @@ add_package(Build *b, u32 k, const char *text, char tag)
 }
 
 static bool
-finish_build(Build *b)
+finish_build(Build *b, const char *flags)
 {
     for (u32 j = 0; j < b->jobs; j++) {
         fclose(b->outs[j]);
@@ -695,7 +720,7 @@ finish_build(Build *b)
     for (u32 j = 0; j < b->jobs; j++) {
         n += snprintf(command + n, sizeof command - (size_t)n, " p%u", j);
     }
-    snprintf(command + n, sizeof command - (size_t)n, " | xargs -P %u -I{} " CHIBI_TEST_CC TARGET " " FLAGS " -c -o {}.o {}.c && " CHIBI_TEST_CC TARGET " -shared" LINK " -fsanitize=undefined -o programs.so p*.o", b->jobs);
+    snprintf(command + n, sizeof command - (size_t)n, " | xargs -P %u -I{} " CHIBI_TEST_CC TARGET " " FLAGS "%s -c -o {}.o {}.c && " CHIBI_TEST_CC TARGET " -shared" LINK " -fsanitize=undefined -o programs.so p*.o", b->jobs, flags);
     if (system(command) != 0) {
         fprintf(stderr, "c_source test: `%s` failed\n", command);
         return false;
@@ -881,22 +906,22 @@ TEST_CASE(agrees_with_reference)
     u32 programs = env ? (u32)atoi(env) : 60;
     u64 rng = seed_text ? strtoull(seed_text, NULL, 10) : 0x5EED;
     Build b;
-    REQUIRE(open_build(&b));
+    REQUIRE(open_build(&b, 0));
 
     char *text = malloc(PROGRAM_SIZE);
     u64 *seeds = malloc((programs + 1) * sizeof *seeds);
     u32 grid = NBACKEND_PROGRAMS + (u32)(sizeof C_PROGRAMS / sizeof C_PROGRAMS[0]);
     bool ok = true;
     for (u32 k = 0; ok && k < grid; k++) {
-        ok = add_package(&b, k, grid_program(k), 'g');
+        ok = add_package(&b, k, grid_program(k), 'g', false);
     }
     for (u32 k = 0; ok && k < programs; k++) {
         seeds[k] = rng;
         size_t len = random_typed_program(&rng, text);
         text[len] = 0;
-        ok = add_package(&b, k, text, 'p');
+        ok = add_package(&b, k, text, 'p', false);
     }
-    ok = ok && finish_build(&b);
+    ok = ok && finish_build(&b, "");
 
     u32 tested = 0;
     for (u32 k = 0; ok && k < grid; k++) {
@@ -1075,8 +1100,8 @@ exports(const Build *b, int64_t x)
 TEST_CASE(works_with_c)
 {
     Build b;
-    REQUIRE(open_build(&b));
-    bool ok = add_package(&b, 0, INTEROP, 'i') && finish_build(&b);
+    REQUIRE(open_build(&b, 0));
+    bool ok = add_package(&b, 0, INTEROP, 'i', false) && finish_build(&b, "");
     for (int64_t x = 0; ok && x < 20; x++) {
         ok = calls_c(&b, x);
         ok &= formats(&b, x);
@@ -1101,6 +1126,144 @@ TEST_CASE(works_with_c)
     return true;
 }
 
+typedef int64_t I4(void *, int64_t, int64_t, int64_t, int64_t);
+
+static const char VECTOR_MASK[] =
+    "fn mask(a: u8, k: int) -> int {\n"
+    "    v: u8x16 = a\n"
+    "    w := u8x16.{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 }\n"
+    "    return int(top_bits(w +% v > 15)) + k\n"
+    "}\n";
+
+static const VectorRun VECTOR_MASK_RESULTS[] = {
+    { "mask", { 9, 1 }, 65409, 0 },
+    { "mask", { 250, 0 }, 63, 0 },
+    { "mask", { 0, 5 }, 5, 0 },
+};
+
+static const char VECTOR_PICK[] =
+    "fn pick(a: u8, k: int) -> int {\n"
+    "    v: u8x16 = a\n"
+    "    w := u8x16.{ 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25 }\n"
+    "    r := lookup(w, v)\n"
+    "    return int(r[k])\n"
+    "}\n";
+
+static const VectorRun VECTOR_PICK_RESULTS[] = {
+    { "pick", { 3, 0 }, 13, 0 },
+    { "pick", { 15, 7 }, 25, 0 },
+    { "pick", { 16, 2 }, 0, 0 },
+    { "pick", { 200, 1 }, 0, 0 },
+};
+
+static int
+call_i4(I4 *f, const int64_t *args, int64_t *result)
+{
+    trap_kind = 0;
+    if (setjmp(trap_jump) == 0) {
+        *result = f(CONTEXT, args[0], args[1], args[2], args[3]);
+        return 0;
+    }
+    return trap_kind;
+}
+
+static bool
+runs_agree(const Build *b, u32 k, const VectorRun *runs, size_t n, const char *flags)
+{
+    bool ok = true;
+    for (size_t i = 0; ok && i < n; i++) {
+        const VectorRun *r = &runs[i];
+        char name[64];
+        snprintf(name, sizeof name, "wv%u_%s", k, r->name);
+        int64_t args[4] = { r->args[0], r->args[1], r->args[2], 0 };
+        int64_t got = 0;
+        int trap = call_i4((I4 *)symbol(b, name), args, &got);
+        ok = trap == r->trap && (trap || got == r->want);
+        if (!ok) {
+            fprintf(
+                stderr,
+                "c_source test: with \"%s\", %s(%lld, %lld, %lld) gave %lld (trap %d), want %lld (trap %d)\n",
+                flags,
+                r->name,
+                (long long)r->args[0],
+                (long long)r->args[1],
+                (long long)r->args[2],
+                (long long)got,
+                trap,
+                (long long)r->want,
+                r->trap
+            );
+        }
+    }
+    return ok;
+}
+
+static bool
+grid_agrees(const Build *b, u32 k, const GridFunction *g, const char *flags)
+{
+    char name[64];
+    snprintf(name, sizeof name, "wv%u_%s", k, g->name);
+    I4 *f = (I4 *)symbol(b, name);
+    u64 mask = g->lanes == 2 ? ~0ull : (1ull << (128 / g->lanes)) - 1;
+    for (int64_t a = 0; a < 16; a++) {
+        for (int64_t x = 0; x < 16; x++) {
+            for (int64_t op = 0; op < 20; op++) {
+                int64_t args[4] = { a, x, op, (a * 3 + x + op) & (g->lanes - 1) };
+                int64_t got = 0;
+                int trap = call_i4(f, args, &got);
+                u64 want = g->oracle(a, x, op, args[3]);
+                if (trap || (((u64)got ^ want) & mask)) {
+                    fprintf(
+                        stderr,
+                        "c_source test: with \"%s\", %s(%lld, %lld, %lld, %lld) gave %llu (trap %d), want %llu\n",
+                        flags,
+                        g->name,
+                        (long long)a,
+                        (long long)x,
+                        (long long)op,
+                        (long long)args[3],
+                        (unsigned long long)((u64)got & mask),
+                        trap,
+                        (unsigned long long)(want & mask)
+                    );
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+TEST_CASE(runs_vectors)
+{
+#if defined(__x86_64__)
+    static const char *const variants[] = { "", " -mssse3", " -DCHIBI_SIMD_GENERIC" };
+#else
+    static const char *const variants[] = { "", " -DCHIBI_SIMD_GENERIC" };
+#endif
+    bool ok = true;
+    for (u32 v = 0; ok && v < sizeof variants / sizeof variants[0]; v++) {
+        Build b;
+        REQUIRE(open_build(&b, 3));
+        ok = add_package(&b, 0, VECTOR_RUNS, 'v', true) && add_package(&b, 1, VECTOR_GRID, 'v', true) &&
+             add_package(&b, 2, VECTOR_BODY, 'v', true) && add_package(&b, 3, VECTOR_MASK, 'v', true) &&
+             add_package(&b, 4, VECTOR_MASK, 'v', true) && add_package(&b, 5, VECTOR_PICK, 'v', true) &&
+             finish_build(&b, variants[v]);
+        ok = ok && runs_agree(&b, 0, VECTOR_RESULTS, NVECTOR_RESULTS, variants[v]);
+        ok = ok && runs_agree(&b, 2, VECTOR_BODY_RESULTS, NVECTOR_BODY_RESULTS, variants[v]);
+        for (u32 k = 3; ok && k < 5; k++) {
+            ok = runs_agree(&b, k, VECTOR_MASK_RESULTS, sizeof VECTOR_MASK_RESULTS / sizeof VECTOR_MASK_RESULTS[0], variants[v]);
+        }
+        ok = ok && runs_agree(&b, 5, VECTOR_PICK_RESULTS, sizeof VECTOR_PICK_RESULTS / sizeof VECTOR_PICK_RESULTS[0], variants[v]);
+        for (size_t f = 0; ok && f < NVECTOR_GRID_FUNCTIONS; f++) {
+            ok = grid_agrees(&b, 1, &VECTOR_GRID_FUNCTIONS[f], variants[v]);
+        }
+        close_build(&b, ok);
+    }
+    REQUIRE(ok);
+    return true;
+}
+
 #endif
 
 TEST_SUITE(c_source_tests)
@@ -1110,5 +1273,6 @@ TEST_SUITE(c_source_tests)
 #ifdef CHIBI_TEST_CC
     RUN_TEST_CASE(agrees_with_reference);
     RUN_TEST_CASE(works_with_c);
+    RUN_TEST_CASE(runs_vectors);
 #endif
 }
