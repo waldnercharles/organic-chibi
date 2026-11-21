@@ -88,7 +88,7 @@ fingerprint(const Programs *s, Tokens tokens, Nodes nodes, Arena *arena)
         int count = parser_parse(&parser, tokens, n, nodes);
         if (count < 0) {
             fprintf(stderr, "bench: program %u does not parse\n", i);
-            parser_print_error(&parser, s->files[i].text);
+            parser_print_error(stderr, &parser, "chibi", s->files[i].text);
             exit(1);
         }
 

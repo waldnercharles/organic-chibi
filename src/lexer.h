@@ -207,9 +207,9 @@ void lexer_init(Lexer *lx, Arena *arena, size_t total_source_bytes);
 // tokens. On an error it returns 0 and sets error and error_pos.
 int lexer_tokenize(Lexer *lx, const char *src, Tokens out);
 
-void print_error_at(const char *src, u32 pos, const char *msg);
+void print_error_at(FILE *out, const char *path, const char *src, u32 pos, const char *msg);
 
-void lexer_print_error(const Lexer *lx, const char *src);
+void lexer_print_error(FILE *out, const Lexer *lx, const char *path, const char *src);
 
 static inline size_t
 lexer_max_tokens(size_t len)

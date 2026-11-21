@@ -1539,9 +1539,9 @@ parser_parse(Parser *p, Tokens tokens, int ntokens, Nodes out)
 }
 
 void
-parser_print_error(const Parser *p, const char *src)
+parser_print_error(FILE *out, const Parser *p, const char *path, const char *src)
 {
-    print_error_at(src, p->error_pos, p->error);
+    print_error_at(out, path, src, p->error_pos, p->error);
 }
 
 Nodes

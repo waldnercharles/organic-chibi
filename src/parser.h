@@ -224,7 +224,7 @@ typedef struct
 
 int parser_parse(Parser *p, Tokens tokens, int ntokens, Nodes out);
 
-void parser_print_error(const Parser *p, const char *src);
+void parser_print_error(FILE *out, const Parser *p, const char *path, const char *src);
 
 Nodes parser_alloc_nodes(Arena *arena, int ntokens);
 

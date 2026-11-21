@@ -28,7 +28,7 @@ BENCH_SRC := bench/*.c test/random/*.c $(SRC)
 run:
 	@mkdir -p build
 	$(CC) $(FAST) -g -o build/chibi src/main.c $(SRC)
-	build/chibi test/hello.chibi
+	build/chibi tokens test/hello.chibi
 
 test:
 	@mkdir -p build

@@ -932,7 +932,7 @@ TEST_CASE(generated_code)
         ok = r.count >= 0;
         if (!ok) {
             fprintf(stderr, "generated program #%d\n", i);
-            parser_print_error(&r.parser, r.src);
+            parser_print_error(stderr, &r.parser, "chibi", r.src);
         }
         if (ok && !top_ends_cover_nodes(r)) {
             fprintf(stderr, "generated program #%d: top-level ends do not cover the nodes\n", i);

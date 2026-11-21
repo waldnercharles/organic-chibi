@@ -165,8 +165,8 @@ element_of(const Checker *c, u32 type)
     return type;
 }
 
-static const char *
-unsupported(const Checker *c)
+const char *
+c_source_unsupported(const Checker *c)
 {
     for (u32 d = 1; d < c->decls.count; d++) {
         u32 type = c->decls.types[d];
@@ -1215,7 +1215,7 @@ const char *
 c_source_package(FILE *out, const Checker *c, const char *prefix)
 {
     assert(strncmp(prefix, "chibi_", strlen(prefix) < 6 ? strlen(prefix) : 6) != 0);
-    const char *error = unsupported(c);
+    const char *error = c_source_unsupported(c);
     if (error) {
         return error;
     }
@@ -1284,4 +1284,42 @@ c_source_package(FILE *out, const Checker *c, const char *prefix)
     free(labels);
     free(words);
     return NULL;
+}
+
+void
+c_source_runtime(FILE *out)
+{
+    static const char *const texts[NTRAPS] = {
+        [TRAP_OVERFLOW] = "integer overflow",
+        [TRAP_DIVIDE] = "division by zero",
+        [TRAP_SHIFT] = "shift count out of range",
+        [TRAP_RANGE] = "value out of range",
+        [TRAP_UNREACHABLE] = "unreachable code reached",
+        [TRAP_BOUNDS] = "index out of bounds",
+    };
+
+    fputs(
+        "\n"
+        "#include <stdio.h>\n"
+        "#include <stdlib.h>\n"
+        "\n"
+        "void *chibi_context;\n"
+        "\n"
+        "void\n"
+        "chibi_trap(int kind)\n"
+        "{\n"
+        "    static const char *const texts[] = {\n",
+        out
+    );
+    for (u32 k = TRAP_OVERFLOW; k < NTRAPS; k++) {
+        fprintf(out, "        [%u] = \"%s\",\n", k, texts[k]);
+    }
+    fputs(
+        "    };\n"
+        "    fflush(NULL);\n"
+        "    fprintf(stderr, \"trap: %s\\n\", texts[kind]);\n"
+        "    abort();\n"
+        "}\n",
+        out
+    );
 }

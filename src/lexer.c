@@ -1182,16 +1182,16 @@ lexer_kind_name(TokenKind k)
 }
 
 void
-print_error_at(const char *src, u32 pos, const char *msg)
+print_error_at(FILE *out, const char *path, const char *src, u32 pos, const char *msg)
 {
     LineCol lc = advance_line_col(src, (LineCol){ 1, 1 }, 0, pos);
-    fprintf(stderr, "chibi:%d:%d: %s\n", lc.line, lc.col, msg);
+    fprintf(out, "%s:%d:%d: %s\n", path, lc.line, lc.col, msg);
 }
 
 void
-lexer_print_error(const Lexer *lx, const char *src)
+lexer_print_error(FILE *out, const Lexer *lx, const char *path, const char *src)
 {
-    print_error_at(src, lx->error_pos, lx->error);
+    print_error_at(out, path, src, lx->error_pos, lx->error);
 }
 
 Tokens
