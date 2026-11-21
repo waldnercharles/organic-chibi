@@ -183,6 +183,31 @@ enum
     OP_ADDV_8B = 0x0E31B800u,
     OP_RBIT = 0x5AC00000u,
     OP_CLZ = 0x5AC01000u,
+    OP_VADD = 0x4E208400u,
+    OP_VSUB = 0x6E208400u,
+    OP_VMUL = 0x4E209C00u,
+    OP_VAND = 0x4E201C00u,
+    OP_VORR = 0x4EA01C00u,
+    OP_VEOR = 0x6E201C00u,
+    OP_CMEQ = 0x6E208C00u,
+    OP_CMGT = 0x4E203400u,
+    OP_CMGE = 0x4E203C00u,
+    OP_CMHI = 0x6E203400u,
+    OP_CMHS = 0x6E203C00u,
+    OP_SSHL = 0x4E204400u,
+    OP_USHL = 0x6E204400u,
+    OP_VNEG = 0x6E20B800u,
+    OP_VNOT = 0x6E205800u,
+    OP_DUP = 0x4E000C00u,
+    OP_UMOV_D = 0x4E083C00u,
+    OP_INS_D1 = 0x4E181C00u,
+    OP_SHL_IMM = 0x4F005400u,
+    OP_SSHR_IMM = 0x4F000400u,
+    OP_USHR_IMM = 0x6F000400u,
+    OP_MOVI_8 = 0x4F00E400u,
+    OP_MOVI_16 = 0x4F008400u,
+    OP_MOVI_32 = 0x4F000400u,
+    OP_MOVI_64 = 0x6F00E400u,
     SF = 0x80000000u,
     DOUBLE = 0x00400000u,
 };
@@ -196,6 +221,7 @@ enum
     INFO_UNSUPPORTED = 0x20,
     INFO_MEMORY = 0x40,
     INFO_PAIR = 0x80,
+    INFO_VECTOR = INFO_UNSUPPORTED | INFO_MEMORY,
 };
 
 typedef struct
@@ -303,6 +329,9 @@ typedef struct
     u32 tested;
     const char *error;
     const u64 *adapters;
+    u32 *homes;
+    u32 nhomes;
+    u32 homes_cap;
 } Emit;
 
 static void *
@@ -367,6 +396,12 @@ precision(u8 info)
     return (info & INFO_SCALE) == 3 ? DOUBLE : 0;
 }
 
+static bool
+is_vector(u8 info)
+{
+    return (info & INFO_VECTOR) == INFO_VECTOR;
+}
+
 static u8
 type_info(const Checker *c, u32 type)
 {
@@ -383,6 +418,10 @@ type_info(const Checker *c, u32 type)
     }
     if (kind == TYPE_ARRAY || kind == TYPE_STRUCT) {
         return INFO_MEMORY;
+    }
+    if (kind == TYPE_VECTOR) {
+        return INFO_VECTOR |
+               (type_info(c, c->types.arg0[type]) & (INFO_SCALE | INFO_SIGNED));
     }
     u32 bits = c->types.arg0[type];
     u8 scale = bits == 64 ? 3 : bits == 32 ? 2 : bits == 16 ? 1 : 0;
@@ -2870,7 +2909,7 @@ find_open(Emit *e, u32 target)
 
 static const char UNSUPPORTED_TYPE[] = "the arm64 backend supports only "
                                        "integers, floats, bool, pointers, "
-                                       "arrays and slices so far";
+                                       "arrays, slices and vectors so far";
 
 static u32
 arm_end(const Emit *e, u32 i)
@@ -3109,10 +3148,15 @@ lay_out_frame(Emit *e)
     );
     u32 counts[4] = { 0 };
     u32 memory = 0;
+    u32 widest = 8;
     for (u32 s = 0; s < fn->nslots; s++) {
         u8 info = e->info[slots[s].type];
         if (info & INFO_UNSUPPORTED) {
-            e->error = UNSUPPORTED_TYPE;
+            if (is_vector(info)) {
+                widest = 16;
+            } else {
+                e->error = UNSUPPORTED_TYPE;
+            }
         }
         if (e->slot_regs[s] == NO_REG && slots[s].weight) {
             memory += (info & INFO_MEMORY) != 0;
@@ -3136,7 +3180,7 @@ lay_out_frame(Emit *e)
         bases[k] += 1u << k;
     }
 
-    for (u32 align = 8; memory && align > 0; align /= 2) {
+    for (u32 align = widest; memory && align > 0; align /= 2) {
         offset = (offset + align - 1) & ~(align - 1);
         for (u32 s = 0; s < fn->nslots; s++) {
             u32 type = slots[s].type;
@@ -3299,6 +3343,238 @@ return_struct(Emit *e, u32 type, u32 a)
     release(e, a);
 }
 
+static void
+release_home(Emit *e, u32 home)
+{
+    e->homes = grow(e->homes, &e->homes_cap, e->nhomes + 1, sizeof *e->homes);
+    e->homes[e->nhomes++] = home;
+}
+
+static void
+lane_constant(Emit *e, u32 d, u8 t, u64 bits)
+{
+    u32 scale = t & INFO_SCALE;
+    u64 ones = scale == 3 ? ~0ull : (1ull << (8u << scale)) - 1;
+    u64 lane = bits & ones;
+    if (lane == 0 || lane == ones) {
+        u32 imm = lane ? 0xFF : 0;
+        put(e, OP_MOVI_64 | (imm >> 5) << 16 | (imm & 31) << 5 | d);
+        return;
+    }
+    if (lane < 256 && scale < 3) {
+        static const u32 movi[] = { OP_MOVI_8, OP_MOVI_16, OP_MOVI_32 };
+        put(e, movi[scale] | (u32)(lane >> 5) << 16 | (u32)(lane & 31) << 5 | d);
+        return;
+    }
+    mov_imm(e, X16, lane, scale == 3 ? SF : 0);
+    put(e, OP_DUP | (1u << scale) << 16 | X16 << 5 | d);
+}
+
+static u32
+fetch_lanes(Emit *e, u32 x, u32 scratch)
+{
+    if (x & IR_CONST) {
+        lane_constant(e, scratch, operand_info(e, x), constant_bits(e, x));
+        return scratch;
+    }
+    u32 home = e->spills[x];
+    if (home == NO_VALUE) {
+        return V29;
+    }
+    memory(e, OP_LDR_Q, 4, scratch, home, X8);
+    release_home(e, home);
+    return scratch;
+}
+
+static bool
+reads_lanes_next(const Emit *e, u32 v)
+{
+    if (v + 1 >= e->fn->count) {
+        return false;
+    }
+    u32 at = e->fn->first + v + 1;
+    if (!is_vector(e->info[e->ir->types[at]])) {
+        return false;
+    }
+    switch (e->ir->kinds[at]) {
+        case IR_STORE:
+        case IR_EXIT: return e->ir->bs[at] == v;
+        case IR_LOAD:
+        case IR_LOAD_AT:
+        case IR_SPLAT:
+        case IR_END: return false;
+        default: return e->ir->as[at] == v || e->ir->bs[at] == v;
+    }
+}
+
+static u32
+new_home(Emit *e)
+{
+    if (e->nhomes) {
+        return e->homes[--e->nhomes];
+    }
+    u32 offset = (e->locals + e->spill_top + 15) & ~15u;
+    e->spill_top = offset + 16 - e->locals;
+    if (e->spill_top > e->spill_max) {
+        e->spill_max = e->spill_top;
+    }
+    return offset;
+}
+
+static void
+keep_lanes(Emit *e, u32 v)
+{
+    if (reads_lanes_next(e, v)) {
+        e->spills[v] = NO_VALUE;
+        return;
+    }
+    u32 home = new_home(e);
+    memory(e, OP_STR_Q, 4, V29, home, X8);
+    e->spills[v] = home;
+}
+
+static void
+shift_lanes(Emit *e, u8 kind, u8 t, u32 a, u32 b)
+{
+    u32 scale = t & INFO_SCALE;
+    u32 bits = 8u << scale;
+    if (b & IR_CONST) {
+        u32 count = (u32)constant_bits(e, b);
+        u32 r = fetch_lanes(e, a, V30);
+        if (kind == IR_SHL || count == 0) {
+            put(e, OP_SHL_IMM | (bits + count) << 16 | r << 5 | V29);
+        } else {
+            u32 op = is_signed(t) ? OP_SSHR_IMM : OP_USHR_IMM;
+            put(e, op | (2 * bits - count) << 16 | r << 5 | V29);
+        }
+        return;
+    }
+
+    u8 count_info = operand_info(e, b);
+    u32 rb = fetch(e, b, X17);
+    put(e, OP_SUBS_IMM | width(count_info) | bits << 10 | rb << 5 | ZR);
+    trap_if(e, COND_HS, TRAP_SHIFT);
+    if (kind == IR_SHR) {
+        put(e, OP_SUB | rb << 16 | ZR << 5 | X16);
+        rb = X16;
+    }
+    put(e, OP_DUP | (1u << scale) << 16 | rb << 5 | V31);
+    release(e, b);
+
+    u32 r = fetch_lanes(e, a, V30);
+    put(e, (is_signed(t) ? OP_SSHL : OP_USHL) | scale << 22 | V31 << 16 | r << 5 | V29);
+}
+
+static u32
+lane_op(u8 kind, u8 t)
+{
+    u32 size = (u32)(t & INFO_SCALE) << 22;
+    bool s = is_signed(t);
+    switch (kind) {
+        case IR_ADD_WRAP: return OP_VADD | size;
+        case IR_SUB_WRAP: return OP_VSUB | size;
+        case IR_MUL_WRAP: return OP_VMUL | size;
+        case IR_AND: return OP_VAND;
+        case IR_OR: return OP_VORR;
+        case IR_XOR: return OP_VEOR;
+        case IR_EQ:
+        case IR_NE: return OP_CMEQ | size;
+        case IR_LT:
+        case IR_GT: return (s ? OP_CMGT : OP_CMHI) | size;
+        case IR_LE:
+        case IR_GE: return (s ? OP_CMGE : OP_CMHS) | size;
+        default: assert(false && "unknown vector instruction"); return 0;
+    }
+}
+
+static void
+multiply_wide_lanes(Emit *e, u32 ra, u32 rb)
+{
+    put(e, OP_UMOV_D | ra << 5 | X16);
+    put(e, OP_UMOV_D | rb << 5 | X17);
+    put(e, OP_MUL | SF | X17 << 16 | X16 << 5 | X16);
+    put(e, OP_UMOV_D | 1u << 20 | ra << 5 | X17);
+    put(e, OP_UMOV_D | 1u << 20 | rb << 5 | X8);
+    put(e, OP_MUL | SF | X8 << 16 | X17 << 5 | X17);
+    put(e, OP_FMOV_FROM_X | X16 << 5 | V29);
+    put(e, OP_INS_D1 | X17 << 5 | V29);
+}
+
+static NOINLINE void
+lanes(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
+{
+    u8 t = e->info[type];
+    switch (kind) {
+        case IR_LOAD:
+            memory(e, OP_LDR_Q, 4, V29, e->slot_offsets[a], X8);
+            break;
+        case IR_LOAD_AT: {
+            u32 p = fetch(e, a, X16);
+            release(e, a);
+            put(e, OP_LDR_Q | p << 5 | V29);
+            break;
+        }
+        case IR_SPLAT: {
+            u32 r = fetch(e, a, X16);
+            release(e, a);
+            put(e, OP_DUP | (1u << (t & INFO_SCALE)) << 16 | r << 5 | V29);
+            break;
+        }
+        case IR_SHL:
+        case IR_SHR: shift_lanes(e, kind, t, a, b); break;
+        case IR_NEG_WRAP: {
+            u32 r = fetch_lanes(e, a, V30);
+            put(e, OP_VNEG | (u32)(t & INFO_SCALE) << 22 | r << 5 | V29);
+            break;
+        }
+        case IR_BIT_NOT: {
+            u32 r = fetch_lanes(e, a, V30);
+            put(e, OP_VNOT | r << 5 | V29);
+            break;
+        }
+        case IR_STORE: {
+            u32 r = fetch_lanes(e, b, V30);
+            memory(e, OP_STR_Q, 4, r, e->slot_offsets[a], X8);
+            return;
+        }
+        case IR_EXIT: {
+            Open *o = find_open(e, a);
+            fetch_lanes(e, b, V29);
+            bool falls = i + 1 < e->fn->count &&
+                         e->ir->kinds[e->fn->first + i + 1] == IR_END &&
+                         o == &e->open[e->nopen - 1];
+            if (!falls) {
+                add_fixup(e, &o->ends);
+                put(e, OP_B);
+            }
+            return;
+        }
+        case IR_END: {
+            Open o = e->open[--e->nopen];
+            assert(o.kind == IR_BLOCK);
+            patch(e, o.ends, here(e));
+            break;
+        }
+        default: {
+            u32 ra = fetch_lanes(e, a, V30);
+            u32 rb = fetch_lanes(e, b, V31);
+            if (kind == IR_MUL_WRAP && (t & INFO_SCALE) == 3) {
+                multiply_wide_lanes(e, ra, rb);
+                break;
+            }
+            if (kind == IR_LT || kind == IR_LE) {
+                swap(&ra, &rb);
+            }
+            put(e, lane_op(kind, t) | rb << 16 | ra << 5 | V29);
+            if (kind == IR_NE) {
+                put(e, OP_VNOT | V29 << 5 | V29);
+            }
+            break;
+        }
+    }
+    keep_lanes(e, i);
+}
+
 static u32
 emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
 {
@@ -3308,6 +3584,7 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
     e->nopen = 0;
     e->nfixups = 1;
     e->nspill_free = 0;
+    e->nhomes = 0;
     e->spill_top = 0;
     e->spill_max = 0;
     e->naliases = 0;
@@ -3366,249 +3643,267 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
         }
     }
 
-    for (u32 i = 0; i < fn->count && !e->error; i++) {
-        u32 at = fn->first + i;
-        u8 kind = ir->kinds[at];
-        u32 type = ir->types[at];
-        u32 a = ir->as[at];
-        u32 b = ir->bs[at];
-        if (e->info[type] & INFO_UNSUPPORTED) {
-            e->error = UNSUPPORTED_TYPE;
-            break;
-        }
-        switch (kind) {
-            case IR_LOAD: {
-                u32 st = slot_type(e, a);
-                if (e->slot_regs[a] != NO_REG) {
-                    add_alias(e, i, e->slot_regs[a], e->info[st]);
-                    break;
-                }
-                u32 d = result(e, i, e->info[st]);
-                load_typed(e, st, d, e->slot_offsets[a]);
+    u32 i = 0;
+    while (i < fn->count && !e->error) {
+        for (; i < fn->count && !e->error; i++) {
+            u32 at = fn->first + i;
+            u8 kind = ir->kinds[at];
+            u32 type = ir->types[at];
+            u32 a = ir->as[at];
+            u32 b = ir->bs[at];
+            if (UNLIKELY(e->info[type] & INFO_UNSUPPORTED)) {
                 break;
             }
-            case IR_STORE: {
-                u8 h = e->slot_regs[a];
-                if (h != NO_REG) {
-                    store_pinned(e, h, type, b);
-                    break;
-                }
-                u32 r;
-                if ((b & IR_CONST) && constant_bits(e, b) == 0) {
-                    r = ZR;
-                } else {
-                    r = fetch(e, b, is_float(e->info[type]) ? V30 : X16);
-                    release(e, b);
-                }
-                store_typed(e, type, r, e->slot_offsets[a]);
-                break;
-            }
-            case IR_ADDR:
-                if (a < 32 ? e->by_ref >> a & 1
-                           : a < fn->nparams && slots[a].type != slot_type(e, a)) {
-                    param_address(e, i, a, e->info[type]);
-                    break;
-                }
-                sp_address(e, result(e, i, e->info[type]), e->slot_offsets[a]);
-                break;
-            case IR_DATA: data_address(e, i, type, a); break;
-            case IR_GLOBAL: global_address(e, i, type, a); break;
-            case IR_CALLBACK: callback_address(e, i, type, a, b, n); break;
-            case IR_LOAD_AT: {
-                u8 t = e->info[type];
-                if (t & INFO_MEMORY) {
-                    hold_struct(e, i, a);
-                    break;
-                }
-                u32 p = fetch(e, a, X16);
-                release(e, a);
-                if (t & INFO_PAIR) {
-                    load_pair(e, i, p, t);
-                    break;
-                }
-                u32 d = result(e, i, t);
-                put(e, load_op(t) | p << 5 | d);
-                break;
-            }
-            case IR_INDEX: index_address(e, i, type, a, b); break;
-            case IR_FIELD:
-                offset_address(e, i, e->info[type], a, check_field_offset(e->c, b));
-                break;
-            case IR_INDEX_LEN: index_len(e, i, type, a, b); break;
-            case IR_SLICE:
-            case IR_SLICE_FROM: slice(e, i, kind, type, a, b); break;
-            case IR_SECOND: break;
-            case IR_COPY: copy_memory(e, type, a, b); break;
-            case IR_ZERO: zero_memory(e, type, a); break;
-            case IR_STORE_AT: {
-                u8 t = e->info[type];
-                u32 p = fetch(e, a, X16);
-                u32 r = (b & IR_CONST) && constant_bits(e, b) == 0
-                          ? ZR
-                          : fetch(e, b, is_float(t) ? V30 : X17);
-                put(e, store_op(t, r) | p << 5 | r);
-                release(e, a);
-                release(e, b);
-                break;
-            }
-            case IR_STORE_PAIR: store_pair(e, a, b); break;
-            case IR_ADD:
-            case IR_SUB:
-            case IR_ADD_WRAP:
-            case IR_SUB_WRAP: add_sub(e, i, kind, type, a, b); break;
-            case IR_MUL:
-            case IR_MUL_WRAP: multiply(e, i, kind, type, a, b); break;
-            case IR_DIV:
-            case IR_REM: divide(e, i, kind, type, a, b); break;
-            case IR_AND:
-            case IR_OR:
-            case IR_XOR: bitwise(e, i, kind, type, a, b); break;
-            case IR_SHL:
-            case IR_SHR: shift(e, i, kind, type, a, b); break;
-            case IR_NEG:
-            case IR_NEG_WRAP:
-            case IR_NOT:
-            case IR_BIT_NOT: unary(e, i, kind, type, a); break;
-            case IR_TRAILING_ZEROS:
-            case IR_LEADING_ZEROS:
-            case IR_COUNT_ONES: count_bits(e, i, kind, type, a); break;
-            case IR_EQ:
-            case IR_NE:
-            case IR_LT:
-            case IR_LE:
-            case IR_GT:
-            case IR_GE: compare(e, i, kind, type, a, b); break;
-            case IR_ADD_OVERFLOWS:
-            case IR_SUB_OVERFLOWS:
-            case IR_MUL_OVERFLOWS: test_overflow(e, i, kind, type, a, b); break;
-            case IR_CONVERT: convert(e, i, type, a); break;
-            case IR_NARROW: narrow(e, i, type, a); break;
-            case IR_TRUNCATE: truncate_to(e, i, type, a); break;
-            case IR_CALL:
-            case IR_CALL_C:
-                call(e, i, type, a, b, n, kind == IR_CALL ? FIRST_INT_ARG : 0);
-                break;
-            case IR_DROP: release(e, a); break;
-            case IR_RET:
-                if (e->info[type] & INFO_PAIR) {
-                    return_pair(e, a, b);
-                } else if (e->info[type] & INFO_MEMORY) {
-                    return_struct(e, type, a);
-                } else if (type != TYPE_ID_VOID) {
-                    move_into(e, 0, a, is_float(e->info[type]));
-                }
-                if (i + 1 < fn->count) {
-                    add_fixup(e, &e->epilogue);
-                    put(e, OP_B);
-                }
-                break;
-            case IR_BLOCK:
-            case IR_LOOP:
-            case IR_IF: {
-                e->open = grow(e->open, &e->open_cap, e->nopen + 1, sizeof *e->open);
-                if (kind == IR_IF && (a & IR_CONST)) {
-                    assert(type == TYPE_ID_NONE);
-                    if (constant_bits(e, a)) {
-                        e->open[e->nopen++] = (Open){ .target = i,
-                                                      .kind = IR_IF,
-                                                      .dead_else = true };
+            switch (kind) {
+                case IR_LOAD: {
+                    u32 st = slot_type(e, a);
+                    if (e->slot_regs[a] != NO_REG) {
+                        add_alias(e, i, e->slot_regs[a], e->info[st]);
                         break;
                     }
-                    i = arm_end(e, i);
-                    if (ir->kinds[fn->first + i] == IR_ELSE) {
-                        e->open[e->nopen++] = (Open){ .target = i, .kind = IR_BLOCK };
-                    }
+                    u32 d = result(e, i, e->info[st]);
+                    load_typed(e, st, d, e->slot_offsets[a]);
                     break;
                 }
-
-                if (kind == IR_IF && e->fused != a) {
-                    u32 r = fetch(e, a, X16);
+                case IR_STORE: {
+                    u8 h = e->slot_regs[a];
+                    if (h != NO_REG) {
+                        store_pinned(e, h, type, b);
+                        break;
+                    }
+                    u32 r;
+                    if ((b & IR_CONST) && constant_bits(e, b) == 0) {
+                        r = ZR;
+                    } else {
+                        r = fetch(e, b, is_float(e->info[type]) ? V30 : X16);
+                        release(e, b);
+                    }
+                    store_typed(e, type, r, e->slot_offsets[a]);
+                    break;
+                }
+                case IR_ADDR:
+                    if (a < 32 ? e->by_ref >> a & 1
+                               : a < fn->nparams && slots[a].type != slot_type(e, a)) {
+                        param_address(e, i, a, e->info[type]);
+                        break;
+                    }
+                    sp_address(e, result(e, i, e->info[type]), e->slot_offsets[a]);
+                    break;
+                case IR_DATA: data_address(e, i, type, a); break;
+                case IR_GLOBAL: global_address(e, i, type, a); break;
+                case IR_CALLBACK: callback_address(e, i, type, a, b, n); break;
+                case IR_LOAD_AT: {
+                    u8 t = e->info[type];
+                    if (t & INFO_MEMORY) {
+                        hold_struct(e, i, a);
+                        break;
+                    }
+                    u32 p = fetch(e, a, X16);
                     release(e, a);
+                    if (t & INFO_PAIR) {
+                        load_pair(e, i, p, t);
+                        break;
+                    }
+                    u32 d = result(e, i, t);
+                    put(e, load_op(t) | p << 5 | d);
+                    break;
+                }
+                case IR_INDEX: index_address(e, i, type, a, b); break;
+                case IR_FIELD:
+                    offset_address(e, i, e->info[type], a, check_field_offset(e->c, b));
+                    break;
+                case IR_INDEX_LEN: index_len(e, i, type, a, b); break;
+                case IR_SLICE:
+                case IR_SLICE_FROM: slice(e, i, kind, type, a, b); break;
+                case IR_SECOND: break;
+                case IR_COPY: copy_memory(e, type, a, b); break;
+                case IR_ZERO: zero_memory(e, type, a); break;
+                case IR_STORE_AT: {
+                    u8 t = e->info[type];
+                    u32 p = fetch(e, a, X16);
+                    u32 r = (b & IR_CONST) && constant_bits(e, b) == 0
+                              ? ZR
+                              : fetch(e, b, is_float(t) ? V30 : X17);
+                    put(e, store_op(t, r) | p << 5 | r);
+                    release(e, a);
+                    release(e, b);
+                    break;
+                }
+                case IR_STORE_PAIR: store_pair(e, a, b); break;
+                case IR_ADD:
+                case IR_SUB:
+                case IR_ADD_WRAP:
+                case IR_SUB_WRAP: add_sub(e, i, kind, type, a, b); break;
+                case IR_MUL:
+                case IR_MUL_WRAP: multiply(e, i, kind, type, a, b); break;
+                case IR_DIV:
+                case IR_REM: divide(e, i, kind, type, a, b); break;
+                case IR_AND:
+                case IR_OR:
+                case IR_XOR: bitwise(e, i, kind, type, a, b); break;
+                case IR_SHL:
+                case IR_SHR: shift(e, i, kind, type, a, b); break;
+                case IR_NEG:
+                case IR_NEG_WRAP:
+                case IR_NOT:
+                case IR_BIT_NOT: unary(e, i, kind, type, a); break;
+                case IR_TRAILING_ZEROS:
+                case IR_LEADING_ZEROS:
+                case IR_COUNT_ONES: count_bits(e, i, kind, type, a); break;
+                case IR_EQ:
+                case IR_NE:
+                case IR_LT:
+                case IR_LE:
+                case IR_GT:
+                case IR_GE: compare(e, i, kind, type, a, b); break;
+                case IR_ADD_OVERFLOWS:
+                case IR_SUB_OVERFLOWS:
+                case IR_MUL_OVERFLOWS:
+                    test_overflow(e, i, kind, type, a, b);
+                    break;
+                case IR_CONVERT: convert(e, i, type, a); break;
+                case IR_NARROW: narrow(e, i, type, a); break;
+                case IR_TRUNCATE: truncate_to(e, i, type, a); break;
+                case IR_CALL:
+                case IR_CALL_C:
+                    call(e, i, type, a, b, n, kind == IR_CALL ? FIRST_INT_ARG : 0);
+                    break;
+                case IR_DROP: release(e, a); break;
+                case IR_RET:
+                    if (e->info[type] & INFO_PAIR) {
+                        return_pair(e, a, b);
+                    } else if (e->info[type] & INFO_MEMORY) {
+                        return_struct(e, type, a);
+                    } else if (type != TYPE_ID_VOID) {
+                        move_into(e, 0, a, is_float(e->info[type]));
+                    }
+                    if (i + 1 < fn->count) {
+                        add_fixup(e, &e->epilogue);
+                        put(e, OP_B);
+                    }
+                    break;
+                case IR_BLOCK:
+                case IR_LOOP:
+                case IR_IF: {
+                    e->open = grow(
+                        e->open,
+                        &e->open_cap,
+                        e->nopen + 1,
+                        sizeof *e->open
+                    );
+                    if (kind == IR_IF && (a & IR_CONST)) {
+                        assert(type == TYPE_ID_NONE);
+                        if (constant_bits(e, a)) {
+                            e->open[e->nopen++] = (Open){ .target = i,
+                                                          .kind = IR_IF,
+                                                          .dead_else = true };
+                            break;
+                        }
+                        i = arm_end(e, i);
+                        if (ir->kinds[fn->first + i] == IR_ELSE) {
+                            e->open[e->nopen++] = (Open){ .target = i, .kind = IR_BLOCK };
+                        }
+                        break;
+                    }
+
+                    if (kind == IR_IF && e->fused != a) {
+                        u32 r = fetch(e, a, X16);
+                        release(e, a);
+                        spill_all(e);
+                        Open o = { .target = i, .kind = kind, .result = NO_REG };
+                        add_fixup(e, &o.skip);
+                        put(e, OP_CBZ | r);
+                        e->open[e->nopen++] = o;
+                        break;
+                    }
+
                     spill_all(e);
-                    Open o = { .target = i, .kind = kind, .result = NO_REG };
-                    add_fixup(e, &o.skip);
-                    put(e, OP_CBZ | r);
+                    if (kind == IR_LOOP) {
+                        align_loop(e);
+                    }
+                    Open o = { .target = i, .start = here(e), .kind = kind, .result = NO_REG };
+                    if (kind == IR_IF) {
+                        add_fixup(e, &o.skip);
+                        put(e, OP_B_COND | (u32)(e->fused_cond ^ 1));
+                        e->fused = NO_VALUE;
+                    }
                     e->open[e->nopen++] = o;
                     break;
                 }
-
-                spill_all(e);
-                if (kind == IR_LOOP) {
-                    align_loop(e);
-                }
-                Open o = { .target = i, .start = here(e), .kind = kind, .result = NO_REG };
-                if (kind == IR_IF) {
-                    add_fixup(e, &o.skip);
-                    put(e, OP_B_COND | (u32)(e->fused_cond ^ 1));
-                    e->fused = NO_VALUE;
-                }
-                e->open[e->nopen++] = o;
-                break;
-            }
-            case IR_ELSE: {
-                Open *o = &e->open[e->nopen - 1];
-                if (o->dead_else) {
-                    e->nopen--;
-                    i = arm_end(e, i);
-                    break;
-                }
-                if (type != TYPE_ID_NONE) {
-                    hand_over(e, o, type, a);
-                }
-                add_fixup(e, &o->ends);
-                put(e, OP_B);
-                patch(e, o->skip, here(e));
-                o->skip = 0;
-                break;
-            }
-            case IR_END: {
-                Open o = e->open[--e->nopen];
-                if (type != TYPE_ID_NONE) {
-                    bool fl = is_float(e->info[type]);
-                    if (o.kind == IR_IF) {
-                        move_into(e, o.result, a, fl);
-                    } else if (o.result == NO_REG) {
-                        o.result = (u8)take_reg(e, fl);
-                        *(fl ? &e->free_float : &e->free_int) |= 1u << o.result;
+                case IR_ELSE: {
+                    Open *o = &e->open[e->nopen - 1];
+                    if (o->dead_else) {
+                        e->nopen--;
+                        i = arm_end(e, i);
+                        break;
                     }
-                    u32 *free_mask = fl ? &e->free_float : &e->free_int;
-                    assert(*free_mask & (1u << o.result));
-                    *free_mask &= ~(1u << o.result);
-                    u32 h = (fl ? 32 : 0) + o.result;
-                    e->holders[h] = i;
-                    e->regs[i] = (u8)h;
-                    e->vinfo[i] = e->info[type];
-                }
-                patch(e, o.skip, here(e));
-                patch(e, o.ends, here(e));
-                if (o.kind == IR_SWITCH) {
-                    finish_switch(e, &o);
-                }
-                break;
-            }
-            case IR_EXIT: {
-                Open *o = find_open(e, a);
-                if (type != TYPE_ID_NONE) {
-                    hand_over(e, o, type, b);
-                }
-                bool falls = i + 1 < fn->count &&
-                             ir->kinds[fn->first + i + 1] == IR_END &&
-                             o == &e->open[e->nopen - 1];
-                if (!falls) {
+                    if (type != TYPE_ID_NONE) {
+                        hand_over(e, o, type, a);
+                    }
                     add_fixup(e, &o->ends);
                     put(e, OP_B);
+                    patch(e, o->skip, here(e));
+                    o->skip = 0;
+                    break;
                 }
+                case IR_END: {
+                    Open o = e->open[--e->nopen];
+                    if (type != TYPE_ID_NONE) {
+                        bool fl = is_float(e->info[type]);
+                        if (o.kind == IR_IF) {
+                            move_into(e, o.result, a, fl);
+                        } else if (o.result == NO_REG) {
+                            o.result = (u8)take_reg(e, fl);
+                            *(fl ? &e->free_float : &e->free_int) |= 1u << o.result;
+                        }
+                        u32 *free_mask = fl ? &e->free_float : &e->free_int;
+                        assert(*free_mask & (1u << o.result));
+                        *free_mask &= ~(1u << o.result);
+                        u32 h = (fl ? 32 : 0) + o.result;
+                        e->holders[h] = i;
+                        e->regs[i] = (u8)h;
+                        e->vinfo[i] = e->info[type];
+                    }
+                    patch(e, o.skip, here(e));
+                    patch(e, o.ends, here(e));
+                    if (o.kind == IR_SWITCH) {
+                        finish_switch(e, &o);
+                    }
+                    break;
+                }
+                case IR_EXIT: {
+                    Open *o = find_open(e, a);
+                    if (type != TYPE_ID_NONE) {
+                        hand_over(e, o, type, b);
+                    }
+                    bool falls = i + 1 < fn->count &&
+                                 ir->kinds[fn->first + i + 1] == IR_END &&
+                                 o == &e->open[e->nopen - 1];
+                    if (!falls) {
+                        add_fixup(e, &o->ends);
+                        put(e, OP_B);
+                    }
+                    break;
+                }
+                case IR_REPEAT: {
+                    Open *o = find_open(e, a);
+                    put(e, OP_B | ((o->start - here(e)) & 0x03FFFFFFu));
+                    break;
+                }
+                case IR_NOP: break;
+                case IR_SWITCH: open_switch(e, i, type, a, b); break;
+                case IR_CASE: start_arm(e, i); break;
+                default: assert(false && "unknown IR instruction");
+            }
+        }
+        if (i < fn->count && !e->error) {
+            u32 at = fn->first + i;
+            if (!is_vector(e->info[ir->types[at]])) {
+                e->error = UNSUPPORTED_TYPE;
                 break;
             }
-            case IR_REPEAT: {
-                Open *o = find_open(e, a);
-                put(e, OP_B | ((o->start - here(e)) & 0x03FFFFFFu));
-                break;
-            }
-            case IR_NOP: break;
-            case IR_SWITCH: open_switch(e, i, type, a, b); break;
-            case IR_CASE: start_arm(e, i); break;
-            default: assert(false && "unknown IR instruction");
+            lanes(e, i, ir->kinds[at], ir->types[at], ir->as[at], ir->bs[at]);
+            i++;
         }
     }
 
@@ -3908,6 +4203,7 @@ arm64_compile(Native *n, const Checker *c, Convention convention)
     free(e.vinfo);
     free(e.spills);
     free(e.spill_free);
+    free(e.homes);
     free(e.slot_offsets);
     free(e.slot_regs);
     free(e.retyped);

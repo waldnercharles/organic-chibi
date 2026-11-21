@@ -5,6 +5,7 @@
 #include "ir_reference.h"
 #include "random/code.h"
 #include "random/program.h"
+#include "vectors.h"
 
 #include <assert.h>
 #include <math.h>
@@ -718,7 +719,6 @@ TEST_CASE(unsupported_types)
     REQUIRE(rejects("fn b(a: int) -> !void {\n    if a > 0 {\n        return\n    }\n}\n"));
     REQUIRE(rejects("fn o(p: ?int) -> ?int {\n    return p\n}\n"));
     REQUIRE(rejects("fn s(p: ?[]u8) -> int {\n    return 0\n}\n"));
-    REQUIRE(rejects("fn v(a: u8, k: int) -> u8 {\n    x: u8x16 = a\n    return x[k]\n}\n"));
     return true;
 }
 
@@ -7122,6 +7122,313 @@ TEST_CASE(overflow_tests)
     return true;
 }
 
+typedef int64_t I3(void *, int64_t, int64_t, int64_t);
+
+static int
+call_i3(I3 *f, const int64_t *args, int64_t *result)
+{
+    trap_kind = 0;
+    if (sigsetjmp(trap_jump, 1) == 0) {
+        *result = f(CONTEXT, args[0], args[1], args[2]);
+        return 0;
+    }
+    return trap_kind;
+}
+
+static bool
+vector_runs_agree(const char *text, const VectorRun *runs, size_t n)
+{
+    Program p;
+    if (!build(&p, text)) {
+        return false;
+    }
+    bool ok = true;
+    for (size_t i = 0; ok && i < n; i++) {
+        const VectorRun *r = &runs[i];
+        int64_t got = 0;
+        int trap = call_i3((I3 *)fn(&p, r->name), r->args, &got);
+        if (trap != r->trap || (!trap && got != r->want)) {
+            fprintf(
+                stderr,
+                "arm64 test: %s(%lld, %lld, %lld) gave %lld (trap %d), want "
+                "%lld (trap %d)\n",
+                r->name,
+                (long long)r->args[0],
+                (long long)r->args[1],
+                (long long)r->args[2],
+                (long long)got,
+                trap,
+                (long long)r->want,
+                r->trap
+            );
+            ok = false;
+        }
+    }
+    release_program(&p);
+    return ok;
+}
+
+static int
+call_i4(I4 *f, const int64_t *args, int64_t *result)
+{
+    trap_kind = 0;
+    if (sigsetjmp(trap_jump, 1) == 0) {
+        *result = f(CONTEXT, args[0], args[1], args[2], args[3]);
+        return 0;
+    }
+    return trap_kind;
+}
+
+static bool
+vector_grid_agrees(Program *p, const GridFunction *g)
+{
+    I4 *f = (I4 *)fn(p, g->name);
+    u64 mask = g->lanes == 2 ? ~0ull : (1ull << (128 / g->lanes)) - 1;
+    for (int64_t a = 0; a < 16; a++) {
+        for (int64_t b = 0; b < 16; b++) {
+            for (int64_t op = 0; op < 20; op++) {
+                int64_t args[4] = { a, b, op, (a * 3 + b + op) & (g->lanes - 1) };
+                int64_t got = 0;
+                int trap = call_i4(f, args, &got);
+                u64 want = g->oracle(a, b, op, args[3]);
+                if (trap || (((u64)got ^ want) & mask)) {
+                    fprintf(
+                        stderr,
+                        "arm64 test: %s(%lld, %lld, %lld, %lld) gave %llu "
+                        "(trap %d), want %llu\n",
+                        g->name,
+                        (long long)a,
+                        (long long)b,
+                        (long long)op,
+                        (long long)args[3],
+                        (unsigned long long)((u64)got & mask),
+                        trap,
+                        (unsigned long long)(want & mask)
+                    );
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+static const char VECTOR_SHAPES[] =
+    "fn mask(a: u8) -> u8 {\n"
+    "    v: u8x16 = a\n"
+    "    m := (v | 0x20) -% 97 <= 25\n"
+    "    return m[3]\n"
+    "}\n"
+    "fn shifted(a: u8, b: i8) -> int {\n"
+    "    x: u8x16 = a\n"
+    "    y: i8x16 = b\n"
+    "    s := (x << 2) >> 3\n"
+    "    t := y >> 1\n"
+    "    return int(s[0]) * 1000 + int(t[0])\n"
+    "}\n"
+    "fn constants(a: u16, b: u32) -> int {\n"
+    "    x: u16x8 = a\n"
+    "    y: u32x4 = b\n"
+    "    p := x +% 5\n"
+    "    q := y ^ 200\n"
+    "    r := y +% 0x12345\n"
+    "    z := x & 0\n"
+    "    o := x | 65535\n"
+    "    return int(p[1]) + int(q[2]) * 10 + int(r[3]) * 100 + int(z[0]) + int(o[1]) * 1000\n"
+    "}\n"
+    "fn product(a: int, k: int) -> int {\n"
+    "    x: i64x2 = a\n"
+    "    y := x *% x\n"
+    "    return y[k]\n"
+    "}\n"
+    "fn odd_home(a: int, b: u8) -> int {\n"
+    "    n := a * 3\n"
+    "    r := n + p: {\n"
+    "        v: u8x16 = b\n"
+    "        w := (v ^ 1) +% (v | 2)\n"
+    "        break p int(w[0])\n"
+    "    }\n"
+    "    return r\n"
+    "}\n"
+    "fn far(a: u8) -> int {\n"
+    "    big: [70000]u8\n"
+    "    big[69999] = a\n"
+    "    v: u8x16 = a\n"
+    "    w := (v ^ 1) +% (v | 2)\n"
+    "    return int(w[3]) + int(big[69999])\n"
+    "}\n"
+    "fn mixed_slots(a: u8) -> int {\n"
+    "    s := u8.[1, 2, 3]\n"
+    "    v: u8x16 = a\n"
+    "    t := i16.[4, 5]\n"
+    "    w := v +% s[2]\n"
+    "    return int(w[1]) + int(t[1])\n"
+    "}\n"
+    "fn bump(x: u8) -> u8 {\n"
+    "    t: u8x16 = x\n"
+    "    u := (t ^ 255) +% 1\n"
+    "    return u[0]\n"
+    "}\n"
+    "fn across(a: u8) -> int {\n"
+    "    v: u8x16 = a\n"
+    "    w := v +% bump(a)\n"
+    "    return int(w[0])\n"
+    "}\n"
+    "fn accumulate(n: int) -> int {\n"
+    "    acc: u32x4\n"
+    "    step := u32x4.{ 1, 2, 3, 4 }\n"
+    "    for k in 0..n {\n"
+    "        acc = acc +% step *% u32(k)\n"
+    "    }\n"
+    "    return int(acc[0]) + int(acc[3]) * 1000\n"
+    "}\n"
+    "fn dropped(a: u8) -> int {\n"
+    "    v: u8x16 = a\n"
+    "    _ = v +% 1\n"
+    "    w := v ^ 3\n"
+    "    return int(w[0])\n"
+    "}\n"
+    "fn tree(x: u8, y: u8) -> int {\n"
+    "    a: u8x16 = x\n"
+    "    b: u8x16 = y\n"
+    "    c := a +% 1\n"
+    "    d := b -% 1\n"
+    "    r := ((a | b) ^ (c & d)) +% ((a ^ c) | (b & d))\n"
+    "    return int(r[7])\n"
+    "}\n"
+    "fn slot_numbers(a: u8, b: u8, c: u8, d: u8) -> int {\n"
+    "    v: u8x16 = a +% 1\n"
+    "    w: u8x16\n"
+    "    x := v ^ w\n"
+    "    return int(x[0])\n"
+    "}\n"
+    "fn address_numbers(a: u8, b: u8, c: u8, d: u8) -> int {\n"
+    "    v: u8x16 = a\n"
+    "    s: [3]u8\n"
+    "    w := v +% s[2]\n"
+    "    return int(w[0])\n"
+    "}\n"
+    "fn spilled(a: int, b: u8) -> int {\n"
+    "    v: u8x16 = b\n"
+    "    w := v +% u8(a * 2 + (a * 3 + (a * 5 + (a * 7 + (a * 11 + (a * 13 + (a * 17 + (a * 19 + a * 23))))))))\n"
+    "    return int(w[8]) * 1000 + int(w[12])\n"
+    "}\n";
+
+enum
+{
+    WORD_STR_Q_SP = 0x3D8003E0u,
+    WORD_LDR_Q_SP = 0x3DC003E0u,
+    WORD_STR_Q_X8 = 0x3D800100u,
+    WORD_LDR_Q_X8 = 0x3DC00100u,
+    Q_FIELDS = 0x003FFC1Fu,
+    WORD_DUP_16B = 0x4E010C00u,
+    WORD_DUP_4S_X16 = 0x4E040E00u,
+    WORD_MOVI_16B_32 = 0x4F01E400u,
+    WORD_MOVI_16B_97 = 0x4F03E420u,
+    WORD_MOVI_16B_25 = 0x4F00E720u,
+    WORD_MOVI_8H_5 = 0x4F0084A0u,
+    WORD_MOVI_4S_200 = 0x4F060500u,
+    WORD_MOVI_2D_ZERO = 0x6F00E400u,
+    WORD_MOVI_2D_ONES = 0x6F07E7E0u,
+    WORD_CMHS_16B = 0x6E203C00u,
+    WORD_SHL_16B_2 = 0x4F0A5400u,
+    WORD_USHR_16B_3 = 0x6F0D0400u,
+    WORD_SSHR_16B_1 = 0x4F0F0400u,
+    WORD_UMOV_D = 0x4E083C00u,
+    UMOV_FIELDS = 0x001003FFu,
+    WORD_INS_D1 = 0x4E181C00u,
+    WORD_FMOV_D_X = 0x9E670000u,
+    THREE_VECTORS = 0x001F03FFu,
+    WORD_SUB_SP_128 = 0xD10203FFu,
+};
+
+TEST_CASE(vectors)
+{
+    catch_traps();
+    REQUIRE(vector_runs_agree(VECTOR_BODY, VECTOR_BODY_RESULTS, NVECTOR_BODY_RESULTS));
+    REQUIRE(vector_runs_agree(VECTOR_RUNS, VECTOR_RESULTS, NVECTOR_RESULTS));
+
+    Program p;
+    REQUIRE(build(&p, VECTOR_GRID));
+    for (size_t f = 0; f < NVECTOR_GRID_FUNCTIONS; f++) {
+        REQUIRE(vector_grid_agrees(&p, &VECTOR_GRID_FUNCTIONS[f]));
+    }
+    release_program(&p);
+
+    REQUIRE(build(&p, VECTOR_SHAPES));
+    I1 *mask = (I1 *)fn(&p, "mask");
+    REQUIRE(mask(CONTEXT, 65) == 255);
+    REQUIRE(mask(CONTEXT, 122) == 255);
+    REQUIRE(mask(CONTEXT, 64) == 0);
+    REQUIRE(mask(CONTEXT, 123) == 0);
+    REQUIRE(count_words(&p, "mask", WORD_DUP_16B, REGISTER_FIELDS) == 1);
+    REQUIRE(count_words(&p, "mask", WORD_STR_Q_SP, Q_FIELDS) == 2);
+    REQUIRE(count_words(&p, "mask", WORD_LDR_Q_SP, Q_FIELDS) == 1);
+    REQUIRE(count_words(&p, "mask", WORD_MOVI_16B_32, RD_FIELD) == 1);
+    REQUIRE(count_words(&p, "mask", WORD_MOVI_16B_97, RD_FIELD) == 1);
+    REQUIRE(count_words(&p, "mask", WORD_MOVI_16B_25, RD_FIELD) == 1);
+    REQUIRE(count_words(&p, "mask", WORD_CMHS_16B, THREE_VECTORS) == 1);
+
+    I2 *shifted = (I2 *)fn(&p, "shifted");
+    REQUIRE(shifted(CONTEXT, 0xFF, -100) == 31 * 1000 - 50);
+    REQUIRE(shifted(CONTEXT, 0x22, 99) == 17 * 1000 + 49);
+    REQUIRE(count_words(&p, "shifted", WORD_SHL_16B_2, REGISTER_FIELDS) == 1);
+    REQUIRE(count_words(&p, "shifted", WORD_USHR_16B_3, REGISTER_FIELDS) == 1);
+    REQUIRE(count_words(&p, "shifted", WORD_SSHR_16B_1, REGISTER_FIELDS) == 1);
+
+    I2 *constants = (I2 *)fn(&p, "constants");
+    REQUIRE(
+        constants(CONTEXT, 65534, 0xFFFFFF00) ==
+        3 + 4294967240ll * 10 + 74309ll * 100 + 65535000
+    );
+    REQUIRE(constants(CONTEXT, 7, 1) == 12 + 201 * 10 + 74566ll * 100 + 65535000);
+    REQUIRE(count_words(&p, "constants", WORD_MOVI_8H_5, RD_FIELD) == 1);
+    REQUIRE(count_words(&p, "constants", WORD_MOVI_4S_200, RD_FIELD) == 1);
+    REQUIRE(count_words(&p, "constants", WORD_DUP_4S_X16, RD_FIELD) == 1);
+    REQUIRE(count_words(&p, "constants", WORD_MOVI_2D_ZERO, RD_FIELD) == 1);
+    REQUIRE(count_words(&p, "constants", WORD_MOVI_2D_ONES, RD_FIELD) == 1);
+
+    I2 *product = (I2 *)fn(&p, "product");
+    REQUIRE(product(CONTEXT, 3, 0) == 9);
+    REQUIRE(product(CONTEXT, -5, 1) == 25);
+    REQUIRE(product(CONTEXT, 0x100000001, 1) == 0x200000001);
+    REQUIRE(count_words(&p, "product", WORD_UMOV_D, UMOV_FIELDS) == 4);
+    REQUIRE(count_words(&p, "product", WORD_INS_D1, REGISTER_FIELDS) == 1);
+    REQUIRE(count_words(&p, "product", WORD_FMOV_D_X, REGISTER_FIELDS) == 1);
+
+    REQUIRE(((I2 *)fn(&p, "odd_home"))(CONTEXT, 2, 5) == 17);
+    REQUIRE(((I2 *)fn(&p, "odd_home"))(CONTEXT, -1, 255) == 250);
+    REQUIRE(count_words(&p, "odd_home", WORD_STR_Q_X8, RD_FIELD) == 0);
+    REQUIRE(count_words(&p, "odd_home", WORD_LDR_Q_X8, RD_FIELD) == 0);
+    REQUIRE(((I1 *)fn(&p, "far"))(CONTEXT, 5) == 16);
+    REQUIRE(count_words(&p, "far", WORD_STR_Q_X8, RD_FIELD) >= 1);
+    REQUIRE(((I1 *)fn(&p, "mixed_slots"))(CONTEXT, 5) == 13);
+    REQUIRE(count_words(&p, "mixed_slots", WORD_STR_Q_X8, RD_FIELD) == 0);
+    REQUIRE(count_words(&p, "mixed_slots", WORD_LDR_Q_X8, RD_FIELD) == 0);
+
+    REQUIRE(((I1 *)fn(&p, "across"))(CONTEXT, 5) == 0);
+    REQUIRE(((I1 *)fn(&p, "across"))(CONTEXT, 200) == 0);
+    REQUIRE(((I1 *)fn(&p, "accumulate"))(CONTEXT, 5) == 40010);
+    REQUIRE(((I1 *)fn(&p, "accumulate"))(CONTEXT, 0) == 0);
+    REQUIRE(((I1 *)fn(&p, "dropped"))(CONTEXT, 5) == 6);
+    for (int64_t x = 0; x < 256; x += 15) {
+        for (int64_t y = 0; y < 256; y += 17) {
+            uint8_t c = (uint8_t)(x + 1), d = (uint8_t)(y - 1);
+            uint8_t want = (uint8_t)(((x | y) ^ (c & d)) + ((x ^ c) | (y & d)));
+            REQUIRE(((I2 *)fn(&p, "tree"))(CONTEXT, x, y) == want);
+        }
+    }
+    REQUIRE(count_words(&p, "tree", WORD_STR_Q_SP, Q_FIELDS) == 12);
+    REQUIRE(count_words(&p, "tree", WORD_LDR_Q_SP, Q_FIELDS) == 17);
+    REQUIRE(count_words(&p, "tree", WORD_SUB_SP_128, 0) == 1);
+
+    REQUIRE(((I4 *)fn(&p, "slot_numbers"))(CONTEXT, 3, 0, 0, 0) == 4);
+    REQUIRE(((I4 *)fn(&p, "address_numbers"))(CONTEXT, 7, 0, 0, 0) == 7);
+    REQUIRE(((I2 *)fn(&p, "spilled"))(CONTEXT, 1, 250) == 94094);
+    release_program(&p);
+    return true;
+}
+
 TEST_SUITE(arm64_tests)
 {
     RUN_TEST_CASE(hidden_context);
@@ -7134,6 +7441,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(many_pointers);
     RUN_TEST_CASE(bit_counts);
     RUN_TEST_CASE(overflow_tests);
+    RUN_TEST_CASE(vectors);
     RUN_TEST_CASE(narrow_parameters);
     RUN_TEST_CASE(constant_division);
     RUN_TEST_CASE(differential);

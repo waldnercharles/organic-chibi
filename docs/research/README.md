@@ -85,7 +85,8 @@ Updated 2026-11-20. Built so far:
 - step 3h.5, `[*]T` and the entry point: a pointer into an array that indexes without bounds checks, moves with `p + n` and slices into a checked `[]T`, and `export fn main(argc: i32, argv: [*][*]u8) -> i32` as the entry point.
 - step 3i.1, bit counts: `trailing_zeros`, `leading_zeros` and `count_ones` on any integer, folded when the argument is constant, and one to five arm64 instructions each.
 - step 3i.2, overflow checks: `add_overflows`, `sub_overflows` and `mul_overflows` give a `bool` beside `+%`, `-%` and `*%`, folded when both arguments are constant, in one to three arm64 instructions that feed a `cset` or an `if`'s branch, in the form the owner is still deciding.
-- step 3i.3, vectors in the checker and the reference interpreter: eight 128-bit integer vector types such as `u8x16`, literals, lane-wise wrapping and bitwise operators, shifts, comparisons that give lane masks, a scalar that stands for every lane, and `v[i]`, with the type the owner is still deciding. The arm64 backend comes next, in step 3i.4.
+- step 3i.3, vectors in the checker and the reference interpreter: eight 128-bit integer vector types such as `u8x16`, literals, lane-wise wrapping and bitwise operators, shifts, comparisons that give lane masks, a scalar that stands for every lane, and `v[i]`, with the type the owner is still deciding.
+- step 3i.4, vectors in the arm64 backend: one NEON instruction for most lane-wise operators, `movi` for constants that fit it, checked variable shifts, and vector temporaries kept in V29 or in reused 16-byte homes.
 
 [checker-and-ir.md](checker-and-ir.md) section 8 has the details and the measurements.
 
@@ -93,7 +94,7 @@ The goal now is self-hosting: translate the compiler into chibi, then use the co
 1. **Step 3d:** built (steps 3d.1 to 3d.9). Options A and C of question 14 were timed on 2026-11-19, on x86-64 ([experiments/slice-lowering](../../experiments/slice-lowering/README.md)): C was at least as fast as A on every kernel, and 21–28% faster on a loop that re-slices as a lexer does, so 3d builds C, and step 3d.3 built slices that way. The same kernels still need timing on the owner's M4 Pro. A cloud container runs the arm64 backend's tests under qemu (`make test`), but can't time arm64 code.
 2. Globals and constant tables: built (steps 3g.1 and 3g.2).
 3. Calling C and being called from C: built (steps 3h.1 to 3h.5): calls into C, stack arguments, C's variadic calls, callbacks that C calls, `export fn`, and `[*]T` with the entry point.
-4. SIMD types, and the bit-scan and overflow builtins: in progress. Step 3i.1 built the bit counts, step 3i.2 the overflow checks in the form the sheet recommends, and step 3i.3 vectors in the checker and the reference interpreter with the type the sheet recommends; the form of the overflow checks and the vector type wait for the owner's answers ([simd-and-builtins.md](simd-and-builtins.md)). Step 3i.4 adds vectors to the arm64 backend.
+4. SIMD types, and the bit-scan and overflow builtins: in progress. Step 3i.1 built the bit counts, step 3i.2 the overflow checks in the form the sheet recommends, step 3i.3 vectors in the checker and the reference interpreter with the type the sheet recommends, and step 3i.4 vectors in the arm64 backend; the form of the overflow checks and the vector type wait for the owner's answers ([simd-and-builtins.md](simd-and-builtins.md)). Next: the 16-byte loads and stores, the table lookup and the lane mask that the lexer needs (the sheet's section 3), then vectors as parameters, results and constants.
 5. The C backend, the C-to-chibi translator and the bootstrap check.
 6. Then steps 3c, 3e, 3f, 4 and 5, and the spike of cppgm's LowIR as the release backend (the Compiler row of 2026-11-19).
 
