@@ -39,6 +39,9 @@ enum
     WORDS_PER_FUNCTION = 96,
     WORDS_PER_INSTRUCTION = 32,
     WORDS_PER_ARGUMENT = 8,
+    WORDS_PER_ADAPTER = 24,
+    WORDS_PER_ADAPTER_PARAM = 8,
+    ADAPTER_STACK_LIMIT = 4064,
 };
 
 enum
@@ -293,6 +296,7 @@ typedef struct
     u8 fused_cond;
     u32 tested;
     const char *error;
+    const u64 *adapters;
 } Emit;
 
 static void *
@@ -365,7 +369,7 @@ type_info(const Checker *c, u32 type)
         u32 backing = (u32)c->types.arg1[type];
         return backing ? type_info(c, backing) : INFO_UNSUPPORTED;
     }
-    if (kind == TYPE_POINTER) {
+    if (kind == TYPE_POINTER || kind == TYPE_FN) {
         return 3;
     }
     if (kind == TYPE_SLICE) {
@@ -2520,6 +2524,28 @@ bind_c(Emit *e, const Native *n, u32 decl)
     return true;
 }
 
+static NOINLINE void
+callback_address(Emit *e, u32 i, u32 type, u32 k, u32 decl, const Native *n)
+{
+    if (e->c->decls.bodies[decl] != NO_BODY) {
+        u32 d = result(e, i, e->info[type]);
+        u64 to = e->adapters[k];
+        adrp(e, d, to);
+        if (to & 0xFFF) {
+            put(e, SF | OP_ADD_IMM | (u32)(to & 0xFFF) << 10 | d << 5 | d);
+        }
+        return;
+    }
+    if (!n->entries[decl] && !bind_c(e, n, decl)) {
+        return;
+    }
+
+    u32 d = result(e, i, e->info[type]);
+    u64 slot = (u64)(uintptr_t)(n->entries + decl);
+    adrp(e, d, slot);
+    put(e, OP_LDRX | (u32)((slot & 0xFFF) >> 3) << 10 | d << 5 | d);
+}
+
 static void
 call(Emit *e, u32 i, u32 type, u32 decl, u32 b, const Native *n, u32 ints)
 {
@@ -3292,6 +3318,7 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                 break;
             case IR_DATA: data_address(e, i, type, a); break;
             case IR_GLOBAL: global_address(e, i, type, a); break;
+            case IR_CALLBACK: callback_address(e, i, type, a, b, n); break;
             case IR_LOAD_AT: {
                 u8 t = e->info[type];
                 if (t & INFO_MEMORY) {
@@ -3562,6 +3589,103 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
     return entry;
 }
 
+static u32
+place_param(const Emit *e, ArgCursor *at, u32 type, u32 *regs)
+{
+    u8 info = e->info[type];
+    if (info & INFO_MEMORY) {
+        *regs = check_struct_regs(e->c, type);
+        return place_struct(e, at, *regs);
+    }
+    u32 size = 1u << (info & INFO_SCALE);
+    *regs = 1 | (is_float(info) ? REGS_FLOAT : 0);
+    return check_place_arg(at, *regs, size, size, e->place);
+}
+
+static const u32 unit_loads[4] = { OP_LDRB, OP_LDRH, OP_LDRW, OP_LDRX };
+static const u32 unit_stores[4] = { OP_STRB, OP_STRH, OP_STRW, OP_STRX };
+
+static NOINLINE void
+store_stack_args(Emit *e, const u32 *params, ArgCursor *in, ArgCursor *out)
+{
+    for (u32 j = 1; j <= params[0]; j++) {
+        u32 type = params[j];
+        u8 info = e->info[type];
+        u32 regs;
+        u32 from = place_param(e, in, type, &regs);
+        u32 to = place_param(e, out, type, &regs);
+        if (!(to & PLACE_STACK)) {
+            assert(!(from & PLACE_STACK) && to == from + !(regs & REGS_FLOAT));
+            continue;
+        }
+
+        u32 units = 1;
+        u32 scale = info & INFO_SCALE;
+        if (info & INFO_MEMORY) {
+            units = regs & REGS_COUNT;
+            scale = (regs & REGS_FLOAT) && !(regs & REGS_DOUBLE) ? 2 : 3;
+        }
+        to &= ~PLACE_STACK;
+        for (u32 u = 0; u < units; u++) {
+            u32 step = u << scale;
+            u32 r = X16;
+            if (from & PLACE_STACK) {
+                u32 offset = 16 + (from & ~PLACE_STACK) + step;
+                put(e, unit_loads[scale] | (offset >> scale) << 10 | X29 << 5 | X16);
+            } else {
+                assert(!(regs & REGS_FLOAT));
+                r = from + u;
+            }
+            put(e, unit_stores[scale] | ((to + step) >> scale) << 10 | SP << 5 | r);
+        }
+    }
+}
+
+static NOINLINE void
+emit_adapter(Emit *e, u32 decl, const Native *n)
+{
+    const u32 *params = e->c->lists + e->c->types.arg0[e->c->decls.types[decl]];
+    ArgCursor in = { 0, 0, 0 };
+    ArgCursor out = { FIRST_INT_ARG, 0, 0 };
+    for (u32 j = 1; j <= params[0]; j++) {
+        u32 regs;
+        place_param(e, &in, params[j], &regs);
+        place_param(e, &out, params[j], &regs);
+    }
+    if (in.stack > ADAPTER_STACK_LIMIT || out.stack > ADAPTER_STACK_LIMIT) {
+        e->error = "a callback for C needs over 4064 bytes of stack arguments";
+        return;
+    }
+
+    u32 frame = (out.stack + 15) & ~15u;
+    if (frame) {
+        put(e, OP_PUSH_FRAME);
+        put(e, OP_SET_FRAME);
+        put(e, OP_SUB_SP | frame << 10);
+        ArgCursor from = { 0, 0, 0 };
+        ArgCursor to = { FIRST_INT_ARG, 0, 0 };
+        store_stack_args(e, params, &from, &to);
+    }
+    for (u32 r = in.ints < 7 ? in.ints : 7; r-- > 0;) {
+        mov(e, SF, r + 1, r);
+    }
+
+    u64 context = (u64)(uintptr_t)(n->entries + e->c->decls.count);
+    adrp(e, 0, context);
+    put(e, OP_LDRX | (u32)((context & 0xFFF) >> 3) << 10);
+    u64 entry = (u64)(uintptr_t)(n->entries + decl);
+    adrp(e, X16, entry);
+    put(e, OP_LDR_X16_X16 | (u32)((entry & 0xFFF) >> 3) << 10);
+    if (!frame) {
+        put(e, OP_BR | X16 << 5);
+        return;
+    }
+    put(e, OP_BLR_X16);
+    put(e, OP_RESET_SP);
+    put(e, OP_POP_FRAME);
+    put(e, OP_RET);
+}
+
 static void
 jit_write(bool enable)
 {
@@ -3584,7 +3708,13 @@ arm64_compile(Native *n, const Checker *c, Convention convention)
         words += WORDS_PER_FUNCTION + (size_t)WORDS_PER_INSTRUCTION * fn->count +
                  (size_t)WORDS_PER_ARGUMENT * fn->nextra;
     }
-    size_t table = ((size_t)c->decls.count * sizeof(u64) + page - 1) & ~(page - 1);
+    for (u32 k = 0; k < ir->ncallbacks; k++) {
+        u32 type = c->decls.types[ir->callbacks[k]];
+        u32 nparams = c->lists[c->types.arg0[type]];
+        words += WORDS_PER_ADAPTER + (size_t)WORDS_PER_ADAPTER_PARAM * nparams;
+    }
+    size_t slots = (size_t)c->decls.count + 1;
+    size_t table = (slots * sizeof(u64) + page - 1) & ~(page - 1);
     size_t code = table + (((size_t)ir->ndata + page - 1) & ~(page - 1));
     size_t size = code + ((words * sizeof(u32) + page - 1) & ~(page - 1));
     if (size == code) {
@@ -3641,6 +3771,20 @@ arm64_compile(Native *n, const Checker *c, Convention convention)
                .data = n->memory + table,
                .globals = n->globals,
                .place = convention == CONVENTION_APPLE ? PLACE_APPLE : 0 };
+    u64 *adapters = malloc(ir->ncallbacks * sizeof *adapters);
+    for (u32 k = 0; k < ir->ncallbacks && !e.error; k++) {
+        u32 decl = ir->callbacks[k];
+        if (c->decls.bodies[decl] == NO_BODY) {
+            continue;
+        }
+        n->words = (n->words + 3) & ~(size_t)3;
+        e.code = e.at = n->code + n->words;
+        emit_adapter(&e, decl, n);
+        adapters[k] = (u64)(uintptr_t)e.code;
+        n->words += here(&e);
+        assert(n->words <= words);
+    }
+    e.adapters = adapters;
     for (u32 f = 0; f < ir->nfuncs && !e.error; f++) {
         const IrFunc *fn = &ir->funcs[f];
         n->words = (n->words + 3) & ~(size_t)3;
@@ -3659,6 +3803,7 @@ arm64_compile(Native *n, const Checker *c, Convention convention)
 #endif
 
     free(info);
+    free(adapters);
     free(e.regs);
     free(e.vinfo);
     free(e.spills);
@@ -3691,6 +3836,14 @@ native_replace(Native *n, u32 decl, void *entry)
 {
     jit_write(true);
     n->entries[decl] = (u64)(uintptr_t)entry;
+    jit_write(false);
+}
+
+void
+native_set_context(Native *n, void *context)
+{
+    jit_write(true);
+    n->entries[n->nentries] = (u64)(uintptr_t)context;
     jit_write(false);
 }
 

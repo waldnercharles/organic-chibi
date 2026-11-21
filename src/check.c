@@ -544,7 +544,8 @@ static bool
 is_scalar(const Checker *c, u32 type)
 {
     u8 k = c->types.kinds[type];
-    return is_number(c, type) || k == TYPE_BOOL || k == TYPE_ENUM || k == TYPE_POINTER;
+    return is_number(c, type) || k == TYPE_BOOL || k == TYPE_ENUM ||
+           k == TYPE_POINTER || (k == TYPE_FN && (c->types.arg1[type] & FN_C_CALL));
 }
 
 static bool
@@ -618,7 +619,8 @@ check_type_size(const Checker *c, u32 type)
         case TYPE_INT:
         case TYPE_UINTPTR:
         case TYPE_FLOAT: return t->arg0[type] / 8;
-        case TYPE_POINTER: return 8;
+        case TYPE_POINTER:
+        case TYPE_FN: return 8;
         case TYPE_SLICE: return 16;
         case TYPE_ENUM: return check_type_size(c, (u32)t->arg1[type]);
         case TYPE_ARRAY: {
@@ -2152,7 +2154,8 @@ has_zero(const Checker *c, u32 type)
         type = c->types.arg0[type];
     }
     switch (c->types.kinds[type]) {
-        case TYPE_POINTER: return false;
+        case TYPE_POINTER:
+        case TYPE_FN: return false;
         case TYPE_ENUM: return enum_has(c, type, order_key(c, type, 0));
         case TYPE_STRUCT:
             return !(c->decls.flags[c->types.arg0[type]] & DECL_NO_ZERO);
@@ -2378,6 +2381,28 @@ close_fn_type(Checker *c)
     c->nscratch = c->stack[m].ref;
     c->sp = m;
     return fn_type(c, list, ret);
+}
+
+static void
+refuse_non_c(Checker *c, u32 file, u32 token, u32 type)
+{
+    if (is_slice(c, type) || is_array(c, type)) {
+        report(c, file, token, DIAG_NOT_C, 0, type);
+    } else if (c->types.kinds[type] == TYPE_FN && !(c->types.arg1[type] & FN_C_CALL)) {
+        report(c, file, token, DIAG_C_FN_TYPE, 0, type);
+    }
+}
+
+static NOINLINE u32
+c_fn_type(Checker *c, u32 file, u32 token, u32 fn)
+{
+    assert(c->types.kinds[fn] == TYPE_FN);
+    const u32 *params = c->lists + c->types.arg0[fn];
+    for (u32 i = 1; i <= params[0]; i++) {
+        refuse_non_c(c, file, token, params[i]);
+    }
+    refuse_non_c(c, file, token, (u32)c->types.arg1[fn]);
+    return intern_type(c, TYPE_FN, c->types.arg0[fn], c->types.arg1[fn] | FN_C_CALL);
 }
 
 static void
@@ -3690,6 +3715,7 @@ can_zero(Checker *c, u32 file, u32 token, u32 type)
             }
             return true;
         case TYPE_POINTER:
+        case TYPE_FN:
             report(c, file, token, DIAG_NEVER_NIL, 0, type);
             return false;
         case TYPE_STRUCT:
@@ -5193,6 +5219,37 @@ data_place(Checker *c, u32 decl)
 }
 
 static NOINLINE Operand
+callback(Checker *c, u32 file, u32 token, u32 decl, u32 to)
+{
+    need(c, decl, file, token);
+    u32 type = c->decls.types[decl];
+    if (c->types.arg1[type] == TYPE_ID_INFERRED) {
+        need_body(c, decl, file, token);
+        type = c->decls.types[decl];
+    }
+    if (type == TYPE_ID_NONE) {
+        return poison;
+    }
+    if (!same_type(c, to, TYPE_FN, c->types.arg0[type], c->types.arg1[type] | FN_C_CALL)) {
+        report(c, file, token, DIAG_MISMATCH, type, to);
+        return poison;
+    }
+
+    Ir *ir = &c->ir;
+    u32 k = c->decls.values[decl];
+    if (k == 0) {
+        if (ir->ncallbacks == ir->callbacks_cap) {
+            ir->callbacks_cap = ir->callbacks_cap ? ir->callbacks_cap * 2 : 16;
+            ir->callbacks = resize(ir->callbacks, ir->callbacks_cap, sizeof *ir->callbacks);
+        }
+        ir->callbacks[ir->ncallbacks] = decl;
+        k = ++ir->ncallbacks;
+        c->decls.values[decl] = k;
+    }
+    return emit_value(c, IR_CALLBACK, to, k - 1, decl);
+}
+
+static NOINLINE Operand
 global_place(Checker *c, u32 file, u32 node, u32 decl)
 {
     const ParsedFile *f = &c->files[file];
@@ -5251,9 +5308,14 @@ resolve_name(Checker *c, u32 file, u32 node)
                 return data_place(c, decl);
             }
             return (Operand){ c->decls.types[decl], c->decls.values[decl] };
-        case DECL_FN:
+        case DECL_FN: {
+            u32 to = c->body.code ? expected_at(c, c->sp) : TYPE_ID_NONE;
+            if (c->types.kinds[to] == TYPE_FN && (c->types.arg1[to] & FN_C_CALL)) {
+                return callback(c, file, token, decl, to);
+            }
             report(c, file, token, DIAG_FN_VALUE, 0, 0);
             return poison;
+        }
         case DECL_VAR: return global_place(c, file, node, decl);
         default: assert(false && "unknown declaration kind"); return poison;
     }
@@ -5501,6 +5563,15 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                 break;
             }
             case NODE_FN_TYPE: push_type(c, token, close_fn_type(c)); break;
+            case NODE_EXTERN: {
+                if (kinds[i - 1] != NODE_FN_TYPE) {
+                    unsupported(c, file, i);
+                    break;
+                }
+                u32 t = type_operand(c, file, child, pop(c));
+                push_type(c, token, t ? c_fn_type(c, file, token, t) : TYPE_ID_NONE);
+                break;
+            }
             case NODE_MEMBER_TYPE: {
                 u32 t = type_operand(c, file, child, pop(c));
                 if (t) {
@@ -5730,8 +5801,8 @@ finish_signature(Checker *c, u32 decl)
     u32 end = c->sp;
     if (end > m + 1 && c->stack[end - 1].type == OPERAND_RETURN) {
         ret = c->stack[--end].ref;
-        if (external && (is_slice(c, ret) || is_array(c, ret))) {
-            report(c, file, c->stack_tokens[end], DIAG_NOT_C, 0, ret);
+        if (external) {
+            refuse_non_c(c, file, c->stack_tokens[end], ret);
         }
     }
     bool variadic = end > m + 1 && c->stack[end - 1].type == OPERAND_VARIADIC;
@@ -5746,8 +5817,8 @@ finish_signature(Checker *c, u32 decl)
         Member p = c->members[first + i];
         c->lists[list + 1 + i] = p.type;
         general |= is_compound(c, p.type);
-        if (external && (is_slice(c, p.type) || is_array(c, p.type))) {
-            report(c, file, c->files[file].nodes.tokens[p.node], DIAG_NOT_C, 0, p.type);
+        if (external) {
+            refuse_non_c(c, file, c->files[file].nodes.tokens[p.node], p.type);
         }
     }
 
@@ -6363,12 +6434,13 @@ print_type(FILE *out, const Checker *c, u32 type)
             return;
         case TYPE_FN: {
             const u32 *list = c->lists + t->arg0[type];
-            fputs("fn(", out);
+            fputs(t->arg1[type] & FN_C_CALL ? "extern fn(" : "fn(", out);
             for (u32 i = 1; i <= list[0]; i++) {
                 fputs(i > 1 ? ", " : "", out);
                 print_type(out, c, list[i]);
             }
-            fputs(") -> ", out);
+            bool variadic = t->arg1[type] & FN_VARIADIC;
+            fputs(variadic ? list[0] ? ", ..) -> " : "..) -> " : ") -> ", out);
             print_type(out, c, (u32)t->arg1[type]);
             return;
         }
@@ -6741,6 +6813,7 @@ print_function(FILE *out, const Checker *c, const IrFunc *fn)
                 break;
             case IR_DATA:
             case IR_GLOBAL:
+            case IR_CALLBACK:
                 fputc(' ', out);
                 print_type(out, c, type);
                 fputc(' ', out);
@@ -6974,6 +7047,7 @@ check_free(Checker *c)
     free(c->ir.funcs);
     free(c->ir.data);
     free(c->ir.globals);
+    free(c->ir.callbacks);
 
     exacts_free(&c->exacts);
     free(c->package_names);

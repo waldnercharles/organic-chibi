@@ -42,6 +42,7 @@
     X(IR_NARROW, "narrow")                                                     \
     X(IR_TRUNCATE, "truncate")                                                 \
     X(IR_GLOBAL, "global")                                                     \
+    X(IR_CALLBACK, "callback")                                                 \
     X(IR_CALL, "call")                                                         \
     X(IR_CALL_C, "call-c")                                                     \
     X(IR_STORE, "store")                                                       \
@@ -148,6 +149,9 @@ typedef struct
     u32 nglobals;
     u32 globals_cap;
     u32 globals_size;
+    u32 *callbacks;
+    u32 ncallbacks;
+    u32 callbacks_cap;
 } Ir;
 
 #endif

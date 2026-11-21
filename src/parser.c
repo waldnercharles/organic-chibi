@@ -579,7 +579,8 @@ expect_value_type(Parser *p, int bang)
 {
     TokenKind kind = p->tokens.kinds[p->pos];
     bool type = kind == TK_IDENT || kind == TK_STAR || kind == TK_QUESTION ||
-                kind == TK_OR_ELSE || kind == TK_LBRACK || kind == TK_FN;
+                kind == TK_OR_ELSE || kind == TK_LBRACK || kind == TK_FN ||
+                kind == TK_EXTERN;
     if (type && (p->brackets > 0 || !starts_line(p))) {
         return true;
     }
@@ -617,8 +618,13 @@ parse_composite_type(Parser *p)
 
     bool optional = kind == TK_QUESTION || kind == TK_OR_ELSE;
     if (kind != TK_STAR && kind != TK_LBRACK && kind != TK_FN &&
-        kind != TK_NOT && !optional) {
+        kind != TK_EXTERN && kind != TK_NOT && !optional) {
         fail(p, "expected a type");
+        return;
+    }
+    if (kind == TK_EXTERN && p->tokens.kinds[at + 1] != TK_FN) {
+        p->pos++;
+        fail(p, "expected `fn` after `extern`");
         return;
     }
     if (!descend(p)) {
@@ -627,6 +633,10 @@ parse_composite_type(Parser *p)
 
     if (kind == TK_FN) {
         parse_fn_type(p);
+    } else if (kind == TK_EXTERN) {
+        p->pos++;
+        parse_fn_type(p);
+        emit(p, NODE_EXTERN, at);
     } else if (kind == TK_STAR) {
         p->pos++;
         parse_type(p);

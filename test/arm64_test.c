@@ -5853,12 +5853,401 @@ TEST_CASE(variadic_calls)
     return true;
 }
 
+static const char CALLBACKS[] =
+    "struct P { a: int, b: int }\n"
+    "struct W { a: int, b: int, c: int }\n"
+    "struct V3 { x: f32, y: f32, z: f32 }\n"
+    "struct V4 { v: [4]f32 }\n"
+    "struct Hook { f: extern fn(x: int) -> int, n: int }\n"
+    "\n"
+    "extern fn qsort(base: *[8]int, n: u64, size: u64, cmp: extern fn(a: *int, b: *int) -> i32)\n"
+    "extern fn chibi_c_twice(x: int) -> int\n"
+    "extern fn chibi_c_each(f: extern fn(x: int) -> int, n: int) -> int\n"
+    "extern fn chibi_c_same(a: extern fn(x: int) -> int, b: extern fn(x: int) -> int) -> bool\n"
+    "extern fn chibi_c_note_sp()\n"
+    "\n"
+    "fn ascending(a: *int, b: *int) -> i32 {\n"
+    "    if a.* < b.* {\n"
+    "        return -1\n"
+    "    }\n"
+    "    if a.* > b.* {\n"
+    "        return 1\n"
+    "    }\n"
+    "    return 0\n"
+    "}\n"
+    "\n"
+    "fn descending(a: *int, b: *int) -> i32 {\n"
+    "    return ascending(b, a)\n"
+    "}\n"
+    "\n"
+    "fn sort(p: *[8]int, up: bool) {\n"
+    "    if up {\n"
+    "        qsort(p, 8, 8, ascending)\n"
+    "    } else {\n"
+    "        qsort(p, 8, 8, descending)\n"
+    "    }\n"
+    "}\n"
+    "\n"
+    "fn tap(x: int) -> int {\n"
+    "    return x * 3 + 1\n"
+    "}\n"
+    "\n"
+    "fn each(n: int) -> int {\n"
+    "    return chibi_c_each(tap, n) * 1000 + chibi_c_each(chibi_c_twice, n)\n"
+    "}\n"
+    "\n"
+    "fn hooked(n: int) -> int {\n"
+    "    f: extern fn(x: int) -> int = tap\n"
+    "    h := Hook.{ .f = f, .n = n + 1 }\n"
+    "    return chibi_c_each(h.f, h.n)\n"
+    "}\n"
+    "\n"
+    "fn same(x: int) -> int {\n"
+    "    s := x\n"
+    "    if chibi_c_same(tap, tap) {\n"
+    "        s += 1\n"
+    "    }\n"
+    "    if chibi_c_same(tap, chibi_c_twice) {\n"
+    "        s += 10\n"
+    "    }\n"
+    "    f: extern fn(x: int) -> int = tap\n"
+    "    if f == get_tap() {\n"
+    "        s += 100\n"
+    "    }\n"
+    "    if f != get_twice() {\n"
+    "        s += 1000\n"
+    "    }\n"
+    "    return s\n"
+    "}\n"
+    "\n"
+    "fn get_tap() -> extern fn(x: int) -> int {\n"
+    "    return tap\n"
+    "}\n"
+    "\n"
+    "fn get_twice() -> extern fn(x: int) -> int {\n"
+    "    return chibi_c_twice\n"
+    "}\n"
+    "\n"
+    "fn seven(a: int, b: i8, c: u16, d: i32, e: u32, f: bool, g: *int) -> int {\n"
+    "    s := a + int(b) * 10 + int(c) * 1000 + int(d) * 100000 + int(e) * 10000000 + g.*\n"
+    "    if f {\n"
+    "        s = -s\n"
+    "    }\n"
+    "    return s\n"
+    "}\n"
+    "\n"
+    "fn get_seven() -> extern fn(a: int, b: i8, c: u16, d: i32, e: u32, f: bool, g: *int) -> int {\n"
+    "    return seven\n"
+    "}\n"
+    "\n"
+    "fn eight(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: i16) -> int {\n"
+    "    chibi_c_note_sp()\n"
+    "    return a + 2 * b + 3 * c + 4 * d + 5 * e + 6 * f + 7 * g + 8 * int(h)\n"
+    "}\n"
+    "\n"
+    "fn get_eight() -> extern fn(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: i16) -> int {\n"
+    "    return eight\n"
+    "}\n"
+    "\n"
+    "fn pair_late(a: int, b: int, c: int, d: int, e: int, f: int, p: P) -> int {\n"
+    "    return a + b + c + d + e + f * 10 + p.a * 100 + p.b * 1000\n"
+    "}\n"
+    "\n"
+    "fn get_pair_late() -> extern fn(a: int, b: int, c: int, d: int, e: int, f: int, p: P) -> int {\n"
+    "    return pair_late\n"
+    "}\n"
+    "\n"
+    "fn big(w: W, v: V3, k: int) -> f64 {\n"
+    "    return f64(w.a + 2 * w.b + 3 * w.c + k) + f64(v.x) + 2.0 * f64(v.y) + 4.0 * f64(v.z)\n"
+    "}\n"
+    "\n"
+    "fn get_big() -> extern fn(w: W, v: V3, k: int) -> f64 {\n"
+    "    return big\n"
+    "}\n"
+    "\n"
+    "fn mixed(a: int, b: int, c: int, d: int, e: int, f: int, g: int, p: f64, q: f64, r: f64, s: "
+    "f64, t: f64, u: f64, v: f64, w: f64, y: f64, h: int, k: i16, m: i8) -> f64 {\n"
+    "    n := a + 2 * b + 3 * c + 4 * d + 5 * e + 6 * f + 7 * g + 8 * h + 9 * int(k) + 10 * int(m)\n"
+    "    return f64(n) + p + 2.0 * q + 3.0 * r + 4.0 * s + 5.0 * t + 6.0 * u + 7.0 * v + 8.0 * w + "
+    "9.0 * y\n"
+    "}\n"
+    "\n"
+    "fn get_mixed() -> extern fn(a: int, b: int, c: int, d: int, e: int, f: int, g: int, p: f64, "
+    "q: f64, r: f64, s: f64, t: f64, u: f64, v: f64, w: f64, y: f64, h: int, k: i16, m: i8) -> f64 {\n"
+    "    return mixed\n"
+    "}\n"
+    "\n"
+    "fn hfa_late(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: int, p: f64, q: f64, "
+    "r: f64, s: f64, t: f64, u: f64, v: V3) -> f64 {\n"
+    "    n := a + b + c + d + e + f + g + 8 * h\n"
+    "    return f64(n) + p + q + r + s + t + 6.0 * u + f64(v.x) + 2.0 * f64(v.y) + 4.0 * f64(v.z)\n"
+    "}\n"
+    "\n"
+    "fn get_hfa_late() -> extern fn(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: "
+    "int, p: f64, q: f64, r: f64, s: f64, t: f64, u: f64, v: V3) -> f64 {\n"
+    "    return hfa_late\n"
+    "}\n"
+    "\n"
+    "fn hfa4_late(a: f64, b: f64, c: f64, d: f64, e: f64, f: f64, v: V4) -> f64 {\n"
+    "    n := a + 2.0 * b + 3.0 * c + 4.0 * d + 5.0 * e + 6.0 * f\n"
+    "    return n + f64(v.v[0]) + 10.0 * f64(v.v[1]) + 100.0 * f64(v.v[2]) + 1000.0 * f64(v.v[3])\n"
+    "}\n"
+    "\n"
+    "fn get_hfa4_late() -> extern fn(a: f64, b: f64, c: f64, d: f64, e: f64, f: f64, v: V4) -> f64 {\n"
+    "    return hfa4_late\n"
+    "}\n"
+    "\n"
+    "fn pair_result(a: int) -> P {\n"
+    "    return P.{ a, a * 2 }\n"
+    "}\n"
+    "\n"
+    "fn get_pair_result() -> extern fn(a: int) -> P {\n"
+    "    return pair_result\n"
+    "}\n"
+    "\n"
+    "fn big_small(a: int) -> W {\n"
+    "    return W.{ a, a + 1, a + 2 }\n"
+    "}\n"
+    "\n"
+    "fn get_big_small() -> extern fn(a: int) -> W {\n"
+    "    return big_small\n"
+    "}\n"
+    "\n"
+    "fn big_result(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: int) -> W {\n"
+    "    return W.{ a + h, b * g, c - f + d * e }\n"
+    "}\n"
+    "\n"
+    "fn get_big_result() -> extern fn(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: "
+    "int) -> W {\n"
+    "    return big_result\n"
+    "}\n";
+
+typedef int64_t FN1(int64_t);
+typedef FN1 *GET1(void *);
+typedef void SORT(void *, int64_t *, bool);
+typedef int64_t FN7(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t *);
+typedef FN7 *GET7(void *);
+typedef int64_t FN8(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t);
+typedef FN8 *GET8(void *);
+typedef int64_t FNPL(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, CPoint);
+typedef FNPL *GETPL(void *);
+typedef double FNBIG(CW, CV3, int64_t);
+typedef FNBIG *GETBIG(void *);
+typedef double FNMIX(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, double, double, double, double, double, double, double, double, double, int64_t, int64_t, int64_t);
+typedef FNMIX *GETMIX(void *);
+typedef double FNMIXA(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, double, double, double, double, double, double, double, double, double, int64_t, uint64_t);
+typedef FNMIXA *GETMIXA(void *);
+typedef double FNHFA(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, double, double, double, double, double, double, CV3);
+typedef FNHFA *GETHFA(void *);
+typedef double FNHFA4(double, double, double, double, double, double, CV4);
+typedef FNHFA4 *GETHFA4(void *);
+typedef CPoint FNPR(int64_t);
+typedef FNPR *GETPR(void *);
+typedef CW FNW(int64_t);
+typedef FNW *GETW(void *);
+typedef CW FNW8(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t);
+typedef FNW8 *GETW8(void *);
+
+int64_t
+chibi_c_twice(int64_t x)
+{
+    return 2 * x;
+}
+
+int64_t
+chibi_c_each(FN1 *f, int64_t n)
+{
+    int64_t s = 0;
+    for (int64_t i = 0; i < n; i++) {
+        s = s * 3 + f(i);
+    }
+    return s;
+}
+
+bool
+chibi_c_same(FN1 *a, FN1 *b)
+{
+    return a == b;
+}
+
+static bool sp_misaligned;
+
+void
+chibi_c_note_sp(void)
+{
+    uintptr_t sp;
+    __asm__ volatile("mov %0, sp" : "=r"(sp));
+    sp_misaligned |= (sp & 15) != 0;
+}
+
+static int64_t
+fold_each(int64_t n, int64_t mul, int64_t add)
+{
+    int64_t s = 0;
+    for (int64_t i = 0; i < n; i++) {
+        s = s * 3 + i * mul + add;
+    }
+    return s;
+}
+
+static uint8_t DEFAULT_CONTEXT[16];
+static const void *tap_context;
+
+static int64_t
+c_tap(void *context, int64_t x)
+{
+    tap_context = context;
+    return x + 100;
+}
+
+static bool
+sorts(Program *p, int64_t x)
+{
+    int64_t xs[8] = { 5, -3, 9, 0, 9, -7, x, 2 - x };
+    ((SORT *)fn(p, "sort"))(CONTEXT, xs, true);
+    bool ok = true;
+    for (int i = 1; i < 8; i++) {
+        ok &= xs[i - 1] <= xs[i];
+    }
+    ((SORT *)fn(p, "sort"))(CONTEXT, xs, false);
+    for (int i = 1; i < 8; i++) {
+        ok &= xs[i - 1] >= xs[i];
+    }
+    return ok && xs[0] == (x > 9 ? x : 9);
+}
+
+static const uint64_t JUNK = 0x5A5A5A5A5A5A5A5Aull;
+
+static bool
+odd_layouts(Program *p, int64_t x)
+{
+    int64_t g = x * 77;
+    int8_t b = (int8_t)(x - 5);
+    uint16_t c = (uint16_t)(x * 3000 + 1);
+    int32_t d = (int32_t)(x * -100000);
+    uint32_t e = (uint32_t)(x * 200000000);
+    int64_t s = x + b * 10 + c * 1000LL + d * 100000LL + e * 10000000LL + g;
+    FN7 *seven = ((GET7 *)fn(p, "get_seven"))(CONTEXT);
+    bool ok = seven(x, (int64_t)(JUNK << 8 | (uint8_t)b), (int64_t)(JUNK << 16 | c), (int64_t)(JUNK << 32 | (uint32_t)d), (int64_t)(JUNK << 32 | e), (int64_t)(JUNK << 8 | (x & 1)), &g) == ((x & 1) ? -s : s);
+
+    int16_t h = (int16_t)(x * -700);
+    FN8 *eight = ((GET8 *)fn(p, "get_eight"))(CONTEXT);
+    ok &= eight(x, 1, 2, 3, x * 5, 6, 7, (int64_t)(JUNK << 16 | (uint16_t)h)) == x + 2 + 6 + 12 + 25 * x + 36 + 49 + 8 * h;
+
+    FNPL *pair_late = ((GETPL *)fn(p, "get_pair_late"))(CONTEXT);
+    CPoint pt = { x * 7, x - 3 };
+    ok &= pair_late(1, 2, 3, 4, x, 6, pt) == 10 + x + 60 + 700 * x + 1000 * (x - 3);
+
+    FNBIG *big = ((GETBIG *)fn(p, "get_big"))(CONTEXT);
+    CW w = { x, x + 1, x + 2 };
+    CV3 v = { (float)x + 0.5f, 0.25f, -1.0f };
+    ok &= big(w, v, x * 9) == (double)(x + 2 * (x + 1) + 3 * (x + 2) + 9 * x) + ((double)x + 0.5) + 0.5 - 4.0;
+
+    FNHFA *hfa_late = ((GETHFA *)fn(p, "get_hfa_late"))(CONTEXT);
+    double want = (double)(1 + 2 + 3 + 4 + 5 + 6 + x + 8 * (x - 4)) + 0.5 + 1.5 + 2.5 + 3.5 + 4.5 + 6.0 * (double)x + ((double)x + 0.5) + 0.5 - 4.0;
+    ok &= hfa_late(1, 2, 3, 4, 5, 6, x, x - 4, 0.5, 1.5, 2.5, 3.5, 4.5, (double)x, v) == want;
+
+    FNHFA4 *hfa4_late = ((GETHFA4 *)fn(p, "get_hfa4_late"))(CONTEXT);
+    CV4 v4 = { { 0.5f, (float)x, -2.0f, 0.25f } };
+    ok &= hfa4_late(1.0, 2.0, 3.0, 4.0, 5.0, (double)x, v4) == 55.0 + 6.0 * (double)x + 0.5 + 10.0 * (double)x - 200.0 + 250.0;
+
+    FNPR *pair_result = ((GETPR *)fn(p, "get_pair_result"))(CONTEXT);
+    CPoint r = pair_result(x - 9);
+    ok &= r.x == x - 9 && r.y == 2 * (x - 9);
+
+    FNW *big_small = ((GETW *)fn(p, "get_big_small"))(CONTEXT);
+    CW s3 = big_small(x * 4);
+    ok &= s3.a == x * 4 && s3.b == x * 4 + 1 && s3.c == x * 4 + 2;
+
+    FNW8 *big_result = ((GETW8 *)fn(p, "get_big_result"))(CONTEXT);
+    CW s8 = big_result(x, 2, 3, 4, 5, 6, 7, 8);
+    ok &= s8.a == x + 8 && s8.b == 14 && s8.c == 3 - 6 + 20;
+    return ok;
+}
+
+static double
+mixed_value(int64_t x, int16_t k, int8_t m)
+{
+    int64_t n = 1 + 2 * 2 + 3 * 3 + 4 * 4 + 5 * 5 + 6 * 6 + 7 * x + 8 * 8 + 9 * k + 10 * m;
+    return (double)n + 0.5 + 2.0 + 3.0 * 0.25 + 4.0 + 5.0 * 1.5 + 6.0 * (double)x + 7.0 + 8.0 * 0.125 + 9.0 * (double)(x - 3);
+}
+
+TEST_CASE(callbacks)
+{
+    Program p;
+    REQUIRE(build(&p, CALLBACKS));
+    native_set_context(&p.n, DEFAULT_CONTEXT);
+    for (int64_t x = 0; x < 20; x++) {
+        REQUIRE(sorts(&p, x));
+        REQUIRE(((I1 *)fn(&p, "each"))(CONTEXT, x % 6) == fold_each(x % 6, 3, 1) * 1000 + fold_each(x % 6, 2, 0));
+        REQUIRE(((I1 *)fn(&p, "hooked"))(CONTEXT, x % 5) == fold_each(x % 5 + 1, 3, 1));
+        REQUIRE(((I1 *)fn(&p, "same"))(CONTEXT, x) == x + 1101);
+        REQUIRE(odd_layouts(&p, x));
+
+        int16_t k = (int16_t)(x * -300);
+        int8_t m = (int8_t)(x - 11);
+        FNMIX *mixed = ((GETMIX *)fn(&p, "get_mixed"))(CONTEXT);
+        REQUIRE(mixed(1, 2, 3, 4, 5, 6, x, 0.5, 1.0, 0.25, 1.0, 1.5, (double)x, 1.0, 0.125, (double)(x - 3), 8, (int64_t)(JUNK << 16 | (uint16_t)k), (int64_t)(JUNK << 8 | (uint8_t)m)) == mixed_value(x, k, m));
+    }
+    REQUIRE(!sp_misaligned);
+    REQUIRE(((GET1 *)fn(&p, "get_twice"))(CONTEXT) == chibi_c_twice);
+    FN1 *tapped = ((GET1 *)fn(&p, "get_tap"))(CONTEXT);
+    REQUIRE(tapped == ((GET1 *)fn(&p, "get_tap"))(CONTEXT));
+    REQUIRE(tapped != chibi_c_twice && tapped(5) == 16);
+
+    native_replace(&p.n, decl_named(&p, "tap"), (void *)c_tap);
+    tap_context = NULL;
+    REQUIRE(tapped(5) == 105 && tap_context == DEFAULT_CONTEXT);
+    REQUIRE(((I1 *)fn(&p, "each"))(CONTEXT, 4) == fold_each(4, 1, 100) * 1000 + fold_each(4, 2, 0));
+    REQUIRE(((GET1 *)fn(&p, "get_tap"))(CONTEXT) == tapped);
+    release_program(&p);
+
+    REQUIRE(check_text(&p, CALLBACKS));
+    REQUIRE(arm64_compile(&p.n, &p.c, CONVENTION_APPLE));
+    for (int64_t x = 0; x < 20; x++) {
+        REQUIRE(sorts(&p, x));
+        REQUIRE(odd_layouts(&p, x));
+
+        int16_t k = (int16_t)(x * -300);
+        int8_t m = (int8_t)(x - 11);
+        uint64_t packed = (uint16_t)k | (uint64_t)(uint8_t)m << 16 | JUNK << 24;
+        FNMIXA *mixed = ((GETMIXA *)fn(&p, "get_mixed"))(CONTEXT);
+        REQUIRE(mixed(1, 2, 3, 4, 5, 6, x, 0.5, 1.0, 0.25, 1.0, 1.5, (double)x, 1.0, 0.125, (double)(x - 3), 8, packed) == mixed_value(x, k, m));
+    }
+    REQUIRE(!sp_misaligned);
+    release_program(&p);
+    return true;
+}
+
+TEST_CASE(callback_stack_limit)
+{
+    static char text[16384];
+    int at = snprintf(text, sizeof text, "fn many(");
+    for (int i = 0; i < 520; i++) {
+        at += snprintf(text + at, sizeof text - (size_t)at, "%sa%d: int", i ? ", " : "", i);
+    }
+    at += snprintf(text + at, sizeof text - (size_t)at, ") -> int {\n    return a0\n}\nextern fn take(f: extern fn(");
+    for (int i = 0; i < 520; i++) {
+        at += snprintf(text + at, sizeof text - (size_t)at, "%sint", i ? ", " : "");
+    }
+    snprintf(text + at, sizeof text - (size_t)at, ") -> int)\nfn give() {\n    take(many)\n}\n");
+
+    Program p;
+    REQUIRE(check_text(&p, text));
+    REQUIRE(!arm64_compile(&p.n, &p.c, CONVENTION_HOST));
+    REQUIRE(strcmp(p.n.error, "a callback for C needs over 4064 bytes of stack arguments") == 0);
+    release_program(&p);
+    return true;
+}
+
 TEST_SUITE(arm64_tests)
 {
     RUN_TEST_CASE(hidden_context);
     RUN_TEST_CASE(calls_into_c);
     RUN_TEST_CASE(stack_arguments);
     RUN_TEST_CASE(variadic_calls);
+    RUN_TEST_CASE(callbacks);
+    RUN_TEST_CASE(callback_stack_limit);
     RUN_TEST_CASE(narrow_parameters);
     RUN_TEST_CASE(constant_division);
     RUN_TEST_CASE(differential);

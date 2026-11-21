@@ -138,6 +138,10 @@ static const Case DECLARATIONS[] = {
       "fn g(cb: fn(int, f32) -> u8, h: fn() -> void, k: u8 = 9) -> int\n" },
     { "struct S { f: fn(*int, []u8) -> ?int, g: fn(*int, []u8) -> ?int }\n",
       "struct S { f: fn(*int, []u8) -> ?int, g: fn(*int, []u8) -> ?int }\n" },
+    { "extern fn qsort(base: *int, n: u64, size: u64, cmp: extern fn(a: *int, b: *int) -> i32)\n"
+      "struct Hook { f: extern fn(x: int) -> int, n: int }\n",
+      "extern fn qsort(base: *int, n: u64, size: u64, cmp: extern fn(*int, *int) -> i32) -> void\n"
+      "struct Hook { f: extern fn(int) -> int, n: int }\n" },
     { "package geo\nimport \"std/fmt\"\nconst X := 1\n", "const X = 1\n" },
     {
         "const T := u8.[1, 2, 255]\n"
@@ -217,6 +221,42 @@ static const Case ERRORS[] = {
       "a:1:22: C has no `[2]int`, so an `extern fn` can't pass or return it\n"
       "a:1:33: C has no `[3]u8`, so an `extern fn` can't pass or return it\n"
       "extern fn f(s: []u8, a: [2]int) -> [3]u8\n" },
+    { "extern fn f(cb: fn(x: int) -> int) -> fn() -> void\n"
+      "extern fn g(cb: extern fn(s: []u8), d: extern fn() -> [2]int)\n",
+      "a:1:13: C can't call a chibi `fn(int) -> int`; write `extern fn(int) -> int`\n"
+      "a:1:36: C can't call a chibi `fn() -> void`; write `extern fn() -> void`\n"
+      "a:2:17: C has no `[]u8`, so an `extern fn` can't pass or return it\n"
+      "a:2:40: C has no `[2]int`, so an `extern fn` can't pass or return it\n"
+      "extern fn f(cb: fn(int) -> int) -> fn() -> void\n"
+      "extern fn g(cb: extern fn([]u8) -> void, d: extern fn() -> [2]int) -> void\n" },
+    { "struct Hook { f: extern fn(x: int) -> int, n: int }\n"
+      "extern fn each(f: extern fn(x: int) -> int)\n"
+      "extern fn sum(n: int, ..) -> int\n"
+      "fn one(x: int) -> i32 {\n    return 1\n}\n"
+      "fn g(c: fn(x: int) -> int) {\n"
+      "    each(one)\n"
+      "    each(sum)\n"
+      "    h := one\n"
+      "    k: fn(x: int) -> i32 = one\n"
+      "    p: extern fn(x: int) -> int\n"
+      "    q: Hook\n"
+      "    r := Hook.{ .n = 1 }\n"
+      "    s := c == c\n"
+      "}\n",
+      "a:8:10: `fn(int) -> i32` and `extern fn(int) -> int` don't mix without a conversion\n"
+      "a:9:10: `extern fn(int, ..) -> int` and `extern fn(int) -> int` don't mix without a "
+      "conversion\n"
+      "a:10:10: `one` is a function, so it can't be used here\n"
+      "a:11:28: `one` is a function, so it can't be used here\n"
+      "a:12:5: `extern fn(int) -> int` is never nil, so this needs a value\n"
+      "a:13:5: `Hook` has no zero value because of its field `f`, so this needs a value\n"
+      "a:14:10: `f` has no zero value, so this literal needs a value for it\n"
+      "a:15:12: `fn(int) -> int` doesn't support `==`\n"
+      "struct Hook { f: extern fn(int) -> int, n: int }\n"
+      "extern fn each(f: extern fn(int) -> int) -> void\n"
+      "extern fn sum(n: int, ..) -> int\n"
+      "fn one(x: int) -> i32\n"
+      "fn g(c: fn(int) -> int) -> void\n" },
     { "struct P { x: int }\n"
       "extern fn printf(fmt: *u8, ..) -> i32\n"
       "fn f(p: *u8, q: P, s: []int) {\n"
@@ -873,6 +913,41 @@ static const Case BODIES[] = {
       "    %1 = call-c int f(1, 2, 3)\n"
       "    %2 = add int %0, %1\n"
       "    ret int %2\n" },
+    { "extern fn qsort(base: *int, n: u64, size: u64, cmp: extern fn(a: *int, b: *int) -> i32)\n"
+      "extern fn each(f: extern fn(x: int) -> int, n: int) -> int\n"
+      "extern fn twice(x: int) -> int\n"
+      "fn up(a: *int, b: *int) -> i32 {\n    return 0\n}\n"
+      "fn sort(p: *int) -> int {\n"
+      "    qsort(p, 4, 8, up)\n"
+      "    qsort(p, 4, 8, up)\n"
+      "    f: extern fn(x: int) -> int = tap\n"
+      "    return each(f, 3) + each(twice, 2)\n"
+      "}\n"
+      "fn tap(x: int) {\n    return x + 1\n}\n",
+      "fn up(a: *int, b: *int) -> i32\n"
+      "    slots: a: *int, b: *int\n"
+      "    ret i32 0\n"
+      "fn sort(p: *int) -> int\n"
+      "    slots: p: *int, f: extern fn(int) -> int\n"
+      "    %0 = load *int p\n"
+      "    %1 = callback extern fn(*int, *int) -> i32 up\n"
+      "    call-c void qsort(%0, 4, 8, %1)\n"
+      "    %3 = load *int p\n"
+      "    %4 = callback extern fn(*int, *int) -> i32 up\n"
+      "    call-c void qsort(%3, 4, 8, %4)\n"
+      "    %6 = callback extern fn(int) -> int tap\n"
+      "    store extern fn(int) -> int f, %6\n"
+      "    %8 = load extern fn(int) -> int f\n"
+      "    %9 = call-c int each(%8, 3)\n"
+      "    %10 = callback extern fn(int) -> int twice\n"
+      "    %11 = call-c int each(%10, 2)\n"
+      "    %12 = add int %9, %11\n"
+      "    ret int %12\n"
+      "fn tap(x: int) -> int\n"
+      "    slots: x: int\n"
+      "    %0 = load int x\n"
+      "    %1 = add int %0, 1\n"
+      "    ret int %1\n" },
     { "fn g(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: int, x: f32) -> int {\n"
       "    return a + h\n"
       "}\n"
@@ -3828,6 +3903,41 @@ TEST_CASE(variadic_promotions)
     return true;
 }
 
+TEST_CASE(callback_list)
+{
+    const char *text = "extern fn each(f: extern fn(x: int) -> int) -> int\n"
+                       "extern fn twice(x: int) -> int\n"
+                       "fn tap(x: int) -> int {\n"
+                       "    return x\n"
+                       "}\n"
+                       "fn g() -> int {\n"
+                       "    return each(tap) + each(twice) + each(tap) + each(twice)\n"
+                       "}\n";
+    Arena arena = { 0 };
+    Lexer lx;
+    Checker c;
+    ParsedFile *files = check_texts(&c, &arena, &lx, &text, 1, 1);
+
+    const IrCode *code = &c.ir.code;
+    const IrFunc *f = &c.ir.funcs[1];
+    u32 got[4];
+    u32 n = 0;
+    for (u32 i = f->first; i < f->first + f->count; i++) {
+        if (code->kinds[i] == IR_CALLBACK && n < 4) {
+            got[n++] = code->as[i];
+        }
+    }
+    bool ok = c.ndiags == 0 && c.ir.nfuncs == 2 && c.ir.ncallbacks == 2 && n == 4 &&
+              c.ir.callbacks[0] == 3 && c.ir.callbacks[1] == 2 && got[0] == 0 &&
+              got[1] == 1 && got[2] == 0 && got[3] == 1;
+
+    check_free(&c);
+    free(files);
+    arena_free(&arena);
+    REQUIRE(ok);
+    return true;
+}
+
 TEST_CASE(files)
 {
     const char *texts[] = {
@@ -3957,6 +4067,7 @@ TEST_SUITE(check_tests)
     RUN_TEST_CASE(errors);
     RUN_TEST_CASE(bodies);
     RUN_TEST_CASE(variadic_promotions);
+    RUN_TEST_CASE(callback_list);
     RUN_TEST_CASE(files);
     RUN_TEST_CASE(constants_across_files);
     RUN_TEST_CASE(globals_across_files);
