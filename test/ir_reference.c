@@ -285,7 +285,7 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
         u64 x = 0, y = 0;
         if (kind >= IR_ADD && kind <= IR_GE) {
             x = OPERAND(a);
-            if (kind < IR_NEG || kind > IR_BIT_NOT) {
+            if (kind < IR_NEG || kind > IR_COUNT_ONES) {
                 y = OPERAND(b);
             }
         }
@@ -458,6 +458,17 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
             case IR_NEG_WRAP: v = canon(0 - x, t); break;
             case IR_NOT: v = !x; break;
             case IR_BIT_NOT: v = canon(~x, t); break;
+            case IR_TRAILING_ZEROS:
+            case IR_LEADING_ZEROS:
+            case IR_COUNT_ONES: {
+                u32 bits = ty(c, OPERAND_TYPE(a)).bits;
+                u64 s = x & ~0ull >> (64 - bits);
+                v = kind == IR_COUNT_ONES     ? (u64)__builtin_popcountll(s)
+                  : s == 0                    ? bits
+                  : kind == IR_TRAILING_ZEROS ? (u64)__builtin_ctzll(s)
+                                              : (u64)__builtin_clzll(s) - (64 - bits);
+                break;
+            }
             case IR_EQ:
             case IR_NE:
             case IR_LT:

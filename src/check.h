@@ -189,6 +189,7 @@ enum
     X(DIAG_NOT_CALLABLE, "expected a function or a type")                                           \
     X(DIAG_ARG_COUNT, "wrong number of arguments: expected %c, found %C")                           \
     X(DIAG_ARG_COUNT_VARIADIC, "wrong number of arguments: expected at least %c, found %C")         \
+    X(DIAG_BUILTIN_INT, "`%n` takes an integer, found `%U`")                                        \
     X(DIAG_RETURN_VALUE, "this function returns nothing, so `return` takes no value")               \
     X(DIAG_RETURN_EMPTY, "`return` needs a value of type `%U`")                                     \
     X(DIAG_MISSING_RETURN, "the function can reach its end without returning a value of type `%U`") \

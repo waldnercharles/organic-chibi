@@ -82,6 +82,7 @@ Updated 2026-11-20. Built so far:
 - step 3h.3, callbacks that C calls: `extern fn(...)` types for C function pointers, and an adapter for each chibi function passed as one, which supplies a default context that the host sets.
 - step 3h.4, `export fn`: C calls an exported function by its chibi name, through the same adapter.
 - step 3h.5, `[*]T` and the entry point: a pointer into an array that indexes without bounds checks, moves with `p + n` and slices into a checked `[]T`, and `export fn main(argc: i32, argv: [*][*]u8) -> i32` as the entry point.
+- step 3i.1, bit counts: `trailing_zeros`, `leading_zeros` and `count_ones` on any integer, folded when the argument is constant, and one to five arm64 instructions each.
 
 [checker-and-ir.md](checker-and-ir.md) section 8 has the details and the measurements.
 
@@ -89,7 +90,7 @@ The goal now is self-hosting: translate the compiler into chibi, then use the co
 1. **Step 3d:** built (steps 3d.1 to 3d.9). Options A and C of question 14 were timed on 2026-11-19, on x86-64 ([experiments/slice-lowering](../../experiments/slice-lowering/README.md)): C was at least as fast as A on every kernel, and 21–28% faster on a loop that re-slices as a lexer does, so 3d builds C, and step 3d.3 built slices that way. The same kernels still need timing on the owner's M4 Pro. A cloud container runs the arm64 backend's tests under qemu (`make test`), but can't time arm64 code.
 2. Globals and constant tables: built (steps 3g.1 and 3g.2).
 3. Calling C and being called from C: built (steps 3h.1 to 3h.5): calls into C, stack arguments, C's variadic calls, callbacks that C calls, `export fn`, and `[*]T` with the entry point.
-4. SIMD types, and the bit-scan and overflow builtins.
+4. SIMD types, and the bit-scan and overflow builtins: in progress. Step 3i.1 built the bit counts; the overflow checks and the vector type wait for the owner's answers.
 5. The C backend, the C-to-chibi translator and the bootstrap check.
 6. Then steps 3c, 3e, 3f, 4 and 5, and the spike of cppgm's LowIR as the release backend (the Compiler row of 2026-11-19).
 
@@ -117,7 +118,7 @@ Updated 2026-11-21. The owner's answers are in [../decisions.md](../decisions.md
    - `[*]T` (rank 5, decided 2026-11-15). Step 3h.5 built it with a slice's `.ptr`, the conversion from `&a` and the entry point as an `export fn main`; its rules open to review are in [checker-and-ir.md](checker-and-ir.md) section 8, among them what an empty slice's `.ptr` gives once optionals exist.
 4. **SIMD types and builtins.**
    - Vector math beyond the matrix row: element-wise operators and swizzles (rank 14, 2.14).
-   - How builtins are named. Sheets 3 and 8 recommend plain predeclared names for type queries, such as `size_of` and `type_of` ([syntax-options-data.md](syntax-options-data.md) 3), and no sheet covers the bit-scan and overflow builtins yet.
+   - How builtins are named. Sheets 3 and 8 recommend plain predeclared names for type queries, such as `size_of` and `type_of` ([syntax-options-data.md](syntax-options-data.md) 3), and no sheet covers the bit-scan and overflow builtins yet. The owner was asked on 2026-11-21, with plain names recommended over `@` names and a built-in package; step 3i.1 built `trailing_zeros`, `leading_zeros` and `count_ones` as plain names meanwhile.
    - The attribute design (adopt-or-settle 3.8), of which only `@tail` is decided. The compiler's C needs `noinline`, `always_inline` and `noreturn`.
 5. **The C backend.** Rank 3 (2.3), one contract for every backend: left-to-right evaluation, no FMA contraction, and `==` on structs comparing fields, as recommended. The part for arrays and structs in literals and struct arguments is decided: they read left to right (the Language row of 2026-11-19). The rest of rank 3 is still open. No strict aliasing is decided (the Casts row). [shader-languages.md](shader-languages.md) proposes narrowing the contract to the CPU backends.
 6. **The C-to-chibi translator.**
@@ -149,7 +150,8 @@ Built by the research thread and open to the owner's review, as their rows in de
 - a bare `..` for C's variadic tail, C's promotions, and how step 3h.2 passes stack and variadic arguments (Language, 2026-11-20);
 - `extern fn(...)` for C function pointer types, and the default context that step 3h.3's adapters supply (Language, 2026-11-20, the callbacks row);
 - how step 3h.4 exports functions: the chibi name as the C name, and an `extern fn`'s signature rules (Language, the `export fn` row of 2026-11-09);
-- how step 3h.5 builds `[*]T`: a slice's `.ptr`, the conversion from `&a`, the arithmetic left out, and the entry point as an `export fn main` (Language, the pointer kinds row of 2026-11-15).
+- how step 3h.5 builds `[*]T`: a slice's `.ptr`, the conversion from `&a`, the arithmetic left out, and the entry point as an `export fn main` (Language, the pointer kinds row of 2026-11-15);
+- how step 3i.1 builds the bit counts: plain predeclared names while the owner decides the spelling, an `int` result, and a zero argument giving the width (Language, the bit counts row of 2026-11-21).
 
 ## Syntax option sheets: how they fit together (2026-11-10)
 

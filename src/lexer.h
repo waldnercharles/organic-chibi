@@ -142,7 +142,10 @@ enum
     OTHER(NAME_TAIL, "tail")                                                   \
     OTHER(NAME_DISCARD, "_")                                                   \
     OTHER(NAME_LEN, "len")                                                     \
-    OTHER(NAME_PTR, "ptr")
+    OTHER(NAME_PTR, "ptr")                                                     \
+    OTHER(NAME_TRAILING_ZEROS, "trailing_zeros")                               \
+    OTHER(NAME_LEADING_ZEROS, "leading_zeros")                                 \
+    OTHER(NAME_COUNT_ONES, "count_ones")
 // clang-format on
 
 #define CHIBI_BUILTIN_NAME_ID(name, text) name,

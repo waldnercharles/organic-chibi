@@ -24,6 +24,7 @@ enum
     OPERAND_LOCAL,
     OPERAND_ADDRESS,
     OPERAND_FN,
+    OPERAND_BUILTIN,
     OPERAND_STMT,
     OPERAND_RANGE,
     OPERAND_DISCARD,
@@ -2948,6 +2949,50 @@ call_fn(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg, u32 
                                : (Operand){ ret, REF_VALUE | i };
 }
 
+static NOINLINE Operand
+call_builtin(Checker *c, u32 file, u32 token, Operand callee, u32 first_arg, u32 nargs)
+{
+    if (callee.type != OPERAND_BUILTIN) {
+        report(c, file, token, DIAG_NOT_CALLABLE, 0, 0);
+        return poison;
+    }
+    if (nargs != 1) {
+        report(c, file, token, DIAG_ARG_COUNT, 1, nargs);
+        return poison;
+    }
+
+    u32 arg_token = c->stack_tokens[first_arg];
+    Operand a = c->stack[first_arg];
+    if (a.type == TYPE_ID_UNTYPED_INT) {
+        a = convert(c, file, arg_token, a, TYPE_ID_I64);
+    }
+    if (a.type == TYPE_ID_NONE) {
+        return poison;
+    }
+    if (!is_place(a) && !is_value_type(a.type)) {
+        report(c, file, arg_token, DIAG_NOT_VALUE, 0, 0);
+        return poison;
+    }
+    if (is_place(a) || !is_int(c, a.type)) {
+        u32 type = is_place(a) ? place_type(c, a) : a.type;
+        report(c, file, arg_token, DIAG_BUILTIN_INT, callee.ref, type);
+        return poison;
+    }
+
+    u8 kind = (u8)(IR_TRAILING_ZEROS + callee.ref - NAME_TRAILING_ZEROS);
+    if (!is_constant(a)) {
+        return emit_value(c, kind, TYPE_ID_I64, value_of(a), 0);
+    }
+
+    u32 bits = (u32)c->types.arg0[a.type];
+    u64 x = exact_bits(&c->exacts, value_of(a)) & ~0ull >> (64 - bits);
+    u32 n = kind == IR_COUNT_ONES     ? (u32)__builtin_popcountll(x)
+          : x == 0                    ? bits
+          : kind == IR_TRAILING_ZEROS ? (u32)__builtin_ctzll(x)
+                                      : (u32)__builtin_clzll(x) - (64 - bits);
+    return (Operand){ TYPE_ID_I64, exact_int(&c->exacts, n) };
+}
+
 static void
 call(Checker *c, u32 file, u32 node)
 {
@@ -2971,7 +3016,7 @@ call(Checker *c, u32 file, u32 node)
     } else if (callee.type == OPERAND_FN) {
         r = call_fn(c, file, node, callee_token, callee.ref, m + 1, nargs);
     } else if (callee.type != TYPE_ID_NONE) {
-        report(c, file, callee_token, DIAG_NOT_CALLABLE, 0, 0);
+        r = call_builtin(c, file, callee_token, callee, m + 1, nargs);
     }
 
     c->sp = m - 1;
@@ -5363,6 +5408,20 @@ global_place(Checker *c, u32 file, u32 node, u32 decl)
     return r;
 }
 
+static NOINLINE Operand
+resolve_builtin(Checker *c, u32 file, u32 node, u32 token, u32 id)
+{
+    if (id - NAME_TRAILING_ZEROS > NAME_COUNT_ONES - NAME_TRAILING_ZEROS) {
+        report(c, file, token, DIAG_UNKNOWN_NAME, 0, 0);
+        return poison;
+    }
+    if (c->files[file].nodes.kinds[node + 1] != NODE_CALL_ARGS) {
+        report(c, file, token, DIAG_FN_VALUE, 0, 0);
+        return poison;
+    }
+    return (Operand){ OPERAND_BUILTIN, id };
+}
+
 static Operand
 resolve_name(Checker *c, u32 file, u32 node)
 {
@@ -5377,8 +5436,7 @@ resolve_name(Checker *c, u32 file, u32 node)
 
     u32 decl = c->package_names[id];
     if (decl == 0) {
-        report(c, file, token, DIAG_UNKNOWN_NAME, 0, 0);
-        return poison;
+        return resolve_builtin(c, file, node, token, id);
     }
 
     switch (c->decls.kinds[decl]) {
@@ -6941,6 +6999,9 @@ print_function(FILE *out, const Checker *c, const IrFunc *fn)
             case IR_NEG_WRAP:
             case IR_NOT:
             case IR_BIT_NOT:
+            case IR_TRAILING_ZEROS:
+            case IR_LEADING_ZEROS:
+            case IR_COUNT_ONES:
             case IR_CONVERT:
             case IR_NARROW:
             case IR_TRUNCATE:

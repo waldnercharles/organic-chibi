@@ -32,6 +32,9 @@
     X(IR_NEG_WRAP, "neg-wrap")                                                 \
     X(IR_NOT, "not")                                                           \
     X(IR_BIT_NOT, "bit-not")                                                   \
+    X(IR_TRAILING_ZEROS, "trailing-zeros")                                     \
+    X(IR_LEADING_ZEROS, "leading-zeros")                                       \
+    X(IR_COUNT_ONES, "count-ones")                                             \
     X(IR_EQ, "eq")                                                             \
     X(IR_NE, "ne")                                                             \
     X(IR_LT, "lt")                                                             \

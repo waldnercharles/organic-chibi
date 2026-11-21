@@ -6596,6 +6596,169 @@ TEST_CASE(many_pointers)
     return true;
 }
 
+static const char BIT_COUNTS[] =
+    "fn pack_u8(x: u8) -> int {\n"
+    "    return trailing_zeros(x) + 100 * leading_zeros(x) + 10000 * count_ones(x)\n"
+    "}\n"
+    "fn pack_i8(x: i8) -> int {\n"
+    "    return trailing_zeros(x) + 100 * leading_zeros(x) + 10000 * count_ones(x)\n"
+    "}\n"
+    "fn pack_u16(x: u16) -> int {\n"
+    "    return trailing_zeros(x) + 100 * leading_zeros(x) + 10000 * count_ones(x)\n"
+    "}\n"
+    "fn pack_i16(x: i16) -> int {\n"
+    "    return trailing_zeros(x) + 100 * leading_zeros(x) + 10000 * count_ones(x)\n"
+    "}\n"
+    "fn pack_u32(x: u32) -> int {\n"
+    "    return trailing_zeros(x) + 100 * leading_zeros(x) + 10000 * count_ones(x)\n"
+    "}\n"
+    "fn pack_i32(x: i32) -> int {\n"
+    "    return trailing_zeros(x) + 100 * leading_zeros(x) + 10000 * count_ones(x)\n"
+    "}\n"
+    "fn pack_u64(x: u64) -> int {\n"
+    "    return trailing_zeros(x) + 100 * leading_zeros(x) + 10000 * count_ones(x)\n"
+    "}\n"
+    "fn pack_int(x: int) -> int {\n"
+    "    return trailing_zeros(x) + 100 * leading_zeros(x) + 10000 * count_ones(x)\n"
+    "}\n"
+    "fn tz64(x: u64) -> int {\n"
+    "    return trailing_zeros(x)\n"
+    "}\n"
+    "fn ones64(x: u64) -> int {\n"
+    "    return count_ones(x)\n"
+    "}\n"
+    "fn lz16(x: u16) -> int {\n"
+    "    return leading_zeros(x)\n"
+    "}\n";
+
+static const char BIT_GRID[] =
+    "fn grid_int(a: int, b: int) -> int {\n"
+    "    x := a *% 1000003 +% b *% 7\n"
+    "    return trailing_zeros(x) + 100 * leading_zeros(x) + 10000 * count_ones(x)\n"
+    "}\n"
+    "fn grid_u64(a: int, b: int) -> int {\n"
+    "    v := a *% 1000003 +% b *% 7\n"
+    "    x := (u64((v >> 32) & 0xFFFFFFFF) << 32) | u64(v & 0xFFFFFFFF)\n"
+    "    return trailing_zeros(x) + 100 * leading_zeros(x) + 10000 * count_ones(x)\n"
+    "}\n"
+    "fn grid_u32(a: int, b: int) -> int {\n"
+    "    x := u32((a *% 1000003 +% b *% 7) & 0xFFFFFFFF)\n"
+    "    return trailing_zeros(x) + 100 * leading_zeros(x) + 10000 * count_ones(x)\n"
+    "}\n"
+    "fn grid_i32(a: int, b: int) -> int {\n"
+    "    x := i32(((a *% 1000003 +% b *% 7) & 0xFFFFFFFF) - 2147483648)\n"
+    "    return trailing_zeros(x) + 100 * leading_zeros(x) + 10000 * count_ones(x)\n"
+    "}\n"
+    "fn grid_u16(a: int, b: int) -> int {\n"
+    "    x := u16((a *% 1000003 +% b *% 7) & 0xFFFF)\n"
+    "    return trailing_zeros(x) + 100 * leading_zeros(x) + 10000 * count_ones(x)\n"
+    "}\n"
+    "fn grid_i16(a: int, b: int) -> int {\n"
+    "    x := i16(((a *% 1000003 +% b *% 7) & 0xFFFF) - 32768)\n"
+    "    return trailing_zeros(x) + 100 * leading_zeros(x) + 10000 * count_ones(x)\n"
+    "}\n"
+    "fn grid_u8(a: int, b: int) -> int {\n"
+    "    x := u8((a *% 31 +% b) & 255)\n"
+    "    return trailing_zeros(x) + 100 * leading_zeros(x) + 10000 * count_ones(x)\n"
+    "}\n"
+    "fn grid_i8(a: int, b: int) -> int {\n"
+    "    x := i8(((a *% 31 +% b) & 255) - 128)\n"
+    "    return trailing_zeros(x) + 100 * leading_zeros(x) + 10000 * count_ones(x)\n"
+    "}\n";
+
+static const char *const BIT_GRID_FUNCTIONS[] = {
+    "grid_int", "grid_u64", "grid_u32", "grid_i32",
+    "grid_u16", "grid_i16", "grid_u8", "grid_i8",
+};
+
+enum
+{
+    WORD_RBIT_X = 0xDAC00000u,
+    WORD_CLZ_X = 0xDAC01000u,
+    WORD_CLZ_W = 0x5AC01000u,
+    WORD_SUB_W_16 = 0x51004000u,
+    WORD_CNT_8B = 0x0E205800u,
+    WORD_ADDV_8B = 0x0E31B800u,
+    REGISTER_FIELDS = 0x3FFu,
+};
+
+TEST_CASE(bit_counts)
+{
+    catch_traps();
+    Program p;
+    REQUIRE(build(&p, BIT_COUNTS));
+
+    I1 *u8s = (I1 *)fn(&p, "pack_u8");
+    REQUIRE(u8s(CONTEXT, (int64_t)(JUNK << 8)) == 808);
+    REQUIRE(u8s(CONTEXT, (int64_t)(JUNK << 8 | 1u)) == 10700);
+    REQUIRE(u8s(CONTEXT, (int64_t)(JUNK << 8 | 0x80u)) == 10007);
+    REQUIRE(u8s(CONTEXT, (int64_t)(JUNK << 8 | 0xFFu)) == 80000);
+    REQUIRE(u8s(CONTEXT, (int64_t)(JUNK << 8 | 0x14u)) == 20302);
+
+    I1 *i8s = (I1 *)fn(&p, "pack_i8");
+    REQUIRE(i8s(CONTEXT, (int64_t)(JUNK << 8 | 0x80u)) == 10007);
+    REQUIRE(i8s(CONTEXT, (int64_t)(JUNK << 8 | 0xFFu)) == 80000);
+    REQUIRE(i8s(CONTEXT, (int64_t)(JUNK << 8)) == 808);
+    REQUIRE(i8s(CONTEXT, (int64_t)(JUNK << 8 | 0x40u)) == 10106);
+    REQUIRE(i8s(CONTEXT, (int64_t)(JUNK << 8 | 0x14u)) == 20302);
+
+    I1 *u16s = (I1 *)fn(&p, "pack_u16");
+    REQUIRE(u16s(CONTEXT, (int64_t)(JUNK << 16)) == 1616);
+    REQUIRE(u16s(CONTEXT, (int64_t)(JUNK << 16 | 1u)) == 11500);
+    REQUIRE(u16s(CONTEXT, (int64_t)(JUNK << 16 | 0x8000u)) == 10015);
+    REQUIRE(u16s(CONTEXT, (int64_t)(JUNK << 16 | 0xFFFFu)) == 160000);
+    REQUIRE(u16s(CONTEXT, (int64_t)(JUNK << 16 | 0x0F00u)) == 40408);
+
+    I1 *i16s = (I1 *)fn(&p, "pack_i16");
+    REQUIRE(i16s(CONTEXT, (int64_t)(JUNK << 16 | 0x8000u)) == 10015);
+    REQUIRE(i16s(CONTEXT, (int64_t)(JUNK << 16 | 0xFFFFu)) == 160000);
+    REQUIRE(i16s(CONTEXT, (int64_t)(JUNK << 16 | 0xFFFEu)) == 150001);
+    REQUIRE(i16s(CONTEXT, (int64_t)(JUNK << 16)) == 1616);
+
+    I1 *u32s = (I1 *)fn(&p, "pack_u32");
+    REQUIRE(u32s(CONTEXT, (int64_t)(JUNK << 32)) == 3232);
+    REQUIRE(u32s(CONTEXT, (int64_t)(JUNK << 32 | 1u)) == 13100);
+    REQUIRE(u32s(CONTEXT, (int64_t)(JUNK << 32 | 0x80000000u)) == 10031);
+    REQUIRE(u32s(CONTEXT, (int64_t)(JUNK << 32 | 0xFFFFFFFFu)) == 320000);
+    REQUIRE(u32s(CONTEXT, (int64_t)(JUNK << 32 | 0x00F0F000u)) == 80812);
+
+    I1 *i32s = (I1 *)fn(&p, "pack_i32");
+    REQUIRE(i32s(CONTEXT, (int64_t)(JUNK << 32 | 0x80000000u)) == 10031);
+    REQUIRE(i32s(CONTEXT, (int64_t)(JUNK << 32 | 0xFFFFFFFFu)) == 320000);
+    REQUIRE(i32s(CONTEXT, (int64_t)(JUNK << 32)) == 3232);
+    REQUIRE(i32s(CONTEXT, (int64_t)(JUNK << 32 | 0x40000000u)) == 10130);
+
+    I1 *u64s = (I1 *)fn(&p, "pack_u64");
+    REQUIRE(u64s(CONTEXT, 0) == 6464);
+    REQUIRE(u64s(CONTEXT, 1) == 16300);
+    REQUIRE(u64s(CONTEXT, INT64_MIN) == 10063);
+    REQUIRE(u64s(CONTEXT, -1) == 640000);
+    REQUIRE(u64s(CONTEXT, 0x0000F00000000000) == 41644);
+
+    I1 *ints = (I1 *)fn(&p, "pack_int");
+    REQUIRE(ints(CONTEXT, INT64_MIN) == 10063);
+    REQUIRE(ints(CONTEXT, -1) == 640000);
+    REQUIRE(ints(CONTEXT, 0) == 6464);
+    REQUIRE(ints(CONTEXT, 0x00FF000000000000) == 80848);
+
+    REQUIRE(((I1 *)fn(&p, "tz64"))(CONTEXT, INT64_MIN) == 63);
+    REQUIRE(((I1 *)fn(&p, "ones64"))(CONTEXT, -1) == 64);
+    REQUIRE(((I1 *)fn(&p, "lz16"))(CONTEXT, (int64_t)(JUNK << 16 | 0x00F0u)) == 8);
+    REQUIRE(count_words(&p, "tz64", WORD_RBIT_X, REGISTER_FIELDS) == 1);
+    REQUIRE(count_words(&p, "tz64", WORD_CLZ_X, REGISTER_FIELDS) == 1);
+    REQUIRE(count_words(&p, "tz64", WORD_B_COND, B_COND_FIELDS) == 0);
+    REQUIRE(count_words(&p, "ones64", WORD_CNT_8B, REGISTER_FIELDS) == 1);
+    REQUIRE(count_words(&p, "ones64", WORD_ADDV_8B, REGISTER_FIELDS) == 1);
+    REQUIRE(count_words(&p, "lz16", WORD_CLZ_W, REGISTER_FIELDS) == 1);
+    REQUIRE(count_words(&p, "lz16", WORD_SUB_W_16, REGISTER_FIELDS) == 1);
+    release_program(&p);
+
+    REQUIRE(build(&p, BIT_GRID));
+    REQUIRE(agree_on_grid(&p, BIT_GRID_FUNCTIONS, sizeof BIT_GRID_FUNCTIONS / sizeof BIT_GRID_FUNCTIONS[0]));
+    release_program(&p);
+    return true;
+}
+
 TEST_SUITE(arm64_tests)
 {
     RUN_TEST_CASE(hidden_context);
@@ -6606,6 +6769,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(callback_stack_limit);
     RUN_TEST_CASE(exports);
     RUN_TEST_CASE(many_pointers);
+    RUN_TEST_CASE(bit_counts);
     RUN_TEST_CASE(narrow_parameters);
     RUN_TEST_CASE(constant_division);
     RUN_TEST_CASE(differential);

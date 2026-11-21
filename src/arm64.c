@@ -177,6 +177,11 @@ enum
     OP_UCVTF = 0x1E230000u,
     OP_FCVTZS = 0x1E380000u,
     OP_FCVTZU = 0x1E390000u,
+    OP_FMOV_TO_W = 0x1E260000u,
+    OP_CNT_8B = 0x0E205800u,
+    OP_ADDV_8B = 0x0E31B800u,
+    OP_RBIT = 0x5AC00000u,
+    OP_CLZ = 0x5AC01000u,
     SF = 0x80000000u,
     DOUBLE = 0x00400000u,
 };
@@ -1595,6 +1600,45 @@ unary(Emit *e, u32 i, u8 kind, u32 type, u32 a)
             }
             break;
         default: assert(false && "not a unary instruction");
+    }
+}
+
+static NOINLINE void
+count_bits(Emit *e, u32 i, u8 kind, u32 type, u32 a)
+{
+    u8 from = operand_info(e, a);
+    u32 bits = bits_of(from);
+    u32 sf = width(from);
+    u32 ra = fetch(e, a, X16);
+    release(e, a);
+    u32 d = result(e, i, e->info[type]);
+
+    if (kind != IR_TRAILING_ZEROS && is_small(from) && is_signed(from)) {
+        put(e, (bits == 8 ? OP_UXTB : OP_UXTH) | ra << 5 | d);
+        ra = d;
+    }
+    switch (kind) {
+        case IR_TRAILING_ZEROS:
+            if (bits < 32) {
+                put(e, OP_ORR_IMM | (32 - bits) << 16 | ra << 5 | d);
+                ra = d;
+            }
+            put(e, OP_RBIT | sf | ra << 5 | d);
+            put(e, OP_CLZ | sf | d << 5 | d);
+            break;
+        case IR_LEADING_ZEROS:
+            put(e, OP_CLZ | sf | ra << 5 | d);
+            if (bits < 32) {
+                put(e, OP_SUB_IMM | (32 - bits) << 10 | d << 5 | d);
+            }
+            break;
+        case IR_COUNT_ONES:
+            put(e, (sf ? OP_FMOV_FROM_X : OP_FMOV_FROM_W) | ra << 5 | V31);
+            put(e, OP_CNT_8B | V31 << 5 | V31);
+            put(e, OP_ADDV_8B | V31 << 5 | V31);
+            put(e, OP_FMOV_TO_W | V31 << 5 | d);
+            break;
+        default: assert(false && "not a bit count");
     }
 }
 
@@ -3374,6 +3418,9 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
             case IR_NEG_WRAP:
             case IR_NOT:
             case IR_BIT_NOT: unary(e, i, kind, type, a); break;
+            case IR_TRAILING_ZEROS:
+            case IR_LEADING_ZEROS:
+            case IR_COUNT_ONES: count_bits(e, i, kind, type, a); break;
             case IR_EQ:
             case IR_NE:
             case IR_LT:
