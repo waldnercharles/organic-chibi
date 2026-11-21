@@ -520,6 +520,12 @@ static const Case ERRORS[] = {
       "a:4:26: the checker doesn't support this yet\n"
       "a:5:6: the checker doesn't support this yet\n"
       "x: int = 5\nconst F = 1.5\nstruct S { a: ? }\nfn h() -> void\n" },
+    { "const A := b: {\n    x := c: { break c 1 }\n    break b x\n}\nconst B := switch 1 {\n    1 "
+      "=> { y := 2 }\n}\nconst C: [1]int = .[b: { g() }]\nfn g() {}\n",
+      "a:1:12: the checker doesn't support this yet\n"
+      "a:5:12: the checker doesn't support this yet\n"
+      "a:8:21: the checker doesn't support this yet\n"
+      "const A = ?\nconst B = ?\nconst C = ?\nfn g() -> void\n" },
     {
         "fn errs(n: int, f: f32) -> int {\n"
         "    a: [3]int\n"

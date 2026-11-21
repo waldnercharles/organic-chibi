@@ -4904,46 +4904,51 @@ jump(Checker *c, u32 file, u32 token, u8 kind)
 }
 
 static u32
-result_type(Checker *c, u32 file, u32 node, u32 own, u8 start, u8 end_kind, u8 item)
+closing_node(const u8 *kinds, u32 node, u8 start, u8 end, u8 item)
 {
-    const u8 *kinds = c->files[file].nodes.kinds;
     u32 depth = 0;
     for (u32 i = node + 1;; i++) {
         depth += kinds[i] == start;
-        bool end = kinds[i] == end_kind || kinds[i] == item;
-        if (end && depth-- == 0) {
-            if (kinds[i] == item) {
-                u32 m = c->sp - own;
-                while (c->stack[--m].type < OPERAND_MARKER) {
-                }
-                u32 marker = c->stack[m].type - OPERAND_MARKER;
-                bool call = marker == NODE_CALL_ARGS &&
-                            c->stack[m - 1].type == OPERAND_FN;
-                bool literal = marker == NODE_LITERAL_START ||
-                               marker == NODE_ANON_LITERAL_START;
-                return call || literal ? expected_type(c, own) : TYPE_ID_NONE;
-            }
-            u8 next = kinds[i + 1];
-            bool direct = c->sp > own && c->stack[c->sp - own - 1].type ==
-                                             OPERAND_MARKER + NODE_VALUE;
-            if (next == NODE_RETURN_VALUE) {
-                return c->body.ret == TYPE_ID_INFERRED ? TYPE_ID_NONE : c->body.ret;
-            }
-            if (next == NODE_BREAK_VALUE) {
-                const Loop *to = lookup_label(c, file, c->files[file].nodes.tokens[i + 1]);
-                return to && to->value && !to->peer ? to->type : TYPE_ID_NONE;
-            }
-            if (next == NODE_CASE) {
-                const Switch *s = &c->switches[c->nswitches - 1];
-                const Loop *to = s->value ? &c->loops[s->loop] : NULL;
-                return to && !to->peer ? to->type : TYPE_ID_NONE;
-            }
-            if (direct && (next == NODE_VAR_TYPE_INIT || next == NODE_ASSIGN)) {
-                return expected_type(c, own);
-            }
-            return TYPE_ID_NONE;
+        if ((kinds[i] == end || kinds[i] == item) && depth-- == 0) {
+            return i;
         }
     }
+}
+
+static u32
+result_type(Checker *c, u32 file, u32 node, u32 own, u8 start, u8 end_kind, u8 item)
+{
+    const u8 *kinds = c->files[file].nodes.kinds;
+    u32 i = closing_node(kinds, node, start, end_kind, item);
+    if (kinds[i] == item) {
+        u32 m = c->sp - own;
+        while (c->stack[--m].type < OPERAND_MARKER) {
+        }
+        u32 marker = c->stack[m].type - OPERAND_MARKER;
+        bool call = marker == NODE_CALL_ARGS && c->stack[m - 1].type == OPERAND_FN;
+        bool literal = marker == NODE_LITERAL_START || marker == NODE_ANON_LITERAL_START;
+        return call || literal ? expected_type(c, own) : TYPE_ID_NONE;
+    }
+
+    u8 next = kinds[i + 1];
+    bool direct = c->sp > own &&
+                  c->stack[c->sp - own - 1].type == OPERAND_MARKER + NODE_VALUE;
+    if (next == NODE_RETURN_VALUE) {
+        return c->body.ret == TYPE_ID_INFERRED ? TYPE_ID_NONE : c->body.ret;
+    }
+    if (next == NODE_BREAK_VALUE) {
+        const Loop *to = lookup_label(c, file, c->files[file].nodes.tokens[i + 1]);
+        return to && to->value && !to->peer ? to->type : TYPE_ID_NONE;
+    }
+    if (next == NODE_CASE) {
+        const Switch *s = &c->switches[c->nswitches - 1];
+        const Loop *to = s->value ? &c->loops[s->loop] : NULL;
+        return to && !to->peer ? to->type : TYPE_ID_NONE;
+    }
+    if (direct && (next == NODE_VAR_TYPE_INIT || next == NODE_ASSIGN)) {
+        return expected_type(c, own);
+    }
+    return TYPE_ID_NONE;
 }
 
 static void
@@ -5957,6 +5962,14 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                 body_marker(c, file, i, kind, token);
             } else if (kind == NODE_AND_LEFT || kind == NODE_OR_LEFT) {
                 logical_left(c, file, token, kind);
+            } else if (kind == NODE_VALUE_LABEL_START) {
+                report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
+                i = closing_node(kinds, i, kind, NODE_LABELED_VALUE, NODE_LABELED_ITEM);
+                push(c, token, TYPE_ID_NONE, 0);
+            } else if (kind == NODE_VALUE_SWITCH_START) {
+                report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
+                i = closing_node(kinds, i, kind, NODE_VALUE_SWITCH, NODE_SWITCH_ITEM);
+                push(c, token, TYPE_ID_NONE, 0);
             } else {
                 if (kind == NODE_LITERAL_START || kind == NODE_ANON_LITERAL_START) {
                     claim_literal(c, file, token, kind);
