@@ -39,6 +39,7 @@ typedef enum
     TYPE_SLICE,
     TYPE_ARRAY,
     TYPE_STRUCT,
+    TYPE_VECTOR,
     TYPE_ERROR_UNION,
     TYPE_FN,
     TYPE_ENUM,
@@ -67,10 +68,18 @@ typedef enum
     X(TYPE_ID_UNTYPED_FLOAT, TYPE_UNTYPED_FLOAT, 0, 0, "untyped float")        \
     X(TYPE_ID_UNDEFINED, TYPE_UNDEFINED, 0, 0, "undefined")                    \
     X(TYPE_ID_INFERRED, TYPE_INFERRED, 0, 0, "(inferred)")                     \
-    X(TYPE_ID_ENUM_LITERAL, TYPE_ENUM_LITERAL, 0, 0, "enum literal")
+    X(TYPE_ID_ENUM_LITERAL, TYPE_ENUM_LITERAL, 0, 0, "enum literal")           \
+    X(TYPE_ID_U8X16, TYPE_VECTOR, TYPE_ID_U8, 16, "u8x16")                     \
+    X(TYPE_ID_I8X16, TYPE_VECTOR, TYPE_ID_I8, 16, "i8x16")                     \
+    X(TYPE_ID_U16X8, TYPE_VECTOR, TYPE_ID_U16, 8, "u16x8")                     \
+    X(TYPE_ID_I16X8, TYPE_VECTOR, TYPE_ID_I16, 8, "i16x8")                     \
+    X(TYPE_ID_U32X4, TYPE_VECTOR, TYPE_ID_U32, 4, "u32x4")                     \
+    X(TYPE_ID_I32X4, TYPE_VECTOR, TYPE_ID_I32, 4, "i32x4")                     \
+    X(TYPE_ID_U64X2, TYPE_VECTOR, TYPE_ID_U64, 2, "u64x2")                     \
+    X(TYPE_ID_I64X2, TYPE_VECTOR, TYPE_ID_I64, 2, "i64x2")
 // clang-format on
 
-#define CHIBI_FIXED_TYPE_ID(id, kind, bits, is_signed, text) id,
+#define CHIBI_FIXED_TYPE_ID(id, kind, arg0, arg1, text) id,
 enum
 {
     TYPE_ID_NONE,
@@ -153,6 +162,7 @@ enum
     X(DIAG_NOT_VALUE, "expected a value")                                                           \
     X(DIAG_NOT_BOOL, "expected `bool`, found `%T`")                                                 \
     X(DIAG_BAD_OPERATOR, "`%T` doesn't support `%t`")                                               \
+    X(DIAG_WRAPPING_ONLY, "`%T` supports only the wrapping `+%%`, `-%%` and `*%%` so far")          \
     X(DIAG_NOT_ASSIGNABLE, "only a variable, a field, an element or `p.*` can be assigned to")      \
     X(DIAG_ASSIGN_PARAM, "`%n` is a parameter, so it can't be assigned")                            \
     X(DIAG_ASSIGN_LOOP_VARIABLE, "`%n` is a loop variable, so it can't be assigned")                \
@@ -180,6 +190,7 @@ enum
     X(DIAG_STRUCT_LITERAL_TYPE, "the type of this literal isn't known here; write it, as in `Point.{ 1, 2 }`") \
     X(DIAG_NOT_STRUCT, "`%U` is not a struct, so a struct literal can't build it")                  \
     X(DIAG_FIELD_COUNT, "wrong number of fields: expected %c, found %C")                            \
+    X(DIAG_LANE_COUNT, "`%U` needs one value for each lane, found %c")                              \
     X(DIAG_MIXED_FIELDS, "name every field of this literal, or none")                               \
     X(DIAG_FIELD_TWICE, "`%n` is already set at %l")                                                \
     X(DIAG_MISSING_FIELD, "`%n` has no zero value, so this literal needs a value for it")          \

@@ -47,6 +47,7 @@
     X(IR_CONVERT, "convert")                                                   \
     X(IR_NARROW, "narrow")                                                     \
     X(IR_TRUNCATE, "truncate")                                                 \
+    X(IR_SPLAT, "splat")                                                       \
     X(IR_GLOBAL, "global")                                                     \
     X(IR_CALLBACK, "callback")                                                 \
     X(IR_CALL, "call")                                                         \

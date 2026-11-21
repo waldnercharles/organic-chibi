@@ -139,6 +139,14 @@ enum
     TYPE(NAME_F64, "f64")                                                      \
     TYPE(NAME_UINTPTR, "uintptr")                                              \
     TYPE(NAME_ERROR, "error")                                                  \
+    TYPE(NAME_U8X16, "u8x16")                                                  \
+    TYPE(NAME_I8X16, "i8x16")                                                  \
+    TYPE(NAME_U16X8, "u16x8")                                                  \
+    TYPE(NAME_I16X8, "i16x8")                                                  \
+    TYPE(NAME_U32X4, "u32x4")                                                  \
+    TYPE(NAME_I32X4, "i32x4")                                                  \
+    TYPE(NAME_U64X2, "u64x2")                                                  \
+    TYPE(NAME_I64X2, "i64x2")                                                  \
     OTHER(NAME_TAIL, "tail")                                                   \
     OTHER(NAME_DISCARD, "_")                                                   \
     OTHER(NAME_LEN, "len")                                                     \

@@ -718,6 +718,7 @@ TEST_CASE(unsupported_types)
     REQUIRE(rejects("fn b(a: int) -> !void {\n    if a > 0 {\n        return\n    }\n}\n"));
     REQUIRE(rejects("fn o(p: ?int) -> ?int {\n    return p\n}\n"));
     REQUIRE(rejects("fn s(p: ?[]u8) -> int {\n    return 0\n}\n"));
+    REQUIRE(rejects("fn v(a: u8, k: int) -> u8 {\n    x: u8x16 = a\n    return x[k]\n}\n"));
     return true;
 }
 

@@ -164,6 +164,75 @@ is_member(const u32 *runs, Ty t, u64 x)
     return false;
 }
 
+static bool
+is_vector(const Checker *c, u32 type)
+{
+    return c->types.kinds[type] == TYPE_VECTOR;
+}
+
+static u64
+replicate(u64 v, u32 bits)
+{
+    if (bits == 64) {
+        return v;
+    }
+    u64 r = 0;
+    for (u32 s = 0; s < 64; s += bits) {
+        r |= (v & ((1ull << bits) - 1)) << s;
+    }
+    return r;
+}
+
+static u64
+get_lane(const u64 *w, u32 k, Ty t)
+{
+    u32 bit = k * t.bits;
+    return canon(w[bit / 64] >> (bit % 64), t);
+}
+
+static void
+put_lane(u64 *w, u32 k, u32 bits, u64 v)
+{
+    u32 bit = k * bits;
+    u64 mask = bits == 64 ? ~0ull : ((1ull << bits) - 1) << (bit % 64);
+    w[bit / 64] = (w[bit / 64] & ~mask) | ((v << (bit % 64)) & mask);
+}
+
+static int
+lanewise(const Checker *c, u8 kind, u32 type, const u64 *x, const u64 *y, u64 shift, u64 *r)
+{
+    Ty t = ty(c, c->types.arg0[type]);
+    if ((kind == IR_SHL || kind == IR_SHR) && shift >= t.bits) {
+        return TRAP_SHIFT;
+    }
+    for (u32 k = 0; k < c->types.arg1[type]; k++) {
+        u64 a = get_lane(x, k, t);
+        u64 b = get_lane(y, k, t);
+        u64 v = 0;
+        switch (kind) {
+            case IR_ADD_WRAP: v = a + b; break;
+            case IR_SUB_WRAP: v = a - b; break;
+            case IR_MUL_WRAP: v = a * b; break;
+            case IR_AND: v = a & b; break;
+            case IR_OR: v = a | b; break;
+            case IR_XOR: v = a ^ b; break;
+            case IR_SHL: v = a << shift; break;
+            case IR_SHR: v = t.sign ? (u64)((int64_t)a >> shift) : a >> shift; break;
+            case IR_NEG_WRAP: v = 0 - a; break;
+            case IR_BIT_NOT: v = ~a; break;
+            case IR_EQ:
+            case IR_NE:
+            case IR_LT:
+            case IR_LE:
+            case IR_GT:
+            case IR_GE: v = compare(kind, a, b, t) ? ~0ull : 0; break;
+            default: assert(false && "not a lane-wise operation");
+        }
+        put_lane(r, k, t.bits, v);
+    }
+    return 0;
+}
+
 static u32
 value_type(const IrCode *ir, u32 g)
 {
@@ -217,7 +286,7 @@ ir_reference_init(IrReference *r, const Checker *c)
         for (u32 s = 0; s < fn->nslots; s++) {
             u32 type = ir->code.slots[fn->first_slot + s].type;
             u8 kind = c->types.kinds[type];
-            u64 bytes = kind == TYPE_ARRAY || kind == TYPE_STRUCT
+            u64 bytes = kind == TYPE_ARRAY || kind == TYPE_STRUCT || kind == TYPE_VECTOR
                           ? check_type_size(c, type)
                           : 8;
             assert(bytes < (1u << 24) && size < (1u << 24));
@@ -251,6 +320,7 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
     const IrCode *ir = &c->ir.code;
     const IrFunc *fn = &c->ir.funcs[f];
     u64 *vals = calloc(fn->count + 1, sizeof *vals);
+    u64 *highs = calloc(fn->count + 1, sizeof *highs);
     u8 *frame = calloc(r->frames[f] + 8, 1);
     const u32 *offsets = r->offsets + fn->first_slot;
     for (u32 p = 0; p < fn->nparams; p++) {
@@ -268,6 +338,17 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
 #define OPERAND_TYPE(x)                                                        \
     (((x) & IR_CONST) ? ir->consts[fn->first_const + ((x) & ~IR_CONST)].type   \
                       : value_type(ir, fn->first + (x)))
+#define WIDE(x, w)                                                             \
+    do {                                                                       \
+        if ((x) & IR_CONST) {                                                  \
+            IrConst k_ = ir->consts[fn->first_const + ((x) & ~IR_CONST)];      \
+            u32 bits_ = ty(c, c->types.arg0[k_.type]).bits;                    \
+            (w)[0] = (w)[1] = replicate(k_.bits, bits_);                       \
+        } else {                                                               \
+            (w)[0] = vals[(x)];                                                \
+            (w)[1] = highs[(x)];                                               \
+        }                                                                      \
+    } while (0)
 
     int trap = TRAP_UNREACHABLE;
     u64 second = 0;
@@ -283,6 +364,62 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
         u32 b = ir->bs[g];
         Ty t = ty(c, type);
         u64 x = 0, y = 0;
+        if (is_vector(c, type)) {
+            u64 w[2] = { 0, 0 }, z[2] = { 0, 0 }, out[2] = { 0, 0 };
+            int fail = 0;
+            switch (kind) {
+                case IR_LOAD: memcpy(out, frame + offsets[a], sizeof out); break;
+                case IR_STORE:
+                    WIDE(b, w);
+                    memcpy(frame + offsets[a], w, sizeof w);
+                    break;
+                case IR_LOAD_AT: memcpy(out, (const void *)(uintptr_t)OPERAND(a), sizeof out); break;
+                case IR_SPLAT:
+                    out[0] = out[1] = replicate(OPERAND(a), ty(c, c->types.arg0[type]).bits);
+                    break;
+                case IR_SHL:
+                case IR_SHR:
+                    WIDE(a, w);
+                    fail = lanewise(c, kind, type, w, w, OPERAND(b), out);
+                    break;
+                case IR_NEG_WRAP:
+                case IR_BIT_NOT:
+                    WIDE(a, w);
+                    fail = lanewise(c, kind, type, w, w, 0, out);
+                    break;
+                case IR_EXIT:
+                    WIDE(b, w);
+                    vals[r->ends[fn->first + a] - fn->first] = w[0];
+                    highs[r->ends[fn->first + a] - fn->first] = w[1];
+                    i = r->ends[fn->first + a] - fn->first + 1;
+                    continue;
+                case IR_ADD_WRAP:
+                case IR_SUB_WRAP:
+                case IR_MUL_WRAP:
+                case IR_AND:
+                case IR_OR:
+                case IR_XOR:
+                case IR_EQ:
+                case IR_NE:
+                case IR_LT:
+                case IR_LE:
+                case IR_GT:
+                case IR_GE:
+                    WIDE(a, w);
+                    WIDE(b, z);
+                    fail = lanewise(c, kind, type, w, z, 0, out);
+                    break;
+                default: assert(false && "unknown vector instruction");
+            }
+            if (fail) {
+                trap = fail;
+                break;
+            }
+            vals[i] = out[0];
+            highs[i] = out[1];
+            i++;
+            continue;
+        }
         if (kind >= IR_ADD && kind <= IR_MUL_OVERFLOWS) {
             x = OPERAND(a);
             if (kind < IR_NEG || kind > IR_COUNT_ONES) {
@@ -616,10 +753,12 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
 
 done:
     free(vals);
+    free(highs);
     free(frame);
     return trap;
 #undef OPERAND
 #undef OPERAND_TYPE
+#undef WIDE
 }
 
 int

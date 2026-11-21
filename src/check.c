@@ -153,18 +153,18 @@ static const u8 assign_ops[NNODES] = {
     [NODE_SHR_ASSIGN] = NODE_SHR,
 };
 
-#define FIXED_KIND(id, kind, bits, is_signed, text) [id] = kind,
-#define FIXED_BITS(id, kind, bits, is_signed, text) [id] = bits,
-#define FIXED_SIGNED(id, kind, bits, is_signed, text) [id] = is_signed,
-#define FIXED_TEXT(id, kind, bits, is_signed, text) [id] = text,
+#define FIXED_KIND(id, kind, arg0, arg1, text) [id] = kind,
+#define FIXED_ARG0(id, kind, arg0, arg1, text) [id] = arg0,
+#define FIXED_ARG1(id, kind, arg0, arg1, text) [id] = arg1,
+#define FIXED_TEXT(id, kind, arg0, arg1, text) [id] = text,
 static const u8 fixed_kinds[NFIXED_TYPES] = { CHIBI_FIXED_TYPES(FIXED_KIND) };
-static const u8 fixed_bits[NFIXED_TYPES] = { CHIBI_FIXED_TYPES(FIXED_BITS) };
-static const u8 fixed_signed[NFIXED_TYPES] = { CHIBI_FIXED_TYPES(FIXED_SIGNED) };
+static const u8 fixed_arg0[NFIXED_TYPES] = { CHIBI_FIXED_TYPES(FIXED_ARG0) };
+static const u8 fixed_arg1[NFIXED_TYPES] = { CHIBI_FIXED_TYPES(FIXED_ARG1) };
 static const char *const fixed_texts[NFIXED_TYPES] = { [TYPE_ID_NONE] = "?",
                                                        CHIBI_FIXED_TYPES(FIXED_TEXT) };
 
 #define BUILTIN(name) [name - NAME_LAST_KEYWORD - 1]
-static_assert(NBUILTIN_TYPES == 15, "every builtin type name needs an entry in builtin_types");
+static_assert(NBUILTIN_TYPES == 23, "every builtin type name needs an entry in builtin_types");
 static const u8 builtin_types[NBUILTIN_TYPES] = {
     BUILTIN(NAME_VOID) = TYPE_ID_VOID,
     BUILTIN(NAME_BOOL) = TYPE_ID_BOOL,
@@ -181,6 +181,14 @@ static const u8 builtin_types[NBUILTIN_TYPES] = {
     BUILTIN(NAME_F64) = TYPE_ID_F64,
     BUILTIN(NAME_UINTPTR) = TYPE_ID_UINTPTR,
     BUILTIN(NAME_ERROR) = TYPE_ID_ERROR,
+    BUILTIN(NAME_U8X16) = TYPE_ID_U8X16,
+    BUILTIN(NAME_I8X16) = TYPE_ID_I8X16,
+    BUILTIN(NAME_U16X8) = TYPE_ID_U16X8,
+    BUILTIN(NAME_I16X8) = TYPE_ID_I16X8,
+    BUILTIN(NAME_U32X4) = TYPE_ID_U32X4,
+    BUILTIN(NAME_I32X4) = TYPE_ID_I32X4,
+    BUILTIN(NAME_U64X2) = TYPE_ID_U64X2,
+    BUILTIN(NAME_I64X2) = TYPE_ID_I64X2,
 };
 
 #define DIAGNOSTIC_TEXT(name, text) [name] = text,
@@ -575,6 +583,12 @@ is_struct(const Checker *c, u32 type)
 }
 
 static bool
+is_vector(const Checker *c, u32 type)
+{
+    return c->types.kinds[type] == TYPE_VECTOR;
+}
+
+static bool
 is_aggregate(const Checker *c, u32 type)
 {
     static_assert(TYPE_STRUCT == TYPE_ARRAY + 1, "arrays and structs must be adjacent kinds");
@@ -607,6 +621,13 @@ is_compound(const Checker *c, u32 type)
 }
 
 static bool
+is_compound_or_vector(const Checker *c, u32 type)
+{
+    static_assert(TYPE_VECTOR == TYPE_STRUCT + 1, "vectors must follow the compound kinds");
+    return (u8)(c->types.kinds[type] - TYPE_SLICE) <= 3;
+}
+
+static bool
 is_held(const Checker *c, u32 type)
 {
     return !is_compound(c, type) || is_storable(c, type);
@@ -624,7 +645,8 @@ check_type_size(const Checker *c, u32 type)
         case TYPE_POINTER:
         case TYPE_MANY:
         case TYPE_FN: return 8;
-        case TYPE_SLICE: return 16;
+        case TYPE_SLICE:
+        case TYPE_VECTOR: return 16;
         case TYPE_ENUM: return check_type_size(c, (u32)t->arg1[type]);
         case TYPE_ARRAY: {
             u64 n = t->arg1[type];
@@ -734,7 +756,7 @@ is_passed_compound(const Checker *c, u32 type)
 static ALWAYS_INLINE bool
 is_passed(const Checker *c, u32 type)
 {
-    return !is_compound(c, type) || is_passed_compound(c, type);
+    return !is_compound_or_vector(c, type) || is_passed_compound(c, type);
 }
 
 static NOINLINE void
@@ -1111,10 +1133,15 @@ read_compound(Checker *c, u32 slot, u32 token, u8 next)
 {
     Operand o = { OPERAND_LOCAL, slot };
     u32 file = c->decls.files[c->body.decl];
+    u32 type = slot_at(c, slot)->type;
+    if (is_vector(c, type) && c->files[file].tokens.kinds[token + 1] != TK_LBRACK) {
+        weigh(c, slot);
+        return emit_value(c, IR_LOAD, type, slot, 0);
+    }
     if (next == NODE_FIELD || binding_kind(c, file, slot) != NODE_NONE) {
         return o;
     }
-    if (is_slice(c, slot_at(c, slot)->type)) {
+    if (is_slice(c, type)) {
         return read_slice(c, o);
     }
     if (c->files[file].tokens.kinds[token + 1] != TK_LBRACK) {
@@ -1127,7 +1154,7 @@ static Operand
 read_local(Checker *c, u32 slot, u32 token, u8 next)
 {
     u32 type = slot_at(c, slot)->type;
-    if (is_compound(c, type)) {
+    if (is_compound_or_vector(c, type)) {
         return read_compound(c, slot, token, next);
     }
     if (type == TYPE_ID_NONE) {
@@ -1404,14 +1431,43 @@ slice_of_place(Checker *c, u32 file, u32 token, Operand o, u32 to)
     return make_pair(c, to, place_address(c, o), n);
 }
 
+static Operand convert(Checker *c, u32 file, u32 token, Operand o, u32 to);
+
+static Operand
+splat(Checker *c, u32 file, u32 token, Operand o, u32 to)
+{
+    u32 elem = c->types.arg0[to];
+    if (!is_untyped(o.type) && o.type != elem &&
+        ((o.ref & REF_RESULT) || !widens(c, o.type, elem))) {
+        report(c, file, token, DIAG_MISMATCH, o.type, to);
+        return poison;
+    }
+    if (!c->body.code) {
+        report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
+        return poison;
+    }
+
+    Operand e = convert(c, file, token, o, elem);
+    if (e.type == TYPE_ID_NONE) {
+        return poison;
+    }
+    if (is_constant(e)) {
+        return (Operand){ to, value_of(e) };
+    }
+    return emit_value(c, IR_SPLAT, to, value_of(e), 0);
+}
+
 static NOINLINE Operand
-convert_pointer(Checker *c, u32 file, u32 token, Operand o, u32 to)
+reshape(Checker *c, u32 file, u32 token, Operand o, u32 to)
 {
     const Types *t = &c->types;
     u32 from = o.type;
     if (t->kinds[to] == TYPE_MANY && t->kinds[from] == TYPE_POINTER &&
         is_array(c, t->arg0[from]) && t->arg0[t->arg0[from]] == t->arg0[to]) {
         return emit_value(c, IR_INDEX, to, value_of(o), ir_const(c, TYPE_ID_I64, 0));
+    }
+    if (t->kinds[to] == TYPE_VECTOR) {
+        return splat(c, file, token, o, to);
     }
     report(c, file, token, DIAG_MISMATCH, from, to);
     return poison;
@@ -1476,7 +1532,7 @@ convert(Checker *c, u32 file, u32 token, Operand o, u32 to)
         return emit_value(c, IR_CONVERT, to, value_of(o), 0);
     }
 
-    return convert_pointer(c, file, token, o, to);
+    return reshape(c, file, token, o, to);
 }
 
 static bool
@@ -1599,7 +1655,10 @@ cast(Checker *c, u32 file, u32 token, Operand o, u32 to)
     }
     if (!is_value_type(o.type) || !is_number(c, o.type) ||
         (!to_int && to_kind != TYPE_FLOAT)) {
-        report(c, file, token, is_value_type(o.type) ? DIAG_MISMATCH : DIAG_NOT_VALUE, o.type, to);
+        u8 diag = !is_value_type(o.type)                   ? DIAG_NOT_VALUE
+                : is_vector(c, o.type) || is_vector(c, to) ? DIAG_UNSUPPORTED
+                                                           : DIAG_MISMATCH;
+        report(c, file, token, diag, o.type, to);
         return poison;
     }
 
@@ -1637,6 +1696,20 @@ peer_type(const Checker *c, u32 a, u32 b)
     return is_untyped(a) || widens(c, a, b) ? b : a;
 }
 
+static NOINLINE u32
+unify_vector(Checker *c, u32 file, u32 token, Operand *a, Operand *b)
+{
+    bool vector = is_vector(c, a->type);
+    if (vector == is_vector(c, b->type)) {
+        report(c, file, token, DIAG_MISMATCH, a->type, b->type);
+        return TYPE_ID_NONE;
+    }
+
+    Operand *from = vector ? b : a;
+    *from = convert(c, file, token, *from, vector ? a->type : b->type);
+    return from->type;
+}
+
 static u32
 unify(Checker *c, u32 file, u32 token, Operand *a, Operand *b)
 {
@@ -1660,9 +1733,7 @@ unify(Checker *c, u32 file, u32 token, Operand *a, Operand *b)
         *from = convert(c, file, token, *from, type);
         return from->type;
     }
-
-    report(c, file, token, DIAG_MISMATCH, a->type, b->type);
-    return TYPE_ID_NONE;
+    return unify_vector(c, file, token, a, b);
 }
 
 static bool
@@ -1848,12 +1919,40 @@ expected_type(const Checker *c, u32 own)
     return expected_at(c, c->sp - own);
 }
 
+static NOINLINE Operand
+shift_lanes(Checker *c, u32 file, u32 token, u8 kind, Operand a, Operand b)
+{
+    if (!is_vector(c, a.type) || !is_int(c, b.type)) {
+        bool lhs = is_int(c, a.type) || is_vector(c, a.type);
+        report(c, file, token, DIAG_BAD_OPERATOR, lhs ? b.type : a.type, 0);
+        return poison;
+    }
+
+    u32 elem = c->types.arg0[a.type];
+    if (is_constant(b)) {
+        u32 n = value_of(b);
+        if (exact_sign(&c->exacts, n) < 0 || !exact_fits(&c->exacts, n, 32, false) ||
+            exact_bits(&c->exacts, n) >= c->types.arg0[elem]) {
+            report(c, file, token, DIAG_BAD_SHIFT, n, 0);
+            return poison;
+        }
+    }
+    if (b.type == TYPE_ID_UNTYPED_INT) {
+        b = (Operand){ elem, b.ref };
+    }
+
+    u32 x = operand_ir(c, a);
+    u32 y = operand_ir(c, b);
+    return (Operand){ a.type,
+                      REF_VALUE | REF_RESULT |
+                          emit(c, binary_irs[kind], a.type, x, y) };
+}
+
 static Operand
 shift(Checker *c, u32 file, u32 token, u8 kind, Operand a, Operand b)
 {
     if (!is_int(c, a.type) || !is_int(c, b.type)) {
-        report(c, file, token, DIAG_BAD_OPERATOR, is_int(c, a.type) ? b.type : a.type, 0);
-        return poison;
+        return shift_lanes(c, file, token, kind, a, b);
     }
 
     bool untyped = a.type == TYPE_ID_UNTYPED_INT;
@@ -1924,6 +2023,23 @@ advance(Checker *c, u32 file, u32 token, u8 kind, Operand p, Operand n)
     return emit_value(c, IR_INDEX, p.type, value_of(p), at);
 }
 
+static NOINLINE Operand
+lanewise(Checker *c, u32 file, u32 token, u8 kind, u32 type, Operand a, Operand b)
+{
+    if (!is_vector(c, type) || kind == NODE_DIV || kind == NODE_MOD) {
+        report(c, file, token, DIAG_BAD_OPERATOR, type, 0);
+        return poison;
+    }
+    if (operator_classes[kind] == OP_ARITH) {
+        report(c, file, token, DIAG_WRAPPING_ONLY, type, 0);
+        return poison;
+    }
+
+    u32 x = operand_ir(c, a);
+    u32 y = operand_ir(c, b);
+    return (Operand){ type, REF_VALUE | REF_RESULT | emit(c, binary_irs[kind], type, x, y) };
+}
+
 static Operand
 binary(Checker *c, u32 file, u32 token, u8 kind, Operand a, Operand b)
 {
@@ -1953,8 +2069,7 @@ binary(Checker *c, u32 file, u32 token, u8 kind, Operand a, Operand b)
         return poison;
     }
     if (!applies(c, cls, type)) {
-        report(c, file, token, DIAG_BAD_OPERATOR, type, 0);
-        return poison;
+        return lanewise(c, file, token, kind, type, a, b);
     }
     if (is_constant(a) && is_constant(b)) {
         return fold(c, file, token, kind, type, a, b);
@@ -1973,6 +2088,22 @@ binary(Checker *c, u32 file, u32 token, u8 kind, Operand a, Operand b)
     return (Operand){ result, REF_VALUE | REF_RESULT | emit(c, ir, type, x, y) };
 }
 
+static NOINLINE Operand
+unary_lanes(Checker *c, u32 file, u32 token, u8 kind, Operand a)
+{
+    if (kind == NODE_NOT) {
+        report(c, file, token, DIAG_NOT_BOOL, a.type, 0);
+        return poison;
+    }
+    if (kind == NODE_NEG) {
+        report(c, file, token, DIAG_WRAPPING_ONLY, a.type, 0);
+        return poison;
+    }
+
+    u8 ir = kind == NODE_NEG_WRAP ? IR_NEG_WRAP : IR_BIT_NOT;
+    return (Operand){ a.type, REF_VALUE | REF_RESULT | emit(c, ir, a.type, operand_ir(c, a), 0) };
+}
+
 static Operand
 unary(Checker *c, u32 file, u32 token, u8 kind, Operand a)
 {
@@ -1986,6 +2117,10 @@ unary(Checker *c, u32 file, u32 token, u8 kind, Operand a)
     if (!is_value_type(a.type)) {
         report(c, file, token, DIAG_NOT_VALUE, 0, 0);
         return poison;
+    }
+
+    if (is_vector(c, a.type)) {
+        return unary_lanes(c, file, token, kind, a);
     }
 
     if (kind == NODE_NOT) {
@@ -2432,6 +2567,8 @@ refuse_non_c(Checker *c, u32 file, u32 token, u32 type, u8 not_c)
         report(c, file, token, not_c, 0, type);
     } else if (c->types.kinds[type] == TYPE_FN && !(c->types.arg1[type] & FN_C_CALL)) {
         report(c, file, token, DIAG_C_FN_TYPE, 0, type);
+    } else if (is_vector(c, type) && not_c == DIAG_NOT_C) {
+        report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
     }
 }
 
@@ -3391,6 +3528,21 @@ slice_pair(Checker *c, Operand o)
     return pair_of(c, is_place(o) ? read_slice(c, o) : o);
 }
 
+static NOINLINE bool
+index_lanes(Checker *c, u32 file, u32 token, Operand base, u32 type)
+{
+    if (!is_vector(c, type)) {
+        report(c, file, token, DIAG_NOT_INDEXABLE, type, 0);
+        return false;
+    }
+    if (base.type != OPERAND_LOCAL) {
+        report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
+        return false;
+    }
+    slot_at(c, base.ref)->weight = WEIGHT_ADDRESSED;
+    return true;
+}
+
 static NOINLINE Operand
 index_place(Checker *c, u32 file, u32 token, Operand base, Operand index, u32 index_token, u8 next)
 {
@@ -3404,8 +3556,7 @@ index_place(Checker *c, u32 file, u32 token, Operand base, Operand index, u32 in
         return poison;
     }
     bool many = c->types.kinds[type] == TYPE_MANY;
-    if (!many && !is_indexable(c, type)) {
-        report(c, file, token, DIAG_NOT_INDEXABLE, type, 0);
+    if (!many && !is_indexable(c, type) && !index_lanes(c, file, token, base, type)) {
         return poison;
     }
     if (!check_index(c, file, index_token, index)) {
@@ -3491,7 +3642,7 @@ slice_range(Checker *c, u32 file, u8 kind)
     }
     bool many = c->types.kinds[type] == TYPE_MANY;
     if (!many && !is_indexable(c, type)) {
-        report(c, file, token, DIAG_NOT_INDEXABLE, type, 0);
+        report(c, file, token, is_vector(c, type) ? DIAG_UNSUPPORTED : DIAG_NOT_INDEXABLE, type, 0);
         return poison;
     }
     if (many && !has_hi) {
@@ -3906,7 +4057,8 @@ can_zero(Checker *c, u32 file, u32 token, u32 type)
             }
             return true;
         default:
-            if (is_number(c, type) || type == TYPE_ID_BOOL || is_slice(c, type)) {
+            if (is_number(c, type) || type == TYPE_ID_BOOL ||
+                is_slice(c, type) || is_vector(c, type)) {
                 return true;
             }
             report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
@@ -3980,8 +4132,11 @@ literal_struct(Checker *c, u32 file, u32 token, u32 m, bool typed)
         }
     }
     if (type != TYPE_ID_NONE && !is_struct(c, type)) {
-        report(c, file, token, DIAG_NOT_STRUCT, 0, type);
-        return TYPE_ID_NONE;
+        if (!is_vector(c, type)) {
+            report(c, file, token, DIAG_NOT_STRUCT, 0, type);
+            return TYPE_ID_NONE;
+        }
+        return type;
     }
     if (type != TYPE_ID_NONE && !is_storable(c, type)) {
         report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
@@ -4040,6 +4195,100 @@ literal_fields(Checker *c, u32 file, u32 m, u32 type, u32 token, u32 *items)
     return true;
 }
 
+static u32
+reserve_data(Checker *c, u32 file, u32 token, u32 type)
+{
+    Ir *ir = &c->ir;
+    u64 size = check_type_size(c, type);
+    u32 align = check_type_align(c, type);
+    u32 at = (ir->ndata + align - 1) & ~(align - 1);
+    if (size > DATA_LIMIT - at) {
+        report(c, file, token, DIAG_DATA_TOO_LARGE, 0, 0);
+        return NO_SLOT;
+    }
+
+    u32 end = at + (u32)size;
+    if (end >= ir->data_cap) {
+        ir->data_cap = 2 * end + 64;
+        ir->data = resize(ir->data, ir->data_cap, 1);
+    }
+    memset(ir->data + ir->ndata, 0, end - ir->ndata);
+    ir->ndata = end;
+    return at;
+}
+
+static void
+put_data(Checker *c, u8 *to, u32 type, Operand v)
+{
+    u64 size = check_type_size(c, type);
+    if (is_aggregate(c, type)) {
+        memcpy(to, c->ir.data + value_of(v), size);
+        return;
+    }
+    u64 bits = constant_bits(c, v);
+    memcpy(to, &bits, size);
+}
+
+static NOINLINE void
+vector_literal(Checker *c, u32 file, u32 node, u32 m, u32 base, u32 type)
+{
+    u32 token = c->stack_tokens[base];
+    u32 elem = c->types.arg0[type];
+    u32 n = c->sp - m - 1;
+    bool ok = true;
+    for (u32 k = m + 1; ok && k < c->sp; k++) {
+        if (c->stack[k].type == OPERAND_FIELD) {
+            report(c, file, c->stack_tokens[k], DIAG_NO_MEMBER, c->stack[k].ref, type);
+            ok = false;
+        }
+    }
+    if (ok && n != c->types.arg1[type]) {
+        report(c, file, token, DIAG_LANE_COUNT, n, type);
+        ok = false;
+    }
+
+    bool constant = true;
+    for (u32 k = m + 1; ok && k < c->sp; k++) {
+        Operand v = convert(c, file, c->stack_tokens[k], c->stack[k], elem);
+        constant = constant && is_constant(v);
+        c->stack[k] = v;
+    }
+    for (u32 k = m + 1; ok && k < c->sp; k++) {
+        ok = c->stack[k].type != TYPE_ID_NONE;
+    }
+
+    Operand r = poison;
+    u64 size = check_type_size(c, elem);
+    if (ok && constant) {
+        u32 at = reserve_data(c, file, token, type);
+        for (u32 k = 0; at != NO_SLOT && k < n; k++) {
+            put_data(c, c->ir.data + at + k * size, elem, c->stack[m + 1 + k]);
+        }
+        if (at != NO_SLOT) {
+            r = load_at(c, type, emit(c, IR_DATA, pointer_type(c, type), at, 0));
+        }
+    } else if (ok) {
+        u32 slot = add_slot(c, 0, type, node);
+        slot_at(c, slot)->weight = WEIGHT_ADDRESSED;
+        Operand lanes = { OPERAND_LOCAL, slot };
+        for (u32 k = 0; k < n; k++) {
+            u32 at = emit(
+                c,
+                IR_INDEX,
+                pointer_type(c, elem),
+                place_address(c, lanes),
+                ir_const(c, TYPE_ID_I64, k)
+            );
+            store_at(c, elem, at, c->stack[m + 1 + k]);
+        }
+        r = load_local(c, slot);
+    }
+
+    c->sp = base;
+    drop_unread(c, base);
+    push_operand(c, token, r);
+}
+
 static NOINLINE void
 struct_literal(Checker *c, u32 file, u32 node, u8 kind)
 {
@@ -4048,6 +4297,10 @@ struct_literal(Checker *c, u32 file, u32 node, u8 kind)
     u32 base = typed ? m - 1 : m;
     u32 token = c->stack_tokens[base];
     u32 type = literal_struct(c, file, token, m, typed);
+    if (is_vector(c, type)) {
+        vector_literal(c, file, node, m, base, type);
+        return;
+    }
     u32 items = 0;
     bool ok = literal_fields(c, file, m, type, token, &items);
 
@@ -4108,28 +4361,6 @@ struct_literal(Checker *c, u32 file, u32 node, u8 kind)
     push_operand(c, token, ok ? (Operand){ OPERAND_LOCAL, slot } : poison);
 }
 
-static u32
-reserve_data(Checker *c, u32 file, u32 token, u32 type)
-{
-    Ir *ir = &c->ir;
-    u64 size = check_type_size(c, type);
-    u32 align = check_type_align(c, type);
-    u32 at = (ir->ndata + align - 1) & ~(align - 1);
-    if (size > DATA_LIMIT - at) {
-        report(c, file, token, DIAG_DATA_TOO_LARGE, 0, 0);
-        return NO_SLOT;
-    }
-
-    u32 end = at + (u32)size;
-    if (end >= ir->data_cap) {
-        ir->data_cap = 2 * end + 64;
-        ir->data = resize(ir->data, ir->data_cap, 1);
-    }
-    memset(ir->data + ir->ndata, 0, end - ir->ndata);
-    ir->ndata = end;
-    return at;
-}
-
 static u64
 global_size(Checker *c, u32 type)
 {
@@ -4175,18 +4406,6 @@ reserve_zeroed(Checker *c, u32 file, u32 token, u32 type)
     c->zeroed = at + (u32)size;
     c->zeroed_align = align > c->zeroed_align ? align : c->zeroed_align;
     return at;
-}
-
-static void
-put_data(Checker *c, u8 *to, u32 type, Operand v)
-{
-    u64 size = check_type_size(c, type);
-    if (is_aggregate(c, type)) {
-        memcpy(to, c->ir.data + value_of(v), size);
-        return;
-    }
-    u64 bits = constant_bits(c, v);
-    memcpy(to, &bits, size);
 }
 
 static void
@@ -4271,6 +4490,10 @@ constant_struct(Checker *c, u32 file, u8 kind)
     u32 base = typed ? m - 1 : m;
     u32 token = c->stack_tokens[base];
     u32 type = literal_struct(c, file, token, m, typed);
+    if (is_vector(c, type)) {
+        report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
+        type = TYPE_ID_NONE;
+    }
     u32 items = 0;
     bool ok = literal_fields(c, file, m, type, token, &items);
 
@@ -6485,7 +6708,7 @@ check_init(Checker *c, const Names *names)
     Types *t = &c->types;
     reserve_types(c, 256);
     for (u32 id = 0; id < NFIXED_TYPES; id++) {
-        add_type(c, fixed_kinds[id], fixed_bits[id], fixed_signed[id]);
+        add_type(c, fixed_kinds[id], fixed_arg0[id], fixed_arg1[id]);
     }
     t->map_mask = 63;
     t->map = calloc(t->map_mask + 1, sizeof *t->map);
@@ -6723,15 +6946,16 @@ print_bits(FILE *out, const Checker *c, u32 type, u64 bits)
 static void
 print_data(FILE *out, const Checker *c, const u8 *data, u32 type)
 {
-    if (is_array(c, type)) {
+    if (is_array(c, type) || is_vector(c, type)) {
+        bool lanes = is_vector(c, type);
         u32 elem = c->types.arg0[type];
         u64 size = check_type_size(c, elem);
-        fputs(".[", out);
+        fputs(lanes ? ".{ " : ".[", out);
         for (u64 k = 0; k < c->types.arg1[type]; k++) {
             fputs(k ? ", " : "", out);
             print_data(out, c, data + k * size, elem);
         }
-        fputc(']', out);
+        fputs(lanes ? " }" : "]", out);
         return;
     }
     if (is_struct(c, type)) {
@@ -6831,6 +7055,7 @@ check_print_diagnostics(FILE *out, const Checker *c)
                 case 'C': fprintf(out, "%u", d.arg2); break;
                 case 'T': print_type(out, c, d.arg); break;
                 case 'U': print_type(out, c, d.arg2); break;
+                case '%': fputc('%', out); break;
                 default: assert(false && "unknown placeholder");
             }
         }
@@ -6955,10 +7180,11 @@ print_operand(FILE *out, const Checker *c, const IrFunc *fn, u32 operand)
     }
 
     IrConst k = c->ir.code.consts[fn->first_const + (operand & ~IR_CONST)];
-    if (c->types.kinds[k.type] == TYPE_FLOAT) {
-        print_float(out, k.bits, c->types.arg0[k.type]);
+    u32 type = is_vector(c, k.type) ? c->types.arg0[k.type] : k.type;
+    if (c->types.kinds[type] == TYPE_FLOAT) {
+        print_float(out, k.bits, c->types.arg0[type]);
     } else {
-        print_bits(out, c, k.type, k.bits);
+        print_bits(out, c, type, k.bits);
     }
 }
 
@@ -7031,7 +7257,11 @@ print_function(FILE *out, const Checker *c, const IrFunc *fn)
                 fputc(' ', out);
                 print_type(out, c, type);
                 fputc(' ', out);
-                print_name(out, c, c->decls.names[b]);
+                if (kind == IR_DATA && b == 0) {
+                    print_data(out, c, c->ir.data + a, c->types.arg0[type]);
+                } else {
+                    print_name(out, c, c->decls.names[b]);
+                }
                 break;
             case IR_STORE:
                 fputc(' ', out);
@@ -7063,6 +7293,7 @@ print_function(FILE *out, const Checker *c, const IrFunc *fn)
             case IR_CONVERT:
             case IR_NARROW:
             case IR_TRUNCATE:
+            case IR_SPLAT:
                 fputc(' ', out);
                 print_type(out, c, type);
                 fputc(' ', out);
