@@ -7312,7 +7312,42 @@ static const char VECTOR_SHAPES[] =
     "    v: u8x16 = b\n"
     "    w := v +% u8(a * 2 + (a * 3 + (a * 5 + (a * 7 + (a * 11 + (a * 13 + (a * 17 + (a * 19 + a * 23))))))))\n"
     "    return int(w[8]) * 1000 + int(w[12])\n"
+    "}\n"
+    "fn bytes_mask(p: [*]u8) -> int {\n"
+    "    return top_bits(unaligned_load(u8x16, p))\n"
+    "}\n"
+    "fn halves_mask(p: [*]u8) -> int {\n"
+    "    return top_bits(unaligned_load(i16x8, p))\n"
+    "}\n"
+    "fn words_mask(p: [*]u8) -> int {\n"
+    "    return top_bits(unaligned_load(u32x4, p) > 0x80000000)\n"
+    "}\n"
+    "fn longs_mask(p: [*]u8) -> int {\n"
+    "    return top_bits(unaligned_load(i64x2, p))\n"
+    "}\n"
+    "fn lookup_store(p: [*]u8, q: [*]u8) {\n"
+    "    t := unaligned_load(u8x16, p)\n"
+    "    unaligned_store(q + 1, lookup(t, unaligned_load(u8x16, q)))\n"
+    "}\n"
+    "fn copy16(p: [*]u8, q: [*]u8) {\n"
+    "    unaligned_store(q, unaligned_load(u8x16, p))\n"
+    "}\n"
+    "fn fill(q: [*]u8, a: u8) {\n"
+    "    v: u8x16 = a\n"
+    "    unaligned_store(q, v)\n"
+    "    unaligned_store(q + 16, v)\n"
+    "    unaligned_store(q + 32, v)\n"
+    "    unaligned_store(q + 48, v)\n"
+    "    unaligned_store(q + 64, v)\n"
+    "    unaligned_store(q + 80, v)\n"
+    "    unaligned_store(q + 96, v)\n"
+    "    unaligned_store(q + 112, v)\n"
+    "    unaligned_store(q + 128, v)\n"
     "}\n";
+
+typedef int64_t VMASK(void *, const uint8_t *);
+typedef void VLOOK(void *, const uint8_t *, uint8_t *);
+typedef void VFILL(void *, uint8_t *, int64_t);
 
 enum
 {
@@ -7340,6 +7375,24 @@ enum
     WORD_FMOV_D_X = 0x9E670000u,
     THREE_VECTORS = 0x001F03FFu,
     WORD_SUB_SP_128 = 0xD10203FFu,
+    WORD_TBL = 0x4E000000u,
+    WORD_USHR_16B_7 = 0x6F090400u,
+    WORD_USHR_2D_63 = 0x6F410400u,
+    WORD_USRA = 0x6F001400u,
+    USRA_FIELDS = 0x007F03FFu,
+    WORD_USRA_8H_7 = 0x6F191400u,
+    WORD_USRA_4S_14 = 0x6F321400u,
+    WORD_USRA_4S_15 = 0x6F311400u,
+    WORD_USRA_2D_28 = 0x6F641400u,
+    WORD_USRA_2D_30 = 0x6F621400u,
+    WORD_USRA_2D_31 = 0x6F611400u,
+    WORD_UMOV_B0 = 0x0E013C00u,
+    WORD_UMOV_B8 = 0x0E113C00u,
+    WORD_ORR_LSL_8 = 0x2A002000u,
+    WORD_ORR_LSL_4 = 0x2A001000u,
+    WORD_ORR_LSL_2 = 0x2A000800u,
+    WORD_ORR_LSL_1 = 0x2A000400u,
+    WORD_STR_X_SP = 0xF90003E0u,
 };
 
 TEST_CASE(vectors)
@@ -7425,6 +7478,53 @@ TEST_CASE(vectors)
     REQUIRE(((I4 *)fn(&p, "slot_numbers"))(CONTEXT, 3, 0, 0, 0) == 4);
     REQUIRE(((I4 *)fn(&p, "address_numbers"))(CONTEXT, 7, 0, 0, 0) == 7);
     REQUIRE(((I2 *)fn(&p, "spilled"))(CONTEXT, 1, 250) == 94094);
+
+    uint8_t raw[17] = { 0,    0x80, 0x01, 0xFF, 0x7F, 0x00, 0x90, 0x10, 0x40,
+                        0x08, 0x88, 0x00, 0x00, 0x00, 0x80, 0x7F, 0xFF };
+    REQUIRE(((VMASK *)fn(&p, "bytes_mask"))(CONTEXT, raw + 1) == 41509);
+    REQUIRE(((VMASK *)fn(&p, "halves_mask"))(CONTEXT, raw + 1) == 212);
+    REQUIRE(((VMASK *)fn(&p, "words_mask"))(CONTEXT, raw + 1) == 8);
+    REQUIRE(((VMASK *)fn(&p, "longs_mask"))(CONTEXT, raw + 1) == 2);
+    REQUIRE(count_words(&p, "bytes_mask", WORD_USHR_16B_7, REGISTER_FIELDS) == 1);
+    REQUIRE(count_words(&p, "bytes_mask", WORD_USRA_8H_7, REGISTER_FIELDS) == 1);
+    REQUIRE(count_words(&p, "bytes_mask", WORD_USRA_4S_14, REGISTER_FIELDS) == 1);
+    REQUIRE(count_words(&p, "bytes_mask", WORD_USRA_2D_28, REGISTER_FIELDS) == 1);
+    REQUIRE(count_words(&p, "bytes_mask", WORD_UMOV_B0, REGISTER_FIELDS) == 1);
+    REQUIRE(count_words(&p, "bytes_mask", WORD_UMOV_B8, REGISTER_FIELDS) == 1);
+    REQUIRE(count_words(&p, "bytes_mask", WORD_ORR_LSL_8, THREE_VECTORS) == 1);
+    REQUIRE(count_words(&p, "bytes_mask", WORD_STR_Q_SP, Q_FIELDS) == 0);
+    REQUIRE(count_words(&p, "halves_mask", WORD_USRA_4S_15, REGISTER_FIELDS) == 1);
+    REQUIRE(count_words(&p, "halves_mask", WORD_USRA_2D_30, REGISTER_FIELDS) == 1);
+    REQUIRE(count_words(&p, "halves_mask", WORD_ORR_LSL_4, THREE_VECTORS) == 1);
+    REQUIRE(count_words(&p, "words_mask", WORD_USRA, USRA_FIELDS) == 1);
+    REQUIRE(count_words(&p, "words_mask", WORD_USRA_2D_31, REGISTER_FIELDS) == 1);
+    REQUIRE(count_words(&p, "words_mask", WORD_ORR_LSL_2, THREE_VECTORS) == 1);
+    REQUIRE(count_words(&p, "words_mask", WORD_STR_Q_SP, Q_FIELDS) == 0);
+    REQUIRE(count_words(&p, "longs_mask", WORD_USHR_2D_63, REGISTER_FIELDS) == 1);
+    REQUIRE(count_words(&p, "longs_mask", WORD_USRA, USRA_FIELDS) == 0);
+    REQUIRE(count_words(&p, "longs_mask", WORD_ORR_LSL_1, THREE_VECTORS) == 1);
+
+    uint8_t table[16] = { 9, 8, 7,   6,   5,   4,   3,   2,
+                          1, 0, 200, 201, 202, 203, 204, 205 };
+    uint8_t q[18] = { 3, 15, 16, 0,  255, 10, 9, 128,  1,
+                      2, 14, 13, 17, 12,  11, 4, 0x55, 0x66 };
+    static const uint8_t looked[16] = { 6, 205, 0,   9,   0, 200, 0,   0,
+                                        8, 7,   204, 203, 0, 202, 201, 5 };
+    ((VLOOK *)fn(&p, "lookup_store"))(CONTEXT, table, q);
+    REQUIRE(q[0] == 3 && memcmp(q + 1, looked, sizeof looked) == 0 && q[17] == 0x66);
+    REQUIRE(count_words(&p, "lookup_store", WORD_TBL, THREE_VECTORS) == 1);
+
+    uint8_t bytes[146];
+    for (int k = 0; k < 146; k++) {
+        bytes[k] = (uint8_t)(k * 7);
+    }
+    ((VLOOK *)fn(&p, "copy16"))(CONTEXT, bytes + 3, bytes + 20);
+    REQUIRE(memcmp(bytes + 20, (uint8_t[]){ 21, 28, 35, 42, 49, 56, 63, 70 }, 8) == 0);
+    REQUIRE(bytes[19] == 133 && bytes[35] == 126 && bytes[36] == 252);
+    REQUIRE(count_words(&p, "copy16", WORD_STR_Q_SP, Q_FIELDS) == 0);
+    ((VFILL *)fn(&p, "fill"))(CONTEXT, bytes + 1, 9);
+    REQUIRE(bytes[0] == 0 && bytes[1] == 9 && bytes[144] == 9 && bytes[145] == 247);
+    REQUIRE(count_words(&p, "fill", WORD_STR_X_SP, Q_FIELDS) == 0);
     release_program(&p);
     return true;
 }

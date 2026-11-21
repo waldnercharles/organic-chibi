@@ -194,16 +194,19 @@ enum
     OP_CMGE = 0x4E203C00u,
     OP_CMHI = 0x6E203400u,
     OP_CMHS = 0x6E203C00u,
+    OP_TBL = 0x4E000000u,
     OP_SSHL = 0x4E204400u,
     OP_USHL = 0x6E204400u,
     OP_VNEG = 0x6E20B800u,
     OP_VNOT = 0x6E205800u,
     OP_DUP = 0x4E000C00u,
     OP_UMOV_D = 0x4E083C00u,
+    OP_UMOV_B = 0x0E013C00u,
     OP_INS_D1 = 0x4E181C00u,
     OP_SHL_IMM = 0x4F005400u,
     OP_SSHR_IMM = 0x4F000400u,
     OP_USHR_IMM = 0x6F000400u,
+    OP_USRA = 0x6F001400u,
     OP_MOVI_8 = 0x4F00E400u,
     OP_MOVI_16 = 0x4F008400u,
     OP_MOVI_32 = 0x4F000400u,
@@ -3465,6 +3468,23 @@ shift_lanes(Emit *e, u8 kind, u8 t, u32 a, u32 b)
     put(e, (is_signed(t) ? OP_SSHL : OP_USHL) | scale << 22 | V31 << 16 | r << 5 | V29);
 }
 
+static void
+gather_top_bits(Emit *e, u32 i, u8 t, u32 a)
+{
+    u32 scale = t & INFO_SCALE;
+    u32 bits = 8u << scale;
+    u32 d = result(e, i, e->info[scale ? TYPE_ID_U8 : TYPE_ID_U16]);
+    u32 r = fetch_lanes(e, a, V30);
+
+    put(e, OP_USHR_IMM | (bits + 1) << 16 | r << 5 | V29);
+    for (u32 n = 1, w = bits; w < 64; n *= 2, w *= 2) {
+        put(e, OP_USRA | (3 * w + n) << 16 | V29 << 5 | V29);
+    }
+    put(e, OP_UMOV_B | V29 << 5 | X16);
+    put(e, OP_UMOV_B | 8u << 17 | V29 << 5 | X17);
+    put(e, OP_ORR | X17 << 16 | (8u >> scale) << 10 | X16 << 5 | d);
+}
+
 static u32
 lane_op(u8 kind, u8 t)
 {
@@ -3483,6 +3503,7 @@ lane_op(u8 kind, u8 t)
         case IR_GT: return (s ? OP_CMGT : OP_CMHI) | size;
         case IR_LE:
         case IR_GE: return (s ? OP_CMGE : OP_CMHS) | size;
+        case IR_LOOKUP: return OP_TBL;
         default: assert(false && "unknown vector instruction"); return 0;
     }
 }
@@ -3537,6 +3558,14 @@ lanes(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
             memory(e, OP_STR_Q, 4, r, e->slot_offsets[a], X8);
             return;
         }
+        case IR_STORE_AT: {
+            u32 r = fetch_lanes(e, b, V30);
+            u32 p = fetch(e, a, X16);
+            put(e, OP_STR_Q | p << 5 | r);
+            release(e, a);
+            return;
+        }
+        case IR_TOP_BITS: gather_top_bits(e, i, t, a); return;
         case IR_EXIT: {
             Open *o = find_open(e, a);
             fetch_lanes(e, b, V29);

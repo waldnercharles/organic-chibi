@@ -156,7 +156,11 @@ enum
     OTHER(NAME_COUNT_ONES, "count_ones")                                       \
     OTHER(NAME_ADD_OVERFLOWS, "add_overflows")                                 \
     OTHER(NAME_SUB_OVERFLOWS, "sub_overflows")                                 \
-    OTHER(NAME_MUL_OVERFLOWS, "mul_overflows")
+    OTHER(NAME_MUL_OVERFLOWS, "mul_overflows")                                 \
+    OTHER(NAME_UNALIGNED_LOAD, "unaligned_load")                               \
+    OTHER(NAME_UNALIGNED_STORE, "unaligned_store")                             \
+    OTHER(NAME_LOOKUP, "lookup")                                               \
+    OTHER(NAME_TOP_BITS, "top_bits")
 // clang-format on
 
 #define CHIBI_BUILTIN_NAME_ID(name, text) name,

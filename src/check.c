@@ -3106,6 +3106,130 @@ int_argument(Checker *c, u32 file, u32 name, u32 m)
     return true;
 }
 
+static bool
+many_argument(Checker *c, u32 file, u32 name, u32 m)
+{
+    Operand p = c->stack[m];
+    if (p.type == TYPE_ID_NONE) {
+        return false;
+    }
+    if (!is_place(p) && !is_value_type(p.type)) {
+        report(c, file, c->stack_tokens[m], DIAG_NOT_VALUE, 0, 0);
+        return false;
+    }
+    if (is_place(p) || c->types.kinds[p.type] != TYPE_MANY) {
+        u32 type = is_place(p) ? place_type(c, p) : p.type;
+        report(c, file, c->stack_tokens[m], DIAG_BUILTIN_MANY, name, type);
+        return false;
+    }
+    return true;
+}
+
+static NOINLINE Operand
+call_unaligned_load(Checker *c, u32 file, u32 token, u32 first_arg, u32 nargs)
+{
+    if (nargs != 2) {
+        report(c, file, token, DIAG_ARG_COUNT, 2, nargs);
+        return poison;
+    }
+    Operand t = c->stack[first_arg];
+    u32 t_token = c->stack_tokens[first_arg];
+    if (t.type != TYPE_ID_TYPE) {
+        if (t.type != TYPE_ID_NONE) {
+            report(c, file, t_token, DIAG_LOAD_TYPE, 0, 0);
+        }
+        return poison;
+    }
+    if (!is_number(c, t.ref) && !is_vector(c, t.ref)) {
+        report(c, file, t_token, DIAG_UNALIGNED_TYPE, NAME_UNALIGNED_LOAD, t.ref);
+        return poison;
+    }
+    if (!many_argument(c, file, NAME_UNALIGNED_LOAD, first_arg + 1)) {
+        return poison;
+    }
+    return emit_value(c, IR_LOAD_AT, t.ref, operand_ir(c, c->stack[first_arg + 1]), 0);
+}
+
+static NOINLINE Operand
+call_unaligned_store(Checker *c, u32 file, u32 token, u32 first_arg, u32 nargs)
+{
+    if (nargs != 2) {
+        report(c, file, token, DIAG_ARG_COUNT, 2, nargs);
+        return poison;
+    }
+    Operand v = c->stack[first_arg + 1];
+    u32 v_token = c->stack_tokens[first_arg + 1];
+    if (!many_argument(c, file, NAME_UNALIGNED_STORE, first_arg) ||
+        v.type == TYPE_ID_NONE) {
+        return poison;
+    }
+    if (!is_place(v) && !is_value_type(v.type)) {
+        report(c, file, v_token, DIAG_NOT_VALUE, 0, 0);
+        return poison;
+    }
+    if (is_untyped(v.type)) {
+        report(c, file, v_token, DIAG_STORE_UNTYPED, 0, 0);
+        return poison;
+    }
+    if (is_place(v) || (!is_number(c, v.type) && !is_vector(c, v.type))) {
+        u32 type = is_place(v) ? place_type(c, v) : v.type;
+        report(c, file, v_token, DIAG_UNALIGNED_TYPE, NAME_UNALIGNED_STORE, type);
+        return poison;
+    }
+
+    u32 p = operand_ir(c, c->stack[first_arg]);
+    emit(c, IR_STORE_AT, v.type, p, operand_ir(c, v));
+    return (Operand){ TYPE_ID_VOID, 0 };
+}
+
+static NOINLINE Operand
+call_lookup(Checker *c, u32 file, u32 token, u32 first_arg, u32 nargs)
+{
+    if (nargs != 2) {
+        report(c, file, token, DIAG_ARG_COUNT, 2, nargs);
+        return poison;
+    }
+    Operand table = c->stack[first_arg];
+    Operand index = c->stack[first_arg + 1];
+    if (table.type == TYPE_ID_NONE || index.type == TYPE_ID_NONE) {
+        return poison;
+    }
+    bool bytes = table.type == TYPE_ID_U8X16 || table.type == TYPE_ID_I8X16;
+    if (!bytes || index.type != table.type) {
+        u32 a = is_place(table) ? place_type(c, table) : table.type;
+        u32 b = is_place(index) ? place_type(c, index) : index.type;
+        report(c, file, token, DIAG_LOOKUP_TYPES, a, b);
+        return poison;
+    }
+    return emit_value(c, IR_LOOKUP, table.type, operand_ir(c, table), operand_ir(c, index));
+}
+
+static NOINLINE Operand
+call_top_bits(Checker *c, u32 file, u32 token, u32 first_arg, u32 nargs)
+{
+    if (nargs != 1) {
+        report(c, file, token, DIAG_ARG_COUNT, 1, nargs);
+        return poison;
+    }
+    Operand v = c->stack[first_arg];
+    u32 v_token = c->stack_tokens[first_arg];
+    if (v.type == TYPE_ID_NONE) {
+        return poison;
+    }
+    if (!is_place(v) && !is_value_type(v.type)) {
+        report(c, file, v_token, DIAG_NOT_VALUE, 0, 0);
+        return poison;
+    }
+    if (is_place(v) || !is_vector(c, v.type)) {
+        u32 type = is_place(v) ? place_type(c, v) : v.type;
+        report(c, file, v_token, DIAG_BUILTIN_VECTOR, NAME_TOP_BITS, type);
+        return poison;
+    }
+    u32 type = c->types.arg1[v.type] == 16 ? TYPE_ID_U16 : TYPE_ID_U8;
+    u32 i = emit(c, IR_TOP_BITS, v.type, operand_ir(c, v), 0);
+    return (Operand){ type, REF_VALUE | i };
+}
+
 static Operand
 test_overflow(Checker *c, u32 file, u32 token, u32 name, u32 first_arg, u32 nargs)
 {
@@ -3154,6 +3278,16 @@ call_builtin(Checker *c, u32 file, u32 token, Operand callee, u32 first_arg, u32
     if (callee.type != OPERAND_BUILTIN) {
         report(c, file, token, DIAG_NOT_CALLABLE, 0, 0);
         return poison;
+    }
+    switch (callee.ref) {
+        case NAME_UNALIGNED_LOAD:
+            return call_unaligned_load(c, file, token, first_arg, nargs);
+        case NAME_UNALIGNED_STORE:
+            return call_unaligned_store(c, file, token, first_arg, nargs);
+        case NAME_LOOKUP: return call_lookup(c, file, token, first_arg, nargs);
+        case NAME_TOP_BITS:
+            return call_top_bits(c, file, token, first_arg, nargs);
+        default: break;
     }
     if (callee.ref >= NAME_ADD_OVERFLOWS) {
         return test_overflow(c, file, token, callee.ref, first_arg, nargs);
@@ -5692,7 +5826,7 @@ global_place(Checker *c, u32 file, u32 node, u32 decl)
 static NOINLINE Operand
 resolve_builtin(Checker *c, u32 file, u32 node, u32 token, u32 id)
 {
-    if (id - NAME_TRAILING_ZEROS > NAME_MUL_OVERFLOWS - NAME_TRAILING_ZEROS) {
+    if (id - NAME_TRAILING_ZEROS > NAME_TOP_BITS - NAME_TRAILING_ZEROS) {
         report(c, file, token, DIAG_UNKNOWN_NAME, 0, 0);
         return poison;
     }
@@ -7294,6 +7428,7 @@ print_function(FILE *out, const Checker *c, const IrFunc *fn)
             case IR_NARROW:
             case IR_TRUNCATE:
             case IR_SPLAT:
+            case IR_TOP_BITS:
                 fputc(' ', out);
                 print_type(out, c, type);
                 fputc(' ', out);

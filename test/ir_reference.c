@@ -234,10 +234,14 @@ lanewise(const Checker *c, u8 kind, u32 type, const u64 *x, const u64 *y, u64 sh
 }
 
 static u32
-value_type(const IrCode *ir, u32 g)
+value_type(const Checker *c, u32 g)
 {
-    u8 kind = ir->kinds[g];
-    return kind >= IR_EQ && kind <= IR_MUL_OVERFLOWS ? TYPE_ID_BOOL : ir->types[g];
+    u8 kind = c->ir.code.kinds[g];
+    u32 type = c->ir.code.types[g];
+    if (kind == IR_TOP_BITS) {
+        return c->types.arg1[type] == 16 ? TYPE_ID_U16 : TYPE_ID_U8;
+    }
+    return kind >= IR_EQ && kind <= IR_MUL_OVERFLOWS ? TYPE_ID_BOOL : type;
 }
 
 void
@@ -337,7 +341,7 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                       : vals[(x)])
 #define OPERAND_TYPE(x)                                                        \
     (((x) & IR_CONST) ? ir->consts[fn->first_const + ((x) & ~IR_CONST)].type   \
-                      : value_type(ir, fn->first + (x)))
+                      : value_type(c, fn->first + (x)))
 #define WIDE(x, w)                                                             \
     do {                                                                       \
         if ((x) & IR_CONST) {                                                  \
@@ -409,6 +413,29 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                     WIDE(b, z);
                     fail = lanewise(c, kind, type, w, z, 0, out);
                     break;
+                case IR_LOOKUP: {
+                    WIDE(a, w);
+                    WIDE(b, z);
+                    Ty byte = ty(c, TYPE_ID_U8);
+                    for (u32 k = 0; k < 16; k++) {
+                        u64 index = get_lane(z, k, byte);
+                        put_lane(out, k, 8, index < 16 ? get_lane(w, (u32)index, byte) : 0);
+                    }
+                    break;
+                }
+                case IR_STORE_AT:
+                    WIDE(b, w);
+                    memcpy((void *)(uintptr_t)OPERAND(a), w, sizeof w);
+                    break;
+                case IR_TOP_BITS: {
+                    WIDE(a, w);
+                    u32 bits = ty(c, c->types.arg0[type]).bits;
+                    for (u32 k = 0; k < c->types.arg1[type]; k++) {
+                        u32 top = k * bits + bits - 1;
+                        out[0] |= (w[top / 64] >> (top % 64) & 1) << k;
+                    }
+                    break;
+                }
                 default: assert(false && "unknown vector instruction");
             }
             if (fail) {

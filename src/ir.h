@@ -48,6 +48,8 @@
     X(IR_NARROW, "narrow")                                                     \
     X(IR_TRUNCATE, "truncate")                                                 \
     X(IR_SPLAT, "splat")                                                       \
+    X(IR_LOOKUP, "lookup")                                                     \
+    X(IR_TOP_BITS, "top-bits")                                                 \
     X(IR_GLOBAL, "global")                                                     \
     X(IR_CALLBACK, "callback")                                                 \
     X(IR_CALL, "call")                                                         \

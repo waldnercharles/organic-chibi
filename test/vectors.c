@@ -112,6 +112,153 @@ const char VECTOR_RUNS[] =
     "    y := x >> 0\n"
     "    z := x << n\n"
     "    return int(y[k]) * 1000 + int(z[k])\n"
+    "}\n"
+    "\n"
+    "fn load_lanes(off: int, k: int) -> int {\n"
+    "    s: [48]u8\n"
+    "    for i in 0..48 {\n"
+    "        s[i] = u8(i) *% 13 +% 5\n"
+    "    }\n"
+    "    p: [*]u8 = &s\n"
+    "    v := unaligned_load(u8x16, p + off)\n"
+    "    return int(v[k])\n"
+    "}\n"
+    "\n"
+    "fn load_numbers(off: int, w: int) -> int {\n"
+    "    s: [48]u8\n"
+    "    for i in 0..48 {\n"
+    "        s[i] = u8(i) *% 29 +% 200\n"
+    "    }\n"
+    "    p: [*]u8 = &s\n"
+    "    return switch w {\n"
+    "        0 => unaligned_load(int, p + off)\n"
+    "        1 => int(unaligned_load(u32, p + off))\n"
+    "        2 => int(unaligned_load(i16, p + off))\n"
+    "        3 => int(unaligned_load(i8, p + off))\n"
+    "        _ => int(unaligned_load(u16, p + off))\n"
+    "    }\n"
+    "}\n"
+    "\n"
+    "fn load_words(k: int) -> int {\n"
+    "    a := u32.[0x03020100, 0x07060504, 0x0B0A0908, 0x0F0E0D0C, 0x13121110]\n"
+    "    q: [*]u32 = &a\n"
+    "    v := unaligned_load(u8x16, q + 1)\n"
+    "    return int(v[k])\n"
+    "}\n"
+    "\n"
+    "fn store_lanes(off: int, k: int) -> int {\n"
+    "    s: [48]u8\n"
+    "    v: u8x16\n"
+    "    for i in 0..16 {\n"
+    "        v[i] = u8(i) +% 100\n"
+    "    }\n"
+    "    p: [*]u8 = &s\n"
+    "    unaligned_store(p + off, v ^ 0x80)\n"
+    "    return int(s[k])\n"
+    "}\n"
+    "\n"
+    "fn store_numbers(off: int, k: int) -> int {\n"
+    "    s: [24]u8\n"
+    "    p: [*]u8 = &s\n"
+    "    unaligned_store(p + off, u32(0x44332211))\n"
+    "    unaligned_store(p + off + 4, i16(-2))\n"
+    "    unaligned_store(p + off + 6, u8(7))\n"
+    "    unaligned_store(p + off + 7, u64(0x0102030405060708))\n"
+    "    return int(s[k])\n"
+    "}\n"
+    "\n"
+    "fn store_words(k: int) -> int {\n"
+    "    a: [6]u32\n"
+    "    q: [*]u32 = &a\n"
+    "    v: u8x16\n"
+    "    for i in 0..16 {\n"
+    "        v[i] = u8(i) +% 1\n"
+    "    }\n"
+    "    unaligned_store(q + 1, v)\n"
+    "    return int(a[k])\n"
+    "}\n"
+    "\n"
+    "fn floats(off: int) -> int {\n"
+    "    s: [24]u8\n"
+    "    p: [*]u8 = &s\n"
+    "    unaligned_store(p + off, f64(1.5))\n"
+    "    unaligned_store(p + off + 8, f32(-2.25))\n"
+    "    x := unaligned_load(f64, p + off)\n"
+    "    y := unaligned_load(f32, p + off + 8)\n"
+    "    return int(x * 4.0) * 100 + int(y * 4.0)\n"
+    "}\n"
+    "\n"
+    "fn lookups(a: u8, k: int) -> int {\n"
+    "    t := u8x16.{ 200, 7, 33, 1, 0, 99, 254, 255, 128, 127, 64, 3, 2, 18, 45, 90 }\n"
+    "    v: u8x16\n"
+    "    for i in 0..16 {\n"
+    "        v[i] = a +% u8(i)\n"
+    "    }\n"
+    "    w := lookup(t, v)\n"
+    "    return int(w[k])\n"
+    "}\n"
+    "\n"
+    "fn signed_lookups(a: i8, k: int) -> int {\n"
+    "    t := i8x16.{ -1, 2, -3, 4, -5, 6, -7, 8, -9, 10, -11, 12, -13, 14, -15, 127 }\n"
+    "    v: i8x16\n"
+    "    for i in 0..16 {\n"
+    "        v[i] = a +% i8(i)\n"
+    "    }\n"
+    "    w := lookup(t, v)\n"
+    "    return int(w[k])\n"
+    "}\n"
+    "\n"
+    "fn top_bits_of(a: int, w: int) -> int {\n"
+    "    s: [16]u8\n"
+    "    for i in 0..16 {\n"
+    "        if ((a >> i) & 1) != 0 {\n"
+    "            s[i] = u8(i) | 128\n"
+    "        } else {\n"
+    "            s[i] = u8(i) ^ 127\n"
+    "        }\n"
+    "    }\n"
+    "    p: [*]u8 = &s\n"
+    "    return switch w {\n"
+    "        0 => int(top_bits(unaligned_load(u8x16, p)))\n"
+    "        1 => int(top_bits(unaligned_load(i16x8, p)))\n"
+    "        2 => int(top_bits(unaligned_load(u32x4, p)))\n"
+    "        _ => int(top_bits(unaligned_load(i64x2, p)))\n"
+    "    }\n"
+    "}\n"
+    "\n"
+    "fn first_space(n: int, m: int) -> int {\n"
+    "    s: [64]u8\n"
+    "    for i in 0..64 {\n"
+    "        s[i] = 97\n"
+    "    }\n"
+    "    s[n] = 32\n"
+    "    s[m] = 9\n"
+    "    ws := u8x16.{ 32, 0, 0, 0, 0, 0, 0, 0, 0, 9, 10, 0, 0, 13, 0, 0 }\n"
+    "    p: [*]u8 = &s\n"
+    "    at := 0\n"
+    "    while at < 64 {\n"
+    "        v := unaligned_load(u8x16, p + at)\n"
+    "        hits := top_bits(lookup(ws, v & 15) == v)\n"
+    "        if hits != 0 {\n"
+    "            return at + trailing_zeros(hits)\n"
+    "        }\n"
+    "        at += 16\n"
+    "    }\n"
+    "    return -1\n"
+    "}\n"
+    "\n"
+    "fn mask_zeros(a: int, w: int) -> int {\n"
+    "    s: [16]u8\n"
+    "    for i in 0..16 {\n"
+    "        if ((a >> i) & 1) != 0 {\n"
+    "            s[i] = 255\n"
+    "        }\n"
+    "    }\n"
+    "    p: [*]u8 = &s\n"
+    "    if w == 0 {\n"
+    "        return leading_zeros(top_bits(unaligned_load(u8x16, p))) * 100 + trailing_zeros(top_bits(unaligned_load(u8x16, p)))\n"
+    "    }\n"
+    "    return leading_zeros(top_bits(unaligned_load(u32x4, p))) * 100 + trailing_zeros(top_bits(unaligned_load(u32x4, p)))\n"
     "}\n";
 
 const VectorRun VECTOR_BODY_RESULTS[] = {
@@ -163,6 +310,82 @@ const VectorRun VECTOR_RESULTS[] = {
     { "shift_edges", { -7, 32, 0 }, 0, TRAP_SHIFT },
     { "shift_edges", { -7, 0x100000001, 0 }, 0, TRAP_SHIFT },
     { "shift_edges", { -7, -1, 0 }, 0, TRAP_SHIFT },
+    { "load_lanes", { 0, 0 }, 5, 0 },
+    { "load_lanes", { 1, 15 }, 213, 0 },
+    { "load_lanes", { 7, 3 }, 135, 0 },
+    { "load_lanes", { 32, 15 }, 104, 0 },
+    { "load_lanes", { 3, 16 }, 0, TRAP_BOUNDS },
+    { "load_numbers", { 0, 0 }, -7820965588129094200, 0 },
+    { "load_numbers", { 3, 0 }, -1527370551216489441, 0 },
+    { "load_numbers", { 5, 1 }, 2962454105, 0 },
+    { "load_numbers", { 7, 2 }, -20333, 0 },
+    { "load_numbers", { 2, 2 }, 7938, 0 },
+    { "load_numbers", { 1, 3 }, -27, 0 },
+    { "load_numbers", { 9, 3 }, -51, 0 },
+    { "load_numbers", { 11, 4 }, 9223, 0 },
+    { "load_words", { 0 }, 4, 0 },
+    { "load_words", { 15 }, 19, 0 },
+    { "load_words", { 16 }, 0, TRAP_BOUNDS },
+    { "store_lanes", { 1, 0 }, 0, 0 },
+    { "store_lanes", { 1, 1 }, 228, 0 },
+    { "store_lanes", { 1, 16 }, 243, 0 },
+    { "store_lanes", { 1, 17 }, 0, 0 },
+    { "store_lanes", { 32, 47 }, 243, 0 },
+    { "store_lanes", { 5, 48 }, 0, TRAP_BOUNDS },
+    { "store_numbers", { 1, 0 }, 0, 0 },
+    { "store_numbers", { 1, 1 }, 17, 0 },
+    { "store_numbers", { 1, 4 }, 68, 0 },
+    { "store_numbers", { 1, 5 }, 254, 0 },
+    { "store_numbers", { 1, 6 }, 255, 0 },
+    { "store_numbers", { 1, 7 }, 7, 0 },
+    { "store_numbers", { 1, 8 }, 8, 0 },
+    { "store_numbers", { 1, 15 }, 1, 0 },
+    { "store_numbers", { 1, 16 }, 0, 0 },
+    { "store_numbers", { 9, 23 }, 1, 0 },
+    { "store_words", { 0 }, 0, 0 },
+    { "store_words", { 1 }, 67305985, 0 },
+    { "store_words", { 4 }, 269422093, 0 },
+    { "store_words", { 5 }, 0, 0 },
+    { "store_words", { 6 }, 0, TRAP_BOUNDS },
+    { "floats", { 0 }, 591, 0 },
+    { "floats", { 3 }, 591, 0 },
+    { "lookups", { 0, 0 }, 200, 0 },
+    { "lookups", { 0, 15 }, 90, 0 },
+    { "lookups", { 3, 4 }, 255, 0 },
+    { "lookups", { 10, 5 }, 90, 0 },
+    { "lookups", { 10, 6 }, 0, 0 },
+    { "lookups", { 250, 5 }, 0, 0 },
+    { "lookups", { 250, 6 }, 200, 0 },
+    { "lookups", { 250, 15 }, 127, 0 },
+    { "lookups", { 0, 16 }, 0, TRAP_BOUNDS },
+    { "signed_lookups", { 0, 0 }, -1, 0 },
+    { "signed_lookups", { 0, 15 }, 127, 0 },
+    { "signed_lookups", { -1, 0 }, 0, 0 },
+    { "signed_lookups", { -1, 1 }, -1, 0 },
+    { "signed_lookups", { -128, 3 }, 0, 0 },
+    { "signed_lookups", { 5, 10 }, 127, 0 },
+    { "signed_lookups", { 5, 11 }, 0, 0 },
+    { "top_bits_of", { 42435, 0 }, 42435, 0 },
+    { "top_bits_of", { 65535, 0 }, 65535, 0 },
+    { "top_bits_of", { 0, 0 }, 0, 0 },
+    { "top_bits_of", { 42435, 1 }, 201, 0 },
+    { "top_bits_of", { 32770, 1 }, 129, 0 },
+    { "top_bits_of", { 42435, 2 }, 10, 0 },
+    { "top_bits_of", { 2176, 2 }, 6, 0 },
+    { "top_bits_of", { 42435, 3 }, 3, 0 },
+    { "top_bits_of", { 32768, 3 }, 2, 0 },
+    { "top_bits_of", { 128, 3 }, 1, 0 },
+    { "first_space", { 5, 63 }, 5, 0 },
+    { "first_space", { 40, 17 }, 17, 0 },
+    { "first_space", { 63, 63 }, 63, 0 },
+    { "first_space", { 16, 31 }, 16, 0 },
+    { "first_space", { 64, 0 }, 0, TRAP_BOUNDS },
+    { "mask_zeros", { 0, 0 }, 1616, 0 },
+    { "mask_zeros", { 16, 0 }, 1104, 0 },
+    { "mask_zeros", { 0x8000, 0 }, 15, 0 },
+    { "mask_zeros", { 0, 1 }, 808, 0 },
+    { "mask_zeros", { 0x80, 1 }, 601, 0 },
+    { "mask_zeros", { 0x8000, 1 }, 403, 0 },
 };
 
 const size_t NVECTOR_RESULTS = sizeof VECTOR_RESULTS / sizeof VECTOR_RESULTS[0];

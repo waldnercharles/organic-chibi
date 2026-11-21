@@ -201,6 +201,12 @@ enum
     X(DIAG_ARG_COUNT, "wrong number of arguments: expected %c, found %C")                           \
     X(DIAG_ARG_COUNT_VARIADIC, "wrong number of arguments: expected at least %c, found %C")         \
     X(DIAG_BUILTIN_INT, "`%n` takes an integer, found `%U`")                                        \
+    X(DIAG_BUILTIN_VECTOR, "`%n` takes a vector, found `%U`")                                       \
+    X(DIAG_BUILTIN_MANY, "`%n` takes a `[*]` pointer, found `%U`")                                  \
+    X(DIAG_UNALIGNED_TYPE, "`%n` reads and writes numbers and vectors, found `%U`")                 \
+    X(DIAG_LOAD_TYPE, "`unaligned_load` takes a type first, as in `unaligned_load(u8x16, p)`")      \
+    X(DIAG_STORE_UNTYPED, "`unaligned_store` needs a typed value, as in `u32(0)`")                  \
+    X(DIAG_LOOKUP_TYPES, "`lookup` takes two `u8x16` or two `i8x16`, found `%T` and `%U`")          \
     X(DIAG_RETURN_VALUE, "this function returns nothing, so `return` takes no value")               \
     X(DIAG_RETURN_EMPTY, "`return` needs a value of type `%U`")                                     \
     X(DIAG_MISSING_RETURN, "the function can reach its end without returning a value of type `%U`") \
