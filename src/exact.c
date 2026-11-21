@@ -7,13 +7,17 @@
 #define MAX_LIMBS ((EXACT_FRACTION_BITS + 64) / 64)
 #define WORK_LIMBS (2 * MAX_LIMBS + 24)
 
-typedef unsigned __int128 u128;
-
 typedef struct
 {
     u32 n;
     u64 w[WORK_LIMBS];
 } Mag;
+
+typedef struct
+{
+    u64 lo;
+    u64 hi;
+} Wide;
 
 static const u64 pow10_u64[20] = {
     1ull,
@@ -96,9 +100,11 @@ mag_add(Mag *r, const Mag *a, const Mag *b)
 
     u64 carry = 0;
     for (u32 i = 0; i < n; i++) {
-        u128 s = (u128)x->w[i] + (i < m ? y->w[i] : 0) + carry;
-        r->w[i] = (u64)s;
-        carry = (u64)(s >> 64);
+        u64 v = x->w[i];
+        u64 s = v + (i < m ? y->w[i] : 0);
+        u64 t = s + carry;
+        carry = (s < v) | (t < s);
+        r->w[i] = t;
     }
 
     r->n = n;
@@ -127,6 +133,29 @@ mag_sub(Mag *r, const Mag *a, const Mag *b)
     mag_trim(r);
 }
 
+static Wide
+mul_add(u64 a, u64 b, u64 c, u64 d)
+{
+    u64 a0 = a & 0xFFFFFFFF;
+    u64 a1 = a >> 32;
+    u64 b0 = b & 0xFFFFFFFF;
+    u64 b1 = b >> 32;
+    u64 low = a0 * b0;
+    u64 mid0 = a0 * b1;
+    u64 mid1 = a1 * b0;
+    u64 high = a1 * b1;
+    u64 mid = (low >> 32) + (mid0 & 0xFFFFFFFF) + (mid1 & 0xFFFFFFFF);
+
+    u64 lo = mid << 32 | (low & 0xFFFFFFFF);
+    u64 hi = high + (mid0 >> 32) + (mid1 >> 32) + (mid >> 32);
+
+    u64 s = lo + c;
+    hi += s < c;
+    u64 t = s + d;
+    hi += t < d;
+    return (Wide){ t, hi };
+}
+
 static void
 mag_mul(Mag *r, const Mag *a, const Mag *b)
 {
@@ -141,9 +170,9 @@ mag_mul(Mag *r, const Mag *a, const Mag *b)
     for (u32 i = 0; i < a->n; i++) {
         u64 carry = 0;
         for (u32 j = 0; j < b->n; j++) {
-            u128 t = (u128)a->w[i] * b->w[j] + r->w[i + j] + carry;
-            r->w[i + j] = (u64)t;
-            carry = (u64)(t >> 64);
+            Wide t = mul_add(a->w[i], b->w[j], r->w[i + j], carry);
+            r->w[i + j] = t.lo;
+            carry = t.hi;
         }
         r->w[i + b->n] = carry;
     }
@@ -157,9 +186,9 @@ mag_mul_add(Mag *m, u64 factor, u64 add)
 {
     u64 carry = add;
     for (u32 i = 0; i < m->n; i++) {
-        u128 t = (u128)m->w[i] * factor + carry;
-        m->w[i] = (u64)t;
-        carry = (u64)(t >> 64);
+        Wide t = mul_add(m->w[i], factor, carry, 0);
+        m->w[i] = t.lo;
+        carry = t.hi;
     }
     if (carry) {
         assert(m->n < WORK_LIMBS);
@@ -221,6 +250,50 @@ mag_ctz(const Mag *m)
     return 64 * i + (u32)__builtin_ctzll(m->w[i]);
 }
 
+static u64
+div_wide(u64 hi, u64 lo, u64 d, u64 *rem)
+{
+    assert(hi < d);
+    if (hi == 0) {
+        *rem = lo % d;
+        return lo / d;
+    }
+
+    u32 s = (u32)__builtin_clzll(d);
+    d <<= s;
+    hi = hi << s | (s ? lo >> (64 - s) : 0);
+    lo <<= s;
+
+    u64 d1 = d >> 32;
+    u64 d0 = d & 0xFFFFFFFF;
+    u64 l1 = lo >> 32;
+    u64 l0 = lo & 0xFFFFFFFF;
+
+    u64 q1 = hi / d1;
+    u64 r = hi - q1 * d1;
+    while (q1 >> 32 || q1 * d0 > (r << 32 | l1)) {
+        q1--;
+        r += d1;
+        if (r >> 32) {
+            break;
+        }
+    }
+
+    u64 mid = (hi << 32 | l1) - q1 * d;
+    u64 q0 = mid / d1;
+    r = mid - q0 * d1;
+    while (q0 >> 32 || q0 * d0 > (r << 32 | l0)) {
+        q0--;
+        r += d1;
+        if (r >> 32) {
+            break;
+        }
+    }
+
+    *rem = ((mid << 32 | l0) - q0 * d) >> s;
+    return q1 << 32 | q0;
+}
+
 static void
 mag_divmod(Mag *q, Mag *r, const Mag *a, const Mag *b)
 {
@@ -237,9 +310,7 @@ mag_divmod(Mag *q, Mag *r, const Mag *a, const Mag *b)
         u64 d = b->w[0];
         u64 rem = 0;
         for (u32 i = a->n; i-- > 0;) {
-            u128 cur = (u128)rem << 64 | a->w[i];
-            q->w[i] = (u64)(cur / d);
-            rem = (u64)(cur % d);
+            q->w[i] = div_wide(rem, a->w[i], d, &rem);
         }
         q->n = a->n;
         mag_trim(q);
@@ -261,23 +332,29 @@ mag_divmod(Mag *q, Mag *r, const Mag *a, const Mag *b)
     un[0] = a->w[0] << s;
 
     for (u32 j = m + 1; j-- > 0;) {
-        u128 top = (u128)un[j + n] << 64 | un[j + n - 1];
-        u128 qhat = top / vn[n - 1];
-        u128 rhat = top % vn[n - 1];
-        while (qhat >> 64 || qhat * vn[n - 2] > (rhat << 64 | un[j + n - 2])) {
-            qhat--;
-            rhat += vn[n - 1];
-            if (rhat >> 64) {
+        u64 qhat = UINT64_MAX;
+        u64 rhat = un[j + n - 1] + vn[n - 1];
+        bool fits = rhat >= vn[n - 1];
+        if (un[j + n] < vn[n - 1]) {
+            qhat = div_wide(un[j + n], un[j + n - 1], vn[n - 1], &rhat);
+            fits = true;
+        }
+        while (fits) {
+            Wide p = mul_add(qhat, vn[n - 2], 0, 0);
+            if (p.hi < rhat || (p.hi == rhat && p.lo <= un[j + n - 2])) {
                 break;
             }
+            qhat--;
+            rhat += vn[n - 1];
+            fits = rhat >= vn[n - 1];
         }
 
         u64 carry = 0;
         u64 borrow = 0;
         for (u32 i = 0; i < n; i++) {
-            u128 p = qhat * vn[i] + carry;
-            carry = (u64)(p >> 64);
-            u64 lo = (u64)p;
+            Wide p = mul_add(qhat, vn[i], carry, 0);
+            carry = p.hi;
+            u64 lo = p.lo;
             u64 x = un[i + j];
             u64 d = x - lo;
             u64 next = (x < lo) | (d < borrow);
@@ -289,14 +366,15 @@ mag_divmod(Mag *q, Mag *r, const Mag *a, const Mag *b)
         bool negative = (x < carry) | (d < borrow);
         un[j + n] = d - borrow;
 
-        q->w[j] = (u64)qhat;
+        q->w[j] = qhat;
         if (negative) {
             q->w[j]--;
             u64 c = 0;
             for (u32 i = 0; i < n; i++) {
-                u128 t = (u128)un[i + j] + vn[i] + c;
-                un[i + j] = (u64)t;
-                c = (u64)(t >> 64);
+                u64 s = un[i + j] + vn[i];
+                u64 t = s + c;
+                c = (s < vn[i]) | (t < s);
+                un[i + j] = t;
             }
             un[j + n] += c;
         }
@@ -346,11 +424,10 @@ mag_gcd(Mag *g, const Mag *a, const Mag *b)
 static void
 mag_pow10(Mag *m, u32 k)
 {
-    mag_set(m, 1);
+    mag_set(m, pow10_u64[k % 19]);
     for (; k >= 19; k -= 19) {
         mag_mul_add(m, pow10_u64[19], 0);
     }
-    mag_mul_add(m, pow10_u64[k], 0);
 }
 
 static Exact *
@@ -405,10 +482,10 @@ load(const Exacts *e, u32 a, Mag *num, Mag *den, bool *negative)
     }
 
     num->n = x.num;
-    memcpy(num->w, e->limbs + x.first, x.num * sizeof *num->w);
+    memcpy(num->w, e->limbs + x.small, x.num * sizeof *num->w);
     if (x.den) {
         den->n = x.den;
-        memcpy(den->w, e->limbs + x.first + x.num, x.den * sizeof *den->w);
+        memcpy(den->w, e->limbs + x.small + x.num, x.den * sizeof *den->w);
     } else {
         mag_set(den, 1);
     }
@@ -439,7 +516,7 @@ store(Exacts *e, const Mag *num, const Mag *den, bool negative)
     e->nlimbs += need;
 
     Exact *x = add_value(e);
-    *x = (Exact){ .first = first,
+    *x = (Exact){ .small = first,
                   .num = (u16)num->n,
                   .den = (u16)dn,
                   .big = true,
@@ -471,11 +548,11 @@ finish(Exacts *e, Mag *num, Mag *den, bool negative, u32 limit, ExactStatus *sta
 }
 
 static u32
-parse_digits(Mag *m, const char *p, u32 base)
+add_digits(Mag *m, const char *p, u32 base, u32 *ndigits)
 {
-    mag_set(m, 0);
     u64 chunk = 0;
     u64 scale = 1;
+    u32 n = 0;
     const char *q = p;
     for (;; q++) {
         u32 d;
@@ -501,9 +578,11 @@ parse_digits(Mag *m, const char *p, u32 base)
         }
         chunk = chunk * base + d;
         scale *= base;
+        n++;
     }
     mag_mul_add(m, scale, chunk);
     mag_trim(m);
+    *ndigits = n;
     return (u32)(q - p);
 }
 
@@ -530,14 +609,35 @@ exact_parse(Exacts *e, const char *text, u32 limit, ExactStatus *status)
         }
         q++;
     }
-    bool plain = base == 10 && *q != '.' && *q != 'e' && *q != 'E' &&
+    u32 places = 0;
+    if (base == 10 && q[0] == '.' && q[1] >= '0' && q[1] <= '9') {
+        for (q++; (*q >= '0' && *q <= '9') || *q == '_'; q++) {
+            if (*q != '_') {
+                u64 d = (u64)(*q - '0');
+                if (places == 19 || fast > (UINT64_MAX - d) / 10) {
+                    break;
+                }
+                fast = fast * 10 + d;
+                places++;
+            }
+        }
+    }
+    bool plain = base == 10 && *q != 'e' && *q != 'E' &&
                  !((*q >= '0' && *q <= '9') || *q == '_');
-    if (plain && fast <= (u64)INT64_MAX) {
+    if (plain && places == 0 && fast <= (u64)INT64_MAX) {
         return exact_int(e, (int64_t)fast);
     }
 
     Mag num, den;
-    u32 used = parse_digits(&num, p, base);
+    if (plain) {
+        mag_set(&num, fast);
+        mag_set(&den, pow10_u64[places]);
+        return finish(e, &num, &den, false, limit, status);
+    }
+
+    mag_set(&num, 0);
+    u32 ndigits;
+    u32 used = add_digits(&num, p, base, &ndigits);
     if (used == 0) {
         *status = EXACT_TOO_LARGE;
         return EXACT_ZERO;
@@ -549,20 +649,14 @@ exact_parse(Exacts *e, const char *text, u32 limit, ExactStatus *status)
     }
 
     int64_t scale = 0;
-    if (*p == '.') {
-        p++;
-        while ((*p >= '0' && *p <= '9') || *p == '_') {
-            if (*p != '_') {
-                if (num.n > MAX_LIMBS + 1) {
-                    *status = EXACT_TOO_LARGE;
-                    return EXACT_ZERO;
-                }
-                mag_mul_add(&num, 10, (u64)(*p - '0'));
-                mag_trim(&num);
-                scale--;
-            }
-            p++;
+    if (p[0] == '.' && p[1] >= '0' && p[1] <= '9') {
+        used = add_digits(&num, p + 1, 10, &ndigits);
+        if (used == 0) {
+            *status = EXACT_TOO_LARGE;
+            return EXACT_ZERO;
         }
+        p += 1 + used;
+        scale = -(int64_t)ndigits;
     }
     if (*p == 'e' || *p == 'E') {
         p++;
@@ -862,7 +956,7 @@ exact_bits(const Exacts *e, u32 a)
         return (u64)x.small;
     }
     assert(x.den == 0);
-    u64 low = e->limbs[x.first];
+    u64 low = e->limbs[x.small];
     return x.negative ? 0 - low : low;
 }
 
@@ -951,8 +1045,8 @@ exact_float(const Exacts *e, u32 a, u32 width, ExactStatus *status)
         return float_bits((double)x.small, width);
     }
     if (x.big && x.num == 1 && x.den == 1) {
-        u64 n = e->limbs[x.first];
-        u64 d = e->limbs[x.first + 1];
+        u64 n = e->limbs[x.small];
+        u64 d = e->limbs[x.small + 1];
         if (n < limit && d < limit) {
             double q = (double)n / (double)d;
             return float_bits(x.negative ? -q : q, width);

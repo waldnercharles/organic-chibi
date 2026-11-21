@@ -32,11 +32,7 @@ typedef enum
 
 typedef struct
 {
-    union
-    {
-        int64_t small;
-        u64 first;
-    };
+    int64_t small;
     u16 num;
     u16 den;
     bool big;
