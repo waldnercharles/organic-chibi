@@ -29,6 +29,7 @@ TEST_SUITE(parser_tests);
 TEST_SUITE(check_tests);
 TEST_SUITE(exact_tests);
 TEST_SUITE(arm64_tests);
+TEST_SUITE(c_source_tests);
 
 int
 main(void)
@@ -41,6 +42,7 @@ main(void)
     RUN_TEST_SUITE(check_tests);
     RUN_TEST_SUITE(exact_tests);
     RUN_TEST_SUITE(arm64_tests);
+    RUN_TEST_SUITE(c_source_tests);
 
     printf("test: %s (" ARCH SIMD PATH ")\n", pu_test_failed() ? "FAILED" : "passed");
     return pu_test_failed();

@@ -3,6 +3,7 @@
 #include "code.h"
 
 #include <assert.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -3847,4 +3848,33 @@ random_typed_program(u64 *rng, char *buf)
         function(&g, 3 + random_below(rng, 6), true);
     }
     return g.len;
+}
+
+int64_t
+random_argument(u64 *rng)
+{
+    static const int64_t edges[] = {
+        0,         1,          -1,        127,       128,     -128,   -129,
+        255,       256,        32767,     -32768,    65535,   65536,  INT32_MAX,
+        INT32_MIN, UINT32_MAX, INT64_MAX, INT64_MIN, 1000003, -999983
+    };
+    int pick = random_below(rng, 10);
+    if (pick < 6) {
+        return random_below(rng, 41) - 20;
+    }
+    if (pick < 8) {
+        return random_below(rng, 2001) - 1000;
+    }
+    return edges[random_below(rng, sizeof edges / sizeof edges[0])];
+}
+
+double
+random_float_argument(u64 *rng)
+{
+    static const double edges[] = { 0.0,   -0.0, 0.5,   -2.75, 1e18,
+                                    -1e19, 3e9,  1e300, NAN,   INFINITY };
+    if (random_below(rng, 4) == 0) {
+        return edges[random_below(rng, sizeof edges / sizeof edges[0])];
+    }
+    return (random_below(rng, 4001) - 2000) / 8.0;
 }

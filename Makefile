@@ -32,7 +32,7 @@ run:
 
 test:
 	@mkdir -p build
-	@$(CC) $(SAFE) -o build/test $(TEST_SRC)
+	@$(CC) $(SAFE) -DCHIBI_TEST_CC='"$(CC)"' -o build/test $(TEST_SRC)
 	@$(CC) $(SAFE) -DCHIBI_SIMD_GENERIC -o build/test-generic $(TEST_SRC)
 	@$(CC) $(SAFE) -DCHIBI_LEXER_BULK -o build/test-bulk $(TEST_SRC)
 	@build/test

@@ -3,17 +3,6 @@
 
 #include "check.h"
 
-typedef enum
-{
-    TRAP_OVERFLOW = 1,
-    TRAP_DIVIDE,
-    TRAP_SHIFT,
-    TRAP_RANGE,
-    TRAP_UNREACHABLE,
-    TRAP_BOUNDS,
-    NTRAPS,
-} TrapKind;
-
 typedef struct
 {
     u8 *memory;

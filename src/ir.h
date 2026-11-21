@@ -84,6 +84,17 @@ enum
     IR_CONST = 1u << 31,
 };
 
+typedef enum
+{
+    TRAP_OVERFLOW = 1,
+    TRAP_DIVIDE,
+    TRAP_SHIFT,
+    TRAP_RANGE,
+    TRAP_UNREACHABLE,
+    TRAP_BOUNDS,
+    NTRAPS,
+} TrapKind;
+
 enum
 {
     WEIGHT_ADDRESSED = UINT32_MAX,

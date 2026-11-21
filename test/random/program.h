@@ -12,5 +12,7 @@ enum
 };
 
 size_t random_typed_program(u64 *rng, char *buf);
+int64_t random_argument(u64 *rng);
+double random_float_argument(u64 *rng);
 
 #endif
