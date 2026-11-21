@@ -6913,7 +6913,10 @@ global_place(Checker *c, u32 file, u32 node, u32 decl)
         return poison;
     }
 
-    u32 at = emit(c, IR_GLOBAL, pointer_type(c, type), c->decls.values[decl], decl);
+    u32 ptr = pointer_type(c, type);
+    u32 at = c->decls.bodies[decl] == NO_BODY
+               ? emit(c, IR_C_GLOBAL, ptr, 0, decl)
+               : emit(c, IR_GLOBAL, ptr, c->decls.values[decl], decl);
     Operand r = { OPERAND_ADDRESS, REF_VALUE | at };
     u8 next = f->nodes.kinds[node + 1];
     if (takes_place[next]) {
@@ -7608,6 +7611,20 @@ set_global(Checker *c, u32 decl, u32 node)
         report(c, file, t_token, DIAG_UNSUPPORTED, 0, 0);
         return;
     }
+    if (d->bodies[decl] == NO_BODY) {
+        u32 elem = t;
+        while (is_array(c, elem)) {
+            elem = c->types.arg0[elem];
+        }
+        if (is_slice(c, elem)) {
+            report(c, file, t_token, DIAG_NOT_C_GLOBAL, 0, elem);
+        } else if (c->types.kinds[elem] == TYPE_FN) {
+            report(c, file, t_token, DIAG_UNSUPPORTED, 0, 0);
+        } else {
+            d->types[decl] = t;
+        }
+        return;
+    }
 
     u32 elem = t;
     while (is_array(c, elem)) {
@@ -7966,7 +7983,7 @@ declare(Checker *c)
             }
 
             u8 kind = decl_kinds[kinds[root]];
-            if (kind == DECL_VAR && file->entry) {
+            if (kind == DECL_VAR && file->entry && !external) {
                 report(c, f, tokens[root], DIAG_UNSUPPORTED, 0, 0);
                 first = end;
                 continue;
@@ -8535,6 +8552,7 @@ print_decl(FILE *out, const Checker *c, u32 decl)
             break;
         }
         case DECL_VAR:
+            fputs(d->bodies[decl] == NO_BODY ? "extern " : "", out);
             print_name(out, c, d->names[decl]);
             if (type == TYPE_ID_NONE) {
                 fputs(" = ?", out);
@@ -8542,7 +8560,7 @@ print_decl(FILE *out, const Checker *c, u32 decl)
             }
             fputs(": ", out);
             print_type(out, c, type);
-            if (!(d->flags[decl] & DECL_ZEROED)) {
+            if (!(d->flags[decl] & DECL_ZEROED) && d->bodies[decl] != NO_BODY) {
                 fputs(" = ", out);
                 print_data(out, c, c->ir.globals + d->values[decl], type);
             }
@@ -8642,6 +8660,7 @@ print_function(FILE *out, const Checker *c, const IrFunc *fn)
                 break;
             case IR_DATA:
             case IR_GLOBAL:
+            case IR_C_GLOBAL:
             case IR_CALLBACK:
                 fputc(' ', out);
                 print_type(out, c, type);

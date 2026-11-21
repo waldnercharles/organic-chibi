@@ -1419,8 +1419,19 @@ static NOINLINE void
 parse_extern(Parser *p)
 {
     int at = p->pos;
+    if (p->tokens.kinds[at + 1] == TK_IDENT && p->tokens.kinds[at + 2] == TK_COLON) {
+        p->pos += 3;
+        parse_type(p);
+        if (p->tokens.kinds[p->pos] == TK_EQ) {
+            fail(p, "an `extern` global has no starting value");
+            return;
+        }
+        emit(p, NODE_VAR_TYPE, at + 1);
+        emit(p, NODE_EXTERN, at);
+        return;
+    }
     if (p->tokens.kinds[at + 1] != TK_FN || p->tokens.kinds[at + 2] != TK_IDENT) {
-        fail(p, "`extern` must come before `fn`");
+        fail(p, "`extern` must come before `fn` or `name: type`");
         return;
     }
 

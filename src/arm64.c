@@ -2779,9 +2779,12 @@ static NOINLINE bool
 bind_c(Emit *e, const Native *n, u32 decl)
 {
     Name name = names_get(e->c->names, e->c->decls.names[decl]);
+    bool global = e->c->decls.kinds[decl] == DECL_VAR;
     char symbol[256];
     if (name.len >= sizeof symbol) {
-        e->error = "the name of an `extern fn` is longer than 255 bytes";
+        e->error = global
+                     ? "the name of an `extern` global is longer than 255 bytes"
+                     : "the name of an `extern fn` is longer than 255 bytes";
         return false;
     }
     memcpy(symbol, name.text, name.len);
@@ -2792,7 +2795,9 @@ bind_c(Emit *e, const Native *n, u32 decl)
     }
     void *address = dlsym(e->process, symbol);
     if (!address) {
-        e->error = "an `extern fn` names a C function that is not loaded";
+        e->error = global
+                     ? "an `extern` global names a C variable that isn't loaded"
+                     : "an `extern fn` names a C function that is not loaded";
         return false;
     }
     n->entries[decl] = (u64)(uintptr_t)address;
@@ -2811,6 +2816,19 @@ callback_address(Emit *e, u32 i, u32 type, u32 k, u32 decl, const Native *n)
         }
         return;
     }
+    if (!n->entries[decl] && !bind_c(e, n, decl)) {
+        return;
+    }
+
+    u32 d = result(e, i, e->info[type]);
+    u64 slot = (u64)(uintptr_t)(n->entries + decl);
+    adrp(e, d, slot);
+    put(e, OP_LDRX | (u32)((slot & 0xFFF) >> 3) << 10 | d << 5 | d);
+}
+
+static NOINLINE void
+c_global_address(Emit *e, u32 i, u32 type, u32 decl, const Native *n)
+{
     if (!n->entries[decl] && !bind_c(e, n, decl)) {
         return;
     }
@@ -3859,6 +3877,7 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                     break;
                 case IR_DATA: data_address(e, i, type, a); break;
                 case IR_GLOBAL: global_address(e, i, type, a); break;
+                case IR_C_GLOBAL: c_global_address(e, i, type, b, n); break;
                 case IR_CALLBACK: callback_address(e, i, type, a, b, n); break;
                 case IR_LOAD_AT: {
                     u8 t = e->info[type];

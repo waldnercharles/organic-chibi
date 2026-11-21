@@ -348,6 +348,45 @@ static const Case DECLARATIONS[] = {
 };
 
 static const Case ERRORS[] = {
+    { "extern s: []u8\n"
+      "extern f: extern fn(x: int) -> int\n"
+      "extern v: u8x16\n"
+      "extern a: [2][]int\n"
+      "const C := count\n"
+      "extern count: i32\n"
+      "x: i32 = count\n"
+      "extern fn abs(x: i32) -> i32\n"
+      "fn g() -> i32 {\n"
+      "    extern inner: i32\n"
+      "    return inner\n"
+      "}\n"
+      "extern count: i64\n"
+      "extern p: *Missing\n"
+      "extern q: [count]u8\n"
+      "extern ok: [3]u8\n",
+      "a:1:11: C has no `[]u8`, so an `extern` global can't hold it\n"
+      "a:2:11: the checker doesn't support this yet\n"
+      "a:3:11: the checker doesn't support this yet\n"
+      "a:4:11: C has no `[]int`, so an `extern` global can't hold it\n"
+      "a:5:12: expected a constant\n"
+      "a:7:10: expected a constant\n"
+      "a:10:5: the checker doesn't support this yet\n"
+      "a:13:8: `count` is already declared at a:6:8\n"
+      "a:14:12: unknown name `Missing`\n"
+      "a:15:12: expected a constant\n"
+      "extern s = ?\n"
+      "extern f = ?\n"
+      "extern v = ?\n"
+      "extern a = ?\n"
+      "const C = ?\n"
+      "extern count: i32\n"
+      "x = ?\n"
+      "extern fn abs(x: i32) -> i32\n"
+      "fn g() -> i32\n"
+      "extern count: int\n"
+      "extern p = ?\n"
+      "extern q = ?\n"
+      "extern ok: [3]u8\n" },
     { "extern fn f(s: []u8, a: [2]int) -> [3]u8\n",
       "a:1:13: C has no `[]u8`, so an `extern fn` can't pass or return it\n"
       "a:1:22: C has no `[2]int`, so an `extern fn` can't pass or return it\n"
@@ -5944,6 +5983,70 @@ TEST_CASE(globals_across_files)
     return true;
 }
 
+TEST_CASE(extern_globals)
+{
+    const char *texts[] = {
+        "extern count: i32\n"
+        "extern fn abs(x: i32) -> i32\n",
+        "extern origin: Point\n"
+        "pub extern table: [4]?*Point\n"
+        "fn bump() -> i32 {\n"
+        "    count += 1\n"
+        "    origin.y = origin.x\n"
+        "    p := &count\n"
+        "    table[1] = &origin\n"
+        "    return p.* + abs(count)\n"
+        "}\n"
+        "struct Point { x: int, y: int }\n",
+    };
+    REQUIRE(checks_to(
+        texts,
+        2,
+        0,
+        "extern count: i32\n"
+        "extern fn abs(x: i32) -> i32\n"
+        "extern origin: Point\n"
+        "pub extern table: [4]?*Point\n"
+        "fn bump() -> i32\n"
+        "struct Point { x: int, y: int }\n"
+    ));
+    REQUIRE(compiles_to(
+        texts,
+        2,
+        0,
+        true,
+        "fn bump() -> i32\n"
+        "    slots: $0: *i32, p: *i32\n"
+        "    %0 = c-global *i32 count\n"
+        "    store *i32 $0, %0\n"
+        "    %2 = load *i32 $0\n"
+        "    %3 = load-at i32 %2\n"
+        "    %4 = add i32 %3, 1\n"
+        "    %5 = load *i32 $0\n"
+        "    store-at i32 %5, %4\n"
+        "    %7 = c-global *Point origin\n"
+        "    %8 = field *int %7, .y\n"
+        "    %9 = c-global *Point origin\n"
+        "    %10 = field *int %9, .x\n"
+        "    %11 = load-at int %10\n"
+        "    store-at int %8, %11\n"
+        "    %13 = c-global *i32 count\n"
+        "    store *i32 p, %13\n"
+        "    %15 = c-global *[4]?*Point table\n"
+        "    %16 = index *?*Point %15, 1\n"
+        "    %17 = c-global *Point origin\n"
+        "    store-at ?*Point %16, %17\n"
+        "    %19 = load *i32 p\n"
+        "    %20 = load-at i32 %19\n"
+        "    %21 = c-global *i32 count\n"
+        "    %22 = load-at i32 %21\n"
+        "    %23 = call-c i32 abs(%22)\n"
+        "    %24 = add i32 %20, %23\n"
+        "    ret i32 %24\n"
+    ));
+    return true;
+}
+
 TEST_CASE(entry_file)
 {
     const char *texts[] = {
@@ -6283,6 +6386,7 @@ TEST_SUITE(check_tests)
     RUN_TEST_CASE(files);
     RUN_TEST_CASE(constants_across_files);
     RUN_TEST_CASE(globals_across_files);
+    RUN_TEST_CASE(extern_globals);
     RUN_TEST_CASE(entry_file);
     RUN_TEST_CASE(depth_limit);
     RUN_TEST_CASE(doubling_structs);

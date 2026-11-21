@@ -2432,6 +2432,12 @@ TEST_CASE(hidden_context)
     return true;
 }
 
+#ifdef __APPLE__
+#define STDERR_NAME "__stderrp"
+#else
+#define STDERR_NAME "stderr"
+#endif
+
 static const char CALLS_INTO_C
     [] = "struct P { x: int, y: int }\n"
          "struct W { a: int, b: int, c: int }\n"
@@ -2456,6 +2462,11 @@ static const char CALLS_INTO_C
          "extern fn chibi_c_scribble(w: W) -> int\n"
          "extern fn chibi_c_wide(k: int) -> W\n"
          "pub extern fn chibi_c_tick()\n"
+         "\n"
+         "extern chibi_c_ticks: int\n"
+         "extern chibi_c_seen: [5]u64\n"
+         "extern chibi_c_origin: P\n"
+         "extern " STDERR_NAME ": ?*u8\n"
          "\n"
          "fn h(x: int) -> int {\n"
          "    return x\n"
@@ -2562,6 +2573,26 @@ static const char CALLS_INTO_C
          "    return int(strlen(\"chibi\")) * 100 + int(strlen(\"\")) + x\n"
          "}\n"
          "\n"
+         "fn add_ticks(x: int) -> int {\n"
+         "    chibi_c_ticks += x\n"
+         "    return chibi_c_ticks\n"
+         "}\n"
+         "\n"
+         "fn seen_at(i: int) -> u64 {\n"
+         "    return chibi_c_seen[i]\n"
+         "}\n"
+         "\n"
+         "fn move_origin(x: int) -> int {\n"
+         "    chibi_c_origin.x += x\n"
+         "    p := &chibi_c_origin\n"
+         "    p.y = p.x * 2\n"
+         "    return chibi_c_origin.y\n"
+         "}\n"
+         "\n"
+         "fn error_stream() -> ?*u8 {\n"
+         "    return " STDERR_NAME "\n"
+         "}\n"
+         "\n"
          "fn wide(x: int) -> int {\n"
          "    w := chibi_c_wide(x)\n"
          "    return w.a + w.b * 10 + w.c * 100\n"
@@ -2597,6 +2628,7 @@ enum
 
 uint64_t chibi_c_seen[5];
 int64_t chibi_c_ticks;
+CPoint chibi_c_origin = { 1, 2 };
 
 int64_t
 chibi_c_eight(int64_t a, int64_t b, int64_t c, int64_t d, int64_t e, int64_t f, int64_t g, int64_t h)
@@ -2697,6 +2729,11 @@ static const char *const C_CALL_LIMITS[][2] = {
       "    return chibi_c_nowhere()\n"
       "}\n",
       "an `extern fn` names a C function that is not loaded" },
+    { "extern chibi_c_nothing: int\n"
+      "fn g() -> int {\n"
+      "    return chibi_c_nothing\n"
+      "}\n",
+      "an `extern` global names a C variable that isn't loaded" },
 };
 
 TEST_CASE(calls_into_c)
@@ -2745,8 +2782,18 @@ TEST_CASE(calls_into_c)
         int64_t before = chibi_c_ticks;
         REQUIRE(((I1 *)fn(&p, "ticks"))(CONTEXT, x) == x);
         REQUIRE(chibi_c_ticks == before + x);
+
+        before = chibi_c_ticks;
+        REQUIRE(((I1 *)fn(&p, "add_ticks"))(CONTEXT, x) == before + x);
+        REQUIRE(chibi_c_ticks == before + x);
+        REQUIRE(((R1 *)fn(&p, "seen_at"))(CONTEXT, x % 5) == chibi_c_seen[x % 5]);
+
+        int64_t origin = chibi_c_origin.x + x;
+        REQUIRE(((I1 *)fn(&p, "move_origin"))(CONTEXT, x) == 2 * origin);
+        REQUIRE(chibi_c_origin.x == origin && chibi_c_origin.y == 2 * origin);
     }
     REQUIRE(lost_contexts == 0);
+    REQUIRE(((R0 *)fn(&p, "error_stream"))(CONTEXT) == (uint64_t)(uintptr_t)stderr);
 
     REQUIRE(((R0 *)fn(&p, "ret_u8"))(CONTEXT) == 0x05u);
     REQUIRE(((R0 *)fn(&p, "ret_i8"))(CONTEXT) == 0xFFFFFF80u);

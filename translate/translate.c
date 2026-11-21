@@ -236,6 +236,17 @@ typedef struct
     u32 label;
 } Target;
 
+enum
+{
+    SUBST_OPERAND = UINT32_MAX,
+};
+
+typedef struct
+{
+    u32 name;
+    Val val;
+} Temp;
+
 typedef struct
 {
     u32 file;
@@ -288,6 +299,13 @@ typedef struct
     u32 scope_cap;
     Target targets[256];
     u32 ntargets;
+    u32 *subst;
+    Temp *temps;
+    u32 ntemps;
+    u32 temps_cap;
+    u32 *posts;
+    u32 nposts;
+    u32 posts_cap;
     Source sources[256];
     u32 nsources;
     Out out;
@@ -1750,7 +1768,7 @@ adapt(Tr *t, u64 at, Val v, u32 type, u32 bits)
     }
     u32 have = v.bits & ~(u32)NULLABLE;
     u32 want = bits & ~(u32)NULLABLE;
-    if (have == want && same_chibi_type(t, v.type, have, type, want)) {
+    if (same_chibi_type(t, v.type, have, type, want)) {
         v.bits = (v.bits & NULLABLE) | want;
         return v;
     }
@@ -2462,6 +2480,16 @@ unary(Tr *t, u32 e)
 {
     Op o = op(t, e);
     u32 x = e + 1;
+    u32 sub = t->subst[e];
+    if (sub == SUBST_OPERAND) {
+        return ex(t, x, 0, 0);
+    }
+    if (sub != 0) {
+        Temp temp = t->temps[sub - 1];
+        put(&t->out, text(t, temp.name));
+        temp.val.prec = P_POSTFIX;
+        return temp.val;
+    }
     switch (o) {
         case OP_SUB: {
             u32 type = ctype(t, e);
@@ -2784,11 +2812,10 @@ ex(Tr *t, u32 e, u32 want_type, u32 want_bits)
         case K_SUBSCRIPT: return subscript(t, e);
         case K_TYPE_TRAIT: {
             u32 arg = t->a.arg_types[e];
-            if (arg == 0) {
-                die(t, e, "sizeof of an expression");
-            }
+            u32 type = arg != 0 ? ctype_of_string(t, arg, e)
+                                : ctype(t, child(t, e, 0));
             const char *w = text(t, t->a.names[e]);
-            char *ty = type_text(t, ctype_of_string(t, arg, e), 0);
+            char *ty = type_text(t, type, 0);
             putf(&t->out, "%s(%s)", strcmp(w, "sizeof") == 0 ? "size_of" : "align_of", ty);
             free(ty);
             return (Val){ ctype(t, e), 0, P_POSTFIX, true, false, false };
@@ -3028,6 +3055,22 @@ declare_local(Tr *t, u32 decl, const char *suffix)
     return id;
 }
 
+static u32
+declare_temp(Tr *t, const char *base)
+{
+    char buf[256];
+    snprintf(buf, sizeof buf, "%s_old", base);
+    u32 id = intern_text(t, buf);
+    for (u32 n = 2; in_scope(t, id); n++) {
+        snprintf(buf, sizeof buf, "%s_old%u", base, n);
+        id = intern_text(t, buf);
+    }
+
+    t->scope = grow(t->scope, &t->scope_cap, t->nscope + 1, sizeof *t->scope);
+    t->scope[t->nscope++] = id;
+    return id;
+}
+
 static void
 push_target(Tr *t, u32 node, bool is_switch, u32 label)
 {
@@ -3174,6 +3217,217 @@ same_val_type(Tr *t, Val v, u32 type, u32 bits)
 }
 
 static void
+increment(Tr *t, u32 e)
+{
+    Op o = op(t, e);
+    u32 x = e + 1;
+    u32 type = ctype(t, x);
+    ex(t, x, 0, 0);
+    if (is_kind(t, type, CT_POINTER)) {
+        put(&t->out, o == OP_INC ? " += 1" : " += -%u64(1)");
+        return;
+    }
+    bool wrapping = is_unsigned_int(t, type);
+    if (o == OP_INC) {
+        put(&t->out, wrapping ? " +%= 1" : " += 1");
+    } else {
+        put(&t->out, wrapping ? " -%= 1" : " -= 1");
+    }
+}
+
+static const char *
+last_name(Tr *t, u32 e)
+{
+    for (;;) {
+        e = strip_noop(t, e);
+        switch (t->kinds[e]) {
+            case K_DECL_REF: return text(t, t->names[decl_of(t, e)]);
+            case K_MEMBER: return text(t, t->a.names[node_of(t, t->a.refs[e])]);
+            case K_SUBSCRIPT: e = e + 1; break;
+            case K_UNARY:
+                if (op(t, e) != OP_MUL) {
+                    return "value";
+                }
+                e = e + 1;
+                break;
+            case K_IMPLICIT_CAST:
+                if (op(t, e) != CAST_LVALUE && op(t, e) != CAST_ARRAY_DECAY) {
+                    return "value";
+                }
+                e = e + 1;
+                break;
+            default: return "value";
+        }
+    }
+}
+
+static bool
+has_effects(const Tr *t, u32 root)
+{
+    for (u32 i = root; i < t->a.ends[root]; i++) {
+        u8 k = t->kinds[i];
+        if (k == K_CALL || k == K_COMPOUND_ASSIGN ||
+            (k == K_BINARY && op(t, i) == OP_ASSIGN) ||
+            (k == K_UNARY && (op(t, i) == OP_INC || op(t, i) == OP_DEC))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool
+has_call(const Tr *t, u32 root)
+{
+    for (u32 i = root; i < t->a.ends[root]; i++) {
+        if (t->kinds[i] == K_CALL) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static u32
+use_of(const Tr *t, u32 *e)
+{
+    u32 p = t->parents[*e];
+    while (t->kinds[p] == K_PAREN) {
+        *e = p;
+        p = t->parents[p];
+    }
+    return p;
+}
+
+static bool
+private_local(const Tr *t, u32 e)
+{
+    e = strip(t, e);
+    if (t->kinds[e] != K_DECL_REF) {
+        return false;
+    }
+    u32 d = decl_of(t, e);
+    if ((t->kinds[d] != K_VAR && t->kinds[d] != K_PARAM) || global_var(t, d)) {
+        return false;
+    }
+
+    u32 body = function_body(t, t->fn);
+    for (u32 i = body; i < t->a.ends[body]; i++) {
+        if (t->kinds[i] != K_DECL_REF || decl_of(t, i) != d) {
+            continue;
+        }
+        u32 at = i;
+        u32 p = use_of(t, &at);
+        while (t->kinds[p] == K_MEMBER && !(t->a.flags[p] & AST_ARROW)) {
+            at = p;
+            p = use_of(t, &at);
+        }
+        if ((t->kinds[p] == K_UNARY && op(t, p) == OP_AND) ||
+            (is_cast(t, p) && op(t, p) == CAST_ARRAY_DECAY)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool
+value_used(const Tr *t, u32 e, u32 root, bool used)
+{
+    for (u32 at = e; at != root;) {
+        u32 p = t->parents[at];
+        bool through = t->kinds[p] == K_PAREN ||
+                       (t->kinds[p] == K_CAST && op(t, p) == CAST_TO_VOID);
+        if (!through) {
+            return true;
+        }
+        at = p;
+    }
+    return used;
+}
+
+static void
+refuse_branch(const Tr *t, u32 e, u32 root)
+{
+    for (u32 at = e; at != root;) {
+        u32 p = t->parents[at];
+        bool right = at != p + 1;
+        if (t->kinds[p] == K_TYPE_TRAIT) {
+            die(t, e, "`++` or `--` inside `sizeof`");
+        }
+        if (t->kinds[p] == K_BINARY && op(t, p) == OP_COMMA) {
+            die(t, e, "`++` or `--` used as a value inside a comma expression");
+        }
+        if ((t->kinds[p] == K_BINARY &&
+             (op(t, p) == OP_LAND || op(t, p) == OP_LOR) && right) ||
+            (t->kinds[p] == K_CONDITIONAL && right)) {
+            die(t, e, "`++` or `--` used as a value where it may not run");
+        }
+        at = p;
+    }
+}
+
+static u32
+hoist_increments(Tr *t, u32 root, bool after, bool used)
+{
+    u32 posts = t->nposts;
+    bool calls = has_call(t, root);
+    for (u32 i = root; i < t->a.ends[root]; i++) {
+        if (t->kinds[i] != K_UNARY || (op(t, i) != OP_INC && op(t, i) != OP_DEC) ||
+            !value_used(t, i, root, used)) {
+            continue;
+        }
+        refuse_branch(t, i, root);
+        if (has_effects(t, i + 1)) {
+            die(t, i, "`++` or `--` used as a value on an operand with side effects");
+        }
+
+        if (!(t->a.flags[i] & AST_POSTFIX)) {
+            increment(t, i);
+            line(t);
+            t->subst[i] = SUBST_OPERAND;
+            continue;
+        }
+        if (after && (!calls || private_local(t, i + 1))) {
+            t->posts = grow(t->posts, &t->posts_cap, t->nposts + 1, sizeof *t->posts);
+            t->posts[t->nposts++] = i;
+            t->subst[i] = SUBST_OPERAND;
+            continue;
+        }
+
+        u32 name = declare_temp(t, last_name(t, i + 1));
+        putf(&t->out, "%s := ", text(t, name));
+        Val v = ex(t, i + 1, 0, 0);
+        line(t);
+        increment(t, i);
+        line(t);
+        t->temps = grow(t->temps, &t->temps_cap, t->ntemps + 1, sizeof *t->temps);
+        t->temps[t->ntemps++] = (Temp){ name, v };
+        t->subst[i] = t->ntemps;
+    }
+    return posts;
+}
+
+static void
+finish_posts(Tr *t, u32 posts)
+{
+    for (u32 k = posts; k < t->nposts; k++) {
+        line(t);
+        increment(t, t->posts[k]);
+    }
+    t->nposts = posts;
+}
+
+static bool
+needs_hoist(const Tr *t, u32 root)
+{
+    for (u32 i = root; i < t->a.ends[root]; i++) {
+        if (t->kinds[i] == K_UNARY && (op(t, i) == OP_INC || op(t, i) == OP_DEC) &&
+            value_used(t, i, root, true)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void
 conditional_assign(Tr *t, u32 rhs, const char *target, u32 type, u32 bits)
 {
     put(&t->out, "if ");
@@ -3196,16 +3450,10 @@ conditional_assign(Tr *t, u32 rhs, const char *target, u32 type, u32 bits)
 }
 
 static void
-var_decl(Tr *t, u32 v)
+put_var_decl(Tr *t, u32 v, u32 init)
 {
-    if (t->a.details[v] != 0) {
-        die(t, v, "a static or extern local");
-    }
-
-    line(t);
     u32 type = ctype(t, v);
     u32 bits = t->bits[v];
-    u32 init = (t->a.flags[v] & AST_HAS_INIT) ? init_of(t, v) : 0;
     u32 name = declare_local(t, v, "");
     char *ty = type_text(t, type, bits);
     if (init == 0) {
@@ -3233,6 +3481,20 @@ var_decl(Tr *t, u32 v)
     insert(&t->out, at, head.text, head.len);
     free(head.text);
     free(ty);
+}
+
+static void
+var_decl(Tr *t, u32 v)
+{
+    if (t->a.details[v] != 0) {
+        die(t, v, "a static or extern local");
+    }
+
+    line(t);
+    u32 init = (t->a.flags[v] & AST_HAS_INIT) ? init_of(t, v) : 0;
+    u32 posts = init != 0 ? hoist_increments(t, init, true, true) : t->nposts;
+    put_var_decl(t, v, init);
+    finish_posts(t, posts);
 }
 
 static bool
@@ -3332,43 +3594,15 @@ compound_assign(Tr *t, u32 e)
 }
 
 static void
-increment(Tr *t, u32 e)
+put_expr_stmt(Tr *t, u32 e)
 {
-    Op o = op(t, e);
-    u32 x = e + 1;
-    u32 type = ctype(t, x);
-    ex(t, x, 0, 0);
-    if (is_kind(t, type, CT_POINTER)) {
-        put(&t->out, o == OP_INC ? " += 1" : " += -%u64(1)");
-        return;
-    }
-    bool wrapping = is_unsigned_int(t, type);
-    if (o == OP_INC) {
-        put(&t->out, wrapping ? " +%= 1" : " += 1");
-    } else {
-        put(&t->out, wrapping ? " -%= 1" : " -= 1");
-    }
-}
-
-static void
-expr_stmt(Tr *t, u32 e)
-{
-    e = strip(t, e);
     switch (t->kinds[e]) {
-        case K_BINARY: {
-            Op o = op(t, e);
-            if (o == OP_ASSIGN) {
+        case K_BINARY:
+            if (op(t, e) == OP_ASSIGN) {
                 assign(t, child(t, e, 0), child(t, e, 1));
                 return;
             }
-            if (o == OP_COMMA) {
-                expr_stmt(t, child(t, e, 0));
-                line(t);
-                expr_stmt(t, child(t, e, 1));
-                return;
-            }
             break;
-        }
         case K_COMPOUND_ASSIGN: compound_assign(t, e); return;
         case K_UNARY:
             if (op(t, e) == OP_INC || op(t, e) == OP_DEC) {
@@ -3413,6 +3647,21 @@ expr_stmt(Tr *t, u32 e)
     ex(t, e, 0, 0);
 }
 
+static void
+expr_stmt(Tr *t, u32 e)
+{
+    e = strip(t, e);
+    if (t->kinds[e] == K_BINARY && op(t, e) == OP_COMMA) {
+        expr_stmt(t, child(t, e, 0));
+        line(t);
+        expr_stmt(t, child(t, e, 1));
+        return;
+    }
+    u32 posts = hoist_increments(t, e, true, false);
+    put_expr_stmt(t, e);
+    finish_posts(t, posts);
+}
+
 static bool
 terminal(Tr *t, u32 s)
 {
@@ -3437,6 +3686,7 @@ terminal(Tr *t, u32 s)
 static void
 if_stmt(Tr *t, u32 s)
 {
+    hoist_increments(t, s + 1, false, true);
     put(&t->out, "if ");
     cond(t, s + 1);
     block(t, child(t, s, 1));
@@ -3445,7 +3695,7 @@ if_stmt(Tr *t, u32 s)
     }
     u32 e = child(t, s, 2);
     put(&t->out, " else ");
-    if (t->kinds[e] == K_IF) {
+    if (t->kinds[e] == K_IF && !needs_hoist(t, e + 1)) {
         if_stmt(t, e);
     } else {
         braced(t, e);
@@ -3584,15 +3834,18 @@ for_stmt(Tr *t, u32 s)
     u32 c = child(t, s, 2);
     u32 inc = child(t, s, 3);
     u32 body = child(t, s, 4);
+    if (t->kinds[c] != K_NONE && needs_hoist(t, c)) {
+        die(t, c, "`++` or `--` used as a value in a `for` condition");
+    }
     bool scoped = t->kinds[init] == K_DECL_STMT;
     u32 mark = t->nscope;
     if (scoped) {
         put(&t->out, "{");
         t->depth++;
-        line(t);
-    }
-    if (t->kinds[init] != K_NONE) {
         stmt(t, init);
+        line(t);
+    } else if (t->kinds[init] != K_NONE) {
+        expr_stmt(t, init);
         line(t);
     }
     put(&t->out, "while ");
@@ -3608,6 +3861,38 @@ for_stmt(Tr *t, u32 s)
         put(&t->out, "}");
     }
     t->nscope = mark;
+}
+
+static void
+hoisted_while(Tr *t, u32 s)
+{
+    u32 c = s + 1;
+    u32 body = child(t, s, 1);
+    push_target(t, s, false, UINT32_MAX);
+    put(&t->out, "while true {");
+    t->depth++;
+    u32 mark = t->nscope;
+    line(t);
+    hoist_increments(t, c, false, true);
+    put(&t->out, "if ");
+    cond_at(t, c, true);
+    put(&t->out, " {");
+    t->depth++;
+    line(t);
+    put(&t->out, "break");
+    t->depth--;
+    line(t);
+    put(&t->out, "}");
+    if (t->kinds[body] == K_COMPOUND) {
+        statements(t, body + 1, t->a.ends[body]);
+    } else {
+        stmt(t, body);
+    }
+    t->nscope = mark;
+    t->depth--;
+    line(t);
+    put(&t->out, "}");
+    t->ntargets--;
 }
 
 static void
@@ -3632,6 +3917,7 @@ do_stmt(Tr *t, u32 s)
     }
     t->nscope = mark;
     line(t);
+    hoist_increments(t, c, false, true);
     put(&t->out, "if ");
     cond_at(t, c, true);
     put(&t->out, " {");
@@ -3659,6 +3945,9 @@ switch_stmt(Tr *t, u32 s)
 {
     u32 value = child(t, s, 0);
     u32 body = child(t, s, 1);
+    if (needs_hoist(t, value)) {
+        die(t, value, "`++` or `--` used as a value in a `switch` value");
+    }
     if (t->kinds[body] != K_COMPOUND) {
         die(t, s, "a switch whose body isn't a block");
     }
@@ -3765,6 +4054,7 @@ return_stmt(Tr *t, u32 s)
         put(&t->out, "return");
         return;
     }
+    hoist_increments(t, s + 1, false, true);
     u32 fn = t->canon[t->fn];
     u32 type = t->types[ctype(t, fn)].inner;
     u32 v = strip_noop(t, s + 1);
@@ -3813,6 +4103,10 @@ stmt(Tr *t, u32 s)
         case K_COMPOUND: braced(t, s); return;
         case K_IF: if_stmt(t, s); return;
         case K_WHILE:
+            if (needs_hoist(t, s + 1)) {
+                hoisted_while(t, s);
+                return;
+            }
             put(&t->out, "while ");
             cond(t, s + 1);
             loop_body(t, s, child(t, s, 1), 0);
@@ -3925,17 +4219,6 @@ static bool
 builtin_function(const Tr *t, u32 f)
 {
     return strncmp(text(t, t->a.names[f]), "__builtin_", 10) == 0;
-}
-
-static u32
-use_of(const Tr *t, u32 *e)
-{
-    u32 p = t->parents[*e];
-    while (t->kinds[p] == K_PAREN) {
-        *e = p;
-        p = t->parents[p];
-    }
-    return p;
 }
 
 static bool
@@ -4142,13 +4425,23 @@ const_object(const Tr *t, u32 v)
     return false;
 }
 
+static bool
+is_extern_var(const Tr *t, u32 v)
+{
+    return t->a.details[v] != 0 && strcmp(text(t, t->a.details[v]), "extern") == 0;
+}
+
+static void
+emit_extern_global(Tr *t, u32 v)
+{
+    char *ty = type_text(t, ctype(t, v), t->bits[v]);
+    putf(&t->out, "extern %s: %s\n", text(t, t->names[v]), ty);
+    free(ty);
+}
+
 static void
 emit_global(Tr *t, u32 v)
 {
-    if (t->a.details[v] != 0 && strcmp(text(t, t->a.details[v]), "extern") == 0) {
-        die(t, v, "an extern global variable");
-    }
-
     u32 type = ctype(t, v);
     u32 bits = t->bits[v];
     bool constant = const_object(t, v) && !(t->marks[v] & MARK_ADDRESSED);
@@ -4254,6 +4547,7 @@ emit_program(Tr *t)
     u32 n = t->a.count;
     u32 *work = malloc(n * sizeof *work);
     u32 nwork = 0;
+    t->subst = calloc(n, sizeof *t->subst);
     for (u32 i = 0; i < n; i++) {
         if (t->kinds[i] == K_FUNCTION && function_body(t, i) != 0 &&
             t->a.files[i] == t->main_file) {
@@ -4281,7 +4575,8 @@ emit_program(Tr *t)
         }
     }
     for (u32 i = 0; i < n; i++) {
-        if (t->kinds[i] == K_VAR && t->canon[i] == i && (t->marks[i] & MARK_EMIT)) {
+        if (t->kinds[i] == K_VAR && t->canon[i] == i &&
+            (t->marks[i] & MARK_EMIT) && !is_extern_var(t, i)) {
             emit_global(t, i);
         }
     }
@@ -4302,6 +4597,12 @@ emit_program(Tr *t)
     }
     if (t->uses_abort) {
         put(&t->out, "extern fn abort()\n");
+    }
+    for (u32 i = 0; i < n; i++) {
+        if (t->kinds[i] == K_VAR && t->canon[i] == i &&
+            (t->marks[i] & MARK_EMIT) && is_extern_var(t, i)) {
+            emit_extern_global(t, i);
+        }
     }
     put_bytes(&t->out, decls.text, decls.len);
     free(decls.text);

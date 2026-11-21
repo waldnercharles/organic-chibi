@@ -54,6 +54,7 @@
     X(IR_LOOKUP, "lookup")                                                     \
     X(IR_TOP_BITS, "top-bits")                                                 \
     X(IR_GLOBAL, "global")                                                     \
+    X(IR_C_GLOBAL, "c-global")                                                 \
     X(IR_CALLBACK, "callback")                                                 \
     X(IR_CALL, "call")                                                         \
     X(IR_CALL_C, "call-c")                                                     \

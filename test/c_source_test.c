@@ -200,6 +200,12 @@ static const char *const C_PROGRAMS[] = {
     "}\n",
 };
 
+#ifdef __APPLE__
+#define STDERR_NAME "__stderrp"
+#else
+#define STDERR_NAME "stderr"
+#endif
+
 static const char INTEROP[] =
     "struct P { x: int, y: int }\n"
     "struct W { a: int, b: int, c: int }\n"
@@ -236,6 +242,11 @@ static const char INTEROP[] =
     "extern fn chibi_cs_call_wide(f: extern fn(w: W, k: int) -> W, k: int) -> int\n"
     "extern fn chibi_cs_call_void(f: extern fn(p: *int), p: *int)\n"
     "extern fn chibi_cs_unused(x: int) -> int\n"
+    "\n"
+    "extern chibi_cs_ticks: int\n"
+    "extern chibi_cs_origin: P\n"
+    "extern chibi_cs_codes: [3]u8\n"
+    "extern " STDERR_NAME ": ?*u8\n"
     "\n"
     "fn after_c(x: int) -> int {\n"
     "    return labs(x) + labs(x - 10)\n"
@@ -309,6 +320,22 @@ static const char INTEROP[] =
     "\n"
     "fn literal_length(x: int) -> int {\n"
     "    return int(strlen(\"chibi\")) * 100 + int(strlen(\"\")) + x\n"
+    "}\n"
+    "\n"
+    "fn add_ticks(x: int) -> int {\n"
+    "    chibi_cs_ticks += x\n"
+    "    return chibi_cs_ticks\n"
+    "}\n"
+    "\n"
+    "fn move_origin(x: int) -> int {\n"
+    "    chibi_cs_origin.x += x\n"
+    "    p := &chibi_cs_origin\n"
+    "    p.y = p.x * 2\n"
+    "    return chibi_cs_origin.y + int(chibi_cs_codes[2])\n"
+    "}\n"
+    "\n"
+    "fn error_stream() -> ?*u8 {\n"
+    "    return " STDERR_NAME "\n"
     "}\n"
     "\n"
     "fn pairs(x: int) -> f64 {\n"
@@ -480,6 +507,8 @@ static volatile int trap_kind;
 
 void *chibi_context = CONTEXT;
 int64_t chibi_cs_ticks;
+struct i0_P chibi_cs_origin = { 1, 2 };
+uint8_t chibi_cs_codes[3] = { 5, 6, 7 };
 
 NORETURN void
 chibi_trap(int kind)
@@ -1023,6 +1052,14 @@ calls_c(const Build *b, int64_t x)
     int64_t ticks = chibi_cs_ticks;
     ok &= gives("ticks", x, ((I1 *)symbol(b, "i0_ticks"))(CONTEXT, x), x);
     ok &= gives("chibi_cs_ticks", x, chibi_cs_ticks, ticks + x);
+
+    ticks = chibi_cs_ticks;
+    ok &= gives("add_ticks", x, ((I1 *)symbol(b, "i0_add_ticks"))(CONTEXT, x), ticks + x);
+    ok &= gives("chibi_cs_ticks", x, chibi_cs_ticks, ticks + x);
+
+    int64_t origin = chibi_cs_origin.x + x;
+    ok &= gives("move_origin", x, ((I1 *)symbol(b, "i0_move_origin"))(CONTEXT, x), 2 * origin + 7);
+    ok &= gives("chibi_cs_origin", x, chibi_cs_origin.x * 1000 + chibi_cs_origin.y, origin * 1002);
     return ok;
 }
 
@@ -1145,9 +1182,10 @@ TEST_CASE(works_with_c)
         GET *tap = (GET *)symbol(&b, "i0_get_tap");
         bool same = ((GET *)symbol(&b, "i0_get_step"))(CONTEXT) == (uint8_t *)symbol(&b, "cs_step");
         same &= ((GET *)symbol(&b, "i0_get_twice"))(CONTEXT) == (uint8_t *)chibi_cs_twice;
+        same &= ((GET *)symbol(&b, "i0_error_stream"))(CONTEXT) == (uint8_t *)stderr;
         same &= tap(CONTEXT) == tap(CONTEXT) && tap(CONTEXT) != (uint8_t *)symbol(&b, "i0_tap");
         if (!same) {
-            fprintf(stderr, "c_source test: callbacks don't have the expected addresses\n");
+            fprintf(stderr, "c_source test: callbacks or `stderr` don't have the expected addresses\n");
         }
         ok = gives("main", 3, ((MAIN *)symbol(&b, "main"))(3, (uint8_t *)args), 603) && same;
     }

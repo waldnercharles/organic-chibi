@@ -675,6 +675,21 @@ put_symbol(Source *s, u32 decl)
     fprintf(s->out, " CHIBI_SYMBOL(\"%.*s\");\n", (int)n.len, n.text);
 }
 
+static void
+put_c_global(Source *s, u32 decl)
+{
+    const Checker *c = s->c;
+    u32 type = c->decls.types[decl];
+    fputs("extern ", s->out);
+    put_object_type(s, element_of(c, type));
+    putc(' ', s->out);
+    put_c_name(s, decl);
+    for (u32 t = type; c->types.kinds[t] == TYPE_ARRAY; t = c->types.arg0[t]) {
+        fprintf(s->out, "[%llu]", (unsigned long long)c->types.arg1[t]);
+    }
+    put_symbol(s, decl);
+}
+
 static u32
 line_at(Source *s, u32 file, u32 token)
 {
@@ -1131,6 +1146,7 @@ put_instruction(Source *s, u32 i)
         case IR_GLOBAL:
             put_line(s, "v%u = chibi_%cglobals + %u;", i, s->prefix, a);
             break;
+        case IR_C_GLOBAL: put_line(s, "v%u = (uint8_t *)&%e;", i, b); break;
         case IR_INDEX: put_index(s, i, type, a, b); break;
         case IR_INDEX_LEN: {
             const u32 *x = extra(s, b);
@@ -1412,6 +1428,9 @@ c_source_package(FILE *out, const Checker *c, const char *prefix)
         if (c->decls.kinds[d] == DECL_FN && c->decls.bodies[d] == NO_BODY) {
             put_c_signature(&s, d);
             put_symbol(&s, d);
+        } else if (c->decls.kinds[d] == DECL_VAR && c->decls.bodies[d] == NO_BODY &&
+                   c->decls.types[d] != TYPE_ID_NONE) {
+            put_c_global(&s, d);
         }
     }
     for (u32 k = 0; k < ir->nexports; k++) {
