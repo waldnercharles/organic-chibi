@@ -19,6 +19,7 @@ enum
 {
     OPERAND_MEMBER = 0xFFFFFE00u,
     OPERAND_RETURN,
+    OPERAND_VARIADIC,
     OPERAND_BACKING,
     OPERAND_LOCAL,
     OPERAND_ADDRESS,
@@ -691,6 +692,29 @@ check_struct_regs(const Checker *c, u32 type)
         }
     }
     return size <= 16 ? (u32)(size + 7) / 8 : 1 | REGS_POINTER;
+}
+
+u32
+check_place_arg(ArgCursor *at, u32 regs, u32 size, u32 align, u32 how)
+{
+    u32 n = regs & REGS_COUNT;
+    u32 *next = regs & REGS_FLOAT ? &at->floats : &at->ints;
+    if (how != (PLACE_APPLE | PLACE_VARIADIC)) {
+        if (*next + n <= 8) {
+            u32 r = *next;
+            *next += n;
+            return r;
+        }
+        *next = 8;
+    }
+
+    bool packed = how == PLACE_APPLE;
+    u32 slot = packed || align > 8 ? align : 8;
+    u32 bytes = packed ? size : (size + 7) & ~7u;
+    at->stack = (at->stack + slot - 1) & ~(slot - 1);
+    u32 offset = at->stack;
+    at->stack += bytes;
+    return PLACE_STACK | offset;
 }
 
 static NOINLINE bool
@@ -2641,7 +2665,54 @@ reserve_copies(Checker *c, u32 below)
 }
 
 static NOINLINE Operand
-call_compound(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg, u32 nargs)
+promote(Checker *c, u32 file, u32 token, Operand o)
+{
+    if (o.type == TYPE_ID_UNTYPED_INT) {
+        u32 v = value_of(o);
+        u32 to = int_fits(c, TYPE_ID_I32, v) ? TYPE_ID_I32
+               : int_fits(c, TYPE_ID_I64, v) ? TYPE_ID_I64
+                                             : TYPE_ID_U64;
+        return convert(c, file, token, o, to);
+    }
+    if (o.type == TYPE_ID_UNTYPED_FLOAT || o.type == TYPE_ID_F32) {
+        return cast(c, file, token, o, TYPE_ID_F64);
+    }
+
+    u32 type = is_place(o) ? place_type(c, o) : o.type;
+    if (!is_value_type(type)) {
+        report(c, file, token, DIAG_NOT_VALUE, 0, 0);
+        return poison;
+    }
+    if (is_place(o) || !is_scalar(c, type)) {
+        report(c, file, token, DIAG_NOT_VARIADIC, 0, type);
+        return poison;
+    }
+    return o;
+}
+
+static NOINLINE void
+note_stack_args(Checker *c, u32 list, u32 nargs, u32 first)
+{
+    u32 n = c->lists[list];
+    ArgCursor at = { first, 0, 0 };
+    for (u32 i = 0; i < n; i++) {
+        u32 type = c->lists[list + 1 + i];
+        u32 regs = is_slice(c, type)  ? 2
+                 : is_struct(c, type) ? check_struct_regs(c, type)
+                 : is_float(c, type)  ? 1 | REGS_FLOAT
+                                      : 1;
+        u32 size = regs & REGS_POINTER ? 8 : (u32)check_type_size(c, type);
+        check_place_arg(&at, regs, size, 8, 0);
+    }
+
+    u32 bytes = at.stack + 8 * (nargs > n ? nargs - n : 0);
+    if (bytes > c->body.stack_args) {
+        c->body.stack_args = bytes;
+    }
+}
+
+static NOINLINE Operand
+call_general(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg, u32 nargs)
 {
     const Decls *d = &c->decls;
     u32 fn = d->types[decl];
@@ -2654,19 +2725,21 @@ call_compound(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg
 
     u32 list = c->types.arg0[fn];
     u32 n = c->lists[list];
+    u32 total = nargs > n ? nargs : n;
 
     IrCode *code = c->body.code;
-    if (code->nextra + 2 * n + 2 > code->extra_cap) {
-        code->extra_cap = (code->nextra + 2 * n + 2) * 2;
+    if (code->nextra + 2 * total + 2 > code->extra_cap) {
+        code->extra_cap = (code->nextra + 2 * total + 2) * 2;
         code->extra = resize(code->extra, code->extra_cap, sizeof *code->extra);
     }
     u32 extra = code->nextra;
-    code->nextra += 2 * n + 2;
+    code->nextra += 2 * total + 2;
     u32 relative = extra - c->body.first_extra;
 
     bool ok = true;
     u32 w = extra + 1;
     u32 copies = 0;
+    u32 used[2] = { to_c ? 0 : FIRST_INT_ARG, 0 };
     for (u32 i = 0; i < n; i++) {
         u32 type = c->lists[list + 1 + i];
         if (!is_passed(c, type)) {
@@ -2684,6 +2757,7 @@ call_compound(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg
             Pair p = pair_of(c, v);
             code->extra[w++] = p.first;
             code->extra[w++] = p.second;
+            used[0] += 2;
         } else if (is_struct(c, type)) {
             u32 block = c->nunread && i < nargs
                           ? early_block(c, first_arg + i, c->stack[first_arg + i])
@@ -2693,17 +2767,28 @@ call_compound(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg
                 fill_block(c, block, copy, IR_NOP, 0, type, v);
                 v = (Operand){ OPERAND_LOCAL, copy };
             }
-            u32 root = check_struct_regs(c, type) & REGS_POINTER
-                         ? copy_root(c, v, type, &copies, to_c)
-                         : 0;
+            u32 regs = check_struct_regs(c, type);
+            u32 root = regs & REGS_POINTER ? copy_root(c, v, type, &copies, to_c) : 0;
             u32 address = place_address(c, v);
             code->extra[w++] = emit(c, IR_LOAD_AT, type, address, root);
+            used[(regs & REGS_FLOAT) != 0] += regs & REGS_COUNT;
         } else {
+            code->extra[w++] = operand_ir(c, v);
+            used[is_float(c, type)]++;
+        }
+    }
+    for (u32 i = n; i < nargs; i++) {
+        Operand v = promote(c, file, c->stack_tokens[first_arg + i], c->stack[first_arg + i]);
+        ok &= v.type != TYPE_ID_NONE;
+        if (ok) {
             code->extra[w++] = operand_ir(c, v);
         }
     }
     if (!ok) {
         return poison;
+    }
+    if (used[0] > 8 || used[1] > 8 || nargs > n) {
+        note_stack_args(c, list, nargs, to_c ? 0 : FIRST_INT_ARG);
     }
 
     code->extra[extra] = w - extra - 1;
@@ -2714,7 +2799,7 @@ call_compound(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg
         weigh(c, slot);
         code->extra[w++] = slot;
     }
-    if (code->nextra == extra + 2 * n + 2) {
+    if (code->nextra == extra + 2 * total + 2) {
         code->nextra = w;
     }
 
@@ -2753,11 +2838,15 @@ call_fn(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg, u32 
         defaults++;
     }
     if (nargs > n || nargs < n - defaults) {
-        report(c, file, token, DIAG_ARG_COUNT, n, nargs);
-        return poison;
+        bool variadic = c->types.arg1[fn] & FN_VARIADIC;
+        if (!variadic || nargs < n - defaults) {
+            u8 kind = variadic ? DIAG_ARG_COUNT_VARIADIC : DIAG_ARG_COUNT;
+            report(c, file, token, kind, variadic ? n - defaults : n, nargs);
+            return poison;
+        }
     }
-    if (d->flags[decl] & DECL_COMPOUND) {
-        return call_compound(c, file, node, token, decl, first_arg, nargs);
+    if (d->flags[decl] & DECL_GENERAL_CALL) {
+        return call_general(c, file, node, token, decl, first_arg, nargs);
     }
 
     IrCode *code = c->body.code;
@@ -5478,6 +5567,7 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
             case NODE_FN_RETURN:
                 push(c, token, OPERAND_RETURN, type_operand(c, file, child, pop(c)));
                 break;
+            case NODE_VARIADIC: push(c, token, OPERAND_VARIADIC, 0); break;
             case NODE_STRUCT:
             case NODE_ENUM:
             case NODE_UNION:
@@ -5644,23 +5734,26 @@ finish_signature(Checker *c, u32 decl)
             report(c, file, c->stack_tokens[end], DIAG_NOT_C, 0, ret);
         }
     }
+    bool variadic = end > m + 1 && c->stack[end - 1].type == OPERAND_VARIADIC;
+    end -= variadic;
 
     c->sp = end;
     u32 first = collect_members(c, file, m + 1, DIAG_DUPLICATE_PARAM);
     u32 count = c->nmembers - first;
     u32 list = reserve_list(c, count);
-    bool compound = is_compound(c, ret);
+    bool general = is_compound(c, ret) || variadic || count + !external > 8;
     for (u32 i = 0; i < count; i++) {
         Member p = c->members[first + i];
         c->lists[list + 1 + i] = p.type;
-        compound |= is_compound(c, p.type);
+        general |= is_compound(c, p.type);
         if (external && (is_slice(c, p.type) || is_array(c, p.type))) {
             report(c, file, c->files[file].nodes.tokens[p.node], DIAG_NOT_C, 0, p.type);
         }
     }
 
-    c->decls.types[decl] = fn_type(c, list, ret | (external ? FN_C_CALL : 0));
-    c->decls.flags[decl] |= compound ? DECL_COMPOUND : 0;
+    u64 flags = (external ? FN_C_CALL : 0) | (variadic ? FN_VARIADIC : 0);
+    c->decls.types[decl] = fn_type(c, list, ret | flags);
+    c->decls.flags[decl] |= general ? DECL_GENERAL_CALL : 0;
     c->decls.members[decl] = first;
     c->decls.member_counts[decl] = count;
     c->nscratch = c->stack[m].ref;
@@ -5867,6 +5960,7 @@ finish_ir(Checker *c, u32 decl, u32 nparams)
         .nconsts = code->nconsts - b->first_const,
         .calls = b->calls,
         .copies = b->copies,
+        .stack_args = b->stack_args,
     };
 
     if (code != &ir->code) {
@@ -5988,7 +6082,7 @@ check_body(Checker *c, u32 decl)
     }
     if (c->types.arg1[fn] == TYPE_ID_INFERRED) {
         d->types[decl] = intern_type(c, TYPE_FN, c->types.arg0[fn], c->body.ret);
-        d->flags[decl] |= is_compound(c, c->body.ret) ? DECL_COMPOUND : 0;
+        d->flags[decl] |= is_compound(c, c->body.ret) ? DECL_GENERAL_CALL : 0;
     }
 
     unbind_to(c, scope);
@@ -6530,14 +6624,16 @@ print_decl(FILE *out, const Checker *c, u32 decl)
             fputs(d->member_counts[decl] ? "" : " {}", out);
             print_members(out, c, decl, " { ", " }");
             break;
-        case DECL_FN:
+        case DECL_FN: {
+            bool variadic = c->types.arg1[type] & FN_VARIADIC;
             fputs(d->bodies[decl] == NO_BODY ? "extern fn " : "fn ", out);
             print_name(out, c, d->names[decl]);
-            fputs(d->member_counts[decl] ? "" : "()", out);
-            print_members(out, c, decl, "(", ")");
+            fputs(d->member_counts[decl] ? "" : variadic ? "(..)" : "()", out);
+            print_members(out, c, decl, "(", variadic ? ", ..)" : ")");
             fputs(" -> ", out);
             print_type(out, c, (u32)c->types.arg1[type]);
             break;
+        }
         case DECL_VAR:
             print_name(out, c, d->names[decl]);
             if (type == TYPE_ID_NONE) {
@@ -6610,6 +6706,9 @@ print_function(FILE *out, const Checker *c, const IrFunc *fn)
     fputc('\n', out);
     if (fn->copies) {
         fprintf(out, "    copies: %u bytes\n", fn->copies);
+    }
+    if (fn->stack_args) {
+        fprintf(out, "    stack arguments: %u bytes\n", fn->stack_args);
     }
 
     u32 depth = 1;

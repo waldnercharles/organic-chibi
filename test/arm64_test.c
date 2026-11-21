@@ -10,6 +10,7 @@
 #include <math.h>
 #include <setjmp.h>
 #include <signal.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -63,7 +64,7 @@ build(Program *p, const char *text)
     if (!check_text(p, text)) {
         return false;
     }
-    if (!arm64_compile(&p->n, &p->c)) {
+    if (!arm64_compile(&p->n, &p->c, CONVENTION_HOST)) {
         fprintf(stderr, "arm64 test: %s\n", p->n.error);
         return false;
     }
@@ -703,7 +704,7 @@ rejects(const char *text)
                            true };
     check_init(&p.c, &p.lx.names);
     check_package(&p.c, &p.file, 1);
-    bool ok = count >= 0 && p.c.ndiags == 0 && !arm64_compile(&p.n, &p.c) &&
+    bool ok = count >= 0 && p.c.ndiags == 0 && !arm64_compile(&p.n, &p.c, CONVENTION_HOST) &&
               p.n.error && strstr(p.n.error, "supports only") != NULL;
     if (!ok) {
         fprintf(stderr, "arm64 test: expected the backend to reject\n%s", text);
@@ -2404,17 +2405,6 @@ TEST_CASE(passed_structs)
     REQUIRE(passes_to_c(&p));
     REQUIRE(lost_contexts == 0);
     release_program(&p);
-
-    Program q;
-    REQUIRE(check_text(
-        &q,
-        "struct P { a: int, b: int }\n"
-        "fn f(a: int, b: int, c: int, d: int, e: int, f: int, p: P) -> int {\n"
-        "    return a + p.b\n"
-        "}\n"
-    ));
-    REQUIRE(!arm64_compile(&q.n, &q.c) && strstr(q.n.error, "more than 7 integer"));
-    release_program(&q);
     return true;
 }
 
@@ -4179,7 +4169,7 @@ TEST_CASE(store_while_loaded)
     code->bs[first] = code->bs[first + 1];
     code->as[first + 1] = slot;
     code->bs[first + 1] = value;
-    REQUIRE(arm64_compile(&p.n, &p.c));
+    REQUIRE(arm64_compile(&p.n, &p.c, CONVENTION_HOST));
     REQUIRE(((I1 *)fn(&p, "f"))(CONTEXT, 7) == 75);
     release_program(&p);
     return true;
@@ -4902,30 +4892,6 @@ static const char HIDDEN_CONTEXT
 
 typedef int64_t S7(void *, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t);
 
-static const char *const ARGUMENT_LIMITS[][2] = {
-    { "fn g() -> int {\n"
-      "    return f(1, 2, 3, 4, 5, 6, 7, 8)\n"
-      "}\n"
-      "fn f(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: int) -> "
-      "int {\n"
-      "    return a\n"
-      "}\n",
-      "a call passes more than 7 integer or 8 float arguments" },
-    { "struct P { a: int, b: int }\n"
-      "fn g() -> int {\n"
-      "    return f(1, 2, 3, 4, 5, 6, .{ 7, 8 })\n"
-      "}\n"
-      "fn f(a: int, b: int, c: int, d: int, e: int, f: int, p: P) -> int {\n"
-      "    return a\n"
-      "}\n",
-      "a call passes more than 7 integer or 8 float arguments" },
-    { "fn f(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: int) -> "
-      "int {\n"
-      "    return a\n"
-      "}\n",
-      "a function has more than 7 integer or 8 float parameters" },
-};
-
 enum
 {
     WORD_RET = 0xD65F03C0u,
@@ -5032,12 +4998,6 @@ TEST_CASE(hidden_context)
     REQUIRE(lost_contexts == 0);
     REQUIRE(((S7 *)fn(&p, "seven"))(CONTEXT, 1, 2, 3, 4, 5, 6, -7) == 42);
     release_program(&p);
-
-    for (size_t k = 0; k < sizeof ARGUMENT_LIMITS / sizeof ARGUMENT_LIMITS[0]; k++) {
-        REQUIRE(check_text(&p, ARGUMENT_LIMITS[k][0]));
-        REQUIRE(!arm64_compile(&p.n, &p.c) && strcmp(p.n.error, ARGUMENT_LIMITS[k][1]) == 0);
-        release_program(&p);
-    }
     return true;
 }
 
@@ -5296,19 +5256,6 @@ chibi_c_tick(void)
 }
 
 static const char *const C_CALL_LIMITS[][2] = {
-    { "extern fn chibi_c_eight(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: "
-      "int, i: int) -> int\n"
-      "fn g() -> int {\n"
-      "    return chibi_c_eight(1, 2, 3, 4, 5, 6, 7, 8, 9)\n"
-      "}\n",
-      "a call into C passes more than 8 integer or 8 float arguments" },
-    { "struct P { a: int, b: int }\n"
-      "extern fn chibi_c_point(a: int, b: int, c: int, d: int, e: int, f: int, g: int, p: P) "
-      "-> int\n"
-      "fn g() -> int {\n"
-      "    return chibi_c_point(1, 2, 3, 4, 5, 6, 7, .{ 8, 9 })\n"
-      "}\n",
-      "a call into C passes more than 8 integer or 8 float arguments" },
     { "extern fn chibi_c_nowhere() -> int\n"
       "fn g() -> int {\n"
       "    return chibi_c_nowhere()\n"
@@ -5377,9 +5324,532 @@ TEST_CASE(calls_into_c)
 
     for (size_t k = 0; k < sizeof C_CALL_LIMITS / sizeof C_CALL_LIMITS[0]; k++) {
         REQUIRE(check_text(&p, C_CALL_LIMITS[k][0]));
-        REQUIRE(!arm64_compile(&p.n, &p.c) && strcmp(p.n.error, C_CALL_LIMITS[k][1]) == 0);
+        REQUIRE(!arm64_compile(&p.n, &p.c, CONVENTION_HOST) && strcmp(p.n.error, C_CALL_LIMITS[k][1]) == 0);
         release_program(&p);
     }
+    return true;
+}
+
+static const char STACK_ARGUMENTS[] =
+    "struct P { a: int, b: int }\n"
+    "struct V3 { x: f32, y: f32, z: f32 }\n"
+    "struct W { a: int, b: int, c: int }\n"
+    "\n"
+    "const table := W.{ 4, 5, 6 }\n"
+    "\n"
+    "extern fn chibi_c_twelve(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: i8, i: "
+    "u16, j: i32, k: bool, l: int) -> int\n"
+    "extern fn chibi_c_structs(a: int, b: int, c: int, d: int, e: int, f: int, g: int, p: P, q: "
+    "P, r: int) -> int\n"
+    "extern fn chibi_c_floats(a: f64, b: f64, c: f64, d: f64, e: f64, f: f64, s: V3, t: f32, n: "
+    "int, u: f64) -> f64\n"
+    "extern fn chibi_c_last_w(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: int, w: "
+    "W) -> int\n"
+    "extern fn chibi_c_probe(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: int, i: "
+    "i8, j: i16, k: i32, l: i8, m: int, n: u8) -> int\n"
+    "extern fn chibi_c_fprobe(a: f64, b: f64, c: f64, d: f64, e: f64, f: f64, g: f64, h: f64, i: "
+    "f32, j: f64, k: f32, l: f32) -> int\n"
+    "\n"
+    "fn id(x: int) -> int {\n"
+    "    return x\n"
+    "}\n"
+    "\n"
+    "fn twelve(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: i8, i: u16, j: i32, k: "
+    "bool, l: int) -> int {\n"
+    "    s := a + 2 * b + 3 * c + 4 * d + 5 * e + 6 * f + 7 * g + 8 * int(h) + 9 * int(i) + 10 * "
+    "int(j) + 12 * l\n"
+    "    if k {\n"
+    "        s += 1000\n"
+    "    }\n"
+    "    return s\n"
+    "}\n"
+    "\n"
+    "fn kept(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: i8, i: u16, j: i32, k: "
+    "bool, l: int) -> int {\n"
+    "    s := id(a) + id(8 * int(h))\n"
+    "    s += 9 * int(i) + 10 * int(j) + 12 * l\n"
+    "    if k {\n"
+    "        s += 1000\n"
+    "    }\n"
+    "    return s + 2 * b + 3 * c + 4 * d + 5 * e + 6 * f + 7 * g\n"
+    "}\n"
+    "\n"
+    "fn structs(a: int, b: int, c: int, d: int, e: int, f: int, p: P, q: P, r: int) -> int {\n"
+    "    return a + 2 * b + 3 * c + 4 * d + 5 * e + 6 * f + 7 * p.a + 8 * p.b + 9 * q.a + 10 * q.b "
+    "+ 11 * r\n"
+    "}\n"
+    "\n"
+    "fn hfa(a: f64, b: f64, c: f64, d: f64, e: f64, f: f64, s: V3, t: f32, n: int, u: f64) -> f64 "
+    "{\n"
+    "    return a + 2.0 * b + 3.0 * c + 4.0 * d + 5.0 * e + 6.0 * f + 7.0 * f64(s.x) + 8.0 * "
+    "f64(s.y) + 9.0 * f64(s.z) + 10.0 * f64(t) + 11.0 * f64(n) + 12.0 * u\n"
+    "}\n"
+    "\n"
+    "fn slice_at_seven(a: int, b: int, c: int, d: int, e: int, f: int, xs: []int, y: int) -> int "
+    "{\n"
+    "    return a + 2 * b + 3 * c + 4 * d + 5 * e + 6 * f + 100 * xs[0] + 1000 * xs.len + 10000 * y\n"
+    "}\n"
+    "\n"
+    "fn big_last(a: int, b: int, c: int, d: int, e: int, f: int, g: int, w: W) -> int {\n"
+    "    return a + 7 * g + 10 * w.a + 100 * w.b + 1000 * w.c\n"
+    "}\n"
+    "\n"
+    "fn alias_last(q: *W, b: int, c: int, d: int, e: int, f: int, g: int, w: W) -> int {\n"
+    "    q.a = 1000\n"
+    "    return w.a + b + g\n"
+    "}\n"
+    "\n"
+    "fn eight(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: int) -> int {\n"
+    "    return a + 2 * b + 3 * c + 4 * d + 5 * e + 6 * f + 7 * g + 8 * h\n"
+    "}\n"
+    "\n"
+    "fn many(a0: int, a1: int, a2: int, a3: int, a4: int, a5: int, a6: int, a7: int, a8: int, a9: "
+    "int, a10: int, a11: int, a12: int, a13: int, a14: int, a15: int, a16: int, a17: int, a18: "
+    "int, a19: int, a20: int, a21: int, a22: int, a23: int, a24: int, a25: int, a26: int, a27: "
+    "int, a28: int, a29: int, a30: int, a31: int, a32: int, w: W) -> int {\n"
+    "    return a0 + 2 * a7 + 3 * a31 + 4 * a32 + 5 * w.a + 6 * w.c\n"
+    "}\n"
+    "\n"
+    "fn struct_tail(a: int, b: int, c: int, d: int, e: int, f: int, p: P, q: P) -> int {\n"
+    "    return a + 2 * f + 3 * p.a + 4 * p.b + 5 * q.a + 6 * q.b\n"
+    "}\n"
+    "\n"
+    "fn pinned(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: i8, k: i16) -> int {\n"
+    "    s := 0\n"
+    "    for i in 0..3 {\n"
+    "        s += id(int(h)) + int(k) * i\n"
+    "    }\n"
+    "    return s + a + 2 * g\n"
+    "}\n"
+    "\n"
+    "fn call_eight(x: int) -> int {\n"
+    "    return eight(x, 1, 2, 3, 4, 5, 6, x * 2)\n"
+    "}\n"
+    "\n"
+    "fn call_twelve(x: int) -> int {\n"
+    "    w := W.{ x, x + 1, x + 2 }\n"
+    "    t := twelve(x, x + 1, x - 2, 3, x * 4, 5, x + 6, i8(x) - 7, u16(x) * 300, i32(x) * -9, x "
+    "> 3, x * 11)\n"
+    "    k := kept(x, x + 1, x - 2, 3, x * 4, 5, x + 6, i8(x) - 7, u16(x) * 300, i32(x) * -9, x > "
+    "3, x * 11)\n"
+    "    return t + k + w.a + w.c\n"
+    "}\n"
+    "\n"
+    "fn call_c_twelve(x: int) -> int {\n"
+    "    return chibi_c_twelve(x, x + 1, x - 2, 3, x * 4, 5, x + 6, i8(x) - 7, u16(x) * 300, "
+    "i32(x) * -9, x > 3, x * 11)\n"
+    "}\n"
+    "\n"
+    "fn call_structs(x: int) -> int {\n"
+    "    return structs(x, 1, 2, 3, 4, 5, P.{ x, x + 1 }, P.{ 7, x * 2 }, x - 1)\n"
+    "}\n"
+    "\n"
+    "fn call_c_structs(x: int) -> int {\n"
+    "    return chibi_c_structs(x, 1, 2, 3, 4, 5, 6, P.{ x, x + 1 }, P.{ 7, x * 2 }, x - 1)\n"
+    "}\n"
+    "\n"
+    "fn call_hfa(x: int) -> f64 {\n"
+    "    return hfa(f64(x), 1.5, 2.0, 3.0, 4.0, 5.0, V3.{ f32(x), 0.5, 0.25 }, f32(x) * 2.0, x + 3, "
+    "0.125)\n"
+    "}\n"
+    "\n"
+    "fn call_c_floats(x: int) -> f64 {\n"
+    "    return chibi_c_floats(f64(x), 1.5, 2.0, 3.0, 4.0, 5.0, V3.{ f32(x), 0.5, 0.25 }, f32(x) * "
+    "2.0, x + 3, 0.125)\n"
+    "}\n"
+    "\n"
+    "fn call_slice(xs: []int, x: int) -> int {\n"
+    "    return slice_at_seven(x, 1, 2, 3, 4, 5, xs, x + 7)\n"
+    "}\n"
+    "\n"
+    "fn call_big(x: int) -> int {\n"
+    "    w := W.{ x, x + 1, x + 2 }\n"
+    "    return big_last(1, 2, 3, 4, 5, 6, x, w) + big_last(1, 2, 3, 4, 5, 6, 7, table)\n"
+    "}\n"
+    "\n"
+    "fn call_alias(x: int) -> int {\n"
+    "    w := W.{ x, 2, 3 }\n"
+    "    r := alias_last(&w, 1, 2, 3, 4, 5, 6, w)\n"
+    "    return r * 10000 + w.a\n"
+    "}\n"
+    "\n"
+    "fn call_c_last_w(x: int) -> int {\n"
+    "    w := W.{ x, x + 1, x + 2 }\n"
+    "    return chibi_c_last_w(1, 2, 3, 4, 5, 6, 7, x, w) + w.a\n"
+    "}\n"
+    "\n"
+    "fn call_many(x: int) -> int {\n"
+    "    return many(x, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, "
+    "22, 23, 24, 25, 26, 27, 28, 29, 30, 31, x + 32, W.{ x, 0, x * 2 })\n"
+    "}\n"
+    "\n"
+    "fn call_struct_tail(x: int) -> int {\n"
+    "    return struct_tail(x, 1, 2, 3, 4, 5, P.{ x, x + 1 }, P.{ 7, x * 2 })\n"
+    "}\n"
+    "\n"
+    "fn call_pinned(x: int) -> int {\n"
+    "    return pinned(x, 1, 2, 3, 4, 5, 6, i8(x) - 7, i16(x) * -100)\n"
+    "}\n"
+    "\n"
+    "fn probe(x: int) -> int {\n"
+    "    return chibi_c_probe(1, 2, 3, 4, 5, 6, 7, 8, i8(x) - 3, i16(x) * -100, i32(x) * 100000, "
+    "i8(x), x * 1000000000000, u8(x) + 200)\n"
+    "}\n"
+    "\n"
+    "fn fprobe(x: int) -> int {\n"
+    "    return chibi_c_fprobe(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, f32(x) + 0.5, f64(x) * 0.25, "
+    "f32(x) - 1.5, 2.75)\n"
+    "}\n";
+
+typedef int64_t T12(void *, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int8_t, uint16_t, int32_t, bool, int64_t);
+typedef int64_t T12A(void *, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, uint64_t, uint64_t, uint64_t);
+typedef int64_t TS(void *, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, CPoint, CPoint, int64_t);
+typedef double TH(void *, double, double, double, double, double, double, CV3, float, int64_t, double);
+typedef double THA(void *, double, double, double, double, double, double, double, double, double, double, int64_t, double);
+typedef int64_t TL(void *, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, Slice, int64_t);
+typedef int64_t TW(void *, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, CW);
+typedef int64_t TSI(void *, Slice, int64_t);
+typedef int64_t TST(void *, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, CPoint, CPoint);
+typedef int64_t TPN(void *, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int8_t, int16_t);
+
+uint64_t chibi_c_words[13];
+
+static int64_t
+twelve_value(int64_t a, int64_t b, int64_t c, int64_t d, int64_t e, int64_t f, int64_t g, int8_t h, uint16_t i, int32_t j, bool k, int64_t l)
+{
+    return a + 2 * b + 3 * c + 4 * d + 5 * e + 6 * f + 7 * g + 8 * h + 9 * i + 10 * (int64_t)j + 12 * l + (k ? 1000 : 0);
+}
+
+int64_t
+chibi_c_twelve(int64_t a, int64_t b, int64_t c, int64_t d, int64_t e, int64_t f, int64_t g, int8_t h, uint16_t i, int32_t j, bool k, int64_t l)
+{
+    return twelve_value(a, b, c, d, e, f, g, h, i, j, k, l);
+}
+
+int64_t
+chibi_c_structs(int64_t a, int64_t b, int64_t c, int64_t d, int64_t e, int64_t f, int64_t g, CPoint p, CPoint q, int64_t r)
+{
+    return a + 2 * b + 3 * c + 4 * d + 5 * e + 6 * f + 7 * g + 8 * p.x + 9 * p.y + 10 * q.x + 11 * q.y + 12 * r;
+}
+
+static double
+floats_value(double a, double b, double c, double d, double e, double f, CV3 s, float t, int64_t n, double u)
+{
+    return a + 2.0 * b + 3.0 * c + 4.0 * d + 5.0 * e + 6.0 * f + 7.0 * s.x + 8.0 * s.y + 9.0 * s.z + 10.0 * t + 11.0 * (double)n + 12.0 * u;
+}
+
+double
+chibi_c_floats(double a, double b, double c, double d, double e, double f, CV3 s, float t, int64_t n, double u)
+{
+    return floats_value(a, b, c, d, e, f, s, t, n, u);
+}
+
+int64_t
+chibi_c_last_w(int64_t a, int64_t b, int64_t c, int64_t d, int64_t e, int64_t f, int64_t g, int64_t h, CW w)
+{
+    int64_t s = a + b + c + d + e + f + g + 8 * h + 10 * w.a + 100 * w.b + 1000 * w.c;
+    volatile CW *v = &w;
+    v->a = 900;
+    v->b = 800;
+    v->c = 700;
+    return s;
+}
+
+int64_t
+chibi_c_probe(int64_t a, int64_t b, int64_t c, int64_t d, int64_t e, int64_t f, int64_t g, int64_t h, uint64_t s0, uint64_t s1, uint64_t s2, uint64_t s3, uint64_t s4, uint64_t s5)
+{
+    uint64_t s[6] = { s0, s1, s2, s3, s4, s5 };
+    memcpy(chibi_c_words, s, sizeof s);
+    return a + b + c + d + e + f + g + h;
+}
+
+int64_t
+chibi_c_fprobe(double a, double b, double c, double d, double e, double f, double g, double h, double s0, double s1, double s2, double s3)
+{
+    double s[4] = { s0, s1, s2, s3 };
+    memcpy(chibi_c_words, s, sizeof s);
+    return (int64_t)(a + b + c + d + e + f + g + h);
+}
+
+static float
+low_float(uint64_t w)
+{
+    float f;
+    uint32_t bits = (uint32_t)w;
+    memcpy(&f, &bits, sizeof f);
+    return f;
+}
+
+static float
+high_float(uint64_t w)
+{
+    return low_float(w >> 32);
+}
+
+static double
+word_double(uint64_t w)
+{
+    double d;
+    memcpy(&d, &w, sizeof d);
+    return d;
+}
+
+static uint64_t
+float_pair(float lo, float hi)
+{
+    uint32_t a, b;
+    memcpy(&a, &lo, sizeof a);
+    memcpy(&b, &hi, sizeof b);
+    return a | (uint64_t)b << 32;
+}
+
+static int64_t
+many_value(int64_t x)
+{
+    return 22 * x + 235;
+}
+
+static bool
+chibi_calls_agree(Program *p, int64_t x)
+{
+    int8_t h = (int8_t)(x - 7);
+    uint16_t i = (uint16_t)(x * 300);
+    int32_t j = (int32_t)x * -9;
+    int64_t t = twelve_value(x, x + 1, x - 2, 3, x * 4, 5, x + 6, h, i, j, x > 3, x * 11);
+    int64_t xs[3] = { x * 5, 1, 2 };
+    Slice s = { xs, 3 };
+    CV3 v = { (float)x, 0.5f, 0.25f };
+    double hfa = floats_value((double)x, 1.5, 2.0, 3.0, 4.0, 5.0, v, (float)x * 2.0f, x + 3, 0.125);
+    int64_t structs = x + 2 + 6 + 12 + 20 + 30 + 7 * x + 8 * (x + 1) + 63 + 20 * x + 11 * (x - 1);
+    int64_t sliced = x + 2 + 6 + 12 + 20 + 30 + 500 * x + 3000 + 10000 * (x + 7);
+    int64_t big = 1 + 7 * x + 10 * x + 100 * (x + 1) + 1000 * (x + 2) + 1 + 49 + 40 + 500 + 6000;
+    return ((I1 *)fn(p, "call_eight"))(CONTEXT, x) == 17 * x + 112 &&
+           ((I1 *)fn(p, "call_twelve"))(CONTEXT, x) == 2 * t + 2 * x + 2 &&
+           ((I1 *)fn(p, "call_structs"))(CONTEXT, x) == structs &&
+           ((DI *)fn(p, "call_hfa"))(CONTEXT, x) == hfa &&
+           ((TSI *)fn(p, "call_slice"))(CONTEXT, s, x) == sliced &&
+           ((I1 *)fn(p, "call_big"))(CONTEXT, x) == big &&
+           ((I1 *)fn(p, "call_alias"))(CONTEXT, x) == (x + 7) * 10000 + 1000 &&
+           ((I1 *)fn(p, "call_many"))(CONTEXT, x) == many_value(x) &&
+           ((I1 *)fn(p, "call_struct_tail"))(CONTEXT, x) == 20 * x + 49 &&
+           ((I1 *)fn(p, "call_pinned"))(CONTEXT, x) == -296 * x - 9;
+}
+
+TEST_CASE(stack_arguments)
+{
+    Program p;
+    REQUIRE(build(&p, STACK_ARGUMENTS));
+    REQUIRE(count_words(&p, "twelve", WORD_PUSH_CONTEXT_FRAME, 0) == 1);
+    REQUIRE(count_words(&p, "twelve", WORD_SAVE_CONTEXT, 0) == 0);
+    REQUIRE(count_words(&p, "kept", WORD_PUSH_CONTEXT_FRAME, 0) == 1);
+
+    for (int64_t x = 0; x < 20; x++) {
+        int8_t h = (int8_t)(x - 7);
+        uint16_t i = (uint16_t)(x * 300);
+        int32_t j = (int32_t)x * -9;
+        int64_t t = twelve_value(x, x + 1, x - 2, 3, x * 4, 5, x + 6, h, i, j, x > 3, x * 11);
+        REQUIRE(((T12 *)fn(&p, "twelve"))(CONTEXT, x, x + 1, x - 2, 3, x * 4, 5, x + 6, h, i, j, x > 3, x * 11) == t);
+        REQUIRE(((T12 *)fn(&p, "kept"))(CONTEXT, x, x + 1, x - 2, 3, x * 4, 5, x + 6, h, i, j, x > 3, x * 11) == t);
+        REQUIRE(((I1 *)fn(&p, "call_c_twelve"))(CONTEXT, x) == t);
+
+        CPoint a = { x, x + 1 }, b = { 7, x * 2 };
+        int64_t structs = x + 2 + 6 + 12 + 20 + 30 + 7 * x + 8 * (x + 1) + 63 + 20 * x + 11 * (x - 1);
+        REQUIRE(((TS *)fn(&p, "structs"))(CONTEXT, x, 1, 2, 3, 4, 5, a, b, x - 1) == structs);
+        REQUIRE(((I1 *)fn(&p, "call_c_structs"))(CONTEXT, x) == x + 112 + 8 * x + 9 * (x + 1) + 70 + 22 * x + 12 * (x - 1));
+        REQUIRE(((TST *)fn(&p, "struct_tail"))(CONTEXT, x, 1, 2, 3, 4, 5, a, b) == 20 * x + 49);
+        REQUIRE(((TPN *)fn(&p, "pinned"))(CONTEXT, x, 1, 2, 3, 4, 5, 6, (int8_t)(x - 7), (int16_t)(x * -100)) == -296 * x - 9);
+
+        CV3 v = { (float)x, 0.5f, 0.25f };
+        double hfa = floats_value((double)x, 1.5, 2.0, 3.0, 4.0, 5.0, v, (float)x * 2.0f, x + 3, 0.125);
+        REQUIRE(((TH *)fn(&p, "hfa"))(CONTEXT, (double)x, 1.5, 2.0, 3.0, 4.0, 5.0, v, (float)x * 2.0f, x + 3, 0.125) == hfa);
+        REQUIRE(((DI *)fn(&p, "call_c_floats"))(CONTEXT, x) == hfa);
+
+        int64_t xs[3] = { x * 5, 1, 2 };
+        Slice s = { xs, 3 };
+        int64_t sliced = x + 2 + 6 + 12 + 20 + 30 + 500 * x + 3000 + 10000 * (x + 7);
+        REQUIRE(((TL *)fn(&p, "slice_at_seven"))(CONTEXT, x, 1, 2, 3, 4, 5, s, x + 7) == sliced);
+
+        CW w = { x, x + 1, x + 2 };
+        REQUIRE(((TW *)fn(&p, "big_last"))(CONTEXT, 1, 2, 3, 4, 5, 6, x, w) == 1 + 7 * x + 10 * x + 100 * (x + 1) + 1000 * (x + 2));
+        REQUIRE(((I1 *)fn(&p, "call_c_last_w"))(CONTEXT, x) == 28 + 8 * x + 10 * x + 100 * (x + 1) + 1000 * (x + 2) + x);
+
+        REQUIRE(chibi_calls_agree(&p, x));
+
+        REQUIRE(((I1 *)fn(&p, "probe"))(CONTEXT, x) == 36);
+        REQUIRE((int8_t)chibi_c_words[0] == x - 3);
+        REQUIRE((int16_t)chibi_c_words[1] == x * -100);
+        REQUIRE((int32_t)chibi_c_words[2] == x * 100000);
+        REQUIRE((int8_t)chibi_c_words[3] == x);
+        REQUIRE((int64_t)chibi_c_words[4] == x * 1000000000000);
+        REQUIRE((uint8_t)chibi_c_words[5] == x + 200);
+
+        REQUIRE(((I1 *)fn(&p, "fprobe"))(CONTEXT, x) == 36);
+        REQUIRE(low_float(chibi_c_words[0]) == (float)x + 0.5f);
+        REQUIRE(word_double(chibi_c_words[1]) == (double)x * 0.25);
+        REQUIRE(low_float(chibi_c_words[2]) == (float)x - 1.5f);
+        REQUIRE(low_float(chibi_c_words[3]) == 2.75f);
+    }
+    release_program(&p);
+
+    REQUIRE(check_text(&p, STACK_ARGUMENTS));
+    REQUIRE(arm64_compile(&p.n, &p.c, CONVENTION_APPLE));
+    for (int64_t x = 0; x < 20; x++) {
+        REQUIRE(chibi_calls_agree(&p, x));
+
+        int8_t h = (int8_t)(x - 7);
+        uint16_t i = (uint16_t)(x * 300);
+        int32_t j = (int32_t)x * -9;
+        int64_t t = twelve_value(x, x + 1, x - 2, 3, x * 4, 5, x + 6, h, i, j, x > 3, x * 11);
+        uint64_t packed = (uint8_t)h | (uint64_t)i << 16 | (uint64_t)(uint32_t)j << 32;
+        REQUIRE(((T12A *)fn(&p, "twelve"))(CONTEXT, x, x + 1, x - 2, 3, x * 4, 5, x + 6, packed, x > 3, (uint64_t)(x * 11)) == t);
+        REQUIRE(((T12A *)fn(&p, "kept"))(CONTEXT, x, x + 1, x - 2, 3, x * 4, 5, x + 6, packed, x > 3, (uint64_t)(x * 11)) == t);
+
+        CV3 v = { (float)x, 0.5f, 0.25f };
+        double hfa = floats_value((double)x, 1.5, 2.0, 3.0, 4.0, 5.0, v, (float)x * 2.0f, x + 3, 0.125);
+        double first = word_double(float_pair(v.x, v.y));
+        double second = word_double(float_pair(v.z, (float)x * 2.0f));
+        REQUIRE(((THA *)fn(&p, "hfa"))(CONTEXT, (double)x, 1.5, 2.0, 3.0, 4.0, 5.0, -1.0, -2.0, first, second, x + 3, 0.125) == hfa);
+
+        REQUIRE(((I1 *)fn(&p, "probe"))(CONTEXT, x) == 36);
+        REQUIRE((int8_t)chibi_c_words[0] == x - 3);
+        REQUIRE((int16_t)(chibi_c_words[0] >> 16) == x * -100);
+        REQUIRE((int32_t)(chibi_c_words[0] >> 32) == x * 100000);
+        REQUIRE((int8_t)chibi_c_words[1] == x);
+        REQUIRE((int64_t)chibi_c_words[2] == x * 1000000000000);
+        REQUIRE((uint8_t)chibi_c_words[3] == x + 200);
+
+        REQUIRE(((I1 *)fn(&p, "fprobe"))(CONTEXT, x) == 36);
+        REQUIRE(low_float(chibi_c_words[0]) == (float)x + 0.5f);
+        REQUIRE(word_double(chibi_c_words[1]) == (double)x * 0.25);
+        REQUIRE(low_float(chibi_c_words[2]) == (float)x - 1.5f);
+        REQUIRE(high_float(chibi_c_words[2]) == 2.75f);
+    }
+    release_program(&p);
+    return true;
+}
+
+static const char VARIADIC_CALLS[] =
+    "struct P { a: int, b: int }\n"
+    "\n"
+    "extern fn snprintf(buf: *[128]u8, n: u64, fmt: *[64]u8, ..) -> i32\n"
+    "extern fn chibi_c_va(n: int, ..) -> f64\n"
+    "extern fn chibi_c_vprobe(a: int, ..) -> int\n"
+    "extern fn chibi_c_vpoint(p: P, n: int, ..) -> int\n"
+    "extern fn chibi_c_probe(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: int, i: "
+    "i32, ..) -> int\n"
+    "\n"
+    "fn format(buf: *[128]u8, fmt: *[64]u8, x: int) -> i32 {\n"
+    "    return snprintf(buf, 128, fmt, x, i8(x) - 3, u16(x) + 7, f32(x) * 0.5, f64(x) / 4.0, x > "
+    "2, 123456789012, 7, -1, x * 3, x * 5, 2.5)\n"
+    "}\n"
+    "\n"
+    "fn pairs(x: int) -> f64 {\n"
+    "    return chibi_c_va(10, x, 0.5, x + 1, f32(x), x * 4, 1.25, x - 5, 2.0, x + 6, 0.75, x * 7, "
+    "f64(x), x + 8, 3.5, x * 9, 4.5, x - 10, 0.25, x + 11, 8.0)\n"
+    "}\n"
+    "\n"
+    "fn vprobe(x: int) -> int {\n"
+    "    return chibi_c_vprobe(x, x + 1, i8(x) - 3, f32(x) + 0.5, 2.5, u16(x) + 60000, 7)\n"
+    "}\n"
+    "\n"
+    "fn vpoint(x: int) -> int {\n"
+    "    return chibi_c_vpoint(P.{ x, x + 1 }, 3, x * 2, x + 5, x - 9)\n"
+    "}\n"
+    "\n"
+    "fn vnamed(x: int) -> int {\n"
+    "    return chibi_c_probe(1, 2, 3, 4, 5, 6, 7, 8, i32(x) - 5, 7, i8(x) - 3, x * 1000)\n"
+    "}\n";
+
+typedef int32_t TF(void *, char *, const char *, int64_t);
+
+double
+chibi_c_va(int64_t n, ...)
+{
+    va_list ap;
+    va_start(ap, n);
+    double s = 0;
+    for (int64_t i = 0; i < n; i++) {
+        int64_t k = va_arg(ap, int64_t);
+        double d = va_arg(ap, double);
+        s = s * 2.0 + (double)k + d;
+    }
+    va_end(ap);
+    return s;
+}
+
+int64_t
+chibi_c_vpoint(CPoint p, int64_t n, ...)
+{
+    va_list ap;
+    va_start(ap, n);
+    int64_t s = p.x + 2 * p.y;
+    for (int64_t i = 0; i < n; i++) {
+        s = s * 10 + va_arg(ap, int64_t);
+    }
+    va_end(ap);
+    return s;
+}
+
+int64_t
+chibi_c_vprobe(int64_t a, int64_t x1, int64_t x2, int64_t x3, int64_t x4, int64_t x5, int64_t x6, int64_t x7, uint64_t s0, uint64_t s1, uint64_t s2, uint64_t s3, uint64_t s4, uint64_t s5)
+{
+    uint64_t w[13] = { (uint64_t)x1, (uint64_t)x2, (uint64_t)x3, (uint64_t)x4, (uint64_t)x5, (uint64_t)x6, (uint64_t)x7, s0, s1, s2, s3, s4, s5 };
+    memcpy(chibi_c_words, w, sizeof w);
+    return a;
+}
+
+static bool
+named_then_variadic(Program *p, int64_t x)
+{
+    return ((I1 *)fn(p, "vnamed"))(CONTEXT, x) == 36 && (int32_t)chibi_c_words[0] == x - 5 &&
+           (int32_t)chibi_c_words[1] == 7 && (int32_t)chibi_c_words[2] == x - 3 &&
+           (int64_t)chibi_c_words[3] == x * 1000;
+}
+
+TEST_CASE(variadic_calls)
+{
+    Program p;
+    REQUIRE(build(&p, VARIADIC_CALLS));
+    char fmt[64] = "%ld %d %d %.2f %.3f %d %ld %d %d %ld %ld %.1f";
+    for (int64_t x = 0; x < 20; x++) {
+        char buf[128] = { 0 }, want[128];
+        int m = snprintf(want, sizeof want, fmt, (long)x, (int)(int8_t)(x - 3), (int)(uint16_t)(x + 7), (double)((float)x * 0.5f), (double)x / 4.0, (int)(x > 2), 123456789012L, 7, -1, (long)(x * 3), (long)(x * 5), 2.5);
+        REQUIRE(((TF *)fn(&p, "format"))(CONTEXT, buf, fmt, x) == m);
+        REQUIRE(strcmp(buf, want) == 0);
+
+        int64_t k[10] = { x, x + 1, x * 4, x - 5, x + 6, x * 7, x + 8, x * 9, x - 10, x + 11 };
+        double d[10] = { 0.5, (double)(float)x, 1.25, 2.0, 0.75, (double)x, 3.5, 4.5, 0.25, 8.0 };
+        double s = 0;
+        for (int i = 0; i < 10; i++) {
+            s = s * 2.0 + (double)k[i] + d[i];
+        }
+        REQUIRE(((DI *)fn(&p, "pairs"))(CONTEXT, x) == s);
+
+        REQUIRE(((I1 *)fn(&p, "vprobe"))(CONTEXT, x) == x);
+        REQUIRE((int64_t)chibi_c_words[0] == x + 1);
+        REQUIRE((int32_t)chibi_c_words[1] == x - 3);
+        REQUIRE((int32_t)chibi_c_words[2] == x + 60000);
+        REQUIRE((int32_t)chibi_c_words[3] == 7);
+
+        int64_t point = ((3 * x + 2) * 10 + 2 * x) * 10 + x + 5;
+        REQUIRE(((I1 *)fn(&p, "vpoint"))(CONTEXT, x) == point * 10 + x - 9);
+        REQUIRE(named_then_variadic(&p, x));
+    }
+    release_program(&p);
+
+    REQUIRE(check_text(&p, VARIADIC_CALLS));
+    REQUIRE(arm64_compile(&p.n, &p.c, CONVENTION_APPLE));
+    for (int64_t x = 0; x < 20; x++) {
+        REQUIRE(((I1 *)fn(&p, "vprobe"))(CONTEXT, x) == x);
+        REQUIRE((int64_t)chibi_c_words[7] == x + 1);
+        REQUIRE((int32_t)chibi_c_words[8] == x - 3);
+        REQUIRE(word_double(chibi_c_words[9]) == (double)((float)x + 0.5f));
+        REQUIRE(word_double(chibi_c_words[10]) == 2.5);
+        REQUIRE((int32_t)chibi_c_words[11] == x + 60000);
+        REQUIRE((int32_t)chibi_c_words[12] == 7);
+        REQUIRE(named_then_variadic(&p, x));
+    }
+    release_program(&p);
     return true;
 }
 
@@ -5387,6 +5857,8 @@ TEST_SUITE(arm64_tests)
 {
     RUN_TEST_CASE(hidden_context);
     RUN_TEST_CASE(calls_into_c);
+    RUN_TEST_CASE(stack_arguments);
+    RUN_TEST_CASE(variadic_calls);
     RUN_TEST_CASE(narrow_parameters);
     RUN_TEST_CASE(constant_division);
     RUN_TEST_CASE(differential);

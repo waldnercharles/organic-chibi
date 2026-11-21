@@ -95,6 +95,7 @@
     NODE(NODE_PARAM_INIT, 1, ":=")                                             \
     NODE(NODE_PARAM_TYPE, 1, ":")                                              \
     NODE(NODE_PARAM_TYPE_INIT, 3, ":")                                         \
+    NODE(NODE_VARIADIC, 0, NULL)                                               \
     NODE(NODE_CONST_INIT, 1, "const")                                          \
     NODE(NODE_CONST_TYPE_INIT, 3, "const")                                     \
     NODE(NODE_MEMBER_INIT, 1, ":=")                                            \

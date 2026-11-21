@@ -55,7 +55,7 @@ main(void)
         return 1;
     }
     Native n;
-    if (!arm64_compile(&n, &ch)) {
+    if (!arm64_compile(&n, &ch, CONVENTION_HOST)) {
         printf("error %s\n", n.error);
         return 1;
     }

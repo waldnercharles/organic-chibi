@@ -92,7 +92,7 @@ enum
     DECL_PUB = 1,
     DECL_EXPORT = 2,
     DECL_CYCLE = 4,
-    DECL_COMPOUND = 8,
+    DECL_GENERAL_CALL = 8,
     DECL_STORED = 16,
     DECL_DEFAULTS = 32,
     DECL_NO_ZERO = 64,
@@ -107,6 +107,7 @@ enum
 enum
 {
     FN_C_CALL = 1ull << 32,
+    FN_VARIADIC = 1ull << 33,
 };
 
 enum
@@ -132,6 +133,7 @@ enum
     X(DIAG_NOT_INTEGER, "expected an integer type")                                                 \
     X(DIAG_FN_VALUE, "`%t` is a function, so it can't be used here")                                \
     X(DIAG_NOT_C, "C has no `%U`, so an `extern fn` can't pass or return it")                       \
+    X(DIAG_NOT_VARIADIC, "C's `..` takes numbers, `bool`, enums and pointers, not `%U`")            \
     X(DIAG_TOO_LARGE, "an integer constant must fit in 512 bits")                                   \
     X(DIAG_FLOAT_TOO_LARGE, "a float constant must fit in 4,095 bits as an exact fraction")          \
     X(DIAG_DATA_TOO_LARGE, "constants can't take more than 256 MB in all")                          \
@@ -180,6 +182,7 @@ enum
     X(DIAG_DISCARD, "`_` can only discard a value, as in `_ = f()`")                                \
     X(DIAG_NOT_CALLABLE, "expected a function or a type")                                           \
     X(DIAG_ARG_COUNT, "wrong number of arguments: expected %c, found %C")                           \
+    X(DIAG_ARG_COUNT_VARIADIC, "wrong number of arguments: expected at least %c, found %C")         \
     X(DIAG_RETURN_VALUE, "this function returns nothing, so `return` takes no value")               \
     X(DIAG_RETURN_EMPTY, "`return` needs a value of type `%U`")                                     \
     X(DIAG_MISSING_RETURN, "the function can reach its end without returning a value of type `%U`") \
@@ -328,6 +331,7 @@ typedef struct
     u32 calls;
     u32 blocks;
     u32 copies;
+    u32 stack_args;
     bool reachable;
     bool returns_value;
 } Body;
@@ -457,6 +461,23 @@ enum
 };
 
 u32 check_struct_regs(const Checker *c, u32 type);
+
+enum
+{
+    FIRST_INT_ARG = 1,
+    PLACE_APPLE = 1,
+    PLACE_VARIADIC = 2,
+    PLACE_STACK = 1u << 31,
+};
+
+typedef struct
+{
+    u32 ints;
+    u32 floats;
+    u32 stack;
+} ArgCursor;
+
+u32 check_place_arg(ArgCursor *at, u32 regs, u32 size, u32 align, u32 how);
 
 void check_free(Checker *c);
 

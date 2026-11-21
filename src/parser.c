@@ -1019,9 +1019,21 @@ parse_defer(Parser *p)
 }
 
 static void
-parse_params(Parser *p)
+parse_params(Parser *p, bool variadic)
 {
     while (p->tokens.kinds[p->pos] != TK_RPAREN) {
+        if (p->tokens.kinds[p->pos] == TK_RANGE) {
+            if (!variadic) {
+                fail(p, "only an `extern fn` can end with `..`");
+                return;
+            }
+            if (p->tokens.kinds[p->pos + 1] != TK_RPAREN) {
+                fail(p, "`..` must be the last parameter");
+                return;
+            }
+            emit(p, NODE_VARIADIC, p->pos++);
+            return;
+        }
         if (p->tokens.kinds[p->pos] != TK_IDENT) {
             fail(p, "expected a parameter name");
             return;
@@ -1042,7 +1054,7 @@ parse_params(Parser *p)
 }
 
 static int
-parse_signature(Parser *p, bool named)
+parse_signature(Parser *p, bool named, bool variadic)
 {
     emit(p, NODE_FN_START, p->pos++);
     if (named) {
@@ -1055,7 +1067,7 @@ parse_signature(Parser *p, bool named)
     }
     p->pos++;
     p->brackets++;
-    parse_params(p);
+    parse_params(p, variadic);
     p->brackets--;
     if (p->tokens.kinds[p->pos] != TK_RPAREN) {
         fail(p, "expected `,` or `)`");
@@ -1079,7 +1091,7 @@ parse_function(Parser *p, bool named)
     }
 
     int name = p->pos + 1;
-    int close = parse_signature(p, named);
+    int close = parse_signature(p, named, false);
     if (close < 0) {
         return;
     }
@@ -1385,7 +1397,7 @@ parse_extern(Parser *p)
     }
 
     p->pos++;
-    if (parse_signature(p, true) < 0) {
+    if (parse_signature(p, true, true) < 0) {
         return;
     }
     TokenKind next = p->tokens.kinds[p->pos];

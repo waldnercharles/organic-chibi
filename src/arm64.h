@@ -27,7 +27,18 @@ typedef struct
     const char *error;
 } Native;
 
-bool arm64_compile(Native *n, const Checker *c);
+typedef enum
+{
+    CONVENTION_AAPCS64,
+    CONVENTION_APPLE,
+#if defined(__APPLE__)
+    CONVENTION_HOST = CONVENTION_APPLE,
+#else
+    CONVENTION_HOST = CONVENTION_AAPCS64,
+#endif
+} Convention;
+
+bool arm64_compile(Native *n, const Checker *c, Convention convention);
 void *native_entry(const Native *n, u32 decl);
 void native_replace(Native *n, u32 decl, void *entry);
 void native_free(Native *n);

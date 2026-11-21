@@ -134,7 +134,7 @@ main(int argc, char **argv)
         }
 
         Native native;
-        if (!arm64_compile(&native, &c)) {
+        if (!arm64_compile(&native, &c, CONVENTION_HOST)) {
             fprintf(stderr, "arm64-backend: %s\n", native.error);
             return 1;
         }

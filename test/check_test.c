@@ -14,29 +14,27 @@ typedef struct
     const char *want;
 } Case;
 
-static char *
-check_files(const char *const *texts, u32 n, u32 entry, bool ir)
+static ParsedFile *
+check_texts(Checker *c, Arena *arena, Lexer *lx, const char *const *texts, u32 n, u32 entry)
 {
-    Arena arena = { 0 };
     size_t total = 0;
     for (u32 i = 0; i < n; i++) {
         total += strlen(texts[i]);
     }
 
-    Lexer lx;
-    lexer_init(&lx, &arena, total);
+    lexer_init(lx, arena, total);
     ParsedFile *files = calloc(n, sizeof *files);
     for (u32 i = 0; i < n; i++) {
         size_t len = strlen(texts[i]);
-        char *src = arena_alloc(&arena, len + LEXER_SOURCE_PADDING, 16);
+        char *src = arena_alloc(arena, len + LEXER_SOURCE_PADDING, 16);
         memset(src, 0, len + LEXER_SOURCE_PADDING);
         memcpy(src, texts[i], len);
 
-        Tokens tokens = lexer_alloc_tokens(&arena, len);
-        int ntokens = lexer_tokenize(&lx, src, tokens);
+        Tokens tokens = lexer_alloc_tokens(arena, len);
+        int ntokens = lexer_tokenize(lx, src, tokens);
         assert(ntokens > 0);
 
-        Nodes nodes = parser_alloc_nodes(&arena, ntokens);
+        Nodes nodes = parser_alloc_nodes(arena, ntokens);
         Parser p;
         int count = parser_parse(&p, tokens, ntokens, nodes);
         assert(count >= 0);
@@ -46,9 +44,18 @@ check_files(const char *const *texts, u32 n, u32 entry, bool ir)
         };
     }
 
+    check_init(c, &lx->names);
+    check_package(c, files, n);
+    return files;
+}
+
+static char *
+check_files(const char *const *texts, u32 n, u32 entry, bool ir)
+{
+    Arena arena = { 0 };
+    Lexer lx;
     Checker c;
-    check_init(&c, &lx.names);
-    check_package(&c, files, n);
+    ParsedFile *files = check_texts(&c, &arena, &lx, texts, n, entry);
 
     char *got = NULL;
     size_t got_len = 0;
@@ -125,6 +132,8 @@ static const Case DECLARATIONS[] = {
     { "extern fn labs(x: i64) -> i64\npub extern fn quit()\nfn f(x: int) -> int {\n    "
       "return labs(x)\n}\n",
       "extern fn labs(x: int) -> int\npub extern fn quit() -> void\nfn f(x: int) -> int\n" },
+    { "extern fn printf(fmt: *u8, ..) -> i32\nextern fn any(..)\n",
+      "extern fn printf(fmt: *u8, ..) -> i32\nextern fn any(..) -> void\n" },
     { "fn g(cb: fn(int, x: f32) -> u8, h: fn(), k: u8 = 9) => 0\n",
       "fn g(cb: fn(int, f32) -> u8, h: fn() -> void, k: u8 = 9) -> int\n" },
     { "struct S { f: fn(*int, []u8) -> ?int, g: fn(*int, []u8) -> ?int }\n",
@@ -208,6 +217,27 @@ static const Case ERRORS[] = {
       "a:1:22: C has no `[2]int`, so an `extern fn` can't pass or return it\n"
       "a:1:33: C has no `[3]u8`, so an `extern fn` can't pass or return it\n"
       "extern fn f(s: []u8, a: [2]int) -> [3]u8\n" },
+    { "struct P { x: int }\n"
+      "extern fn printf(fmt: *u8, ..) -> i32\n"
+      "fn f(p: *u8, q: P, s: []int) {\n"
+      "    _ = printf()\n"
+      "    _ = printf(p, q)\n"
+      "    _ = printf(p, s)\n"
+      "    _ = printf(p, 18446744073709551616)\n"
+      "    _ = printf(p, i32)\n"
+      "    _ = printf(p, .red)\n"
+      "    _ = printf(p, P.{ 1 })\n"
+      "}\n",
+      "a:4:9: wrong number of arguments: expected at least 1, found 0\n"
+      "a:5:19: C's `..` takes numbers, `bool`, enums and pointers, not `P`\n"
+      "a:6:19: C's `..` takes numbers, `bool`, enums and pointers, not `[]int`\n"
+      "a:7:19: 18446744073709551616 does not fit in `u64`\n"
+      "a:8:19: expected a value\n"
+      "a:9:20: C's `..` takes numbers, `bool`, enums and pointers, not `enum literal`\n"
+      "a:10:19: C's `..` takes numbers, `bool`, enums and pointers, not `P`\n"
+      "struct P { x: int }\n"
+      "extern fn printf(fmt: *u8, ..) -> i32\n"
+      "fn f(p: *u8, q: P, s: []int) -> void\n" },
     { "fn g() {\n    extern fn h()\n}\n",
       "a:2:5: the checker doesn't support this yet\n"
       "a:2:15: the checker doesn't support this yet\n"
@@ -814,6 +844,63 @@ static const Case ERRORS[] = {
 };
 
 static const Case BODIES[] = {
+    { "extern fn printf(fmt: *u8, ..) -> i32\n"
+      "fn f(p: *u8, a: i8, b: f32, c: bool) -> i32 {\n"
+      "    return printf(p, a, b, c, 1, 3000000000, 18446744073709551615, -1, 2.5, b * 2.0)\n"
+      "}\n",
+      "fn f(p: *u8, a: i8, b: f32, c: bool) -> i32\n"
+      "    slots: p: *u8, a: i8, b: f32, c: bool\n"
+      "    stack arguments: 72 bytes\n"
+      "    %0 = load *u8 p\n"
+      "    %1 = load i8 a\n"
+      "    %2 = load f32 b\n"
+      "    %3 = load bool c\n"
+      "    %4 = load f32 b\n"
+      "    %5 = mul f32 %4, 2\n"
+      "    %6 = convert f64 %2\n"
+      "    %7 = convert f64 %5\n"
+      "    %8 = call-c i32 printf(%0, %1, %6, %3, 1, 3000000000, 18446744073709551615, -1, 2.5, "
+      "%7)\n"
+      "    ret i32 %8\n" },
+    { "extern fn f(a: int, b: int = 5, ..) -> int\n"
+      "fn g() -> int {\n"
+      "    return f(1) + f(1, 2, 3)\n"
+      "}\n",
+      "fn g() -> int\n"
+      "    slots:\n"
+      "    stack arguments: 8 bytes\n"
+      "    %0 = call-c int f(1, 5)\n"
+      "    %1 = call-c int f(1, 2, 3)\n"
+      "    %2 = add int %0, %1\n"
+      "    ret int %2\n" },
+    { "fn g(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: int, x: f32) -> int {\n"
+      "    return a + h\n"
+      "}\n"
+      "fn s(a: int, b: int, c: int, d: int, e: int, f: int, xs: []int, y: int) -> int {\n"
+      "    return y\n"
+      "}\n"
+      "fn k(xs: []int) -> int {\n"
+      "    return g(1, 2, 3, 4, 5, 6, 7, 8, 1.5) + s(1, 2, 3, 4, 5, 6, xs, 7)\n"
+      "}\n",
+      "fn g(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: int, x: f32) -> int\n"
+      "    slots: a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: int, x: f32\n"
+      "    %0 = load int a\n"
+      "    %1 = load int h\n"
+      "    %2 = add int %0, %1\n"
+      "    ret int %2\n"
+      "fn s(a: int, b: int, c: int, d: int, e: int, f: int, xs: []int, y: int) -> int\n"
+      "    slots: a: int, b: int, c: int, d: int, e: int, f: int, xs: []int, xs.len: int, y: int\n"
+      "    %0 = load int y\n"
+      "    ret int %0\n"
+      "fn k(xs: []int) -> int\n"
+      "    slots: xs: []int, xs.len: int\n"
+      "    stack arguments: 24 bytes\n"
+      "    %0 = call int g(1, 2, 3, 4, 5, 6, 7, 8, 1.5)\n"
+      "    %1 = load []int xs\n"
+      "    %2 = load int xs.len\n"
+      "    %3 = call int s(1, 2, 3, 4, 5, 6, %1, %2, 7)\n"
+      "    %4 = add int %0, %3\n"
+      "    ret int %4\n" },
     { "extern fn labs(x: i64) -> i64\nfn f(x: int) -> int {\n    return labs(x) + 1\n}\n",
       "fn f(x: int) -> int\n"
       "    slots: x: int\n"
@@ -3706,6 +3793,41 @@ TEST_CASE(bodies)
     return true;
 }
 
+TEST_CASE(variadic_promotions)
+{
+    const char *text = "extern fn printf(fmt: *u8, ..) -> i32\n"
+                       "fn f(p: *u8, b: f32) -> i32 {\n"
+                       "    return printf(p, 1, -1, 3000000000, 18446744073709551615, 2.5, b)\n"
+                       "}\n";
+    Arena arena = { 0 };
+    Lexer lx;
+    Checker c;
+    ParsedFile *files = check_texts(&c, &arena, &lx, &text, 1, 1);
+
+    const IrCode *code = &c.ir.code;
+    const IrFunc *f = &c.ir.funcs[0];
+    u32 call = f->first;
+    while (code->kinds[call] != IR_CALL_C) {
+        call++;
+    }
+    const u32 *args = code->extra + f->first_extra + code->bs[call];
+
+    u32 want[] = { TYPE_ID_I32, TYPE_ID_I32, TYPE_ID_I64, TYPE_ID_U64, TYPE_ID_F64, TYPE_ID_F64 };
+    bool ok = c.ndiags == 0 && c.ir.nfuncs == 1 && args[0] == 7;
+    for (u32 i = 0; ok && i < 6; i++) {
+        u32 x = args[2 + i];
+        u32 type = x & IR_CONST ? code->consts[f->first_const + (x & ~IR_CONST)].type
+                                : code->types[f->first + x];
+        ok = type == want[i];
+    }
+
+    check_free(&c);
+    free(files);
+    arena_free(&arena);
+    REQUIRE(ok);
+    return true;
+}
+
 TEST_CASE(files)
 {
     const char *texts[] = {
@@ -3834,6 +3956,7 @@ TEST_SUITE(check_tests)
     RUN_TEST_CASE(declarations);
     RUN_TEST_CASE(errors);
     RUN_TEST_CASE(bodies);
+    RUN_TEST_CASE(variadic_promotions);
     RUN_TEST_CASE(files);
     RUN_TEST_CASE(constants_across_files);
     RUN_TEST_CASE(globals_across_files);

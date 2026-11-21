@@ -31,7 +31,6 @@ enum
     CALLEE_INT = 0x1FF80000u,
     CALLEE_FLOAT = 0x0000FF00u,
     ARGUMENTS = 0x000000FFu,
-    FIRST_INT_ARG = 1,
     ALIAS = 64,
     PROLOGUE_WORDS = 13,
     PROBE_INTERVAL = 4096,
@@ -270,8 +269,10 @@ typedef struct
     u32 copies_at;
     u32 copied;
     u32 result_at;
+    u32 place;
     bool called;
     bool context_saved;
+    bool wide_record;
     void *process;
     Open *open;
     u32 nopen;
@@ -2355,49 +2356,111 @@ pass_pointer(Emit *e, u32 v, u32 type, u32 d)
     assert(e->copied <= e->fn->copies);
 }
 
-static NOINLINE u32
-pass_struct(Emit *e, u32 v, u32 ints, u32 floats)
+static u32
+place_struct(const Emit *e, ArgCursor *at, u32 regs)
+{
+    u32 n = regs & REGS_COUNT;
+    if (regs & REGS_FLOAT) {
+        u32 m = regs & REGS_DOUBLE ? 8 : 4;
+        return check_place_arg(at, regs, n * m, m, e->place);
+    }
+    return check_place_arg(at, regs, 8 * n, 8, e->place);
+}
+
+static NOINLINE void
+stack_struct(Emit *e, u32 v, u32 type, u32 regs, u32 offset)
+{
+    u32 s = fetch(e, v, X17);
+    release(e, v);
+    if (!(regs & REGS_POINTER)) {
+        sp_address(e, X16, offset);
+        copy_bytes(e, X16, s, check_type_size(e->c, type));
+        return;
+    }
+
+    u32 root = e->ir->bs[e->fn->first + v];
+    if (root == DATA_ROOT ||
+        (root < DATA_ROOT &&
+         e->ir->slots[e->fn->first_slot + root].weight != WEIGHT_ADDRESSED)) {
+        memory(e, OP_STRX, 3, s, offset, X16);
+        return;
+    }
+
+    u64 size = check_type_size(e->c, type);
+    u32 copy = e->copies_at + e->copied;
+    sp_address(e, X16, copy);
+    copy_between(e, X16, s, size);
+    e->copied += (u32)((size + 7) & ~(u64)7);
+    assert(e->copied <= e->fn->copies);
+    sp_address(e, X17, copy);
+    memory(e, OP_STRX, 3, X17, offset, X16);
+}
+
+static NOINLINE void
+pass_struct(Emit *e, u32 v, ArgCursor *at)
 {
     u32 type = e->ir->types[e->fn->first + v];
     u32 regs = check_struct_regs(e->c, type);
-    u32 first = regs & REGS_FLOAT ? floats : ints;
-    if (first + (regs & REGS_COUNT) > 8) {
-        return 0;
+    u32 *next = regs & REGS_FLOAT ? &at->floats : &at->ints;
+    if (*next + (regs & REGS_COUNT) > 8) {
+        u32 place = place_struct(e, at, regs);
+        assert(place & PLACE_STACK);
+        stack_struct(e, v, type, regs, place & ~PLACE_STACK);
+        return;
     }
+
+    u32 first = *next;
+    *next += regs & REGS_COUNT;
     if (regs & REGS_POINTER) {
         pass_pointer(e, v, type, first);
-        return regs;
+        return;
     }
     u32 p = fetch(e, v, X16);
     move_struct(e, true, type, first, p, 0);
     release(e, v);
-    return regs;
 }
 
-static NOINLINE bool
-pass_args(Emit *e, const u32 *args, u32 ints)
+static NOINLINE void
+stack_arg(Emit *e, u32 x, u8 info, ArgCursor *at, u32 how)
 {
-    u32 floats = 0;
+    bool fl = is_float(info);
+    u32 scale = info & INFO_SCALE;
+    u32 regs = ((info & INFO_PAIR) ? 2 : 1) | (fl ? REGS_FLOAT : 0);
+    u32 place = check_place_arg(at, regs, 1u << scale, 1u << scale, how);
+    assert(place & PLACE_STACK);
+
+    u32 r = fetch(e, x, fl ? V30 : X17);
+    release(e, x);
+    if (!fl && how != PLACE_APPLE) {
+        scale = 3;
+        info = (u8)(info & ~INFO_SCALE) | 3;
+    }
+    memory(e, store_op(info, r), scale, r, place & ~PLACE_STACK, X16);
+}
+
+static NOINLINE void
+pass_args(Emit *e, const u32 *args, u32 ints, u32 named)
+{
+    ArgCursor at = { ints, 0, 0 };
     e->copied = 0;
-    for (u32 j = 1; j <= args[0]; j++) {
-        u8 at = operand_info(e, args[j]);
-        if (at & INFO_MEMORY) {
-            u32 regs = pass_struct(e, args[j], ints, floats);
-            if (regs == 0) {
-                return false;
-            }
-            ints += regs & REGS_FLOAT ? 0 : regs & REGS_COUNT;
-            floats += regs & REGS_FLOAT ? regs & REGS_COUNT : 0;
+    for (u32 j = 1; j <= named; j++) {
+        u8 info = operand_info(e, args[j]);
+        if (info & INFO_MEMORY) {
+            pass_struct(e, args[j], &at);
             continue;
         }
-        bool fl = is_float(at);
-        u32 d = fl ? floats++ : ints++;
-        if (d >= 8) {
-            return false;
+        bool fl = is_float(info);
+        u32 *next = fl ? &at.floats : &at.ints;
+        if (*next + ((info & INFO_PAIR) != 0) < 8) {
+            move_into(e, (*next)++, args[j], fl);
+            continue;
         }
-        move_into(e, d, args[j], fl);
+        stack_arg(e, args[j], info, &at, e->place);
     }
-    return true;
+    for (u32 j = named + 1; j <= args[0]; j++) {
+        stack_arg(e, args[j], operand_info(e, args[j]), &at, PLACE_APPLE | PLACE_VARIADIC);
+    }
+    assert(at.stack <= e->fn->stack_args);
 }
 
 static NOINLINE u32
@@ -2466,13 +2529,11 @@ call(Emit *e, u32 i, u32 type, u32 decl, u32 b, const Native *n, u32 ints)
     if (!ints && !n->entries[decl] && !bind_c(e, n, decl)) {
         return;
     }
-    if (!pass_args(e, args, ints)) {
-        e->error = ints
-                     ? "a call passes more than 7 integer or 8 float arguments"
-                     : "a call into C passes more than 8 integer or 8 float "
-                       "arguments";
-        return;
+    u32 named = args[0];
+    if (e->place && !ints) {
+        named = e->c->lists[e->c->types.arg0[e->c->decls.types[decl]]];
     }
+    pass_args(e, args, ints, named);
     save_for_call(e, ~e->free_int & INT_POOL, false);
     save_for_call(e, ~e->free_float & FLOAT_POOL, true);
     if (t & INFO_MEMORY) {
@@ -2801,6 +2862,12 @@ skip_struct(const Emit *e, u32 type, u32 *used)
     used[(regs & REGS_FLOAT) != 0] += regs & REGS_COUNT;
 }
 
+static bool
+late_by_pointer(const Emit *e, const IrSlot *slots, u32 p)
+{
+    return (e->info[slots[p].type] & INFO_MEMORY) && by_pointer(e, slots[p].type);
+}
+
 static NOINLINE const IrSlot *
 retype_params(Emit *e, const IrSlot *slots)
 {
@@ -2809,6 +2876,11 @@ retype_params(Emit *e, const IrSlot *slots)
     memcpy(e->retyped, slots, n * sizeof *slots);
     for (u32 m = e->by_ref; m; m &= m - 1) {
         e->retyped[__builtin_ctz(m)].type = TYPE_ID_I64;
+    }
+    for (u32 p = 32; p < e->fn->nparams; p++) {
+        if (late_by_pointer(e, slots, p)) {
+            e->retyped[p].type = TYPE_ID_I64;
+        }
     }
     return e->retyped;
 }
@@ -2833,7 +2905,11 @@ pin_locals(Emit *e)
             e->by_ref |= by_pointer(e, slots[p].type) << p;
         }
     }
-    if (e->by_ref) {
+    bool late = false;
+    for (u32 p = 32; p < fn->nparams; p++) {
+        late |= late_by_pointer(e, slots, p);
+    }
+    if (e->by_ref || late) {
         slots = retype_params(e, slots);
     }
     e->slots = slots;
@@ -2923,7 +2999,7 @@ lay_out_frame(Emit *e)
         }
     }
     u32 bases[4];
-    u32 offset = 0;
+    u32 offset = fn->stack_args;
     for (u32 k = 0; k < 4; k++) {
         offset = (offset + (1u << k) - 1) & ~((1u << k) - 1);
         bases[k] = offset;
@@ -2996,20 +3072,68 @@ callee_words(u32 *out, bool load, u32 saved_int, u32 saved_float)
     return n;
 }
 
-static NOINLINE u32
-receive_param(Emit *e, u32 p, u32 ints, u32 floats)
+static void
+incoming_address(Emit *e, u32 d, u32 offset)
+{
+    offset += 32;
+    if (offset < 4096) {
+        put(e, OP_ADD_IMM | SF | offset << 10 | X29 << 5 | d);
+        return;
+    }
+    mov_imm(e, d, offset, SF);
+    put(e, OP_ADD | SF | d << 16 | X29 << 5 | d);
+}
+
+static NOINLINE void
+receive_param(Emit *e, u32 p, ArgCursor *at)
 {
     const IrSlot *slot = e->ir->slots + e->fn->first_slot + p;
     u32 regs = check_struct_regs(e->c, slot->type);
-    u32 first = regs & REGS_FLOAT ? floats : ints;
-    if (first + (regs & REGS_COUNT) > 8) {
-        e->error = "a function has more than 7 integer or 8 float parameters";
-        return 0;
+    u32 *next = regs & REGS_FLOAT ? &at->floats : &at->ints;
+    if (*next + (regs & REGS_COUNT) <= 8) {
+        if (slot->weight) {
+            move_struct(e, false, slot->type, *next, SP, e->slot_offsets[p]);
+        }
+        *next += regs & REGS_COUNT;
+        return;
     }
+
+    u32 place = place_struct(e, at, regs);
+    assert(place & PLACE_STACK);
+    e->wide_record = true;
     if (slot->weight) {
-        move_struct(e, false, slot->type, first, SP, e->slot_offsets[p]);
+        incoming_address(e, X17, place & ~PLACE_STACK);
+        sp_address(e, X16, e->slot_offsets[p]);
+        copy_bytes(e, X16, X17, check_type_size(e->c, slot->type));
     }
-    return regs;
+}
+
+static NOINLINE void
+receive_stack(Emit *e, u32 p, u8 info, ArgCursor *at)
+{
+    bool fl = is_float(info);
+    u32 scale = info & INFO_SCALE;
+    u32 regs = ((info & INFO_PAIR) ? 2 : 1) | (fl ? REGS_FLOAT : 0);
+    u32 place = check_place_arg(at, regs, 1u << scale, 1u << scale, e->place);
+    assert(place & PLACE_STACK);
+    e->wide_record = true;
+
+    u8 h = e->slot_regs[p];
+    if (h == NO_REG && !e->slots[p].weight) {
+        return;
+    }
+    u32 r = h != NO_REG ? h & 31u : fl ? V30 : X17;
+    u32 offset = (place & ~PLACE_STACK) + 32;
+    assert((offset & ((1u << scale) - 1)) == 0);
+    if ((offset >> scale) < 4096) {
+        put(e, load_op(info) | (offset >> scale) << 10 | X29 << 5 | r);
+    } else {
+        incoming_address(e, X16, offset - 32);
+        put(e, load_op(info) | X16 << 5 | r);
+    }
+    if (h == NO_REG) {
+        store_typed(e, e->slots[p].type, r, e->slot_offsets[p]);
+    }
 }
 
 static NOINLINE void
@@ -3069,6 +3193,7 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
     e->epilogue = 0;
     e->called = false;
     e->context_saved = false;
+    e->wide_record = false;
     e->free_int = INT_POOL;
     e->free_float = FLOAT_POOL;
     e->fused = NO_VALUE;
@@ -3093,27 +3218,22 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
     if (e->result_at != NO_VALUE) {
         memory(e, OP_STRX, 3, X8, e->result_at, X16);
     }
-    u32 ints = FIRST_INT_ARG, floats = 0;
+    ArgCursor args = { FIRST_INT_ARG, 0, 0 };
     for (u32 p = 0; p < fn->nparams; p++) {
         u32 type = slots[p].type;
-        if (e->info[type] & INFO_MEMORY) {
-            u32 regs = receive_param(e, p, ints, floats);
-            if (regs == 0) {
-                return 0;
-            }
-            ints += regs & REGS_FLOAT ? 0 : regs & REGS_COUNT;
-            floats += regs & REGS_FLOAT ? regs & REGS_COUNT : 0;
+        u8 info = e->info[type];
+        if (info & INFO_MEMORY) {
+            receive_param(e, p, &args);
             continue;
         }
-        bool fl = is_float(e->info[type]);
-        u32 r = fl ? floats++ : ints++;
-        if (r >= 8) {
-            e->error = "a function has more than 7 integer or 8 float "
-                       "parameters";
-            return 0;
+        bool fl = is_float(info);
+        u32 *next = fl ? &args.floats : &args.ints;
+        if (*next + ((info & INFO_PAIR) != 0) >= 8) {
+            receive_stack(e, p, info, &args);
+            continue;
         }
+        u32 r = (*next)++;
         u8 h = e->slot_regs[p];
-        u8 info = e->info[type];
         if (h != NO_REG) {
             if (fl) {
                 fmov(e, h & 31u, r);
@@ -3163,7 +3283,8 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                 break;
             }
             case IR_ADDR:
-                if (a < 32 && (e->by_ref >> a & 1)) {
+                if (a < 32 ? e->by_ref >> a & 1
+                           : a < fn->nparams && slots[a].type != slot_type(e, a)) {
                     param_address(e, i, a, e->info[type]);
                     break;
                 }
@@ -3371,14 +3492,15 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
     u32 saves[PROLOGUE_WORDS];
     u32 nsaves = callee_words(saves, false, e->saved_int, e->saved_float);
     u32 frame = (16 * nsaves + e->locals + e->spill_max + 15) & ~15u;
-    bool record = fn->calls || frame;
+    bool record = fn->calls || frame || e->wide_record;
+    bool wide = e->context_saved || e->wide_record;
     patch(e, e->epilogue, here(e));
     e->at += callee_words(e->at, true, e->saved_int, e->saved_float);
     if (record) {
         if (frame) {
             put(e, OP_RESET_SP);
         }
-        put(e, e->context_saved ? OP_POP_CONTEXT_FRAME : OP_POP_FRAME);
+        put(e, wide ? OP_POP_CONTEXT_FRAME : OP_POP_FRAME);
     }
     put(e, OP_RET);
 
@@ -3411,7 +3533,7 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
     u32 prologue[PROLOGUE_WORDS];
     u32 k = 0;
     if (record) {
-        prologue[k++] = e->context_saved ? OP_PUSH_CONTEXT_FRAME : OP_PUSH_FRAME;
+        prologue[k++] = wide ? OP_PUSH_CONTEXT_FRAME : OP_PUSH_FRAME;
         prologue[k++] = OP_SET_FRAME;
     }
     if (e->context_saved) {
@@ -3451,7 +3573,7 @@ jit_write(bool enable)
 }
 
 bool
-arm64_compile(Native *n, const Checker *c)
+arm64_compile(Native *n, const Checker *c, Convention convention)
 {
     *n = (Native){ 0 };
     const Ir *ir = &c->ir;
@@ -3517,7 +3639,8 @@ arm64_compile(Native *n, const Checker *c)
                .ir = &ir->code,
                .info = info,
                .data = n->memory + table,
-               .globals = n->globals };
+               .globals = n->globals,
+               .place = convention == CONVENTION_APPLE ? PLACE_APPLE : 0 };
     for (u32 f = 0; f < ir->nfuncs && !e.error; f++) {
         const IrFunc *fn = &ir->funcs[f];
         n->words = (n->words + 3) & ~(size_t)3;

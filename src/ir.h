@@ -132,6 +132,7 @@ typedef struct
     u32 nconsts;
     u32 calls;
     u32 copies;
+    u32 stack_args;
 } IrFunc;
 
 typedef struct
