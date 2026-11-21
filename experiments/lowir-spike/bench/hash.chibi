@@ -1,0 +1,26 @@
+extern fn bench_print(x: int)
+
+fn fnv(s: []u8) -> u64 {
+    h: u64 = 14695981039346656037
+    for b in s {
+        h = (h ^ u64(b)) *% 1099511628211
+    }
+    return h
+}
+
+export fn main() -> i32 {
+    x: u32 = 1
+    for i in 0..1048576 {
+        x ^= x << 13
+        x ^= x >> 17
+        x ^= x << 5
+        data[i] = u8(x & 255)
+    }
+    h: u64 = 0
+    for r in 0..300 {
+        data[r] = u8(r & 255)
+        h ^= fnv(data[0..])
+    }
+    bench_print(int(h >> 1))
+    return 0
+}

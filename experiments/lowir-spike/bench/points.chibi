@@ -1,0 +1,33 @@
+extern fn bench_print(x: int)
+
+fn add(a: Point, b: Point) -> Point {
+    return Point.{ a.x + b.x, a.y + b.y, a.z + b.z }
+}
+
+fn scale(a: Point, k: int) -> Point {
+    return Point.{ a.x * k, a.y * k, a.z * k }
+}
+
+fn step(p: Point, seed: int) -> Point {
+    q := add(p, Point.{ seed & 7, (seed >> 3) & 7, (seed >> 6) & 7 })
+    return Point.{ q.x & 1048575, q.y & 1048575, q.z & 1048575 }
+}
+
+export fn main() -> i32 {
+    for i in 0..4096 {
+        points[i] = Point.{ i, i * 2, i * 3 }
+    }
+    total := Point.{ 0, 0, 0 }
+    x := 7
+    for r in 0..40000 {
+        for i in 0..4096 {
+            x = x *% 6364136223846793005 +% 1442695040888963407
+            p := step(points[i], x >> 40)
+            points[i] = p
+            total = add(total, scale(p, 3))
+            total = Point.{ total.x & 1073741823, total.y & 1073741823, total.z & 1073741823 }
+        }
+    }
+    bench_print(total.x + total.y * 3 + total.z * 7)
+    return 0
+}

@@ -1,0 +1,20 @@
+struct R1 { f0: i16, f1: u16, f2: int }
+fn e0(a: int, b: int, c: int, d: f64) -> int {
+    v4: i8 = (i8(b) ^ i8((c & 127)))
+    v6: f64 = (d / d)
+    o8: R1
+    a9: [2]i8 = i8.[~v4, (v4 +% 32)]
+    switch u16((v4 & 127)) {
+        256 => {
+                for n11 in 0..a9.len {
+                    o8.f1 = u16((b & 65535))
+                }
+        }
+        _ => {
+        }
+    }
+    s15: int = 0
+    s15 = s15 *% 31 +% int(o8.f1)
+    t18: int = (b19: { if (true != (d < 0.1)) { break b19 u8(i32(v6)) }; break b19 u8(((i16(v4) + i16(v4)) & 255)) })
+    return s15 +% t18
+}

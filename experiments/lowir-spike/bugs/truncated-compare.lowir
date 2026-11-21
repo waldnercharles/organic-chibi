@@ -1,0 +1,21 @@
+target linux 1
+
+declare global @chibi_context : ptr [binding=strong]
+
+declare function @chibi_trap(%arg0 : i32) -> void [unwind=no, return=noreturn, linkage=c, binding=strong, cold=yes]
+
+function @p_f(%__param0 : ptr, %__param1 : i64) -> i64 [linkage=c, binding=strong] {
+  block ^0:
+    %t1 = binary and i64 %__param1, 2147483647
+    %t2 = convert trunc i32 i64 %t1
+    %t3 = binary and i32 %t2, 65535
+    %t4 = convert trunc u16 i32 %t3
+    %t5 = cmp eq u16 %t4, 0
+    branch %t5, ^1, ^2
+
+  block ^1:
+    return i64 1
+
+  block ^2:
+    return i64 0
+}

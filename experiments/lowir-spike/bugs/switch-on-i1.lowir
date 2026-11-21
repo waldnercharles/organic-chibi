@@ -1,0 +1,45 @@
+target linux 1
+
+declare global @chibi_context : ptr [binding=strong]
+
+declare function @chibi_trap(%arg0 : i32) -> void [unwind=no, return=noreturn, linkage=c, binding=strong, cold=yes]
+
+function @p_f(%__param0 : ptr, %__param1 : i8) -> u32 [linkage=c, binding=strong] {
+  slot $0 : i1
+  slot $1 : u32
+
+  block ^0:
+    %t1 = cmp lt i8 %__param1, 127
+    branch %t1, ^1, ^2
+
+  block ^1:
+    %t2 = cmp lt i8 %__param1, 2
+    %t3 = convert trunc i1 i64 %t2
+    store i1 %t3, $0
+    jump ^3
+
+  block ^2:
+    store i1 0, $0
+    jump ^3
+
+  block ^3:
+    %t4 = load i1 $0
+    switch %t4, ^5, 0:^4, 1:^4
+
+  block ^4:
+    %t5 = binary and i8 %__param1, 127
+    %t6 = convert sext u32 i8 %t5
+    store u32 %t6, $1
+    jump ^6
+
+  block ^7:
+    jump ^6
+
+  block ^6:
+    %t7 = load u32 $1
+    return u32 %t7
+
+  block ^5:
+    call void @chibi_trap(5)
+    unreachable
+}

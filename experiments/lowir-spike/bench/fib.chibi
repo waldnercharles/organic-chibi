@@ -1,0 +1,13 @@
+extern fn bench_print(x: int)
+
+fn fib(n: int) -> int {
+    if n < 2 {
+        return n
+    }
+    return fib(n - 1) + fib(n - 2)
+}
+
+export fn main() -> i32 {
+    bench_print(fib(40))
+    return 0
+}

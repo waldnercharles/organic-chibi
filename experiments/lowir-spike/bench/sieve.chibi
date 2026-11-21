@@ -1,0 +1,28 @@
+extern fn bench_print(x: int)
+
+fn sieve(n: int) -> int {
+    for i in 0..n {
+        flags[i] = 1
+    }
+    count := 0
+    for i in 2..n {
+        if flags[i] == 1 {
+            count += 1
+            j := i * i
+            while j < n {
+                flags[j] = 0
+                j += i
+            }
+        }
+    }
+    return count
+}
+
+export fn main() -> i32 {
+    total := 0
+    for k in 0..5 {
+        total += sieve(20000000 - k)
+    }
+    bench_print(total)
+    return 0
+}

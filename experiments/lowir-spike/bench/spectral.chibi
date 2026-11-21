@@ -1,0 +1,50 @@
+extern fn bench_print(x: int)
+extern fn sqrt(x: f64) -> f64
+
+fn entry(i: int, j: int) -> f64 {
+    return 1.0 / f64((i + j) * (i + j + 1) / 2 + i + 1)
+}
+
+fn times(out: []f64, x: []f64) {
+    for i in 0..out.len {
+        s: f64 = 0.0
+        for j in 0..x.len {
+            s += entry(i, j) * x[j]
+        }
+        out[i] = s
+    }
+}
+
+fn times_transposed(out: []f64, x: []f64) {
+    for i in 0..out.len {
+        s: f64 = 0.0
+        for j in 0..x.len {
+            s += entry(j, i) * x[j]
+        }
+        out[i] = s
+    }
+}
+
+fn both(out: []f64, x: []f64, tmp: []f64) {
+    times(tmp, x)
+    times_transposed(out, tmp)
+}
+
+export fn main() -> i32 {
+    n := 2000
+    for i in 0..n {
+        u[i] = 1.0
+    }
+    for k in 0..20 {
+        both(v[0..], u[0..], t[0..])
+        both(u[0..], v[0..], t[0..])
+    }
+    vbv: f64 = 0.0
+    vv: f64 = 0.0
+    for i in 0..n {
+        vbv += u[i] * v[i]
+        vv += v[i] * v[i]
+    }
+    bench_print(int(sqrt(vbv / vv) * 1000000000.0))
+    return 0
+}

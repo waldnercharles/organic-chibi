@@ -1,0 +1,302 @@
+target linux 1
+
+declare global @chibi_context : ptr [binding=strong]
+
+declare function @chibi_trap(%arg0 : i32) -> void [unwind=no, return=noreturn, linkage=c, binding=strong, cold=yes]
+
+function @p_h1(%__param0 : ptr, %__param1 : i64) -> u32 [linkage=c, binding=strong] {
+  block ^0:
+    %t1 = binary and i64 %__param1, 4294967295
+    %t2 = convert trunc u32 i64 %t1
+    %t3 = binary and i64 %__param1, 4294967295
+    %t4 = convert trunc u32 i64 %t3
+    %t5 = binary and i64 %__param1, 4294967295
+    %t6 = convert trunc u32 i64 %t5
+    %t7 = cmp ult u32 %t4, %t6
+    branch unlikely %t7, ^1, ^2
+
+  block ^2:
+    %t8 = binary sub nowrap u32 %t4, %t6
+    %t9 = binary and i64 %__param1, 4294967295
+    %t10 = convert trunc u32 i64 %t9
+    %t11 = cmp eq u32 %t10, 0
+    branch unlikely %t11, ^3, ^4
+
+  block ^4:
+    %t12 = binary umod u32 %t8, %t10
+    %t13 = binary and i64 %__param1, 4294967295
+    %t14 = convert trunc u32 i64 %t13
+    %t15 = unary bitnot u32 %t14
+    %t16 = binary mul u32 %t12, %t15
+    %t17 = binary mul u32 %t2, %t16
+    return u32 %t17
+
+  block ^1:
+    call void @chibi_trap(1)
+    unreachable
+
+  block ^3:
+    call void @chibi_trap(2)
+    unreachable
+}
+function @p_h3(%__param0 : ptr, %__param1 : u8, %__param2 : f64, %__param3 : u32) -> u32 [linkage=c, binding=strong] {
+  block ^0:
+    %t1 = cmp ule f64 %__param2, -1
+    %t2 = cmp uge f64 %__param2, 18446744073709551616
+    %t3 = binary or i64 %t1, %t2
+    branch unlikely %t3, ^1, ^2
+
+  block ^2:
+    %t4 = convert fptoui i64 f64 %__param2
+    %t5 = binary and i64 %t4, 127
+    %t6 = convert trunc i8 i64 %t5
+    %t7 = binary and i8 %t6, 127
+    %t8 = copy u8 %t7
+    %t9 = convert zext u32 u8 %t8
+    return u32 %t9
+
+  block ^1:
+    call void @chibi_trap(4)
+    unreachable
+}
+function @p_e2(%__param0 : ptr, %__param1 : i64, %__param2 : i64, %__param3 : i64, %__param4 : f64) -> i64 [linkage=c, binding=strong] {
+  slot $0 : i64
+  slot $1 : u8
+  slot $2 : f64
+  slot $3 : obj<16x4>
+  slot $4 : obj<16x4>
+  slot $5 : obj<32x4>
+  slot $6 : ptr
+  slot $7 : i64
+  slot $8 : i64
+  slot $9 : i64
+  slot $10 : u32
+  slot $11 : i1
+
+  block ^0:
+    %t1 = binary and i64 %__param1, 9223372036854775807
+    store i64 %t1, $0
+    %t2 = binary and i64 %__param1, 255
+    %t3 = convert trunc u8 i64 %t2
+    %t4 = load i64 $0
+    %t5 = binary and i64 %t4, 255
+    %t6 = convert trunc u8 i64 %t5
+    %t7 = binary or u8 %t3, %t6
+    store i8 %t7, $1
+    store f64 %__param4, $2
+    %t8 = binary and i64 %__param2, 4294967295
+    %t9 = convert trunc u32 i64 %t8
+    %t10 = unary neg u32 %t9
+    %t11 = load u8 $1
+    %t12 = convert zext u32 u8 %t11
+    %t13 = binary and i64 %__param2, 4294967295
+    %t14 = convert trunc u32 i64 %t13
+    %t15 = unary neg u32 %t14
+    %t16 = load f64 $2
+    %t17 = load f64 $2
+    %t18 = cmp ule f64 %t17, -1
+    %t19 = cmp uge f64 %t17, 4294967296
+    %t20 = binary or i64 %t18, %t19
+    branch unlikely %t20, ^1, ^2
+
+  block ^2:
+    %t21 = convert fptoui u32 f64 %t17
+    %t22 = call u32 @p_h3(%__param0, 31, %t16, %t21)
+    %t23 = addr $3
+    store u32 %t10, %t23
+    %t24 = addr $3
+    %t25 = index i8 %t24, 4
+    store u32 %t12, %t25
+    %t26 = addr $3
+    %t27 = index i8 %t26, 8
+    store u32 %t15, %t27
+    %t28 = addr $3
+    %t29 = index i8 %t28, 12
+    store u32 %t22, %t29
+    %t30 = binary and i64 %__param3, 4294967295
+    %t31 = convert trunc u32 i64 %t30
+    %t32 = load i64 $0
+    %t33 = binary and i64 %t32, 4294967295
+    %t34 = convert trunc u32 i64 %t33
+    %t35 = load u8 $1
+    %t36 = convert zext u32 u8 %t35
+    %t37 = binary sub u32 %t34, %t36
+    %t38 = load f64 $2
+    %t39 = cmp ule f64 %t38, -1
+    %t40 = cmp uge f64 %t38, 4294967296
+    %t41 = binary or i64 %t39, %t40
+    branch unlikely %t41, ^1, ^3
+
+  block ^3:
+    %t42 = convert fptoui u32 f64 %t38
+    %t43 = load u8 $1
+    %t44 = binary and u8 %t43, 31
+    %t45 = cmp uge u8 %t44, 32
+    branch unlikely %t45, ^4, ^5
+
+  block ^5:
+    %t46 = convert zext u32 u8 %t44
+    %t47 = binary ushr u32 %t42, %t46
+    %t48 = binary and i64 %__param1, 65535
+    %t49 = convert trunc u16 i64 %t48
+    switch %t49, ^8, 5:^6, 6:^6, 7:^6, 8:^6, 16:^6, 256:^7
+
+  block ^6:
+    %t50 = binary and i64 %__param3, 4294967295
+    %t51 = convert trunc u32 i64 %t50
+    store u32 %t51, $10
+    jump ^9
+
+  block ^7:
+    store u32 3, $10
+    jump ^9
+
+  block ^8:
+    store u32 4294967295, $10
+    jump ^9
+
+  block ^10:
+    jump ^9
+
+  block ^9:
+    %t52 = load u32 $10
+    %t53 = addr $4
+    store u32 %t31, %t53
+    %t54 = addr $4
+    %t55 = index i8 %t54, 4
+    store u32 %t37, %t55
+    %t56 = addr $4
+    %t57 = index i8 %t56, 8
+    store u32 %t47, %t57
+    %t58 = addr $4
+    %t59 = index i8 %t58, 12
+    store u32 %t52, %t59
+    %t60 = addr $5
+    %t61 = addr $3
+    copyobj 16x4 %t61, %t60
+    %t62 = addr $5
+    %t63 = index i8 %t62, 16
+    %t64 = addr $4
+    copyobj 16x4 %t64, %t63
+    %t65 = load u8 $1
+    %t66 = load u8 $1
+    %t67 = cmp ule u8 %t65, %t66
+    %t68 = cmp eq i64 %t67, 0
+    branch %t68, ^11, ^12
+
+  block ^11:
+    store i1 1, $11
+    jump ^13
+
+  block ^12:
+    %t69 = load u8 $1
+    %t70 = convert zext i16 u8 %t69
+    %t71 = load f64 $2
+    %t72 = cmp ule f64 %t71, -32769
+    %t73 = cmp uge f64 %t71, 32768
+    %t74 = binary or i64 %t72, %t73
+    branch unlikely %t74, ^1, ^14
+
+  block ^14:
+    %t75 = convert fptosi i16 f64 %t71
+    %t76 = cmp eq i16 %t70, %t75
+    %t77 = cmp eq i64 %t76, 0
+    %t78 = convert trunc i1 i64 %t77
+    store i1 %t78, $11
+    jump ^13
+
+  block ^13:
+    %t79 = load i1 $11
+    branch %t79, ^15, ^16
+
+  block ^15:
+    %t80 = load u8 $1
+    %t81 = binary umod u8 %t80, 2
+    %t82 = addr $5
+    %t83 = convert zext i64 u8 %t81
+    %t84 = cmp lt i64 %t83, 0
+    %t85 = cmp gt i64 %t83, 2
+    %t86 = cmp gt i64 2, 2
+    %t87 = binary or i64 %t84, %t85
+    %t88 = binary or i64 %t87, %t86
+    branch unlikely %t88, ^17, ^18
+
+  block ^18:
+    %t89 = index obj<16x1> %t82, %t83
+    %t90 = binary sub i64 2, %t83
+    %t91 = cmp lt i64 0, 0
+    %t92 = cmp gt i64 0, 1
+    %t93 = cmp gt i64 1, %t90
+    %t94 = binary or i64 %t91, %t92
+    %t95 = binary or i64 %t94, %t93
+    branch unlikely %t95, ^17, ^19
+
+  block ^19:
+    %t96 = index obj<16x1> %t89, 0
+    %t97 = binary sub i64 1, 0
+    store ptr %t96, $6
+    store i64 %t97, $7
+    jump ^20
+
+  block ^20:
+    %t98 = load i64 $7
+    %t99 = cmp gt i64 %t98, 0
+    branch %t99, ^21, ^22
+
+  block ^21:
+    %t100 = load ptr $6
+    %t101 = load i64 $7
+    %t102 = cmp lt i64 1, 0
+    %t103 = cmp gt i64 1, %t101
+    %t104 = cmp gt i64 %t101, %t101
+    %t105 = binary or i64 %t102, %t103
+    %t106 = binary or i64 %t105, %t104
+    branch unlikely %t106, ^17, ^23
+
+  block ^23:
+    %t107 = index obj<16x1> %t100, 1
+    %t108 = binary sub i64 %t101, 1
+    store ptr %t107, $6
+    store i64 %t108, $7
+    %t109 = binary and i64 -6, %__param3
+    %t110 = call u32 @p_h1(%__param0, %t109)
+    jump ^20
+
+  block ^22:
+    jump ^24
+
+  block ^24:
+    jump ^16
+
+  block ^16:
+    store i64 0, $8
+    %t111 = binary and i64 %__param1, 65535
+    %t112 = convert trunc u16 i64 %t111
+    %t113 = binary and u16 %t112, 1
+    %t114 = addr $5
+    %t115 = convert zext i64 u16 %t113
+    %t116 = cmp uge i64 %t115, 2
+    branch unlikely %t116, ^17, ^25
+
+  block ^25:
+    %t117 = index obj<16x1> %t114, %t115
+    %t118 = call u32 @p_h1(%__param0, 4)
+    %t119 = convert zext i64 u32 %t118
+    store i64 %t119, $9
+    %t120 = load i64 $8
+    %t121 = load i64 $9
+    %t122 = binary add i64 %t120, %t121
+    return i64 %t122
+
+  block ^4:
+    call void @chibi_trap(3)
+    unreachable
+
+  block ^1:
+    call void @chibi_trap(4)
+    unreachable
+
+  block ^17:
+    call void @chibi_trap(6)
+    unreachable
+}

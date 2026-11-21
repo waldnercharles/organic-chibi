@@ -1,0 +1,3 @@
+fn f(p0: i8) -> u32 {
+    return (switch ((p0 < 127) and (p0 < 2)) { false, true => u32((p0 & 127)) })
+}

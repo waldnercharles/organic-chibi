@@ -1,0 +1,29 @@
+extern fn bench_print(x: int)
+
+fn steps(start: int) -> int {
+    x := start
+    n := 0
+    while x != 1 {
+        if x % 2 == 0 {
+            x = x / 2
+        } else {
+            x = 3 * x + 1
+        }
+        n += 1
+    }
+    return n
+}
+
+export fn main() -> i32 {
+    best := 0
+    at := 0
+    for i in 1..3000000 {
+        s := steps(i)
+        if s > best {
+            best = s
+            at = i
+        }
+    }
+    bench_print(at * 1000 + best)
+    return 0
+}

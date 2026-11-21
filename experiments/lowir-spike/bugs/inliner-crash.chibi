@@ -1,0 +1,18 @@
+enum E1: i32 { m0 = (-63), m1, m2, m3 = (-45), m4 }
+fn h4(p0: u64) -> int {
+    if p0 < 31909797 {
+        switch E1(u8(p0 & 255)) {
+            E1.m0 => {}
+            .m1, .m2 => {}
+            E1.m3, E1.m4 => {
+                a1 := i16(f64(p0))
+            }
+        }
+    }
+    x := 0
+    while x < 6 { x += 1 }
+    return 0
+}
+fn e1(c: int) -> int {
+    return h4(u64(c & 32767))
+}

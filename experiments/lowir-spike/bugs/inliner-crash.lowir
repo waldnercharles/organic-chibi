@@ -1,0 +1,87 @@
+target linux 1
+
+declare global @chibi_context : ptr [binding=strong]
+
+declare function @chibi_trap(%arg0 : i32) -> void [unwind=no, return=noreturn, linkage=c, binding=strong, cold=yes]
+
+function @p_h4(%__param0 : ptr, %__param1 : i64) -> i64 [linkage=c, binding=strong] {
+  slot $0 : i16
+  slot $1 : i64
+
+  block ^0:
+    %t1 = cmp ult i64 %__param1, 31909797
+    branch %t1, ^1, ^2
+
+  block ^1:
+    %t2 = binary and i64 %__param1, 255
+    %t3 = convert trunc u8 i64 %t2
+    %t4 = convert zext i32 u8 %t3
+    switch %t4, ^4, -63:^3, -62:^3, -61:^3, -45:^3, -44:^3
+
+  block ^3:
+    switch %t4, ^8, -63:^5, -62:^6, -61:^6, -45:^7, -44:^7
+
+  block ^5:
+    jump ^9
+
+  block ^6:
+    jump ^9
+
+  block ^7:
+    %t5 = convert uitofp f64 i64 %__param1
+    %t6 = cmp ule f64 %t5, -32769
+    %t7 = cmp uge f64 %t5, 32768
+    %t8 = binary or i64 %t6, %t7
+    branch unlikely %t8, ^4, ^10
+
+  block ^10:
+    %t9 = convert fptosi i16 f64 %t5
+    store i16 %t9, $0
+    jump ^9
+
+  block ^9:
+    jump ^2
+
+  block ^2:
+    store i64 0, $1
+    jump ^11
+
+  block ^11:
+    %t10 = load i64 $1
+    %t11 = cmp lt i64 %t10, 6
+    branch %t11, ^12, ^13
+
+  block ^12:
+    %t12 = load i64 $1
+    %t13 = cmp gt i64 %t12, 9223372036854775806
+    branch unlikely %t13, ^14, ^15
+
+  block ^15:
+    %t14 = binary add nowrap i64 %t12, 1
+    store i64 %t14, $1
+    jump ^11
+
+  block ^13:
+    jump ^16
+
+  block ^16:
+    return i64 0
+
+  block ^14:
+    call void @chibi_trap(1)
+    unreachable
+
+  block ^4:
+    call void @chibi_trap(4)
+    unreachable
+
+  block ^8:
+    call void @chibi_trap(5)
+    unreachable
+}
+function @p_e1(%__param0 : ptr, %__param1 : i64) -> i64 [linkage=c, binding=strong] {
+  block ^0:
+    %t1 = binary and i64 %__param1, 32767
+    %t2 = call i64 @p_h4(%__param0, %t1)
+    return i64 %t2
+}
