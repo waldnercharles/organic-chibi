@@ -259,6 +259,165 @@ const char VECTOR_RUNS[] =
     "        return leading_zeros(top_bits(unaligned_load(u8x16, p))) * 100 + trailing_zeros(top_bits(unaligned_load(u8x16, p)))\n"
     "    }\n"
     "    return leading_zeros(top_bits(unaligned_load(u32x4, p))) * 100 + trailing_zeros(top_bits(unaligned_load(u32x4, p)))\n"
+    "}\n"
+    "\n"
+    "struct Pair { a: int, b: int }\n"
+    "\n"
+    "fn vadd(a: u8x16, b: u8x16) -> u8x16 {\n"
+    "    return a +% b\n"
+    "}\n"
+    "\n"
+    "fn call_add(x: u8, y: u8, k: int) -> int {\n"
+    "    a: u8x16 = x\n"
+    "    b := u8x16.{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 }\n"
+    "    s := vadd(a, b +% y)\n"
+    "    return s[k]\n"
+    "}\n"
+    "\n"
+    "fn spread(a: u8x16, x: f64, b: u8x16, c: u8x16, d: u8x16, e: u8x16, f: u8x16, g: u8x16, h: u8x16, i: u8x16, n: int, j: u8x16) -> int {\n"
+    "    s := a +% b *% 2 +% c *% 3 +% d *% 4 +% e *% 5 +% f *% 6 +% g *% 7 +% h *% 8 +% i *% 9 +% j *% 10\n"
+    "    return int(s[n]) + int(x)\n"
+    "}\n"
+    "\n"
+    "fn call_spread(x: u8, y: u8, k: int) -> int {\n"
+    "    a: u8x16 = x\n"
+    "    b := u8x16.{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 }\n"
+    "    return spread(a, 1000.0, b, a +% 1, b +% 2, a +% 3, b +% 4, a +% 5, b +% y, a +% y, k, b *% 3)\n"
+    "}\n"
+    "\n"
+    "fn mix(p1: int, p2: int, p3: int, p4: int, p5: int, p6: int, p7: int, p8: int, a: u8x16, b: u8x16, c: u8x16, d: u8x16, e: u8x16, f: u8x16, g: u8x16, h: u8x16, i: u8x16, q: i8) -> int {\n"
+    "    s := a +% b *% 2 +% c *% 3 +% d *% 4 +% e *% 5 +% f *% 6 +% g *% 7 +% h *% 8\n"
+    "    return p1 + p2 * 2 + p3 * 3 + p4 * 4 + p5 * 5 + p6 * 6 + p7 * 7 + p8 * 8 + int(s[0]) * 100 + int(i[1]) * 100000 + int(q) * 100000000\n"
+    "}\n"
+    "\n"
+    "fn call_mix(x: u8, y: u8, k: int) -> int {\n"
+    "    a: u8x16 = x\n"
+    "    b: u8x16 = y\n"
+    "    return mix(k, 2, 3, 4, 5, 6, 7, k + 8, a, b, a +% 1, b +% 1, a +% 2, b +% 2, a +% 3, b +% 3, a +% b, -3)\n"
+    "}\n"
+    "\n"
+    "fn leaf(a: u8x16, x: f64, b: u8x16, y: f64) -> f64 {\n"
+    "    return x * 2.0 + y + f64(a[0]) + f64(b[1])\n"
+    "}\n"
+    "\n"
+    "fn call_leaf(x: u8, y: u8, k: int) -> int {\n"
+    "    a: u8x16 = x\n"
+    "    b: u8x16 = y\n"
+    "    return int(leaf(a, 1.5, b, f64(k)))\n"
+    "}\n"
+    "\n"
+    "fn ones() -> u8x16 {\n"
+    "    v: u8x16 = 1\n"
+    "    return v\n"
+    "}\n"
+    "\n"
+    "fn after_call(v: u8x16) -> u8x16 {\n"
+    "    return v +% ones()\n"
+    "}\n"
+    "\n"
+    "fn call_after(x: u8, k: int) -> int {\n"
+    "    a: u8x16 = x\n"
+    "    r := after_call(a)\n"
+    "    return r[k]\n"
+    "}\n"
+    "\n"
+    "fn compose(x: u8, y: u8, k: int) -> int {\n"
+    "    a: u8x16 = x\n"
+    "    b: u8x16 = y\n"
+    "    c := u8x16.{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 }\n"
+    "    r := c +% vadd(vadd(a, b), c *% 2) +% vadd(c, 7)\n"
+    "    return r[k]\n"
+    "}\n"
+    "\n"
+    "fn rsum(v: u8x16, n: int) -> u8x16 {\n"
+    "    if n == 0 {\n"
+    "        return v\n"
+    "    }\n"
+    "    w := rsum(v +% 1, n - 1)\n"
+    "    return w +% v\n"
+    "}\n"
+    "\n"
+    "fn call_rsum(x: u8, n: int, k: int) -> int {\n"
+    "    v := u8x16.{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 } +% x\n"
+    "    r := rsum(v, n)\n"
+    "    return r[k]\n"
+    "}\n"
+    "\n"
+    "fn with_pair(p: Pair, v: u8x16, w: u8x16) -> int {\n"
+    "    s := v +% w\n"
+    "    return p.a * 1000 + p.b * 10 + int(s[3])\n"
+    "}\n"
+    "\n"
+    "fn call_pair(x: u8, y: u8, k: int) -> int {\n"
+    "    p: Pair = .{ .a = k, .b = 7 }\n"
+    "    a: u8x16 = x\n"
+    "    return with_pair(p, a, a +% y)\n"
+    "}\n"
+    "\n"
+    "fn twice(v: u8x16) {\n"
+    "    return v +% v\n"
+    "}\n"
+    "\n"
+    "fn dropped(x: u8, k: int) -> int {\n"
+    "    a: u8x16 = x\n"
+    "    _ = vadd(a, a)\n"
+    "    r := twice(a)\n"
+    "    return r[k]\n"
+    "}\n"
+    "\n"
+    "fn rest(s: []u8) -> []u8 {\n"
+    "    return s[1..]\n"
+    "}\n"
+    "\n"
+    "fn lanes_and_len(v: u8x16, s: []u8) -> int {\n"
+    "    return int(v[2]) * 1000 + s.len * 10 + int(s[0])\n"
+    "}\n"
+    "\n"
+    "fn call_slice(x: u8, n: int, k: int) -> int {\n"
+    "    arr: [8]u8\n"
+    "    for i in 0..8 {\n"
+    "        arr[i] = u8(i) +% x\n"
+    "    }\n"
+    "    a: u8x16 = x\n"
+    "    return lanes_and_len(a +% 1, rest(arr[k..n]))\n"
+    "}\n"
+    "\n"
+    "fn eight_floats(a: f64, b: f64, c: f64, d: f64, e: f64, f: f64, g: f64, h: f64, v: u8x16) -> int {\n"
+    "    return int(a + b * 2.0 + c * 3.0 + d * 4.0 + e * 5.0 + f * 6.0 + g * 7.0 + h * 8.0) + int(v[5]) * 1000\n"
+    "}\n"
+    "\n"
+    "fn call_eight(x: u8, y: u8, k: int) -> int {\n"
+    "    v: u8x16 = x\n"
+    "    return eight_floats(f64(k), 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, f64(y), v +% 1)\n"
+    "}\n"
+    "\n"
+    "fn ignore(v: u8x16, w: u8x16, x: int) -> int {\n"
+    "    return x * 3\n"
+    "}\n"
+    "\n"
+    "fn call_ignore(x: u8, y: u8, k: int) -> int {\n"
+    "    a: u8x16 = x\n"
+    "    return ignore(a, a +% y, k)\n"
+    "}\n"
+    "\n"
+    "fn fill(x: u8) -> u8x16 {\n"
+    "    v: u8x16 = x\n"
+    "    return v\n"
+    "}\n"
+    "\n"
+    "fn call_nested(x: u8, y: u8, k: int) -> int {\n"
+    "    a: u8x16 = x\n"
+    "    r := vadd(a +% y, fill(3))\n"
+    "    return r[k]\n"
+    "}\n"
+    "\n"
+    "fn weigh(v: u8x16, a: int, b: int, c: int) -> int {\n"
+    "    return int(v[0]) + a * 100 + b * 10000 + c * 1000000\n"
+    "}\n"
+    "\n"
+    "fn call_weigh(x: u8, y: int, k: int) -> int {\n"
+    "    v: u8x16 = x\n"
+    "    return weigh(v, y, k, y + k)\n"
     "}\n";
 
 const VectorRun VECTOR_BODY_RESULTS[] = {
@@ -386,6 +545,35 @@ const VectorRun VECTOR_RESULTS[] = {
     { "mask_zeros", { 0, 1 }, 808, 0 },
     { "mask_zeros", { 0x80, 1 }, 601, 0 },
     { "mask_zeros", { 0x8000, 1 }, 403, 0 },
+    { "call_add", { 10, 3, 5 }, 18, 0 },
+    { "call_add", { 250, 9, 15 }, 18, 0 },
+    { "call_spread", { 3, 4, 5 }, 1222, 0 },
+    { "call_spread", { 200, 100, 15 }, 1111, 0 },
+    { "call_mix", { 3, 4, 5 }, -299279552, 0 },
+    { "call_mix", { 250, 9, 1 }, -299683988, 0 },
+    { "call_leaf", { 3, 4, 5 }, 15, 0 },
+    { "call_leaf", { 255, 255, 100 }, 613, 0 },
+    { "call_after", { 5, 3 }, 6, 0 },
+    { "call_after", { 255, 0 }, 0, 0 },
+    { "compose", { 3, 4, 5 }, 34, 0 },
+    { "compose", { 200, 100, 15 }, 111, 0 },
+    { "call_rsum", { 3, 4, 5 }, 50, 0 },
+    { "call_rsum", { 200, 30, 15 }, 218, 0 },
+    { "call_pair", { 3, 4, 5 }, 5080, 0 },
+    { "call_pair", { 200, 100, -2 }, -1686, 0 },
+    { "dropped", { 5, 3 }, 10, 0 },
+    { "dropped", { 200, 0 }, 144, 0 },
+    { "call_slice", { 3, 8, 2 }, 4056, 0 },
+    { "call_slice", { 250, 6, 0 }, 251301, 0 },
+    { "call_slice", { 1, 3, 3 }, 0, TRAP_BOUNDS },
+    { "call_eight", { 3, 4, 5 }, 4149, 0 },
+    { "call_eight", { 255, 10, -200 }, -8, 0 },
+    { "call_ignore", { 3, 4, 5 }, 15, 0 },
+    { "call_ignore", { 1, 2, -7 }, -21, 0 },
+    { "call_nested", { 10, 20, 5 }, 33, 0 },
+    { "call_nested", { 250, 9, 15 }, 6, 0 },
+    { "call_weigh", { 3, 4, 5 }, 9050403, 0 },
+    { "call_weigh", { 250, -2, 7 }, 5070050, 0 },
 };
 
 const size_t NVECTOR_RESULTS = sizeof VECTOR_RESULTS / sizeof VECTOR_RESULTS[0];

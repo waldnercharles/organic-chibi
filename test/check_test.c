@@ -1083,7 +1083,6 @@ static const Case ERRORS[] = {
         "a:4:4: the checker doesn't support this yet\n"
         "a:5:15: the checker doesn't support this yet\n"
         "a:6:14: the checker doesn't support this yet\n"
-        "a:9:4: the checker doesn't support this yet\n"
         "a:12:21: the checker doesn't support this yet\n"
         "a:15:10: `u8x16` needs one value for each lane, found 3\n"
         "a:16:19: `u8x16` has no member `a`\n"
@@ -1196,6 +1195,29 @@ static const Case ERRORS[] = {
         "a:38:11: `lookup` is a function, so it can't be used here\n"
         "struct S { a: int }\n"
         "fn f(p: [*]u8, q: *u8, s: []u8, x: u32, b: bool, st: S) -> void\n",
+    },
+    {
+        "extern fn printf(fmt: *u8, ..) -> i32\n"
+        "export fn give() -> u8x16 {\n"
+        "    v: u8x16 = 1\n"
+        "    return v\n"
+        "}\n"
+        "fn f(v: u8x16, s: []u8) -> u8x16 {\n"
+        "    _ = printf(&s[0], v)\n"
+        "    return v\n"
+        "}\n"
+        "fn g(x: u8) -> int {\n"
+        "    w: u16x8 = x\n"
+        "    v := f(w, .[])\n"
+        "    return v[0]\n"
+        "}\n",
+        "a:2:18: the checker doesn't support this yet\n"
+        "a:7:23: C's `..` takes numbers, `bool`, enums and pointers, not `u8x16`\n"
+        "a:12:12: `u16x8` and `u8x16` don't mix without a conversion\n"
+        "extern fn printf(fmt: *u8, ..) -> i32\n"
+        "export fn give() -> u8x16\n"
+        "fn f(v: u8x16, s: []u8) -> u8x16\n"
+        "fn g(x: u8) -> int\n",
     },
 };
 
@@ -4556,6 +4578,48 @@ static const Case BODIES[] = {
         "    %5 = load-at int %4\n"
         "    %6 = add int %2, %5\n"
         "    ret int %6\n",
+    },
+    {
+        "struct P { a: int }\n"
+        "fn add(a: u8x16, b: u8x16) -> u8x16 {\n"
+        "    return a +% b\n"
+        "}\n"
+        "fn twice(v: u8x16) {\n"
+        "    return add(v, v)\n"
+        "}\n"
+        "fn g(x: u8, p: P) -> u8 {\n"
+        "    v: u8x16 = x\n"
+        "    w := twice(add(v, 7))\n"
+        "    return w[p.a]\n"
+        "}\n",
+        "fn add(a: u8x16, b: u8x16) -> u8x16\n"
+        "    slots: a: u8x16, b: u8x16\n"
+        "    %0 = load u8x16 a\n"
+        "    %1 = load u8x16 b\n"
+        "    %2 = add-wrap u8x16 %0, %1\n"
+        "    ret u8x16 %2\n"
+        "fn twice(v: u8x16) -> u8x16\n"
+        "    slots: v: u8x16\n"
+        "    %0 = load u8x16 v\n"
+        "    %1 = load u8x16 v\n"
+        "    %2 = call u8x16 add(%0, %1)\n"
+        "    ret u8x16 %2\n"
+        "fn g(x: u8, p: P) -> u8\n"
+        "    slots: x: u8, p: P, v: u8x16, w: u8x16\n"
+        "    %0 = load u8 x\n"
+        "    %1 = splat u8x16 %0\n"
+        "    store u8x16 v, %1\n"
+        "    %3 = load u8x16 v\n"
+        "    %4 = call u8x16 add(%3, 7)\n"
+        "    %5 = call u8x16 twice(%4)\n"
+        "    store u8x16 w, %5\n"
+        "    %7 = addr *P p\n"
+        "    %8 = field *int %7, .a\n"
+        "    %9 = load-at int %8\n"
+        "    %10 = addr *u8x16 w\n"
+        "    %11 = index *u8 %10, %9\n"
+        "    %12 = load-at u8 %11\n"
+        "    ret u8 %12\n",
     },
 };
 

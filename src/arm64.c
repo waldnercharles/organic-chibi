@@ -814,7 +814,9 @@ late_arg(Emit *e, const u32 *args, u32 v, u8 info, u32 ints)
             return same;
         }
         u8 t = operand_info(e, args[j]);
-        if (t & INFO_MEMORY) {
+        if (is_vector(t)) {
+            same += fl;
+        } else if (t & INFO_MEMORY) {
             u32 regs = check_struct_regs(e->c, e->ir->types[e->fn->first + args[j]]);
             same += (bool)(regs & REGS_FLOAT) == fl ? regs & REGS_COUNT : 0;
         } else {
@@ -2145,8 +2147,9 @@ half_target(const Emit *e, u32 i, u32 half)
                 if (args[j] == v) {
                     return (u8)same;
                 }
-                assert(args[j] == i || !(operand_info(e, args[j]) & INFO_MEMORY));
-                same += args[j] == i || !is_float(operand_info(e, args[j]));
+                u8 t = operand_info(e, args[j]);
+                assert(args[j] == i || !(t & INFO_MEMORY) || is_vector(t));
+                same += args[j] == i || !(is_float(t) || is_vector(t));
             }
             return NO_REG;
         }
@@ -2537,6 +2540,72 @@ stack_struct(Emit *e, u32 v, u32 type, u32 regs, u32 offset)
     memory(e, OP_STRX, 3, X17, offset, X16);
 }
 
+static void
+release_home(Emit *e, u32 home)
+{
+    e->homes = grow(e->homes, &e->homes_cap, e->nhomes + 1, sizeof *e->homes);
+    e->homes[e->nhomes++] = home;
+}
+
+static void
+lane_constant(Emit *e, u32 d, u8 t, u64 bits)
+{
+    u32 scale = t & INFO_SCALE;
+    u64 ones = scale == 3 ? ~0ull : (1ull << (8u << scale)) - 1;
+    u64 lane = bits & ones;
+    if (lane == 0 || lane == ones) {
+        u32 imm = lane ? 0xFF : 0;
+        put(e, OP_MOVI_64 | (imm >> 5) << 16 | (imm & 31) << 5 | d);
+        return;
+    }
+    if (lane < 256 && scale < 3) {
+        static const u32 movi[] = { OP_MOVI_8, OP_MOVI_16, OP_MOVI_32 };
+        put(e, movi[scale] | (u32)(lane >> 5) << 16 | (u32)(lane & 31) << 5 | d);
+        return;
+    }
+    mov_imm(e, X16, lane, scale == 3 ? SF : 0);
+    put(e, OP_DUP | (1u << scale) << 16 | X16 << 5 | d);
+}
+
+static u32
+fetch_lanes(Emit *e, u32 x, u32 scratch)
+{
+    if (x & IR_CONST) {
+        lane_constant(e, scratch, operand_info(e, x), constant_bits(e, x));
+        return scratch;
+    }
+    u32 home = e->spills[x];
+    if (home == NO_VALUE) {
+        return V29;
+    }
+    memory(e, OP_LDR_Q, 4, scratch, home, X8);
+    release_home(e, home);
+    return scratch;
+}
+
+static void
+move_lanes(Emit *e, u32 d, u32 x)
+{
+    u32 r = fetch_lanes(e, x, d);
+    if (r != d) {
+        put(e, OP_VORR | r << 16 | r << 5 | d);
+    }
+}
+
+static NOINLINE void
+pass_vector(Emit *e, u32 v, ArgCursor *at)
+{
+    if (at->floats < 8) {
+        move_lanes(e, at->floats++, v);
+        return;
+    }
+
+    u32 place = check_place_arg(at, 1 | REGS_FLOAT, 16, 16, e->place);
+    assert(place & PLACE_STACK);
+    u32 r = fetch_lanes(e, v, V30);
+    memory(e, OP_STR_Q, 4, r, place & ~PLACE_STACK, X16);
+}
+
 static NOINLINE void
 pass_struct(Emit *e, u32 v, ArgCursor *at)
 {
@@ -2587,7 +2656,11 @@ pass_args(Emit *e, const u32 *args, u32 ints, u32 named)
     for (u32 j = 1; j <= named; j++) {
         u8 info = operand_info(e, args[j]);
         if (info & INFO_MEMORY) {
-            pass_struct(e, args[j], &at);
+            if (is_vector(info)) {
+                pass_vector(e, args[j], &at);
+            } else {
+                pass_struct(e, args[j], &at);
+            }
             continue;
         }
         bool fl = is_float(info);
@@ -2611,18 +2684,22 @@ by_pointer(const Emit *e, u32 type)
 }
 
 static NOINLINE void
-point_result(Emit *e, u32 type, u32 slot)
+point_result(Emit *e, u32 type, const u32 *args)
 {
     if (by_pointer(e, type)) {
-        sp_address(e, X8, e->slot_offsets[slot]);
+        sp_address(e, X8, e->slot_offsets[args[args[0] + 1]]);
     }
 }
 
 static NOINLINE void
-receive_result(Emit *e, u32 type, u32 slot)
+receive_result(Emit *e, u32 type, const u32 *args)
 {
+    if (is_vector(e->info[type])) {
+        put(e, OP_VORR | 0 << 16 | 0 << 5 | V29);
+        return;
+    }
     if (!by_pointer(e, type)) {
-        move_struct(e, false, type, 0, SP, e->slot_offsets[slot]);
+        move_struct(e, false, type, 0, SP, e->slot_offsets[args[args[0] + 1]]);
     }
 }
 
@@ -2683,7 +2760,7 @@ callback_address(Emit *e, u32 i, u32 type, u32 k, u32 decl, const Native *n)
     put(e, OP_LDRX | (u32)((slot & 0xFFF) >> 3) << 10 | d << 5 | d);
 }
 
-static void
+static ALWAYS_INLINE void
 call(Emit *e, u32 i, u32 type, u32 decl, u32 b, const Native *n, u32 ints)
 {
     assert((ints == 0) == (e->c->decls.bodies[decl] == NO_BODY));
@@ -2700,7 +2777,7 @@ call(Emit *e, u32 i, u32 type, u32 decl, u32 b, const Native *n, u32 ints)
     save_for_call(e, ~e->free_int & INT_POOL, false);
     save_for_call(e, ~e->free_float & FLOAT_POOL, true);
     if (t & INFO_MEMORY) {
-        point_result(e, type, args[args[0] + 1]);
+        point_result(e, type, args);
     }
     if (ints && (e->called || inside_loop(e))) {
         put(e, OP_LOAD_CONTEXT);
@@ -2725,7 +2802,7 @@ call(Emit *e, u32 i, u32 type, u32 decl, u32 b, const Native *n, u32 ints)
             mov(e, SF, d1, 1);
         }
     } else if (t & INFO_MEMORY) {
-        receive_result(e, type, args[args[0] + 1]);
+        receive_result(e, type, args);
     } else if (type != TYPE_ID_VOID) {
         bool fl = is_float(t);
         u32 d = result(e, i, e->info[type]);
@@ -3019,8 +3096,12 @@ pin_by_weight(Emit *e, bool fl, u32 first, u32 cheap, u32 callee)
 }
 
 static NOINLINE void
-skip_struct(const Emit *e, u32 type, u32 *used)
+skip_memory_param(const Emit *e, u32 type, u32 *used)
 {
+    if (e->c->types.kinds[type] == TYPE_VECTOR) {
+        used[1]++;
+        return;
+    }
     u32 regs = check_struct_regs(e->c, type);
     used[(regs & REGS_FLOAT) != 0] += regs & REGS_COUNT;
 }
@@ -3086,7 +3167,7 @@ pin_locals(Emit *e)
         for (u32 p = 0; p < fn->nparams; p++) {
             u8 info = e->info[slots[p].type];
             if (info & INFO_MEMORY) {
-                skip_struct(e, slots[p].type, used);
+                skip_memory_param(e, slots[p].type, used);
                 continue;
             }
             bool fl = is_float(info);
@@ -3253,9 +3334,35 @@ incoming_address(Emit *e, u32 d, u32 offset)
 }
 
 static NOINLINE void
+receive_vector(Emit *e, u32 p, ArgCursor *at)
+{
+    bool used = e->slots[p].weight != 0;
+    if (at->floats < 8) {
+        if (used) {
+            memory(e, OP_STR_Q, 4, at->floats, e->slot_offsets[p], X16);
+        }
+        at->floats++;
+        return;
+    }
+
+    u32 place = check_place_arg(at, 1 | REGS_FLOAT, 16, 16, e->place);
+    assert(place & PLACE_STACK);
+    e->wide_record = true;
+    if (used) {
+        incoming_address(e, X16, place & ~PLACE_STACK);
+        put(e, OP_LDR_Q | X16 << 5 | V30);
+        memory(e, OP_STR_Q, 4, V30, e->slot_offsets[p], X16);
+    }
+}
+
+static NOINLINE void
 receive_param(Emit *e, u32 p, ArgCursor *at)
 {
     const IrSlot *slot = e->ir->slots + e->fn->first_slot + p;
+    if (is_vector(e->info[slot->type])) {
+        receive_vector(e, p, at);
+        return;
+    }
     u32 regs = check_struct_regs(e->c, slot->type);
     u32 *next = regs & REGS_FLOAT ? &at->floats : &at->ints;
     if (*next + (regs & REGS_COUNT) <= 8) {
@@ -3346,49 +3453,6 @@ return_struct(Emit *e, u32 type, u32 a)
     release(e, a);
 }
 
-static void
-release_home(Emit *e, u32 home)
-{
-    e->homes = grow(e->homes, &e->homes_cap, e->nhomes + 1, sizeof *e->homes);
-    e->homes[e->nhomes++] = home;
-}
-
-static void
-lane_constant(Emit *e, u32 d, u8 t, u64 bits)
-{
-    u32 scale = t & INFO_SCALE;
-    u64 ones = scale == 3 ? ~0ull : (1ull << (8u << scale)) - 1;
-    u64 lane = bits & ones;
-    if (lane == 0 || lane == ones) {
-        u32 imm = lane ? 0xFF : 0;
-        put(e, OP_MOVI_64 | (imm >> 5) << 16 | (imm & 31) << 5 | d);
-        return;
-    }
-    if (lane < 256 && scale < 3) {
-        static const u32 movi[] = { OP_MOVI_8, OP_MOVI_16, OP_MOVI_32 };
-        put(e, movi[scale] | (u32)(lane >> 5) << 16 | (u32)(lane & 31) << 5 | d);
-        return;
-    }
-    mov_imm(e, X16, lane, scale == 3 ? SF : 0);
-    put(e, OP_DUP | (1u << scale) << 16 | X16 << 5 | d);
-}
-
-static u32
-fetch_lanes(Emit *e, u32 x, u32 scratch)
-{
-    if (x & IR_CONST) {
-        lane_constant(e, scratch, operand_info(e, x), constant_bits(e, x));
-        return scratch;
-    }
-    u32 home = e->spills[x];
-    if (home == NO_VALUE) {
-        return V29;
-    }
-    memory(e, OP_LDR_Q, 4, scratch, home, X8);
-    release_home(e, home);
-    return scratch;
-}
-
 static bool
 reads_lanes_next(const Emit *e, u32 v)
 {
@@ -3396,6 +3460,15 @@ reads_lanes_next(const Emit *e, u32 v)
         return false;
     }
     u32 at = e->fn->first + v + 1;
+    if (e->ir->kinds[at] == IR_CALL) {
+        const u32 *args = e->ir->extra + e->fn->first_extra + e->ir->bs[at];
+        for (u32 k = 1; k <= args[0]; k++) {
+            if (args[k] == v) {
+                return true;
+            }
+        }
+        return false;
+    }
     if (!is_vector(e->info[e->ir->types[at]])) {
         return false;
     }
@@ -3522,7 +3595,7 @@ multiply_wide_lanes(Emit *e, u32 ra, u32 rb)
 }
 
 static NOINLINE void
-lanes(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
+lanes(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b, const Native *n)
 {
     u8 t = e->info[type];
     switch (kind) {
@@ -3566,6 +3639,14 @@ lanes(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
             return;
         }
         case IR_TOP_BITS: gather_top_bits(e, i, t, a); return;
+        case IR_CALL: call(e, i, type, a, b, n, FIRST_INT_ARG); break;
+        case IR_RET:
+            move_lanes(e, 0, a);
+            if (i + 1 < e->fn->count) {
+                add_fixup(e, &e->epilogue);
+                put(e, OP_B);
+            }
+            return;
         case IR_EXIT: {
             Open *o = find_open(e, a);
             fetch_lanes(e, b, V29);
@@ -3601,6 +3682,7 @@ lanes(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
             break;
         }
     }
+    e->vinfo[i] = t;
     keep_lanes(e, i);
 }
 
@@ -3931,7 +4013,7 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                 e->error = UNSUPPORTED_TYPE;
                 break;
             }
-            lanes(e, i, ir->kinds[at], ir->types[at], ir->as[at], ir->bs[at]);
+            lanes(e, i, ir->kinds[at], ir->types[at], ir->as[at], ir->bs[at], n);
             i++;
         }
     }

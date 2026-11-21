@@ -756,7 +756,7 @@ is_passed_compound(const Checker *c, u32 type)
 static ALWAYS_INLINE bool
 is_passed(const Checker *c, u32 type)
 {
-    return !is_compound_or_vector(c, type) || is_passed_compound(c, type);
+    return !is_compound(c, type) || is_passed_compound(c, type);
 }
 
 static NOINLINE void
@@ -2567,7 +2567,7 @@ refuse_non_c(Checker *c, u32 file, u32 token, u32 type, u8 not_c)
         report(c, file, token, not_c, 0, type);
     } else if (c->types.kinds[type] == TYPE_FN && !(c->types.arg1[type] & FN_C_CALL)) {
         report(c, file, token, DIAG_C_FN_TYPE, 0, type);
-    } else if (is_vector(c, type) && not_c == DIAG_NOT_C) {
+    } else if (is_vector(c, type)) {
         report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
     }
 }
@@ -2901,12 +2901,13 @@ note_stack_args(Checker *c, u32 list, u32 nargs, u32 first)
     ArgCursor at = { first, 0, 0 };
     for (u32 i = 0; i < n; i++) {
         u32 type = c->lists[list + 1 + i];
-        u32 regs = is_slice(c, type)  ? 2
-                 : is_struct(c, type) ? check_struct_regs(c, type)
-                 : is_float(c, type)  ? 1 | REGS_FLOAT
-                                      : 1;
+        bool lanes = is_vector(c, type);
+        u32 regs = is_slice(c, type)          ? 2
+                 : is_struct(c, type)         ? check_struct_regs(c, type)
+                 : is_float(c, type) || lanes ? 1 | REGS_FLOAT
+                                              : 1;
         u32 size = regs & REGS_POINTER ? 8 : (u32)check_type_size(c, type);
-        check_place_arg(&at, regs, size, 8, 0);
+        check_place_arg(&at, regs, size, lanes ? 16 : 8, 0);
     }
 
     u32 bytes = at.stack + 8 * (nargs > n ? nargs - n : 0);
@@ -2978,7 +2979,7 @@ call_general(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg,
             used[(regs & REGS_FLOAT) != 0] += regs & REGS_COUNT;
         } else {
             code->extra[w++] = operand_ir(c, v);
-            used[is_float(c, type)]++;
+            used[is_float(c, type) || is_vector(c, type)]++;
         }
     }
     for (u32 i = n; i < nargs; i++) {

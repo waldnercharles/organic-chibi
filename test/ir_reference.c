@@ -329,7 +329,7 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
     const u32 *offsets = r->offsets + fn->first_slot;
     for (u32 p = 0; p < fn->nparams; p++) {
         u32 type = ir->slots[fn->first_slot + p].type;
-        if (c->types.kinds[type] == TYPE_STRUCT) {
+        if (c->types.kinds[type] == TYPE_STRUCT || is_vector(c, type)) {
             memcpy(frame + offsets[p], (const void *)(uintptr_t)args[p], check_type_size(c, type));
         } else {
             memcpy(frame + offsets[p], &args[p], sizeof *args);
@@ -368,7 +368,7 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
         u32 b = ir->bs[g];
         Ty t = ty(c, type);
         u64 x = 0, y = 0;
-        if (is_vector(c, type)) {
+        if (is_vector(c, type) && kind != IR_CALL) {
             u64 w[2] = { 0, 0 }, z[2] = { 0, 0 }, out[2] = { 0, 0 };
             int fail = 0;
             switch (kind) {
@@ -391,6 +391,10 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                     WIDE(a, w);
                     fail = lanewise(c, kind, type, w, w, 0, out);
                     break;
+                case IR_RET:
+                    WIDE(a, result);
+                    trap = 0;
+                    goto done;
                 case IR_EXIT:
                     WIDE(b, w);
                     vals[r->ends[fn->first + a] - fn->first] = w[0];
@@ -693,9 +697,16 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
             }
             case IR_CALL: {
                 const u32 *list = ir->extra + fn->first_extra + b;
+                const IrFunc *callee = &c->ir.funcs[c->decls.funcs[a] - 1];
                 u64 *call_args = calloc(list[0] + 1, sizeof *call_args);
+                u64(*lanes)[2] = calloc(list[0] + 1, sizeof *lanes);
                 for (u32 k = 0; k < list[0]; k++) {
-                    call_args[k] = OPERAND(list[1 + k]);
+                    if (is_vector(c, ir->slots[callee->first_slot + k].type)) {
+                        WIDE(list[1 + k], lanes[k]);
+                        call_args[k] = (u64)(uintptr_t)lanes[k];
+                    } else {
+                        call_args[k] = OPERAND(list[1 + k]);
+                    }
                 }
                 u64 out[2] = { 0, 0 };
                 bool record = c->types.kinds[type] == TYPE_STRUCT;
@@ -703,6 +714,8 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                 fail = run(r, c->decls.funcs[a] - 1, call_args, to);
                 v = out[0];
                 second = out[1];
+                highs[i] = out[1];
+                free(lanes);
                 free(call_args);
                 break;
             }

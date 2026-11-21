@@ -7349,6 +7349,39 @@ typedef int64_t VMASK(void *, const uint8_t *);
 typedef void VLOOK(void *, const uint8_t *, uint8_t *);
 typedef void VFILL(void *, uint8_t *, int64_t);
 
+typedef uint8_t V16 __attribute__((vector_size(16)));
+typedef V16 VADD(void *, V16, V16);
+typedef int64_t VSPREAD(void *, V16, double, V16, V16, V16, V16, V16, V16, V16, V16, int64_t, V16);
+typedef int64_t VMIX(
+    void *,
+    int64_t,
+    int64_t,
+    int64_t,
+    int64_t,
+    int64_t,
+    int64_t,
+    int64_t,
+    int64_t,
+    V16,
+    V16,
+    V16,
+    V16,
+    V16,
+    V16,
+    V16,
+    V16,
+    V16,
+    int8_t
+);
+typedef double VLEAF(void *, V16, double, V16, double);
+typedef V16 VRSUM(void *, V16, int64_t);
+typedef struct
+{
+    int64_t a, b;
+} CPair;
+typedef int64_t VPAIR(void *, CPair, V16, V16);
+typedef int64_t VEIGHT(void *, double, double, double, double, double, double, double, double, V16);
+
 enum
 {
     WORD_STR_Q_SP = 0x3D8003E0u,
@@ -7393,13 +7426,122 @@ enum
     WORD_ORR_LSL_2 = 0x2A000800u,
     WORD_ORR_LSL_1 = 0x2A000400u,
     WORD_STR_X_SP = 0xF90003E0u,
+    Q_OFFSET = 0x003FFC00u,
+    WORD_MOV_V0_V29 = 0x4EBD1FA0u,
+    WORD_MOV_V1_V29 = 0x4EBD1FA1u,
+    WORD_MOV_V29_V0 = 0x4EA01C1Du,
+    WORD_LDR_Q30_X16 = 0x3DC0021Eu,
+    WORD_ADD_X16_X29_48 = 0x9100C3B0u,
+    WORD_STR_Q30_SP_0 = 0x3D8003FEu,
+    WORD_STR_Q30_SP_16 = 0x3D8007FEu,
+    WORD_STR_Q29_SP_32 = 0x3D800BFDu,
+    WORD_STR_Q29_SP_0 = 0x3D8003FDu,
+    WORD_MOV_X2_X1 = 0xAA0103E2u,
+    WORD_MOV_X1_X0 = 0xAA0003E1u,
+    WORD_STR_Q29_SP_16 = 0x3D8007FDu,
+    WORD_B = 0x14000000u,
+    B_OFFSET = 0x03FFFFFFu,
+    WORD_FMOV_D = 0x1E604000u,
 };
+
+static bool
+vector_calls_agree(void)
+{
+    Program p;
+    if (!build(&p, VECTOR_RUNS)) {
+        return false;
+    }
+    V16 v[10];
+    for (int k = 0; k < 10; k++) {
+        for (int lane = 0; lane < 16; lane++) {
+            v[k][lane] = (uint8_t)(lane * 3 + k * 17);
+        }
+    }
+
+    bool ok = true;
+    V16 sum = ((VADD *)fn(&p, "vadd"))(CONTEXT, v[0], v[1]);
+    V16 rsum = ((VRSUM *)fn(&p, "rsum"))(CONTEXT, v[2], 4);
+    for (int lane = 0; lane < 16; lane++) {
+        ok &= sum[lane] == (uint8_t)(v[0][lane] + v[1][lane]);
+        ok &= rsum[lane] == (uint8_t)(5 * v[2][lane] + 10);
+    }
+
+    VSPREAD *spread = (VSPREAD *)fn(&p, "spread");
+    for (int64_t n = 0; n < 16; n += 5) {
+        uint8_t want = 0;
+        for (int k = 0; k < 10; k++) {
+            want += (uint8_t)((k + 1) * v[k][n]);
+        }
+        ok &= spread(CONTEXT, v[0], 77.0, v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], n, v[9]) ==
+              want + 77;
+    }
+
+    int64_t want = v[8][1] * 100000 - 300000000;
+    uint8_t s0 = 0;
+    for (int k = 0; k < 8; k++) {
+        want += (k + 1) * (k * 11 + 12);
+        s0 += (uint8_t)((k + 1) * v[k][0]);
+    }
+    want += s0 * 100;
+    VMIX *mix = (VMIX *)fn(&p, "mix");
+    int64_t mixed = mix(
+        CONTEXT,
+        12,
+        23,
+        34,
+        45,
+        56,
+        67,
+        78,
+        89,
+        v[0],
+        v[1],
+        v[2],
+        v[3],
+        v[4],
+        v[5],
+        v[6],
+        v[7],
+        v[8],
+        -3
+    );
+    ok &= mixed == want;
+
+    ok &= ((VLEAF *)fn(&p, "leaf"))(CONTEXT, v[3], 1.25, v[5], 2.5) ==
+          5.0 + v[3][0] + v[5][1];
+    ok &= ((VPAIR *)fn(&p, "with_pair"))(CONTEXT, (CPair){ 4, -9 }, v[6], v[7]) ==
+          4000 - 90 + (uint8_t)(v[6][3] + v[7][3]);
+    ok &= ((VEIGHT *)fn(&p, "eight_floats"))(CONTEXT, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.5, v[4]) ==
+          208 + v[4][5] * 1000;
+
+    ok &= count_words(&p, "vadd", WORD_STR_Q_SP, Q_OFFSET) == 1;
+    ok &= count_words(&p, "vadd", WORD_STR_Q_SP | 1, Q_OFFSET) == 1;
+    ok &= count_words(&p, "vadd", WORD_MOV_V0_V29, 0) == 1;
+    ok &= count_words(&p, "vadd", WORD_B, B_OFFSET) == 0;
+    ok &= count_words(&p, "call_add", WORD_LDR_Q_SP, Q_OFFSET) == 1;
+    ok &= count_words(&p, "call_add", WORD_MOV_V1_V29, 0) == 1;
+    ok &= count_words(&p, "call_add", WORD_MOV_V29_V0, 0) == 1;
+    ok &= count_words(&p, "spread", WORD_LDR_Q30_X16, 0) == 3;
+    ok &= count_words(&p, "call_spread", WORD_STR_Q30_SP_0, 0) == 1;
+    ok &= count_words(&p, "call_spread", WORD_STR_Q30_SP_16, 0) == 1;
+    ok &= count_words(&p, "call_spread", WORD_STR_Q29_SP_32, 0) == 1;
+    ok &= count_words(&p, "mix", WORD_ADD_X16_X29_48, 0) == 1;
+    ok &= count_words(&p, "call_mix", WORD_STR_Q29_SP_16, 0) == 1;
+    ok &= count_words(&p, "leaf", WORD_FMOV_D, REGISTER_FIELDS) == 0;
+    ok &= count_words(&p, "call_eight", WORD_STR_Q29_SP_0, 0) == 1;
+    ok &= count_words(&p, "ignore", WORD_STR_Q_SP, Q_FIELDS) == 0;
+    ok &= count_words(&p, "call_slice", WORD_MOV_X2_X1, 0) == 1;
+    ok &= count_words(&p, "call_slice", WORD_MOV_X1_X0, 0) == 1;
+    release_program(&p);
+    return ok;
+}
 
 TEST_CASE(vectors)
 {
     catch_traps();
     REQUIRE(vector_runs_agree(VECTOR_BODY, VECTOR_BODY_RESULTS, NVECTOR_BODY_RESULTS));
     REQUIRE(vector_runs_agree(VECTOR_RUNS, VECTOR_RESULTS, NVECTOR_RESULTS));
+    REQUIRE(vector_calls_agree());
 
     Program p;
     REQUIRE(build(&p, VECTOR_GRID));
