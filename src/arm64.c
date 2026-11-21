@@ -3232,15 +3232,10 @@ lay_out_frame(Emit *e)
     );
     u32 counts[4] = { 0 };
     u32 memory = 0;
-    u32 widest = 8;
     for (u32 s = 0; s < fn->nslots; s++) {
         u8 info = e->info[slots[s].type];
-        if (info & INFO_UNSUPPORTED) {
-            if (is_vector(info)) {
-                widest = 16;
-            } else {
-                e->error = UNSUPPORTED_TYPE;
-            }
+        if ((info & INFO_UNSUPPORTED) && !is_vector(info)) {
+            e->error = UNSUPPORTED_TYPE;
         }
         if (e->slot_regs[s] == NO_REG && slots[s].weight) {
             memory += (info & INFO_MEMORY) != 0;
@@ -3264,14 +3259,14 @@ lay_out_frame(Emit *e)
         bases[k] += 1u << k;
     }
 
-    for (u32 align = widest; memory && align > 0; align /= 2) {
-        offset = (offset + align - 1) & ~(align - 1);
+    for (u32 align = 16; memory && align > 0; align /= 2) {
         for (u32 s = 0; s < fn->nslots; s++) {
             u32 type = slots[s].type;
             if (!(e->info[type] & INFO_MEMORY) || !slots[s].weight ||
                 check_type_align(e->c, type) != align) {
                 continue;
             }
+            offset = (offset + align - 1) & ~(align - 1);
             u64 size = check_type_size(e->c, type);
             if (size >= FRAME_LIMIT - offset) {
                 e->error = "a function's frame is larger than 16 MB";

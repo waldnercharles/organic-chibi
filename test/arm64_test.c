@@ -7264,6 +7264,13 @@ static const char VECTOR_SHAPES[] =
     "    w := v +% s[2]\n"
     "    return int(w[1]) + int(t[1])\n"
     "}\n"
+    "fn odd_slot(a: u8, k: int) -> int {\n"
+    "    n := int(a)\n"
+    "    p := &n\n"
+    "    v: u8x16 = a\n"
+    "    w := v +% u8(p.*)\n"
+    "    return int(w[k])\n"
+    "}\n"
     "fn bump(x: u8) -> u8 {\n"
     "    t: u8x16 = x\n"
     "    u := (t ^ 255) +% 1\n"
@@ -7600,6 +7607,10 @@ TEST_CASE(vectors)
     REQUIRE(((I1 *)fn(&p, "mixed_slots"))(CONTEXT, 5) == 13);
     REQUIRE(count_words(&p, "mixed_slots", WORD_STR_Q_X8, RD_FIELD) == 0);
     REQUIRE(count_words(&p, "mixed_slots", WORD_LDR_Q_X8, RD_FIELD) == 0);
+    REQUIRE(((I2 *)fn(&p, "odd_slot"))(CONTEXT, 5, 3) == 10);
+    REQUIRE(((I2 *)fn(&p, "odd_slot"))(CONTEXT, 200, 15) == 144);
+    REQUIRE(count_words(&p, "odd_slot", WORD_STR_Q_X8, RD_FIELD) == 0);
+    REQUIRE(count_words(&p, "odd_slot", WORD_LDR_Q_X8, RD_FIELD) == 0);
 
     REQUIRE(((I1 *)fn(&p, "across"))(CONTEXT, 5) == 0);
     REQUIRE(((I1 *)fn(&p, "across"))(CONTEXT, 200) == 0);

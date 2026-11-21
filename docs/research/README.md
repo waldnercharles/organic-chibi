@@ -89,6 +89,7 @@ Updated 2026-11-20. Built so far:
 - step 3i.4, vectors in the arm64 backend: one NEON instruction for most lane-wise operators, `movi` for constants that fit it, checked variable shifts, and vector temporaries kept in V29 or in reused 16-byte homes.
 - step 3i.5, loads and stores, the table lookup and the lane mask: `unaligned_load(T, p)` and `unaligned_store(p, v)` through any `[*]` pointer for numbers and vectors, `lookup(table, index)` on 16 byte lanes as NEON's `tbl`, and `top_bits(v)`, one bit per lane in seven arm64 instructions for 16 lanes, with plain names while the owner decides on the spelling.
 - step 3i.6, vectors as parameters and results: in V0 to V7, then 16-byte stack slots, as AAPCS64 passes C's vector types, with the result in V0, and not yet across `extern fn` or `export fn`.
+- step 3i.7, arrays and struct fields of vectors: the lexer's `u8x64` as a struct of four `u8x16`, built, copied, passed and returned by value, with lanes read and written through any field or element, and not yet across `extern fn` or `export fn` or in globals.
 
 [checker-and-ir.md](checker-and-ir.md) section 8 has the details and the measurements.
 
@@ -96,7 +97,7 @@ The goal now is self-hosting: translate the compiler into chibi, then use the co
 1. **Step 3d:** built (steps 3d.1 to 3d.9). Options A and C of question 14 were timed on 2026-11-19, on x86-64 ([experiments/slice-lowering](../../experiments/slice-lowering/README.md)): C was at least as fast as A on every kernel, and 21–28% faster on a loop that re-slices as a lexer does, so 3d builds C, and step 3d.3 built slices that way. The same kernels still need timing on the owner's M4 Pro. A cloud container runs the arm64 backend's tests under qemu (`make test`), but can't time arm64 code.
 2. Globals and constant tables: built (steps 3g.1 and 3g.2).
 3. Calling C and being called from C: built (steps 3h.1 to 3h.5): calls into C, stack arguments, C's variadic calls, callbacks that C calls, `export fn`, and `[*]T` with the entry point.
-4. SIMD types, and the bit-scan and overflow builtins: in progress. Step 3i.1 built the bit counts, step 3i.2 the overflow checks in the form the sheet recommends, step 3i.3 vectors in the checker and the reference interpreter with the type the sheet recommends, step 3i.4 vectors in the arm64 backend, step 3i.5 the loads and stores, the table lookup and the lane mask that the lexer needs (the sheet's section 3), and step 3i.6 vectors as parameters and results; the form of the overflow checks, the vector type and the spelling of builtins wait for the owner's answers ([simd-and-builtins.md](simd-and-builtins.md)). Next: arrays and struct fields of vectors, which the lexer's `u8x64` needs.
+4. SIMD types, and the bit-scan and overflow builtins: built for what the compiler's C uses (steps 3i.1 to 3i.7). Step 3i.1 built the bit counts, step 3i.2 the overflow checks in the form the sheet recommends, step 3i.3 vectors in the checker and the reference interpreter with the type the sheet recommends, step 3i.4 vectors in the arm64 backend, step 3i.5 the loads and stores, the table lookup and the lane mask that the lexer needs (the sheet's section 3), step 3i.6 vectors as parameters and results, and step 3i.7 arrays and struct fields of vectors, which the lexer's `u8x64` needs; with them the generic path of `src/simd.h` can be written in chibi. The form of the overflow checks, the vector type and the spelling of builtins wait for the owner's answers ([simd-and-builtins.md](simd-and-builtins.md)). Next: the C backend (item 5).
 5. The C backend, the C-to-chibi translator and the bootstrap check.
 6. Then steps 3c, 3e, 3f, 4 and 5, and the spike of cppgm's LowIR as the release backend (the Compiler row of 2026-11-19).
 
@@ -161,7 +162,8 @@ Built by the research thread and open to the owner's review, as their rows in de
 - how step 3i.1 builds the bit counts: plain predeclared names while the owner decides the spelling, an `int` result, and a zero argument giving the width (Language, the bit counts row of 2026-11-21);
 - how step 3i.2 builds the overflow checks: the form, which the owner was asked on 2026-11-21, the `_overflows` names, and arguments typed as a binary operator's (Language, the overflow checks row of 2026-11-21);
 - how step 3i.3 builds vectors: the type, which the owner was asked on 2026-11-21, comparisons that give lane masks, wrapping-only arithmetic, and a scalar that stands for every lane only when it converts implicitly (Language, the vectors row of 2026-11-21);
-- how step 3i.6 passes vectors: as AAPCS64 passes C's vector types, and not yet across `extern fn` or `export fn` (Language, the vector parameters row of 2026-11-21).
+- how step 3i.6 passes vectors: as AAPCS64 passes C's vector types, and not yet across `extern fn` or `export fn` (Language, the vector parameters row of 2026-11-21);
+- how step 3i.7 passes structs that hold vectors: as any other struct of their size, so not across `extern fn` or `export fn`, with globals and constants that hold vectors refused (Language, the vector fields row of 2026-11-21).
 
 ## Syntax option sheets: how they fit together (2026-11-10)
 

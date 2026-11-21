@@ -1083,7 +1083,6 @@ static const Case ERRORS[] = {
         "a:4:4: the checker doesn't support this yet\n"
         "a:5:15: the checker doesn't support this yet\n"
         "a:6:14: the checker doesn't support this yet\n"
-        "a:12:21: the checker doesn't support this yet\n"
         "a:15:10: `u8x16` needs one value for each lane, found 3\n"
         "a:16:19: `u8x16` has no member `a`\n"
         "a:17:12: `u8x16` supports only the wrapping `+%`, `-%` and `*%` so far\n"
@@ -1105,7 +1104,6 @@ static const Case ERRORS[] = {
         "a:33:13: the checker doesn't support this yet\n"
         "a:34:10: the checker doesn't support this yet\n"
         "a:35:12: the checker doesn't support this yet\n"
-        "a:36:10: the checker doesn't support this yet\n"
         "a:37:12: the checker doesn't support this yet\n"
         "a:38:19: the checker doesn't support this yet\n"
         "a:39:18: the checker doesn't support this yet\n"
@@ -1218,6 +1216,50 @@ static const Case ERRORS[] = {
         "export fn give() -> u8x16\n"
         "fn f(v: u8x16, s: []u8) -> u8x16\n"
         "fn g(x: u8) -> int\n",
+    },
+    {
+        "struct H { v: u8x16 }\n"
+        "struct W { h: [2]H, n: int }\n"
+        "extern fn take(h: H) -> int\n"
+        "export fn give(w: *W) -> H {\n"
+        "    return w.h[0]\n"
+        "}\n"
+        "g: W\n"
+        "const C := H.{ .v = u8x16.{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 } }\n"
+        "fn f(p: extern fn(h: *H) -> W, w: W) -> u8 {\n"
+        "    a: u8x16\n"
+        "    x := (a +% 1)[2]\n"
+        "    return w.h[1].v[16]\n"
+        "}\n",
+        "a:3:16: the checker doesn't support this yet\n"
+        "a:4:23: the checker doesn't support this yet\n"
+        "a:7:4: the checker doesn't support this yet\n"
+        "a:8:21: the checker doesn't support this yet\n"
+        "a:9:9: the checker doesn't support this yet\n"
+        "a:11:13: the checker doesn't support this yet\n"
+        "a:12:21: index 16 is out of range for `u8x16`\n"
+        "struct H { v: u8x16 }\n"
+        "struct W { h: [2]H, n: int }\n"
+        "extern fn take(h: H) -> int\n"
+        "export fn give(w: *W) -> H\n"
+        "g = ?\n"
+        "const C = ?\n"
+        "fn f(p: extern fn(*H) -> W, w: W) -> u8\n",
+    },
+    {
+        "struct A { a: A }\n"
+        "struct B { b: B, v: u8x16 }\n"
+        "extern fn f(x: A) -> int\n"
+        "extern fn g(x: B) -> int\n"
+        "gb: B\n",
+        "a:1:8: `A` depends on itself\n"
+        "a:2:8: `B` depends on itself\n"
+        "a:5:5: the checker doesn't support this yet\n"
+        "struct A { a: A }\n"
+        "struct B { b: B, v: u8x16 }\n"
+        "extern fn f(x: A) -> int\n"
+        "extern fn g(x: B) -> int\n"
+        "gb = ?\n",
     },
 };
 
@@ -4621,6 +4663,78 @@ static const Case BODIES[] = {
         "    %12 = load-at u8 %11\n"
         "    ret u8 %12\n",
     },
+    {
+        "struct B { v: [2]u8x16, n: int }\n"
+        "fn make(x: u8x16) -> B {\n"
+        "    return .{ .v = .[ x, x +% 1 ], .n = 2 }\n"
+        "}\n"
+        "fn lane(b: B, k: int) -> u8 {\n"
+        "    c := b\n"
+        "    c.v[1][k] = 7\n"
+        "    return c.v[k][3]\n"
+        "}\n",
+        "fn make(x: u8x16) -> B\n"
+        "    slots: x: u8x16, $1: [2]u8x16, $2: B\n"
+        "    %0 = load u8x16 x\n"
+        "    %1 = load u8x16 x\n"
+        "    %2 = add-wrap u8x16 %1, 1\n"
+        "    %3 = addr *[2]u8x16 $1\n"
+        "    %4 = index *u8x16 %3, 0\n"
+        "    store-at u8x16 %4, %0\n"
+        "    %6 = addr *[2]u8x16 $1\n"
+        "    %7 = index *u8x16 %6, 1\n"
+        "    store-at u8x16 %7, %2\n"
+        "    %9 = addr *B $2\n"
+        "    %10 = field *[2]u8x16 %9, .v\n"
+        "    %11 = addr *[2]u8x16 $1\n"
+        "    copy [2]u8x16 %10, %11\n"
+        "    %13 = addr *B $2\n"
+        "    %14 = field *int %13, .n\n"
+        "    store-at int %14, 2\n"
+        "    %16 = addr *B $2\n"
+        "    ret B %16\n"
+        "fn lane(b: B, k: int) -> u8\n"
+        "    slots: b: B, k: int, c: B\n"
+        "    %0 = addr *B c\n"
+        "    %1 = addr *B b\n"
+        "    copy B %0, %1\n"
+        "    %3 = addr *B c\n"
+        "    %4 = field *[2]u8x16 %3, .v\n"
+        "    %5 = index *u8x16 %4, 1\n"
+        "    %6 = load int k\n"
+        "    %7 = index *u8 %5, %6\n"
+        "    store-at u8 %7, 7\n"
+        "    %9 = addr *B c\n"
+        "    %10 = field *[2]u8x16 %9, .v\n"
+        "    %11 = load int k\n"
+        "    %12 = index *u8x16 %10, %11\n"
+        "    %13 = index *u8 %12, 3\n"
+        "    %14 = load-at u8 %13\n"
+        "    ret u8 %14\n",
+    },
+    {
+        "struct Buf { p: [*]u8, n: int }\n"
+        "fn pick(b: Buf, rows: [][*]u8, i: int) -> u8 {\n"
+        "    return b.p[i] +% rows[i][2]\n"
+        "}\n",
+        "fn pick(b: Buf, rows: [][*]u8, i: int) -> u8\n"
+        "    slots: b: Buf, rows: [][*]u8, rows.len: int, i: int\n"
+        "    %0 = addr *Buf b\n"
+        "    %1 = field *[*]u8 %0, .p\n"
+        "    %2 = load-at [*]u8 %1\n"
+        "    %3 = load int i\n"
+        "    %4 = index *u8 %2, %3\n"
+        "    %5 = load-at u8 %4\n"
+        "    %6 = load int i\n"
+        "    %7 = load [][*]u8 rows\n"
+        "    %8 = load int rows.len\n"
+        "    %9 = index-len *[*]u8 %7, %8, %6\n"
+        "    %10 = load-at [*]u8 %9\n"
+        "    %11 = index *u8 %10, 2\n"
+        "    %12 = load-at u8 %11\n"
+        "    %13 = add-wrap u8 %5, %12\n"
+        "    ret u8 %13\n",
+    },
 };
 
 TEST_CASE(declarations)
@@ -4880,6 +4994,39 @@ TEST_CASE(depth_limit)
     return true;
 }
 
+static bool
+checks_doubling_structs(const char *leaf, const char *want)
+{
+    u32 n = 64;
+    size_t cap = (size_t)n * 40 + 64;
+    char *text = malloc(cap);
+    size_t len = 0;
+    for (u32 i = 0; i < n; i++) {
+        u32 next = i + 1;
+        len += (size_t)snprintf(text + len, cap - len, "struct L%u { a: L%u, b: L%u }\n", i, next, next);
+    }
+    snprintf(text + len, cap - len, "struct L%u { %s }\nextern fn f(x: L0) -> int\n", n, leaf);
+
+    const char *texts[] = { text };
+    char *got = check_files(texts, 1, 1, false);
+    free(text);
+
+    bool ok = strncmp(got, want, strlen(want)) == 0;
+    if (!ok) {
+        fprintf(stderr, "doubling structs\n  got: %.200s\n", got);
+    }
+    free(got);
+    return ok;
+}
+
+TEST_CASE(doubling_structs)
+{
+    const char *refused = "a:66:13: the checker doesn't support this yet\n";
+    REQUIRE(checks_doubling_structs("x: int", "struct L0 "));
+    REQUIRE(checks_doubling_structs("v: u8x16", refused));
+    return true;
+}
+
 typedef struct
 {
     Arena arena;
@@ -5012,5 +5159,6 @@ TEST_SUITE(check_tests)
     RUN_TEST_CASE(globals_across_files);
     RUN_TEST_CASE(entry_file);
     RUN_TEST_CASE(depth_limit);
+    RUN_TEST_CASE(doubling_structs);
     RUN_TEST_CASE(vectors);
 }

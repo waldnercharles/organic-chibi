@@ -604,7 +604,7 @@ is_storable(const Checker *c, u32 type)
     if (is_struct(c, type)) {
         return c->decls.flags[c->types.arg0[type]] & DECL_STORED;
     }
-    return is_scalar(c, type) && !is_untyped(type);
+    return (is_scalar(c, type) || is_vector(c, type)) && !is_untyped(type);
 }
 
 static bool
@@ -2560,6 +2560,27 @@ close_fn_type(Checker *c)
     return fn_type(c, list, ret);
 }
 
+static bool
+holds_vector(const Checker *c, u32 type)
+{
+    while (is_array(c, type)) {
+        type = c->types.arg0[type];
+    }
+    if (!is_struct(c, type) || !is_storable(c, type) || check_type_align(c, type) < 16) {
+        return is_vector(c, type);
+    }
+
+    u32 decl = c->types.arg0[type];
+    u32 first = c->decls.members[decl];
+    u32 end = first + c->decls.member_counts[decl];
+    for (u32 i = first; i < end; i++) {
+        if (holds_vector(c, c->members[i].type)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void
 refuse_non_c(Checker *c, u32 file, u32 token, u32 type, u8 not_c)
 {
@@ -2567,7 +2588,7 @@ refuse_non_c(Checker *c, u32 file, u32 token, u32 type, u8 not_c)
         report(c, file, token, not_c, 0, type);
     } else if (c->types.kinds[type] == TYPE_FN && !(c->types.arg1[type] & FN_C_CALL)) {
         report(c, file, token, DIAG_C_FN_TYPE, 0, type);
-    } else if (is_vector(c, type)) {
+    } else if (holds_vector(c, type)) {
         report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
     }
 }
@@ -3670,16 +3691,32 @@ index_lanes(Checker *c, u32 file, u32 token, Operand base, u32 type)
         report(c, file, token, DIAG_NOT_INDEXABLE, type, 0);
         return false;
     }
-    if (base.type != OPERAND_LOCAL) {
+    if (!is_place(base)) {
         report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
         return false;
     }
-    slot_at(c, base.ref)->weight = WEIGHT_ADDRESSED;
+    if (base.type == OPERAND_LOCAL) {
+        slot_at(c, base.ref)->weight = WEIGHT_ADDRESSED;
+    }
     return true;
 }
 
+static NOINLINE bool
+indexed_next(const Checker *c, u32 file, u32 open)
+{
+    const u8 *kinds = c->files[file].tokens.kinds;
+    u32 depth = 0;
+    u32 t = open;
+    do {
+        depth += kinds[t] == TK_LBRACK;
+        depth -= kinds[t] == TK_RBRACK;
+        t++;
+    } while (depth);
+    return kinds[t] == TK_LBRACK;
+}
+
 static NOINLINE Operand
-index_place(Checker *c, u32 file, u32 token, Operand base, Operand index, u32 index_token, u8 next)
+index_place(Checker *c, u32 file, u32 token, Operand base, Operand index, u32 index_token, u32 open, u8 next)
 {
     if (base.type == TYPE_ID_NONE || index.type == TYPE_ID_NONE) {
         return poison;
@@ -3733,7 +3770,9 @@ index_place(Checker *c, u32 file, u32 token, Operand base, Operand index, u32 in
         return r;
     }
     if (!is_aggregate(c, elem)) {
-        return load_at(c, elem, address);
+        return is_vector(c, elem) && indexed_next(c, file, open)
+                 ? r
+                 : load_at(c, elem, address);
     }
     if (next != NODE_FIELD) {
         note_unread(c, r);
@@ -3964,10 +4003,10 @@ struct_field(Checker *c, u32 file, u32 token, Operand o, bool place)
     if (place) {
         return r;
     }
-    if (!is_aggregate(c, field)) {
-        return load_at(c, field, address);
-    }
     u8 after = c->files[file].tokens.kinds[token + 1];
+    if (!is_aggregate(c, field)) {
+        return is_vector(c, field) && after == TK_LBRACK ? r : load_at(c, field, address);
+    }
     if (after != TK_LBRACK && after != TK_PERIOD) {
         note_unread(c, r);
     }
@@ -5986,7 +6025,7 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                     push_operand(
                         c,
                         base_token,
-                        index_place(c, file, base_token, base, index, index_token, kinds[i + 1])
+                        index_place(c, file, base_token, base, index, index_token, token, kinds[i + 1])
                     );
                 } else {
                     unsupported(c, file, i);
@@ -6430,7 +6469,7 @@ set_global(Checker *c, u32 decl, u32 node)
         return;
     }
     claim_contained(c, t, file, t_token);
-    if (!has_layout(c, t)) {
+    if (!has_layout(c, t) || holds_vector(c, t)) {
         report(c, file, t_token, DIAG_UNSUPPORTED, 0, 0);
         return;
     }

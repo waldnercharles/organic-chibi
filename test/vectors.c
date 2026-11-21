@@ -418,6 +418,77 @@ const char VECTOR_RUNS[] =
     "fn call_weigh(x: u8, y: int, k: int) -> int {\n"
     "    v: u8x16 = x\n"
     "    return weigh(v, y, k, y + k)\n"
+    "}\n"
+    "\n"
+    "struct Block { v: [4]u8x16 }\n"
+    "\n"
+    "fn load_block(p: [*]u8) -> Block {\n"
+    "    return .{ .v = .[ unaligned_load(u8x16, p), unaligned_load(u8x16, p + 16), unaligned_load(u8x16, p + 32), unaligned_load(u8x16, p + 48) ] }\n"
+    "}\n"
+    "\n"
+    "fn shift_block(b: Block, p: [*]u8) -> Block {\n"
+    "    return .{ .v = .[ b.v[1], b.v[2], b.v[3], unaligned_load(u8x16, p) ] }\n"
+    "}\n"
+    "\n"
+    "fn block_mask(b: Block, c: u8) -> u64 {\n"
+    "    return u64(top_bits(b.v[0] == c)) | (u64(top_bits(b.v[1] == c)) << 16) | (u64(top_bits(b.v[2] == c)) << 32) | (u64(top_bits(b.v[3] == c)) << 48)\n"
+    "}\n"
+    "\n"
+    "fn find_in_block(c: u8, start: int, k: int) -> int {\n"
+    "    buf: [128]u8\n"
+    "    for i in 0..128 {\n"
+    "        buf[i] = u8(i % 7) +% 97\n"
+    "    }\n"
+    "    p: [*]u8 = &buf\n"
+    "    b := load_block(p + start)\n"
+    "    m := block_mask(b, c)\n"
+    "    b2 := shift_block(b, p + start + 64)\n"
+    "    m2 := block_mask(b2, c)\n"
+    "    return count_ones(m) * 1000 + trailing_zeros(m2) + int(b2.v[3][k])\n"
+    "}\n"
+    "\n"
+    "fn pick_lane(c: u8, j: int, k: int) -> int {\n"
+    "    a: [4]u8x16\n"
+    "    for i in 0..4 {\n"
+    "        a[i] = u8x16.{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 } +% u8(i * 16) +% c\n"
+    "    }\n"
+    "    a[2][5] = 200\n"
+    "    which: [1]int = .[ j ]\n"
+    "    return int(a[which[0]][k])\n"
+    "}\n"
+    "\n"
+    "struct Tagged { v: u8x16, n: int }\n"
+    "\n"
+    "fn bump(t: Tagged, d: u8) -> Tagged {\n"
+    "    return .{ .v = t.v +% d, .n = t.n + 1 }\n"
+    "}\n"
+    "\n"
+    "fn call_bump(x: u8, d: u8, k: int) -> int {\n"
+    "    t := Tagged.{ .v = u8x16.{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 } +% x, .n = 10 }\n"
+    "    u := bump(bump(t, d), d)\n"
+    "    return int(u.v[k]) * 100 + u.n + int(t.v[k])\n"
+    "}\n"
+    "\n"
+    "struct One { v: u8x16 }\n"
+    "\n"
+    "fn twice_one(o: One) -> One {\n"
+    "    return .{ .v = o.v +% o.v }\n"
+    "}\n"
+    "\n"
+    "fn call_one(x: u8, k: int) -> int {\n"
+    "    o := One.{ .v = u8x16.{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 } +% x }\n"
+    "    r := twice_one(o)\n"
+    "    return int(r.v[k]) + int(o.v[k]) * 1000\n"
+    "}\n"
+    "\n"
+    "fn copies(x: u8, k: int) -> int {\n"
+    "    b: Block\n"
+    "    b.v[1] = x\n"
+    "    c := b\n"
+    "    c.v[1][k] = 7\n"
+    "    d: [2]Block\n"
+    "    d[1] = c\n"
+    "    return int(b.v[1][k]) * 10000 + int(c.v[1][k]) * 100 + int(d[1].v[1][k]) + int(d[0].v[3][k])\n"
     "}\n";
 
 const VectorRun VECTOR_BODY_RESULTS[] = {
@@ -574,6 +645,23 @@ const VectorRun VECTOR_RESULTS[] = {
     { "call_nested", { 250, 9, 15 }, 6, 0 },
     { "call_weigh", { 3, 4, 5 }, 9050403, 0 },
     { "call_weigh", { 250, -2, 7 }, 5070050, 0 },
+    { "find_in_block", { 97, 0, 0 }, 10103, 0 },
+    { "find_in_block", { 100, 5, 7 }, 9106, 0 },
+    { "find_in_block", { 103, 48, 15 }, 10103, 0 },
+    { "find_in_block", { 120, 3, 2 }, 167, 0 },
+    { "find_in_block", { 98, 1, 16 }, 0, TRAP_BOUNDS },
+    { "pick_lane", { 3, 1, 4 }, 23, 0 },
+    { "pick_lane", { 250, 3, 15 }, 57, 0 },
+    { "pick_lane", { 0, 2, 5 }, 200, 0 },
+    { "pick_lane", { 1, 4, 0 }, 0, TRAP_BOUNDS },
+    { "pick_lane", { 1, 0, 16 }, 0, TRAP_BOUNDS },
+    { "call_bump", { 3, 4, 5 }, 1620, 0 },
+    { "call_bump", { 250, 10, 15 }, 2921, 0 },
+    { "call_one", { 3, 5 }, 8016, 0 },
+    { "call_one", { 200, 15 }, 215174, 0 },
+    { "copies", { 5, 3 }, 50707, 0 },
+    { "copies", { 255, 15 }, 2550707, 0 },
+    { "copies", { 1, 16 }, 0, TRAP_BOUNDS },
 };
 
 const size_t NVECTOR_RESULTS = sizeof VECTOR_RESULTS / sizeof VECTOR_RESULTS[0];
