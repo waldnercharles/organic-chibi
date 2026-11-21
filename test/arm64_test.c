@@ -2440,6 +2440,7 @@ static const char CALLS_INTO_C
          "\n"
          "extern fn labs(x: i64) -> i64\n"
          "extern fn memset(p: *[8]u8, c: i32, n: u64) -> *[8]u8\n"
+         "extern fn strlen(s: [*]u8) -> u64\n"
          "extern fn chibi_c_eight(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: "
          "int) -> int\n"
          "extern fn chibi_c_mixed(a: i8, b: f64, c: u16, d: f32, e: i32, f: bool) -> f64\n"
@@ -2555,6 +2556,10 @@ static const char CALLS_INTO_C
          "\n"
          "fn from_table() -> int {\n"
          "    return chibi_c_scribble(table) * 10000 + chibi_c_scribble(table)\n"
+         "}\n"
+         "\n"
+         "fn literal_length(x: int) -> int {\n"
+         "    return int(strlen(\"chibi\")) * 100 + int(strlen(\"\")) + x\n"
          "}\n"
          "\n"
          "fn wide(x: int) -> int {\n"
@@ -2728,6 +2733,7 @@ TEST_CASE(calls_into_c)
         REQUIRE(((I1 *)fn(&p, "scribble"))(CONTEXT, x) == 1001 * x + 320005);
         REQUIRE(((I1 *)fn(&p, "wide"))(CONTEXT, x) == 111 * x + 210);
         REQUIRE(((I1 *)fn(&p, "fill"))(CONTEXT, x) == 8 * x);
+        REQUIRE(((I1 *)fn(&p, "literal_length"))(CONTEXT, x) == 500 + x);
 
         ((V1 *)fn(&p, "registers"))(CONTEXT, x);
         REQUIRE((uint32_t)chibi_c_seen[0] == (uint32_t)(int32_t)(int8_t)(x - 10));
@@ -4369,6 +4375,50 @@ TEST_CASE(optionals)
     return true;
 }
 
+static const char *const STRING_FUNCTIONS[] = {
+    "str_byte",   "str_named",  "str_escape_bytes", "str_nul",
+    "str_optional", "str_struct", "str_pointer",
+};
+
+static const CallCase STRING_CASES[] = {
+    { "str_byte", 0, 0, 10400, 0 },
+    { "str_byte", 7, -3, 11897, 0 },
+    { "str_byte", -2, 4, 3204, 0 },
+    { "str_named", 1, 2, 101108, 0 },
+    { "str_named", 5, 1, 44032, 0 },
+    { "str_escape_bytes", 0, 0, 113000, 0 },
+    { "str_escape_bytes", 1, 2, 92003, 0 },
+    { "str_escape_bytes", 7, -3, 10008, 0 },
+    { "str_escape_bytes", -2, 4, 159014, 0 },
+    { "str_escape_bytes", 13, 3, 128016, 0 },
+    { "str_escape_bytes", 5, 1, 8006, 0 },
+    { "str_nul", 7, -3, 10, 0 },
+    { "str_optional", 7, -3, 103114, 0 },
+    { "str_optional", 0, 0, 101108, 0 },
+    { "str_struct", 1, 2, 97123, 0 },
+    { "str_struct", 7, -3, 101118, 0 },
+    { "str_pointer", 13, 3, 120160, 0 },
+};
+
+TEST_CASE(strings)
+{
+    catch_traps();
+    Program p;
+    REQUIRE(build(&p, STRINGS));
+    for (size_t k = 0; k < sizeof STRING_CASES / sizeof STRING_CASES[0]; k++) {
+        CallCase t = STRING_CASES[k];
+        int64_t got = 0;
+        int trap = call_i2((I2 *)fn(&p, t.name), t.a, t.b, &got);
+        if (trap != t.trap || (!trap && got != t.want)) {
+            fprintf(stderr, "arm64 test: %s(%lld, %lld) gave %lld (trap %d)\n", t.name, (long long)t.a, (long long)t.b, (long long)got, trap);
+            REQUIRE(false);
+        }
+    }
+    REQUIRE(agree_on_grid(&p, STRING_FUNCTIONS, sizeof STRING_FUNCTIONS / sizeof STRING_FUNCTIONS[0]));
+    release_program(&p);
+    return true;
+}
+
 typedef int64_t I3(void *, int64_t, int64_t, int64_t);
 
 static int
@@ -4943,6 +4993,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(overflow_tests);
     RUN_TEST_CASE(bitcasts);
     RUN_TEST_CASE(optionals);
+    RUN_TEST_CASE(strings);
     RUN_TEST_CASE(vectors);
     RUN_TEST_CASE(narrow_parameters);
     RUN_TEST_CASE(constant_division);

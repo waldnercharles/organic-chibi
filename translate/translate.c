@@ -1042,6 +1042,16 @@ is_cast(const Tr *t, u32 e)
     return t->kinds[e] == K_IMPLICIT_CAST || t->kinds[e] == K_CAST;
 }
 
+static u32
+strip_noop(const Tr *t, u32 e)
+{
+    e = strip(t, e);
+    while (t->kinds[e] == K_IMPLICIT_CAST && op(t, e) == CAST_NOOP) {
+        e = strip(t, e + 1);
+    }
+    return e;
+}
+
 static bool
 is_null(const Tr *t, u32 e)
 {
@@ -1732,7 +1742,7 @@ static Val
 adapt(Tr *t, u64 at, Val v, u32 type, u32 bits)
 {
     const CType *c = &t->types[type];
-    if (c->kind != CT_POINTER || v.nil || !is_kind(t, v.type, CT_POINTER)) {
+    if (c->kind != CT_POINTER || v.nil || v.untyped || !is_kind(t, v.type, CT_POINTER)) {
         return v;
     }
     if ((v.bits & NULLABLE) && !(bits & NULLABLE)) {
@@ -2133,6 +2143,94 @@ pointer_cast(Tr *t, u32 e, u32 bits_hint, bool have_hint)
     return bitcast_to(t, at, to, bits);
 }
 
+static char
+json_char(const Tr *t, u32 e, const char *s, u32 *k)
+{
+    char ch = s[*k];
+    if (ch != '\\') {
+        *k += 1;
+        return ch;
+    }
+    char x = s[*k + 1];
+    if (x != '"' && x != '\\') {
+        die(t, e, "a string literal escaped in an unexpected way");
+    }
+    *k += 2;
+    return x;
+}
+
+static u8
+c_escape(const Tr *t, u32 e, const char *s, u32 *k)
+{
+    char x = json_char(t, e, s, k);
+    switch (x) {
+        case '\\':
+        case '"': return (u8)x;
+        case 'a': return '\a';
+        case 'b': return '\b';
+        case 'f': return '\f';
+        case 'n': return '\n';
+        case 'r': return '\r';
+        case 't': return '\t';
+        case 'v': return '\v';
+        default: break;
+    }
+    if (x < '0' || x > '3') {
+        die(t, e, "a string literal escaped in an unexpected way");
+    }
+    u32 v = (u32)(x - '0');
+    for (u32 n = 0; n < 2; n++) {
+        char d = json_char(t, e, s, k);
+        if (d < '0' || d > '7') {
+            die(t, e, "a string literal escaped in an unexpected way");
+        }
+        v = v * 8 + (u32)(d - '0');
+    }
+    return (u8)v;
+}
+
+static void
+put_string(Tr *t, u32 e)
+{
+    if (strncmp(text(t, t->a.types[e]), "char[", 5) != 0) {
+        die(t, e, "a string literal that isn't made of `char`");
+    }
+
+    const char *s = text(t, t->a.details[e]);
+    u32 k = 0;
+    if (json_char(t, e, s, &k) != '"') {
+        die(t, e, "a string literal escaped in an unexpected way");
+    }
+    put(&t->out, "\"");
+    for (;;) {
+        char ch = json_char(t, e, s, &k);
+        if (ch == '"') {
+            break;
+        }
+        u8 b = ch == '\\' ? c_escape(t, e, s, &k) : (u8)ch;
+        switch (b) {
+            case '"': put(&t->out, "\\\""); break;
+            case '\\': put(&t->out, "\\\\"); break;
+            case '\b': put(&t->out, "\\b"); break;
+            case '\f': put(&t->out, "\\f"); break;
+            case '\n': put(&t->out, "\\n"); break;
+            case '\r': put(&t->out, "\\r"); break;
+            case '\t': put(&t->out, "\\t"); break;
+            default:
+                if (b >= 0x80) {
+                    die(t, e, "a string literal with a byte above 0x7F");
+                }
+                if (b < 0x20 || b == 0x7F) {
+                    putf(&t->out, "\\u%04X", b);
+                } else {
+                    put_bytes(&t->out, &ch, 1);
+                }
+                break;
+        }
+    }
+    put(&t->out, "\"");
+}
+
 static Val
 cast(Tr *t, u32 e, u32 want_type, u32 want_bits)
 {
@@ -2159,7 +2257,8 @@ cast(Tr *t, u32 e, u32 want_type, u32 want_bits)
         case CAST_ARRAY_DECAY: {
             u32 a = strip(t, x);
             if (t->kinds[a] == K_STRING_LITERAL) {
-                die(t, e, "a string literal");
+                put_string(t, a);
+                return (Val){ ctype(t, e), MANY, P_POSTFIX, true, false, false };
             }
             operand(t, x, P_POSTFIX);
             put(&t->out, "[0..].ptr");
@@ -3115,10 +3214,10 @@ var_decl(Tr *t, u32 v)
         return;
     }
 
-    if (t->kinds[strip(t, init)] == K_CONDITIONAL) {
+    if (t->kinds[strip_noop(t, init)] == K_CONDITIONAL) {
         putf(&t->out, "%s: %s = undefined", text(t, name), ty);
         line(t);
-        conditional_assign(t, strip(t, init), text(t, name), type, bits);
+        conditional_assign(t, strip_noop(t, init), text(t, name), type, bits);
         free(ty);
         return;
     }
@@ -3153,7 +3252,7 @@ is_assert(Tr *t, u32 e)
 static void
 assign(Tr *t, u32 lhs, u32 rhs)
 {
-    u32 r = strip(t, rhs);
+    u32 r = strip_noop(t, rhs);
     if (t->kinds[r] == K_BINARY && op(t, r) == OP_ASSIGN) {
         assign(t, child(t, r, 0), child(t, r, 1));
         line(t);
@@ -3668,7 +3767,7 @@ return_stmt(Tr *t, u32 s)
     }
     u32 fn = t->canon[t->fn];
     u32 type = t->types[ctype(t, fn)].inner;
-    u32 v = strip(t, s + 1);
+    u32 v = strip_noop(t, s + 1);
     if (t->kinds[v] == K_CONDITIONAL) {
         put(&t->out, "if ");
         cond(t, child(t, v, 0));
@@ -3941,7 +4040,8 @@ static void
 put_params(Tr *t, u32 fn, bool locals)
 {
     put(&t->out, "(");
-    for (u32 k = 0;; k++) {
+    u32 k = 0;
+    for (;; k++) {
         u32 p = param_of(t, fn, k);
         if (p == 0) {
             break;
@@ -3960,6 +4060,9 @@ put_params(Tr *t, u32 fn, bool locals)
         putf(&t->out, ": %s", ty);
         free(ty);
     }
+    if (t->types[ctype(t, fn)].variadic) {
+        put(&t->out, k > 0 ? ", .." : "..");
+    }
     put(&t->out, ")");
 
     u32 c = t->canon[fn];
@@ -3976,9 +4079,6 @@ emit_extern(Tr *t, u32 f)
 {
     if (strcmp(text(t, t->a.names[f]), "__assert_fail") == 0) {
         return;
-    }
-    if (t->types[ctype(t, f)].variadic) {
-        die(t, f, "a variadic extern function");
     }
     putf(&t->out, "extern fn %s", text(t, t->a.names[f]));
     put_params(t, f, false);
@@ -4077,6 +4177,9 @@ emit_function(Tr *t, u32 def)
     u32 c = t->canon[def];
     bool exported = t->a.details[c] == 0 ||
                     strcmp(text(t, t->a.details[c]), "static") != 0;
+    if (t->types[ctype(t, def)].variadic) {
+        die(t, def, "a variadic function");
+    }
     t->fn = def;
     t->nscope = 0;
     t->depth = 0;

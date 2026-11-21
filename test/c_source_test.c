@@ -150,7 +150,7 @@ TEST_CASE(emits_doubling_structs)
 enum
 {
     MAX_JOBS = 8,
-    GRID_FUNCTIONS = 258,
+    GRID_FUNCTIONS = 265,
 };
 
 typedef struct
@@ -301,6 +301,14 @@ static const char INTEROP[] =
     "\n"
     "fn format(buf: [*]u8, fmt: [*]u8, x: int) -> i32 {\n"
     "    return snprintf(buf, 128, fmt, x, i8(x) - 3, u16(x) + 7, f32(x) * 0.5, f64(x) / 4.0, x > 2, 123456789012, 7, -1, K, 18446744073709551615, 2.5)\n"
+    "}\n"
+    "\n"
+    "fn literal_format(buf: [*]u8, x: int) -> i32 {\n"
+    "    return snprintf(buf, 128, \"%s=%ld|%s|\", \"x\", x, \"\\u00e9\\t\")\n"
+    "}\n"
+    "\n"
+    "fn literal_length(x: int) -> int {\n"
+    "    return int(strlen(\"chibi\")) * 100 + int(strlen(\"\")) + x\n"
     "}\n"
     "\n"
     "fn pairs(x: int) -> f64 {\n"
@@ -456,6 +464,7 @@ typedef int64_t I0(void *);
 typedef int64_t I1(void *, int64_t);
 typedef double D1(void *, int64_t);
 typedef int32_t FORMAT(void *, uint8_t *, uint8_t *, int64_t);
+typedef int32_t LITERAL_FORMAT(void *, uint8_t *, int64_t);
 typedef void SORT(void *, uint8_t *, uint8_t);
 typedef uint8_t *GET(void *);
 typedef int64_t ADD3(int64_t, int32_t, uint8_t);
@@ -1009,6 +1018,7 @@ calls_c(const Build *b, int64_t x)
     ok &= gives("wide", x, ((I1 *)symbol(b, "i0_wide"))(CONTEXT, x), 111 * x + 210);
     ok &= gives("fill", x, ((I1 *)symbol(b, "i0_fill"))(CONTEXT, x), 8 * x);
     ok &= gives("vpoint", x, ((I1 *)symbol(b, "i0_vpoint"))(CONTEXT, x), point * 10 - 7);
+    ok &= gives("literal_length", x, ((I1 *)symbol(b, "i0_literal_length"))(CONTEXT, x), 500 + x);
 
     int64_t ticks = chibi_cs_ticks;
     ok &= gives("ticks", x, ((I1 *)symbol(b, "i0_ticks"))(CONTEXT, x), x);
@@ -1024,6 +1034,13 @@ formats(const Build *b, int64_t x)
     int n = snprintf(want, sizeof want, fmt, (long)x, (int)(int8_t)(x - 3), (int)(uint16_t)(x + 7), (double)((float)x * 0.5f), (double)x / 4.0, (int)(x > 2), 123456789012L, 7, -1, -7L, 18446744073709551615UL, 2.5);
     if (((FORMAT *)symbol(b, "i0_format"))(CONTEXT, (uint8_t *)buf, (uint8_t *)fmt, x) != n || strcmp(buf, want) != 0) {
         fprintf(stderr, "c_source test: format(%lld) gave \"%s\", expected \"%s\"\n", (long long)x, buf, want);
+        return false;
+    }
+
+    char line[128] = { 0 }, want_line[128];
+    int m = snprintf(want_line, sizeof want_line, "%s=%ld|%s|", "x", (long)x, "\303\251\t");
+    if (((LITERAL_FORMAT *)symbol(b, "i0_literal_format"))(CONTEXT, (uint8_t *)line, x) != m || strcmp(line, want_line) != 0) {
+        fprintf(stderr, "c_source test: literal_format(%lld) gave \"%s\", expected \"%s\"\n", (long long)x, line, want_line);
         return false;
     }
 

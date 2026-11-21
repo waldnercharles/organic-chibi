@@ -3318,6 +3318,57 @@ const char OPTIONALS[] =
     "    return q.* + 1\n"
     "}\n";
 
+const char STRINGS[] =
+    "struct StrLabel { text: [*]u8, n: int }\n"
+    "\n"
+    "const str_hello := \"hello, world\"\n"
+    "const str_escapes := \"q\\\"b\\\\s\\/\\b\\f\\n\\r\\t\\u00e9\\uD83D\\uDE00\\u0001\\u007f\"\n"
+    "\n"
+    "fn str_byte(a: int, b: int) -> int {\n"
+    "    s: [*]u8 = \"hello, world\"\n"
+    "    return int(s[a & 7]) * 100 + b\n"
+    "}\n"
+    "\n"
+    "fn str_named(a: int, b: int) -> int {\n"
+    "    s: [*]u8 = str_hello\n"
+    "    t: [*]u8 = str_hello\n"
+    "    i := a & 7\n"
+    "    return int(s[i]) * 1000 + int(t[(i + b) & 7])\n"
+    "}\n"
+    "\n"
+    "fn str_escape_bytes(a: int, b: int) -> int {\n"
+    "    s: [*]u8 = str_escapes\n"
+    "    i := (a & 15) + (b & 3)\n"
+    "    return int(s[i]) * 1000 + i\n"
+    "}\n"
+    "\n"
+    "fn str_nul(a: int, b: int) -> int {\n"
+    "    s: [*]u8 = \"ab\"\n"
+    "    e: [*]u8 = \"\"\n"
+    "    return int(s[2]) + int(e[0]) * 7 + a - b\n"
+    "}\n"
+    "\n"
+    "fn str_optional(a: int, b: int) -> int {\n"
+    "    p: ?[*]u8 = nil\n"
+    "    if a > b {\n"
+    "        p = \"greater\"\n"
+    "    }\n"
+    "    q := p ?\? \"else\"\n"
+    "    return int(q[0]) * 1000 + int(q[1])\n"
+    "}\n"
+    "\n"
+    "fn str_struct(a: int, b: int) -> int {\n"
+    "    l := StrLabel.{ \"label\", a }\n"
+    "    names: [2][*]u8 = .[\"zero\", \"one\"]\n"
+    "    return int(l.text[a & 3]) * 1000 + int(names[b & 1][0]) + l.n\n"
+    "}\n"
+    "\n"
+    "fn str_pointer(a: int, b: int) -> int {\n"
+    "    p: *u8 = \"x\"\n"
+    "    o: ?*u8 = \"y\"\n"
+    "    return int(p.*) * 1000 + int(o!!.*) + a * b\n"
+    "}\n";
+
 const char *const BACKEND_PROGRAMS[] = {
     ARITHMETIC,
     CONTROL,
@@ -3342,6 +3393,7 @@ const char *const BACKEND_PROGRAMS[] = {
     OVERFLOW_GRID,
     BITCASTS,
     OPTIONALS,
+    STRINGS,
 };
 
 const u32 NBACKEND_PROGRAMS = sizeof BACKEND_PROGRAMS / sizeof BACKEND_PROGRAMS[0];

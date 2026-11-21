@@ -31,6 +31,7 @@ typedef enum
     TYPE_TYPE,
     TYPE_UNTYPED_INT,
     TYPE_UNTYPED_FLOAT,
+    TYPE_UNTYPED_STRING,
     TYPE_UNDEFINED,
     TYPE_INFERRED,
     TYPE_ENUM_LITERAL,
@@ -67,6 +68,7 @@ typedef enum
     X(TYPE_ID_TYPE, TYPE_TYPE, 0, 0, "type")                                   \
     X(TYPE_ID_UNTYPED_INT, TYPE_UNTYPED_INT, 0, 0, "untyped integer")          \
     X(TYPE_ID_UNTYPED_FLOAT, TYPE_UNTYPED_FLOAT, 0, 0, "untyped float")        \
+    X(TYPE_ID_UNTYPED_STRING, TYPE_UNTYPED_STRING, 0, 0, "untyped string")     \
     X(TYPE_ID_UNDEFINED, TYPE_UNDEFINED, 0, 0, "undefined")                    \
     X(TYPE_ID_INFERRED, TYPE_INFERRED, 0, 0, "(inferred)")                     \
     X(TYPE_ID_ENUM_LITERAL, TYPE_ENUM_LITERAL, 0, 0, "enum literal")           \
@@ -150,6 +152,7 @@ enum
     X(DIAG_NOT_VARIADIC, "C's `..` takes numbers, `bool`, enums and pointers, not `%U`")            \
     X(DIAG_TOO_LARGE, "an integer constant must fit in 512 bits")                                   \
     X(DIAG_FLOAT_TOO_LARGE, "a float constant must fit in 4,095 bits as an exact fraction")          \
+    X(DIAG_SURROGATE, "`\\uD800` to `\\uDFFF` must come in pairs, as in `\\uD83D\\uDE00`")          \
     X(DIAG_DATA_TOO_LARGE, "constants can't take more than 256 MB in all")                          \
     X(DIAG_GLOBALS_TOO_LARGE, "globals can't take more than 2 GB in all")                           \
     X(DIAG_DOES_NOT_FIT, "%v does not fit in `%U`")                                                 \
@@ -185,6 +188,7 @@ enum
     X(DIAG_NEVER_NIL, "`%U` is never nil, so this needs a value")                                   \
     X(DIAG_NIL_MISMATCH, "`%U` is never nil")                                                       \
     X(DIAG_NIL_TYPE, "`nil` needs a type here, as in `p: ?*T = nil`")                               \
+    X(DIAG_STRING_TYPE, "a string needs a type here, as in `s: [*]u8 = \"text\"`")                  \
     X(DIAG_MAYBE_NIL, "`%T` may be nil, so it needs `!!`, `?\?` or a check against `nil` first")    \
     X(DIAG_NOT_OPTIONAL, "`%T` is never nil, so `%t` does nothing")                                 \
     X(DIAG_ALWAYS_NIL, "this is always `nil`, so `!!` always traps")                                \
@@ -453,6 +457,10 @@ typedef struct
     Pair *pairs;
     u32 npairs;
     u32 pairs_cap;
+    u32 *string_offsets;
+    u32 *string_lengths;
+    u32 nstrings;
+    u32 strings_cap;
     u32 *claims;
     u32 nclaims;
     Ir ir;

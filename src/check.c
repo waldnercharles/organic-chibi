@@ -1658,6 +1658,25 @@ splat(Checker *c, u32 file, u32 token, Operand o, u32 to)
 }
 
 static NOINLINE Operand
+string_pointer(Checker *c, u32 file, u32 token, Operand o, u32 to)
+{
+    const Types *t = &c->types;
+    bool optional = t->kinds[to] == TYPE_OPTIONAL;
+    u32 target = optional ? t->arg0[to] : to;
+    if (!is_pointer(c, target) || t->arg0[target] != TYPE_ID_U8) {
+        report(c, file, token, DIAG_MISMATCH, o.type, to);
+        return poison;
+    }
+    if (!c->body.code) {
+        report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
+        return poison;
+    }
+
+    u32 at = emit(c, IR_DATA, target, c->string_offsets[value_of(o)], 0);
+    return (Operand){ to, REF_VALUE | (optional ? REF_NONNIL : 0) | at };
+}
+
+static NOINLINE Operand
 convert_optional(Checker *c, u32 file, u32 token, Operand o, u32 to)
 {
     const Types *t = &c->types;
@@ -1695,6 +1714,9 @@ reshape(Checker *c, u32 file, u32 token, Operand o, u32 to)
 {
     const Types *t = &c->types;
     u32 from = o.type;
+    if (from == TYPE_ID_UNTYPED_STRING) {
+        return string_pointer(c, file, token, o, to);
+    }
     if (from == TYPE_ID_NIL || t->kinds[to] == TYPE_OPTIONAL ||
         t->kinds[from] == TYPE_OPTIONAL) {
         return convert_optional(c, file, token, o, to);
@@ -1892,7 +1914,8 @@ cast(Checker *c, u32 file, u32 token, Operand o, u32 to)
     }
     if (!is_value_type(o.type) || !is_number(c, o.type) ||
         (!to_int && to_kind != TYPE_FLOAT)) {
-        if (o.type == TYPE_ID_NIL || to_kind == TYPE_OPTIONAL ||
+        if (o.type == TYPE_ID_NIL || o.type == TYPE_ID_UNTYPED_STRING ||
+            to_kind == TYPE_OPTIONAL ||
             (is_value_type(o.type) && t->kinds[o.type] == TYPE_OPTIONAL)) {
             return convert(c, file, token, o, to);
         }
@@ -1973,7 +1996,7 @@ unify(Checker *c, u32 file, u32 token, Operand *a, Operand *b)
     Operand *from = type == a->type ? b : a;
     if (is_untyped(from->type) || is_context_literal(from->type) ||
         (!(from->ref & REF_RESULT) && widens(c, from->type, type)) ||
-        c->types.kinds[type] == TYPE_OPTIONAL) {
+        (c->types.kinds[type] == TYPE_OPTIONAL && from->type != TYPE_ID_UNTYPED_STRING)) {
         *from = convert(c, file, token, *from, type);
         return from->type;
     }
@@ -2651,6 +2674,10 @@ inferred_type(Checker *c, u32 file, u32 token, Operand v)
         report(c, file, token, DIAG_NIL_TYPE, 0, 0);
         return TYPE_ID_NONE;
     }
+    if (v.type == TYPE_ID_UNTYPED_STRING) {
+        report(c, file, token, DIAG_STRING_TYPE, 0, 0);
+        return TYPE_ID_NONE;
+    }
     return v.type;
 }
 
@@ -2670,6 +2697,10 @@ value_type(Checker *c, u32 file, u32 token, Operand v)
     }
     if (v.type == TYPE_ID_NIL) {
         report(c, file, token, DIAG_NIL_TYPE, 0, 0);
+        return TYPE_ID_NONE;
+    }
+    if (v.type == TYPE_ID_UNTYPED_STRING) {
+        report(c, file, token, DIAG_STRING_TYPE, 0, 0);
         return TYPE_ID_NONE;
     }
     return v.type == TYPE_ID_UNTYPED_INT   ? TYPE_ID_I64
@@ -3300,6 +3331,9 @@ promote(Checker *c, u32 file, u32 token, Operand o)
     }
     if (o.type == TYPE_ID_UNTYPED_FLOAT || o.type == TYPE_ID_F32) {
         return cast(c, file, token, o, TYPE_ID_F64);
+    }
+    if (o.type == TYPE_ID_UNTYPED_STRING) {
+        return convert(c, file, token, o, intern_type(c, TYPE_MANY, TYPE_ID_U8, 0));
     }
 
     u32 type = is_place(o) ? place_type(c, o) : o.type;
@@ -5148,11 +5182,9 @@ literal_fields(Checker *c, u32 file, u32 m, u32 type, u32 token, u32 *items)
 }
 
 static u32
-reserve_data(Checker *c, u32 file, u32 token, u32 type)
+reserve_bytes(Checker *c, u32 file, u32 token, u64 size, u32 align)
 {
     Ir *ir = &c->ir;
-    u64 size = check_type_size(c, type);
-    u32 align = check_type_align(c, type);
     u32 at = (ir->ndata + align - 1) & ~(align - 1);
     if (size > DATA_LIMIT - at) {
         report(c, file, token, DIAG_DATA_TOO_LARGE, 0, 0);
@@ -5164,8 +5196,18 @@ reserve_data(Checker *c, u32 file, u32 token, u32 type)
         ir->data_cap = 2 * end + 64;
         ir->data = resize(ir->data, ir->data_cap, 1);
     }
-    memset(ir->data + ir->ndata, 0, end - ir->ndata);
     ir->ndata = end;
+    return at;
+}
+
+static u32
+reserve_data(Checker *c, u32 file, u32 token, u32 type)
+{
+    u32 from = c->ir.ndata;
+    u32 at = reserve_bytes(c, file, token, check_type_size(c, type), check_type_align(c, type));
+    if (at != NO_SLOT) {
+        memset(c->ir.data + from, 0, c->ir.ndata - from);
+    }
     return at;
 }
 
@@ -5179,6 +5221,114 @@ put_data(Checker *c, u8 *to, u32 type, Operand v)
     }
     u64 bits = constant_bits(c, v);
     memcpy(to, &bits, size);
+}
+
+static u32
+hex4(const char *p)
+{
+    u32 v = 0;
+    for (u32 k = 0; k < 4; k++) {
+        u8 ch = (u8)p[k];
+        v = v << 4 | (ch <= '9' ? ch - '0' : (ch | 0x20) - 'a' + 10);
+    }
+    return v;
+}
+
+static u32
+put_utf8(u8 *to, u32 cp)
+{
+    if (cp < 0x80) {
+        to[0] = (u8)cp;
+        return 1;
+    }
+    if (cp < 0x800) {
+        to[0] = (u8)(0xC0 | cp >> 6);
+        to[1] = (u8)(0x80 | (cp & 0x3F));
+        return 2;
+    }
+    if (cp < 0x10000) {
+        to[0] = (u8)(0xE0 | cp >> 12);
+        to[1] = (u8)(0x80 | (cp >> 6 & 0x3F));
+        to[2] = (u8)(0x80 | (cp & 0x3F));
+        return 3;
+    }
+    to[0] = (u8)(0xF0 | cp >> 18);
+    to[1] = (u8)(0x80 | (cp >> 12 & 0x3F));
+    to[2] = (u8)(0x80 | (cp >> 6 & 0x3F));
+    to[3] = (u8)(0x80 | (cp & 0x3F));
+    return 4;
+}
+
+static u8
+escaped_byte(char e)
+{
+    switch (e) {
+        case 'b': return '\b';
+        case 'f': return '\f';
+        case 'n': return '\n';
+        case 'r': return '\r';
+        case 't': return '\t';
+        default: return (u8)e;
+    }
+}
+
+static NOINLINE Operand
+string_literal(Checker *c, u32 file, u32 token)
+{
+    const ParsedFile *f = &c->files[file];
+    u32 start = f->tokens.starts[token];
+    const char *s = f->src + start + 1;
+    u32 raw = lexer_token_length(f->src, TK_STRING, start) - 2;
+    u32 at = reserve_bytes(c, file, token, (u64)raw + 1, 1);
+    if (at == NO_SLOT) {
+        return poison;
+    }
+
+    u8 *to = c->ir.data + at;
+    u32 n = 0;
+    u32 k = 0;
+    for (;;) {
+        const char *slash = memchr(s + k, '\\', raw - k);
+        u32 run = slash ? (u32)(slash - s) - k : raw - k;
+        memcpy(to + n, s + k, run);
+        n += run;
+        k += run;
+        if (k == raw) {
+            break;
+        }
+        if (s[k + 1] != 'u') {
+            to[n++] = escaped_byte(s[k + 1]);
+            k += 2;
+            continue;
+        }
+
+        u32 cp = hex4(s + k + 2);
+        k += 6;
+        if (cp - 0xD800u < 0x800) {
+            bool paired = cp < 0xDC00 && k + 6 <= raw && s[k] == '\\' &&
+                          s[k + 1] == 'u';
+            u32 low = paired ? hex4(s + k + 2) : 0;
+            if (low - 0xDC00u >= 0x400) {
+                report(c, file, token, DIAG_SURROGATE, 0, 0);
+                c->ir.ndata = at;
+                return poison;
+            }
+            cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
+            k += 6;
+        }
+        n += put_utf8(to + n, cp);
+    }
+    to[n] = 0;
+    c->ir.ndata = at + n + 1;
+
+    if (c->nstrings == c->strings_cap) {
+        c->strings_cap = c->strings_cap ? c->strings_cap * 2 : 64;
+        c->string_offsets = resize(c->string_offsets, c->strings_cap, sizeof *c->string_offsets);
+        c->string_lengths = resize(c->string_lengths, c->strings_cap, sizeof *c->string_lengths);
+    }
+    c->string_offsets[c->nstrings] = at;
+    c->string_lengths[c->nstrings] = n;
+    return (Operand){ TYPE_ID_UNTYPED_STRING, c->nstrings++ };
 }
 
 static NOINLINE void
@@ -6996,6 +7146,9 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
             case NODE_FLOAT:
                 push_operand(c, token, number_literal(c, file, i, TYPE_ID_UNTYPED_FLOAT));
                 break;
+            case NODE_STRING:
+                push_operand(c, token, string_literal(c, file, token));
+                break;
             case NODE_TRUE:
             case NODE_FALSE:
                 push(c, token, TYPE_ID_BOOL, kind == NODE_TRUE ? EXACT_ONE : EXACT_ZERO);
@@ -8178,10 +8331,57 @@ print_data(FILE *out, const Checker *c, const u8 *data, u32 type)
 }
 
 static void
+print_string(FILE *out, const Checker *c, u32 string)
+{
+    const u8 *s = c->ir.data + c->string_offsets[string];
+    u32 n = c->string_lengths[string];
+    fputc('"', out);
+    for (u32 k = 0; k < n; k++) {
+        u8 ch = s[k];
+        switch (ch) {
+            case '"': fputs("\\\"", out); break;
+            case '\\': fputs("\\\\", out); break;
+            case '\b': fputs("\\b", out); break;
+            case '\f': fputs("\\f", out); break;
+            case '\n': fputs("\\n", out); break;
+            case '\r': fputs("\\r", out); break;
+            case '\t': fputs("\\t", out); break;
+            default:
+                if (ch < 0x20 || ch == 0x7F) {
+                    fprintf(out, "\\u%04X", ch);
+                } else {
+                    fputc(ch, out);
+                }
+                break;
+        }
+    }
+    fputc('"', out);
+}
+
+static u32
+string_at(const Checker *c, u32 offset)
+{
+    u32 lo = 0;
+    u32 hi = c->nstrings;
+    while (lo < hi) {
+        u32 mid = lo + (hi - lo) / 2;
+        if (c->string_offsets[mid] < offset) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    assert(lo < c->nstrings && c->string_offsets[lo] == offset);
+    return lo;
+}
+
+static void
 print_constant(FILE *out, const Checker *c, u32 type, u32 value)
 {
     u8 kind = c->types.kinds[type];
-    if (is_aggregate(c, type)) {
+    if (type == TYPE_ID_UNTYPED_STRING) {
+        print_string(out, c, value);
+    } else if (is_aggregate(c, type)) {
         print_data(out, c, c->ir.data + value, type);
     } else if (type == TYPE_ID_BOOL) {
         fputs(exact_sign(&c->exacts, value) ? "true" : "false", out);
@@ -8299,7 +8499,7 @@ print_decl(FILE *out, const Checker *c, u32 decl)
             } else if (type == TYPE_ID_NONE) {
                 fputs(" = ?", out);
             } else {
-                if (!is_untyped(type)) {
+                if (!is_untyped(type) && type != TYPE_ID_UNTYPED_STRING) {
                     fputs(": ", out);
                     print_type(out, c, type);
                 }
@@ -8446,7 +8646,9 @@ print_function(FILE *out, const Checker *c, const IrFunc *fn)
                 fputc(' ', out);
                 print_type(out, c, type);
                 fputc(' ', out);
-                if (kind == IR_DATA && b == 0) {
+                if (kind == IR_DATA && b == 0 && c->types.arg0[type] == TYPE_ID_U8) {
+                    print_string(out, c, string_at(c, a));
+                } else if (kind == IR_DATA && b == 0) {
                     print_data(out, c, c->ir.data + a, c->types.arg0[type]);
                 } else {
                     print_name(out, c, c->decls.names[b]);
@@ -8724,5 +8926,7 @@ check_free(Checker *c)
     free(c->stack_tokens);
     free(c->unread);
     free(c->pairs);
+    free(c->string_offsets);
+    free(c->string_lengths);
     free(c->claims);
 }

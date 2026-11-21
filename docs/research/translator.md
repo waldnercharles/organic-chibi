@@ -15,6 +15,11 @@ Updated 2026-11-21. Item 5 of the self-hosting order ([README.md](README.md)) tr
   - Enum constants that the translated code uses become untyped constants, `const NODE_ADD := 1`, grouped by enum.
   - A long literal wraps: an array of arrays or structs puts one element on each line, and an array of numbers fills lines of up to 100 columns.
   - Tests: no compiler file translates with this step alone, because each one also needs strings, unions or `stderr`. A sample file with enum-indexed, 2-D, struct and `bool` tables, two static tables of one name in one function, a table whose row C takes as a pointer, and two mutable globals prints the same as clang's build of the C, under ASan and UBSan. `src/arena.c` translates to the same chibi as before, and `make translated` still passes.
+- **3t.3 String literals and variadic C functions: built 2026-11-21,** after chibi's string literals (step 3k.3 in [checker-and-ir.md](checker-and-ir.md) section 8). `src/str.c` now translates too.
+  - A literal is written as a chibi literal, and chibi converts it to the `*u8`, `[*]u8` or optional that the place it goes has, so the translator adds no `!!` or `bitcast` to it. clang's AST spells a literal with C's escapes inside JSON's, and the translator decodes both and writes chibi's escapes: `\"`, `\\`, `\b`, `\f`, `\n`, `\r`, `\t`, and `\u00XX` for the other control bytes, such as `\u001B` for C's `\e` and `\u0000` for `\0`.
+  - A C function declared with `...` becomes an `extern fn` that ends in `..`, as in `extern fn printf(p0: ?[*]u8, ..) -> i32`.
+  - A conditional under a conversion that changes nothing, as `const char *q = k ? "yes" : "no"` has, is found in a declaration, an assignment and a `return`, as one without it was.
+  - Tests: `make translated` passes with `src/arena.c` and `src/str.c` translated, on x86-64 under ASan and UBSan and on arm64 under qemu. Nothing in the compiler calls `src/str.c`, so a test program in the scratchpad calls each of its functions on 5 strings, with slices that start past the end, and the translated file prints the same 155 lines as the C under ASan and UBSan. A sample with literals in a declaration, an argument, a compound literal, a `return`, a conditional and `printf`'s `..`, and with every escape that clang writes, prints the same as clang's build of the C.
 
 ## Rules chosen, open to review
 
@@ -33,18 +38,21 @@ Updated 2026-11-21. Item 5 of the self-hosting order ([README.md](README.md)) tr
     - `for (T i = a; i < b; i++)`, where `b` is a constant or a local that the body doesn't write, becomes `for i in a..b`. Any other `for` becomes a `while` with the step at the end of the body, inside a block when the `for` declares a variable. If the body has a `continue`, a labeled block wraps it and `continue` becomes `break nextN`.
     - `do … while (c)` becomes `while true { …; if !(c) { break } }`.
     - A `switch` arm drops its final `break`. Any other `break` out of a `switch` uses a label on the switch, because an unlabeled `break` in a chibi arm leaves the enclosing loop. An arm that falls into the next is refused. `_ => {}` is added when there is no `default`.
-12. **`?:`** in an assignment, a declaration or a `return` becomes `if` and `else`. Elsewhere it is refused until the owner decides on conditional expressions (asked 2026-11-21).
+12. **`?:`** in an assignment, a declaration or a `return` becomes `if` and `else`, also under a conversion that changes nothing. Elsewhere it is refused until the owner decides on conditional expressions (asked 2026-11-21).
 13. **Builtins.** `assert(c)` becomes `if !c { abort() }`, with `extern fn abort()`. `__builtin_expect(x, y)` becomes `x`. A `bool` used as an integer becomes a labeled block that breaks with `T(1)` or `T(0)`.
 14. **Functions** that aren't `static` become `export fn`, so C callers in the mixed build keep their symbols.
 15. **Layout.** Blank lines between statements come from the source file. Comments are dropped. Macros appear expanded, so `ARENA_MAX_ALLOC` is written `u64(1) << 62`.
 16. **Tables.** A `const` table becomes a chibi constant. One whose address C takes, as `const u64 *km = key_mask[n]` does, becomes a global variable instead, because chibi refuses `&` and slicing on a constant until rank 10 decides read-only data (3g.1); so does any global that isn't `const`. A table inside a function moves to the top level as `function_name`, numbered when a function has two of one name, because chibi has no `const` in a body.
 17. **Elements of tables** are folded to numbers, as C computes them, so `[NODE_ADD] = 2 + (NODE_SUB != NODE_NONE)` is written `3`. An element that is just an enum constant keeps its name.
 18. **Enums.** An enum type becomes `u32`, which is what C uses when no constant is negative, and none in the compiler is. Enum constants are untyped, as C's are plain integers, and clang's AST already shows each conversion they go through.
+19. **String literals** stay untyped, so chibi converts each to the pointer its place needs. A byte above 0x7F is refused for now, because none appears in the compiler's literals and chibi has no escape for a single such byte.
+20. **Variadic C functions** end in `..`. A variadic function with a body is refused, because chibi functions can't be variadic.
 
 ## Not built yet
 
-- Strings, `?:` inside expressions, and character literals, which wait on the owner's answer (asked 2026-11-21). Every file but `src/arena.c` needs strings, if only in tables of names or in error messages.
+- `?:` inside expressions and character literals, which wait on the owner's answer (asked 2026-11-21). Character literals become numbers meanwhile.
+- Tables of strings and string-valued globals, which wait for chibi to place addresses inside constant data, and `static const char NAME[] = "..."`, which `src/arm64.c` and `src/driver.c` have and which could become a named chibi literal.
 - Unions, which chibi's checker doesn't support yet. `src/exact.h` has one, so `src/check.c`, `src/c_source.c`, `src/arm64.c` and `src/driver.c` wait for them as well as `src/exact.c`.
 - C's `stderr` and `stdout`, which `src/names.c` and `src/main.c` name. chibi has no way yet to declare a C global.
-- Nested and unnamed records, function pointers, variadic C functions such as `fprintf`, compound assignments that promote their target (`u8 += int`), `++` used as a value, `switch` fallthrough, SIMD intrinsics and `__int128`.
+- Nested and unnamed records, function pointers, compound assignments that promote their target (`u8 += int`), `++` used as a value, `switch` fallthrough, SIMD intrinsics and `__int128`.
 - Each translated file carries its own copy of chibi's runtime, `chibi_trap` and `chibi_context`, so the mixed build renames them per file with `-D`. Once the whole compiler is translated, it is one program and the renames go away.
