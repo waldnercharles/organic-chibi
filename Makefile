@@ -54,11 +54,12 @@ translated:
 	@mkdir -p build/translated
 	@$(CC) $(WARN) -g -O2 -o build/translate translate/*.c
 	@$(CC) $(WARN) -g -O1 -o build/chibi-translated src/main.c $(SRC)
+	@: > build/translated/entry.chibi
 	@for f in $(TRANSLATED); do \
 		n=$$(basename $$f .c); \
 		$(CC) -std=c23 $(HOST) -Xclang -ast-dump=json -fsyntax-only $$f > build/translated/$$n.json && \
 		build/translate build/translated/$$n.json $$f build/translated/$$n.chibi && \
-		build/chibi-translated c -o build/translated/$$n.c build/translated/$$n.chibi && \
+		build/chibi-translated c -o build/translated/$$n.c build/translated/entry.chibi build/translated/$$n.chibi && \
 		$(CC) $(SAFE) -w -Dchibi_trap=chibi_trap_$$n -Dchibi_context=chibi_context_$$n \
 			-c -o build/translated/$$n.o build/translated/$$n.c || exit 1; \
 	done

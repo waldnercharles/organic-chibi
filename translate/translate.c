@@ -188,6 +188,11 @@ enum
     P_POSTFIX,
 };
 
+enum
+{
+    LINE_WIDTH = 100,
+};
+
 typedef struct
 {
     char *text;
@@ -1767,59 +1772,153 @@ decl_bits(const Tr *t, u32 decl)
     return t->bits[t->canon[decl]];
 }
 
+static __int128
+parse_value(const char *s)
+{
+    bool negative = *s == '-';
+    s += negative;
+    __int128 n = 0;
+    for (; *s >= '0' && *s <= '9'; s++) {
+        n = n * 10 + (*s - '0');
+    }
+    return negative ? -n : n;
+}
+
+static bool
+is_enum_constant(const Tr *t, u32 e)
+{
+    return t->kinds[e] == K_DECL_REF && t->kinds[decl_of(t, e)] == K_ENUM_CONSTANT;
+}
+
+static __int128
+enum_value(const Tr *t, u32 d)
+{
+    u32 e = t->parents[d];
+    __int128 v = 0;
+    for (u32 c = e + 1; c < t->a.ends[e]; c = t->a.ends[c]) {
+        if (t->kinds[c] != K_ENUM_CONSTANT) {
+            continue;
+        }
+        if (t->a.ends[c] > c + 1) {
+            if (t->kinds[c + 1] != K_CONSTANT) {
+                die(t, c, "an enum constant whose value clang didn't compute");
+            }
+            v = parse_value(text(t, t->a.details[c + 1]));
+        }
+        if (c == d) {
+            return v;
+        }
+        v++;
+    }
+    die(t, d, "an enum constant outside its enum");
+}
+
+static __int128
+wrap_int(const CType *c, __int128 v)
+{
+    if (c->kind == CT_BOOL) {
+        return v != 0;
+    }
+    if (c->kind != CT_INT || c->bits >= 128) {
+        return v;
+    }
+    u64 m = c->bits == 64 ? ~0ull : (1ull << c->bits) - 1;
+    u64 b = (u64)v & m;
+    if (c->is_signed && (b >> (c->bits - 1)) & 1) {
+        return (__int128)b - ((__int128)1 << c->bits);
+    }
+    return b;
+}
+
+static bool
+fold_binary(Op o, __int128 a, __int128 b, u32 bits, __int128 *r)
+{
+    unsigned __int128 ua = (unsigned __int128)a;
+    switch (o) {
+        case OP_ADD: *r = a + b; return true;
+        case OP_SUB: *r = a - b; return true;
+        case OP_MUL: *r = (__int128)(ua * (unsigned __int128)b); return true;
+        case OP_DIV: *r = b != 0 ? a / b : 0; return b != 0;
+        case OP_MOD: *r = b != 0 ? a % b : 0; return b != 0;
+        case OP_SHL:
+            *r = (__int128)(ua << (b & 127));
+            return b >= 0 && b < bits;
+        case OP_SHR: *r = a >> (b & 127); return b >= 0 && b < bits;
+        case OP_AND: *r = a & b; return true;
+        case OP_OR: *r = a | b; return true;
+        case OP_XOR: *r = a ^ b; return true;
+        case OP_EQ: *r = a == b; return true;
+        case OP_NE: *r = a != b; return true;
+        case OP_LT: *r = a < b; return true;
+        case OP_GT: *r = a > b; return true;
+        case OP_LE: *r = a <= b; return true;
+        case OP_GE: *r = a >= b; return true;
+        case OP_LAND: *r = a && b; return true;
+        case OP_LOR: *r = a || b; return true;
+        default: return false;
+    }
+}
+
 static bool
 constant_value(Tr *t, u32 e, __int128 *v)
 {
     e = strip(t, e);
     switch (t->kinds[e]) {
         case K_INT_LITERAL:
-        case K_CHAR_LITERAL: {
-            const char *s = text(t, t->a.details[e]);
-            __int128 n = 0;
-            for (; *s >= '0' && *s <= '9'; s++) {
-                n = n * 10 + (*s - '0');
-            }
-            *v = n;
+        case K_CHAR_LITERAL:
+            *v = parse_value(text(t, t->a.details[e]));
             return true;
-        }
-        case K_UNARY: {
-            __int128 x;
-            if (!constant_value(t, e + 1, &x)) {
+        case K_BOOL_LITERAL:
+            *v = strcmp(text(t, t->a.details[e]), "true") == 0;
+            return true;
+        case K_DECL_REF:
+            if (!is_enum_constant(t, e)) {
                 return false;
             }
+            *v = enum_value(t, decl_of(t, e));
+            return true;
+        case K_UNARY: {
+            __int128 x;
             Op o = op(t, e);
-            if (o == OP_SUB) {
-                *v = -x;
-                return true;
+            if ((o != OP_SUB && o != OP_BIT_NOT && o != OP_NOT) ||
+                !constant_value(t, e + 1, &x)) {
+                return false;
             }
-            if (o == OP_BIT_NOT) {
-                *v = ~x;
-                return true;
+            __int128 r = o == OP_SUB ? -x : o == OP_BIT_NOT ? ~x : !x;
+            *v = wrap_int(&t->types[ctype(t, e)], r);
+            return true;
+        }
+        case K_BINARY: {
+            __int128 a, b, r;
+            u32 l = child(t, e, 0);
+            if (!constant_value(t, l, &a) || !constant_value(t, child(t, e, 1), &b)) {
+                return false;
             }
-            return false;
+            CType c = t->types[ctype(t, e)];
+            if (!fold_binary(op(t, e), a, b, t->types[ctype(t, l)].bits, &r)) {
+                return false;
+            }
+            *v = wrap_int(&c, r);
+            return true;
+        }
+        case K_CONDITIONAL: {
+            __int128 c;
+            return constant_value(t, child(t, e, 0), &c) &&
+                   constant_value(t, child(t, e, c ? 1 : 2), v);
         }
         case K_IMPLICIT_CAST:
         case K_CAST: {
-            if (op(t, e) != CAST_INTEGRAL) {
-                return false;
-            }
+            Op c = op(t, e);
             __int128 x;
-            if (!constant_value(t, e + 1, &x)) {
+            if ((c != CAST_INTEGRAL && c != CAST_INT_TO_BOOL && c != CAST_NOOP) ||
+                !constant_value(t, e + 1, &x)) {
                 return false;
             }
-            const CType *c = &t->types[ctype(t, e)];
-            if (c->kind != CT_INT || c->bits >= 128) {
+            const CType *ct = &t->types[ctype(t, e)];
+            if (ct->kind != CT_INT && ct->kind != CT_BOOL) {
                 return false;
             }
-            u64 m = c->bits == 64 ? ~0ull : (1ull << c->bits) - 1;
-            u64 b = (u64)x & m;
-            if (c->is_signed && c->bits < 64 && (b >> (c->bits - 1)) & 1) {
-                *v = (__int128)b - ((__int128)1 << c->bits);
-            } else if (c->is_signed && c->bits == 64) {
-                *v = (int64_t)b;
-            } else {
-                *v = b;
-            }
+            *v = wrap_int(ct, x);
             return true;
         }
         default: return false;
@@ -1873,14 +1972,19 @@ integral_cast(Tr *t, u32 e, bool explicit_cast)
     __int128 value;
     if (constant_value(t, e, &value)) {
         __int128 exact;
-        if (!explicit_cast && constant_value(t, x, &exact) && exact == value) {
+        bool same = f.kind == CT_INT && constant_value(t, x, &exact) && exact == value;
+        if (!explicit_cast && same) {
             return ex(t, x, 0, 0);
         }
         if (explicit_cast) {
             char *ty = type_text(t, to, 0);
             putf(&t->out, "%s(", ty);
             free(ty);
-            put_int(t, value);
+            if (same && is_enum_constant(t, strip(t, x))) {
+                ex(t, x, 0, 0);
+            } else {
+                put_int(t, value);
+            }
             put(&t->out, ")");
             return int_type_val(to);
         }
@@ -2327,46 +2431,224 @@ subscript(Tr *t, u32 e)
                   false };
 }
 
+static u32
+column(const Tr *t)
+{
+    u64 i = t->out.len;
+    while (i > 0 && t->out.text[i - 1] != '\n') {
+        i--;
+    }
+    return (u32)(t->out.len - i);
+}
+
 static Val
-init_list(Tr *t, u32 e, u32 type)
+put_constant(Tr *t, u32 e, u32 type)
+{
+    __int128 v;
+    if (!constant_value(t, e, &v)) {
+        return value_as(t, e, type, 0);
+    }
+    if (is_kind(t, type, CT_BOOL)) {
+        put(&t->out, v ? "true" : "false");
+        return (Val){ type, 0, P_POSTFIX, false, false, true };
+    }
+
+    u32 s = strip(t, e);
+    while (is_cast(t, s)) {
+        s = strip(t, s + 1);
+    }
+    if (is_enum_constant(t, s) && enum_value(t, decl_of(t, s)) == v) {
+        ex(t, s, 0, 0);
+    } else {
+        put_int(t, v);
+    }
+    return (Val){ type, 0, v < 0 ? P_UNARY : P_POSTFIX, true, false, false };
+}
+
+static Val put_init(Tr *t, u32 e, u32 type, u32 bits, bool constant);
+
+static bool
+fits(const Tr *t, u64 from)
+{
+    return column(t) <= LINE_WIDTH &&
+           memchr(t->out.text + from, '\n', t->out.len - from) == NULL;
+}
+
+static void
+separate(Tr *t, bool first, bool multiline)
+{
+    if (multiline) {
+        put(&t->out, first ? "" : ",");
+        line(t);
+    } else {
+        put(&t->out, first ? " " : ", ");
+    }
+}
+
+static bool
+zero_init(Tr *t, u32 e)
+{
+    __int128 v;
+    u32 s = strip(t, e);
+    return t->kinds[s] == K_IMPLICIT_VALUE_INIT ||
+           (constant_value(t, s, &v) && v == 0) || is_null(t, s);
+}
+
+static bool
+put_fields(Tr *t, u32 list, u32 type, bool constant, bool multiline)
 {
     CType c = t->types[type];
-    if (c.kind != CT_RECORD) {
-        die(t, e, "an initializer list that isn't for a struct");
+    if (strcmp(text(t, t->a.details[c.decl]), "struct") != 0) {
+        die(t, list, "an initializer for a union");
     }
 
     bool all_zero = true;
-    for (u32 k = e + 1; k < t->a.ends[e]; k = t->a.ends[k]) {
-        __int128 v;
-        u32 s = strip(t, k);
-        if (t->kinds[s] != K_IMPLICIT_VALUE_INIT &&
-            !(constant_value(t, s, &v) && v == 0) && !is_null(t, s)) {
-            all_zero = false;
-        }
+    for (u32 k = list + 1; list != 0 && k < t->a.ends[list]; k = t->a.ends[k]) {
+        all_zero = all_zero && zero_init(t, k);
     }
     put(&t->out, text(t, t->names[c.decl]));
     if (all_zero) {
         put(&t->out, ".{}");
-        return value(type, 0, P_POSTFIX);
+        return true;
     }
 
-    put(&t->out, ".{ ");
+    put(&t->out, ".{");
+    t->depth += multiline;
     u32 field = c.decl + 1;
     bool first = true;
-    for (u32 k = e + 1; k < t->a.ends[e]; k = t->a.ends[k]) {
+    for (u32 k = list + 1; k < t->a.ends[list]; k = t->a.ends[k]) {
         while (t->kinds[field] != K_FIELD) {
             field = t->a.ends[field];
         }
         if (t->kinds[strip(t, k)] != K_IMPLICIT_VALUE_INIT) {
-            put(&t->out, first ? "" : ", ");
+            separate(t, first, multiline);
+            u64 at = t->out.len;
             putf(&t->out, ".%s = ", text(t, t->a.names[field]));
-            value_as(t, k, ctype(t, field), t->bits[field]);
+            put_init(t, k, ctype(t, field), t->bits[field], constant);
             first = false;
+            if (!multiline && !fits(t, at)) {
+                return false;
+            }
         }
         field = t->a.ends[field];
     }
+    if (multiline) {
+        put(&t->out, ",");
+        t->depth--;
+        line(t);
+        put(&t->out, "}");
+        return true;
+    }
     put(&t->out, " }");
-    return value(type, 0, P_POSTFIX);
+    return fits(t, t->out.len);
+}
+
+static bool
+put_elements(Tr *t, u32 list, u32 type, u32 bits, bool constant, bool multiline)
+{
+    CType c = t->types[type];
+    bool nested = is_kind(t, c.inner, CT_ARRAY) || is_kind(t, c.inner, CT_RECORD);
+    u32 filler = 0;
+    u32 item = 0;
+    if (list != 0) {
+        item = list + 1;
+        if (item < t->a.ends[list] && (t->a.flags[item] & AST_FILLER)) {
+            filler = item;
+            item = t->a.ends[item];
+        }
+    }
+
+    put(&t->out, ".[");
+    t->depth += multiline;
+    for (u64 k = 0; k < c.count; k++) {
+        u32 x = filler;
+        if (list != 0 && item < t->a.ends[list]) {
+            x = item;
+            item = t->a.ends[item];
+        } else if (list != 0 && filler == 0) {
+            die(t, list, "an array initializer with fewer values than elements");
+        }
+
+        u64 at = t->out.len;
+        if (multiline && (nested || k == 0)) {
+            separate(t, k == 0, true);
+        } else if (k > 0) {
+            put(&t->out, ", ");
+        }
+        put_init(t, x, c.inner, bits, constant);
+        if (fits(t, at)) {
+            continue;
+        }
+        if (!multiline) {
+            return false;
+        }
+        if (!nested && k > 0) {
+            t->out.len = at;
+            put(&t->out, ",");
+            line(t);
+            put_init(t, x, c.inner, bits, constant);
+        }
+    }
+    if (multiline) {
+        put(&t->out, ",");
+        t->depth--;
+        line(t);
+    }
+    put(&t->out, "]");
+    return multiline || fits(t, t->out.len);
+}
+
+static Val
+put_init(Tr *t, u32 e, u32 type, u32 bits, bool constant)
+{
+    u32 s = e == 0 ? 0 : literal_of(t, e);
+    bool zero = s == 0 || t->kinds[s] == K_IMPLICIT_VALUE_INIT;
+    u8 kind = t->types[type].kind;
+    if (kind == CT_ARRAY || kind == CT_RECORD) {
+        if (!zero && t->kinds[s] != K_INIT_LIST) {
+            return value_as(t, e, type, bits);
+        }
+        u32 list = zero ? 0 : s;
+        u64 start = t->out.len;
+        u32 labels = t->labels;
+        CType c = t->types[type];
+        bool rows = kind == CT_ARRAY && c.count > 1 &&
+                    (is_kind(t, c.inner, CT_ARRAY) || is_kind(t, c.inner, CT_RECORD));
+        bool one_line = !rows &&
+                        (kind == CT_ARRAY
+                             ? put_elements(t, list, type, bits, constant, false)
+                             : put_fields(t, list, type, constant, false));
+        if (!one_line) {
+            t->out.len = start;
+            t->labels = labels;
+            if (kind == CT_ARRAY) {
+                put_elements(t, list, type, bits, constant, true);
+            } else {
+                put_fields(t, list, type, constant, true);
+            }
+        }
+        return value(type, bits, P_POSTFIX);
+    }
+
+    if (zero) {
+        put(&t->out,
+            kind == CT_BOOL      ? "false"
+            : kind == CT_POINTER ? "nil"
+                                 : "0");
+        return (Val){ type,
+                      bits,
+                      P_POSTFIX,
+                      kind != CT_BOOL && kind != CT_POINTER,
+                      kind == CT_POINTER,
+                      kind == CT_BOOL };
+    }
+    if (t->kinds[s] == K_INIT_LIST) {
+        return put_init(t, s + 1, type, bits, constant);
+    }
+    if (constant) {
+        return put_constant(t, e, type);
+    }
+    return value_as(t, e, type, bits);
 }
 
 static Val
@@ -2388,6 +2670,9 @@ ex(Tr *t, u32 e, u32 want_type, u32 want_bits)
         case K_DECL_REF: {
             u32 d = decl_of(t, e);
             put_name(t, d);
+            if (t->kinds[d] == K_ENUM_CONSTANT) {
+                return (Val){ ctype(t, e), 0, P_POSTFIX, true, false, false };
+            }
             u32 bits = t->kinds[d] == K_VAR || t->kinds[d] == K_PARAM ? t->bits[d] : 0;
             return value(ctype(t, e), bits, P_POSTFIX);
         }
@@ -2410,7 +2695,7 @@ ex(Tr *t, u32 e, u32 want_type, u32 want_bits)
             return (Val){ ctype(t, e), 0, P_POSTFIX, true, false, false };
         }
         case K_COMPOUND_LITERAL: return ex(t, e + 1, want_type, want_bits);
-        case K_INIT_LIST: return init_list(t, e, ctype(t, e));
+        case K_INIT_LIST: return put_init(t, e, ctype(t, e), want_bits, false);
         default: die(t, e, "an unsupported expression");
     }
 }
@@ -2716,11 +3001,35 @@ blank_between(Tr *t, u32 a, u32 b)
     return newlines >= 2;
 }
 
+static bool
+global_var(const Tr *t, u32 d)
+{
+    return t->kinds[d] == K_VAR &&
+           (t->kinds[t->parents[d]] == K_TRANSLATION_UNIT || t->a.details[d] != 0);
+}
+
+static bool
+hoisted(const Tr *t, u32 s)
+{
+    if (t->kinds[s] != K_DECL_STMT) {
+        return false;
+    }
+    for (u32 c = s + 1; c < t->a.ends[s]; c = t->a.ends[c]) {
+        if (t->kinds[c] != K_VAR || !global_var(t, c)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static void
 statements(Tr *t, u32 first, u32 end)
 {
     u32 prev = 0;
     for (u32 c = first; c < end; c = t->a.ends[c]) {
+        if (hoisted(t, c)) {
+            continue;
+        }
         if (prev != 0 && blank_between(t, prev, c)) {
             put(&t->out, "\n");
         }
@@ -3387,6 +3696,9 @@ stmt(Tr *t, u32 s)
         case K_NULL_STMT: return;
         case K_DECL_STMT:
             for (u32 c = s + 1; c < t->a.ends[s]; c = t->a.ends[c]) {
+                if (t->kinds[c] == K_VAR && global_var(t, c)) {
+                    continue;
+                }
                 if (t->kinds[c] == K_VAR) {
                     var_decl(t, c);
                 } else if (t->kinds[c] != K_RECORD && t->kinds[c] != K_TYPEDEF) {
@@ -3516,6 +3828,48 @@ builtin_function(const Tr *t, u32 f)
     return strncmp(text(t, t->a.names[f]), "__builtin_", 10) == 0;
 }
 
+static u32
+use_of(const Tr *t, u32 *e)
+{
+    u32 p = t->parents[*e];
+    while (t->kinds[p] == K_PAREN) {
+        *e = p;
+        p = t->parents[p];
+    }
+    return p;
+}
+
+static bool
+address_escapes(const Tr *t, u32 e)
+{
+    for (;;) {
+        u32 p = use_of(t, &e);
+        if (t->kinds[p] == K_MEMBER && !(t->a.flags[p] & AST_ARROW)) {
+            e = p;
+            continue;
+        }
+        if (!is_cast(t, p)) {
+            return t->kinds[p] != K_TYPE_TRAIT;
+        }
+        Op c = op(t, p);
+        if (c == CAST_LVALUE) {
+            return false;
+        }
+        if (c == CAST_NOOP) {
+            e = p;
+            continue;
+        }
+        if (c != CAST_ARRAY_DECAY) {
+            return true;
+        }
+        u32 s = use_of(t, &p);
+        if (t->kinds[s] != K_SUBSCRIPT || p != s + 1) {
+            return true;
+        }
+        e = s;
+    }
+}
+
 static void
 mark_uses(Tr *t, u32 root, u32 *work, u32 *nwork)
 {
@@ -3531,6 +3885,20 @@ mark_uses(Tr *t, u32 root, u32 *work, u32 *nwork)
         }
 
         u32 d = decl_of(t, i);
+        if (t->kinds[d] == K_ENUM_CONSTANT) {
+            t->marks[d] |= MARK_EMIT;
+            continue;
+        }
+        if (global_var(t, d)) {
+            if (address_escapes(t, i)) {
+                t->marks[d] |= MARK_ADDRESSED;
+            }
+            if (!(t->marks[d] & MARK_EMIT)) {
+                t->marks[d] |= MARK_EMIT;
+                work[(*nwork)++] = d;
+            }
+            continue;
+        }
         if (t->kinds[d] != K_FUNCTION || builtin_function(t, d) ||
             (t->marks[d] & (MARK_EMIT | MARK_EXTERN))) {
             continue;
@@ -3639,6 +4007,71 @@ emit_record(Tr *t, u32 r)
 }
 
 static void
+emit_enum_constants(Tr *t, u32 e)
+{
+    bool first = true;
+    for (u32 c = e + 1; c < t->a.ends[e]; c = t->a.ends[c]) {
+        if (t->kinds[c] != K_ENUM_CONSTANT || !(t->marks[c] & MARK_EMIT)) {
+            continue;
+        }
+        put(&t->out, first ? "\n" : "");
+        first = false;
+        putf(&t->out, "const %s := ", text(t, t->names[c]));
+        put_int(t, enum_value(t, c));
+        put(&t->out, "\n");
+    }
+}
+
+static bool
+const_object(const Tr *t, u32 v)
+{
+    const char *s = text(t, t->a.types[v]);
+    const char *end = strchr(s, '[');
+    end = end ? end : s + strlen(s);
+    const char *from = s;
+    for (const char *p = s; p < end; p++) {
+        if (*p == '*') {
+            from = p + 1;
+        }
+    }
+    for (const char *p = from; p < end; p++) {
+        if ((p == s || !is_ident_byte(p[-1])) && starts_word(p, "const")) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void
+emit_global(Tr *t, u32 v)
+{
+    if (t->a.details[v] != 0 && strcmp(text(t, t->a.details[v]), "extern") == 0) {
+        die(t, v, "an extern global variable");
+    }
+
+    u32 type = ctype(t, v);
+    u32 bits = t->bits[v];
+    bool constant = const_object(t, v) && !(t->marks[v] & MARK_ADDRESSED);
+    u32 init = (t->a.flags[v] & AST_HAS_INIT) ? init_of(t, v) : 0;
+    putf(&t->out, "\n%s%s", constant ? "const " : "", text(t, t->names[v]));
+    if (is_kind(t, type, CT_RECORD) && (init != 0 || constant)) {
+        put(&t->out, " := ");
+        put_init(t, init, type, bits, true);
+        put(&t->out, "\n");
+        return;
+    }
+
+    char *ty = type_text(t, type, bits);
+    putf(&t->out, ": %s", ty);
+    free(ty);
+    if (init != 0 || constant) {
+        put(&t->out, " = ");
+        put_init(t, init, type, bits, true);
+    }
+    put(&t->out, "\n");
+}
+
+static void
 emit_function(Tr *t, u32 def)
 {
     u32 c = t->canon[def];
@@ -3673,6 +4106,45 @@ emit_function(Tr *t, u32 def)
     put(&t->out, "\n}\n");
 }
 
+static bool
+top_name_taken(const Tr *t, u32 name)
+{
+    for (u32 i = 0; i < t->a.count; i++) {
+        u8 k = t->kinds[i];
+        if ((t->marks[i] & (MARK_EMIT | MARK_EXTERN)) && t->names[i] == name &&
+            (k == K_FUNCTION || k == K_VAR || k == K_RECORD || k == K_ENUM_CONSTANT)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void
+name_static_locals(Tr *t)
+{
+    for (u32 v = 0; v < t->a.count; v++) {
+        if (t->kinds[v] != K_VAR || !(t->marks[v] & MARK_EMIT) ||
+            t->kinds[t->parents[v]] != K_DECL_STMT) {
+            continue;
+        }
+        u32 fn = t->parents[v];
+        while (t->kinds[fn] != K_FUNCTION) {
+            fn = t->parents[fn];
+        }
+
+        const char *f = text(t, t->a.names[fn]);
+        const char *base = text(t, t->a.names[v]);
+        char buf[256];
+        snprintf(buf, sizeof buf, "%s_%s", f, base);
+        u32 id = intern_text(t, buf);
+        for (u32 k = 2; top_name_taken(t, id); k++) {
+            snprintf(buf, sizeof buf, "%s_%s%u", f, base, k);
+            id = intern_text(t, buf);
+        }
+        t->names[v] = id;
+    }
+}
+
 static void
 emit_program(Tr *t)
 {
@@ -3684,9 +4156,6 @@ emit_program(Tr *t)
             t->a.files[i] == t->main_file) {
             t->marks[t->canon[i]] |= MARK_EMIT;
             work[nwork++] = i;
-        } else if (t->kinds[i] == K_VAR && t->a.files[i] == t->main_file &&
-                   t->kinds[t->parents[i]] == K_TRANSLATION_UNIT) {
-            die(t, i, "a global variable");
         }
     }
     for (u32 k = 0; k < nwork; k++) {
@@ -3694,12 +4163,23 @@ emit_program(Tr *t)
         mark_type(t, ctype(t, def));
         mark_uses(t, def, work, &nwork);
     }
+    name_static_locals(t);
 
     Out body = t->out;
     t->out = (Out){ 0 };
     for (u32 i = 0; i < n; i++) {
+        if (t->kinds[i] == K_ENUM) {
+            emit_enum_constants(t, i);
+        }
+    }
+    for (u32 i = 0; i < n; i++) {
         if (t->kinds[i] == K_RECORD && (t->marks[i] & MARK_EMIT)) {
             emit_record(t, i);
+        }
+    }
+    for (u32 i = 0; i < n; i++) {
+        if (t->kinds[i] == K_VAR && t->canon[i] == i && (t->marks[i] & MARK_EMIT)) {
+            emit_global(t, i);
         }
     }
     for (u32 i = 0; i < n; i++) {

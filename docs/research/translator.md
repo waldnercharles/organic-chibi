@@ -1,6 +1,6 @@
 # The C-to-chibi translator
 
-Updated 2026-11-21. Item 5 of the self-hosting order ([README.md](README.md)) translates the compiler's C into chibi. The translator reads clang's JSON AST of one C file and writes a chibi file. `make translated` translates the files listed in the Makefile's `TRANSLATED`, builds each one through `chibi c`, and runs the test suite with them in place of the C files, on x86-64 and on arm64 under qemu.
+Updated 2026-11-21. Item 5 of the self-hosting order ([README.md](README.md)) translates the compiler's C into chibi. The translator reads clang's JSON AST of one C file and writes a chibi file. `make translated` translates the files listed in the Makefile's `TRANSLATED`, builds each one through `chibi c` after an empty entry file, so that it is a library file and may declare globals (3g.2), and runs the test suite with them in place of the C files, on x86-64 and on arm64 under qemu.
 
 ## Steps
 
@@ -10,6 +10,11 @@ Updated 2026-11-21. Item 5 of the self-hosting order ([README.md](README.md)) tr
   - A translated file includes the structs it uses from project headers, an `extern fn` for each C function it calls, and any `static inline` function from a header that it calls.
   - Checked against a hand translation of `src/arena.c`: the structure is the same. The differences are the wrapping operators of rule 2, and `!!` on reads of locals where the hand translation relied on narrowing.
   - Tests: `make translated` passes with the translated `src/arena.c` on x86-64 under ASan and UBSan and on arm64 under qemu. The generic-SIMD and bulk-lexer builds pass too, run by hand.
+- **3t.2 Constant tables and globals: built 2026-11-21.** Every table in the compiler's C is a `static const` array or struct, at file scope or inside a function, so most of this step is constant tables.
+  - A table becomes a top-level constant with its type written out, `const arity: [12]u8 = .[0, 3, 2, 0, …]`, and a struct becomes `const poison := Pair.{ … }`. clang's AST lists each element in order, with a filler for the rest, so designated initializers and GNU ranges come out as whole arrays, which chibi requires.
+  - Enum constants that the translated code uses become untyped constants, `const NODE_ADD := 1`, grouped by enum.
+  - A long literal wraps: an array of arrays or structs puts one element on each line, and an array of numbers fills lines of up to 100 columns.
+  - Tests: no compiler file translates with this step alone, because each one also needs strings, unions or `stderr`. A sample file with enum-indexed, 2-D, struct and `bool` tables, two static tables of one name in one function, a table whose row C takes as a pointer, and two mutable globals prints the same as clang's build of the C, under ASan and UBSan. `src/arena.c` translates to the same chibi as before, and `make translated` still passes.
 
 ## Rules chosen, open to review
 
@@ -32,10 +37,14 @@ Updated 2026-11-21. Item 5 of the self-hosting order ([README.md](README.md)) tr
 13. **Builtins.** `assert(c)` becomes `if !c { abort() }`, with `extern fn abort()`. `__builtin_expect(x, y)` becomes `x`. A `bool` used as an integer becomes a labeled block that breaks with `T(1)` or `T(0)`.
 14. **Functions** that aren't `static` become `export fn`, so C callers in the mixed build keep their symbols.
 15. **Layout.** Blank lines between statements come from the source file. Comments are dropped. Macros appear expanded, so `ARENA_MAX_ALLOC` is written `u64(1) << 62`.
+16. **Tables.** A `const` table becomes a chibi constant. One whose address C takes, as `const u64 *km = key_mask[n]` does, becomes a global variable instead, because chibi refuses `&` and slicing on a constant until rank 10 decides read-only data (3g.1); so does any global that isn't `const`. A table inside a function moves to the top level as `function_name`, numbered when a function has two of one name, because chibi has no `const` in a body.
+17. **Elements of tables** are folded to numbers, as C computes them, so `[NODE_ADD] = 2 + (NODE_SUB != NODE_NONE)` is written `3`. An element that is just an enum constant keeps its name.
+18. **Enums.** An enum type becomes `u32`, which is what C uses when no constant is negative, and none in the compiler is. Enum constants are untyped, as C's are plain integers, and clang's AST already shows each conversion they go through.
 
 ## Not built yet
 
-- Globals and constant tables, which every other file has.
-- Strings, `?:` inside expressions, and character literals, which wait on the owner's answer (asked 2026-11-21). `src/arena.c` needs none of them.
-- Unions, nested and unnamed records, function pointers, variadic C functions such as `fprintf`, `static` locals, compound assignments that promote their target (`u8 += int`), `++` used as a value, `switch` fallthrough, SIMD intrinsics and `__int128`.
+- Strings, `?:` inside expressions, and character literals, which wait on the owner's answer (asked 2026-11-21). Every file but `src/arena.c` needs strings, if only in tables of names or in error messages.
+- Unions, which chibi's checker doesn't support yet. `src/exact.h` has one, so `src/check.c`, `src/c_source.c`, `src/arm64.c` and `src/driver.c` wait for them as well as `src/exact.c`.
+- C's `stderr` and `stdout`, which `src/names.c` and `src/main.c` name. chibi has no way yet to declare a C global.
+- Nested and unnamed records, function pointers, variadic C functions such as `fprintf`, compound assignments that promote their target (`u8 += int`), `++` used as a value, `switch` fallthrough, SIMD intrinsics and `__int128`.
 - Each translated file carries its own copy of chibi's runtime, `chibi_trap` and `chibi_context`, so the mixed build renames them per file with `-D`. Once the whole compiler is translated, it is one program and the renames go away.
