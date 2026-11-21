@@ -477,6 +477,39 @@ The runtime cost of these conventions is zero. `p->pos++` as a separate statemen
 3. **Bootstrap:** keep the C compiler as stage 0, like Go 1.4. The chibi compiler must stay buildable by it until a release of the chibi compiler takes over.
 4. **The translator itself:** if it is written in C under the same conventions, it can later translate itself.
 
+### 6.4 What chibi-v2's C needs, measured again on 2026-11-21
+
+`src/` is now 20,055 lines in 24 files. Counted from clang 18's JSON AST of every `.c` file, with `-std=c23 -march=x86-64-v2`, over the declarations spelled in `src/` (each header's declarations once), with `vendor/` left out:
+
+| Construct | Uses | Handling |
+|---|---|---|
+| `?:` written in the C | 645 | waits on sheet 4b ([syntax-options-effects.md](syntax-options-effects.md)); 152 more come from `assert` |
+| String literals | 484 | waits on rank 10 ([adopt-or-settle.md](adopt-or-settle.md) 2.10); 313 more come from macros such as the name tables, and 294 from `assert` |
+| Character literals | 239 | waits on sheet 4c; 28 more come from macros |
+| `++` and `--` | 359 as statements, 160 as values | sheet 4a recommends none: the translator writes `x += 1` and hoists the 160 |
+| C's three-part `for` | 245 | lowered to `while`, with `continue` leaving a labeled block so that the step still runs |
+| `switch` | 31, with 496 `case` labels | stacked labels become one arm; a `break` that ends an arm disappears |
+| `sizeof` and `alignof` | 163 and 13 | `size_of(T)` and `align_of(T)`, plain names as the builtin spelling card recommends |
+| Pointer conversions | 46 written, 430 implicit, mostly from `void *` | `bitcast(T, x)`, decided on 2026-11-10 and not built yet |
+| Pointer and integer conversions | 25 | `bitcast`, as above |
+| `NULL` | 68 lines | optional pointers `?*T` and `nil`, decided on 2026-11-10 and not built yet |
+| `assert` | 98 | a call to a translated function, or nothing when `NDEBUG` is defined |
+| Attributes | `noinline` 106, `always_inline` 12, `unused` 10 | dropped until the attribute design (3.8); output stays the same, speed may not |
+| `static` locals | 12 | moved to package globals |
+| Assignment or compound assignment used as a value, comma operator | 10, 6, 4 | hoisted |
+| `do while` | 4 | `while true` that breaks at the end |
+| A C variadic function and `va_arg` | 1 and 15 (`put_line` in `src/c_source.c`) | edited in the C, unless sheet 4e gives chibi variadic functions |
+| `__int128` | 2 (`src/exact.c`) | edited in the C |
+| An untagged union | 1 (`Exact` in `src/exact.h`) | unions are decided (sheet 1) and not built; editing the C is cheaper |
+| A function pointer constant | 1 (`signal(SIGPIPE, SIG_IGN)` in `src/driver.c`) | edited in the C |
+| Calls into C | 42 functions: stdio, memory, `qsort`, `mmap`, `dlopen`, `popen`, `strtod`, `XXH64` and others | `extern fn` declarations made from clang's prototypes; `FILE` becomes an empty struct used through pointers, and `struct stat` for `fstat` takes clang's layout |
+| Builtins | the bit counts, `__builtin_expect`, the overflow checks, `__builtin_signbit`, `__builtin_isfinite` | chibi's builtins where they exist; `__builtin_expect` is dropped |
+| SIMD | `src/simd.h` | translated with `CHIBI_SIMD_GENERIC`, whose vector code maps to chibi's vectors, `lookup` and `top_bits` |
+
+Implicit integer conversions number 6,610 outside initializers and 131,648 inside them, almost all in generated tables; the translator writes `T(x)` wherever option K of the casts row doesn't convert by itself. `->` (4,360 uses) becomes `.`, which reads through a pointer. There is no `goto`, bitfield or `long double`.
+
+The three waiting decisions decide how the translated code reads more than whether it can be written: without them, the translator would hoist 645 conditionals into `if` statements with temporaries, store 484 strings as constant byte arrays, and write 239 characters as numbers.
+
 ---
 
 ## 7. Recommended translator architecture
