@@ -82,6 +82,7 @@
     NODE(NODE_ERROR_UNION, 2, "!")                                             \
     NODE(NODE_ERROR_UNION_INFERRED, 1, "!")                                    \
     NODE(NODE_SLICE_TYPE, 1, "slice")                                          \
+    NODE(NODE_MANY_TYPE, 1, "many")                                            \
     NODE(NODE_ARRAY_TYPE, 2, "array")                                          \
     NODE(NODE_ARRAY2_TYPE, 3, "array")                                         \
     NODE(NODE_ARRAY3_TYPE, 4, "array")                                         \

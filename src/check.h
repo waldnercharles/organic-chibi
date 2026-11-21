@@ -43,6 +43,7 @@ typedef enum
     TYPE_FN,
     TYPE_ENUM,
     TYPE_UNION,
+    TYPE_MANY,
 } TypeKind;
 
 // clang-format off
@@ -162,11 +163,14 @@ enum
     X(DIAG_ADDRESS_LOOP_VARIABLE, "`%n` is a loop variable, so `&` can't take its address")         \
     X(DIAG_ADDRESS_CONSTANT, "`%n` is a constant, so `&` can't take its address")                   \
     X(DIAG_NOT_POINTER, "`%T` is not a pointer, so `.*` can't follow it")                           \
+    X(DIAG_MANY_DEREF, "`%T` points at many items, so write `p[0]`, not `p.*`")                     \
     X(DIAG_NEVER_NIL, "`%U` is never nil, so this needs a value")                                   \
     X(DIAG_NOT_INDEXABLE, "`%T` can't be indexed")                                                  \
     X(DIAG_NOT_INDEX, "an index must be an integer, found `%T`")                                    \
     X(DIAG_INDEX_RANGE, "index %v is out of range for `%U`")                                        \
     X(DIAG_SLICE_ORDER, "this slice starts at %v, after its end")                                   \
+    X(DIAG_MANY_END, "`%U` has no length, so this slice needs an end")                              \
+    X(DIAG_NOT_OFFSET, "`p + n` needs an integer `n`, found `%T`")                                  \
     X(DIAG_SLICE_PARAM, "`%n` is a parameter, so a slice can't point into it")                      \
     X(DIAG_SLICE_LOOP_VARIABLE, "`%n` is a loop variable, so a slice can't point into it")          \
     X(DIAG_SLICE_CONSTANT, "`%n` is a constant, so a slice can't point into it")                    \

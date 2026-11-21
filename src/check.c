@@ -545,7 +545,8 @@ is_scalar(const Checker *c, u32 type)
 {
     u8 k = c->types.kinds[type];
     return is_number(c, type) || k == TYPE_BOOL || k == TYPE_ENUM ||
-           k == TYPE_POINTER || (k == TYPE_FN && (c->types.arg1[type] & FN_C_CALL));
+           k == TYPE_POINTER || k == TYPE_MANY ||
+           (k == TYPE_FN && (c->types.arg1[type] & FN_C_CALL));
 }
 
 static bool
@@ -620,6 +621,7 @@ check_type_size(const Checker *c, u32 type)
         case TYPE_UINTPTR:
         case TYPE_FLOAT: return t->arg0[type] / 8;
         case TYPE_POINTER:
+        case TYPE_MANY:
         case TYPE_FN: return 8;
         case TYPE_SLICE: return 16;
         case TYPE_ENUM: return check_type_size(c, (u32)t->arg1[type]);
@@ -1401,6 +1403,19 @@ slice_of_place(Checker *c, u32 file, u32 token, Operand o, u32 to)
     return make_pair(c, to, place_address(c, o), n);
 }
 
+static NOINLINE Operand
+convert_pointer(Checker *c, u32 file, u32 token, Operand o, u32 to)
+{
+    const Types *t = &c->types;
+    u32 from = o.type;
+    if (t->kinds[to] == TYPE_MANY && t->kinds[from] == TYPE_POINTER &&
+        is_array(c, t->arg0[from]) && t->arg0[t->arg0[from]] == t->arg0[to]) {
+        return emit_value(c, IR_INDEX, to, value_of(o), ir_const(c, TYPE_ID_I64, 0));
+    }
+    report(c, file, token, DIAG_MISMATCH, from, to);
+    return poison;
+}
+
 static Operand
 convert(Checker *c, u32 file, u32 token, Operand o, u32 to)
 {
@@ -1460,8 +1475,7 @@ convert(Checker *c, u32 file, u32 token, Operand o, u32 to)
         return emit_value(c, IR_CONVERT, to, value_of(o), 0);
     }
 
-    report(c, file, token, DIAG_MISMATCH, o.type, to);
-    return poison;
+    return convert_pointer(c, file, token, o, to);
 }
 
 static bool
@@ -1886,6 +1900,29 @@ shift(Checker *c, u32 file, u32 token, u8 kind, Operand a, Operand b)
                           emit(c, binary_irs[kind], a.type, x, y) };
 }
 
+static NOINLINE Operand
+advance(Checker *c, u32 file, u32 token, u8 kind, Operand p, Operand n)
+{
+    if (kind != NODE_ADD) {
+        report(c, file, token, DIAG_BAD_OPERATOR, p.type, 0);
+        return poison;
+    }
+    if (!is_int(c, n.type)) {
+        report(c, file, token, DIAG_NOT_OFFSET, n.type, 0);
+        return poison;
+    }
+
+    u32 at = value_of(n);
+    if (is_constant(n)) {
+        if (!exact_fits(&c->exacts, at, 64, false)) {
+            report(c, file, token, DIAG_INDEX_RANGE, at, p.type);
+            return poison;
+        }
+        at = ir_const(c, TYPE_ID_I64, exact_bits(&c->exacts, at));
+    }
+    return emit_value(c, IR_INDEX, p.type, value_of(p), at);
+}
+
 static Operand
 binary(Checker *c, u32 file, u32 token, u8 kind, Operand a, Operand b)
 {
@@ -1905,6 +1942,9 @@ binary(Checker *c, u32 file, u32 token, u8 kind, Operand a, Operand b)
     u8 cls = operator_classes[kind];
     if (cls == OP_SHIFT) {
         return shift(c, file, token, kind, a, b);
+    }
+    if (a.type >= NFIXED_TYPES && cls == OP_ARITH && c->types.kinds[a.type] == TYPE_MANY) {
+        return advance(c, file, token, kind, a, b);
     }
 
     u32 type = unify(c, file, token, &a, &b);
@@ -2155,6 +2195,7 @@ has_zero(const Checker *c, u32 type)
     }
     switch (c->types.kinds[type]) {
         case TYPE_POINTER:
+        case TYPE_MANY:
         case TYPE_FN: return false;
         case TYPE_ENUM: return enum_has(c, type, order_key(c, type, 0));
         case TYPE_STRUCT:
@@ -3195,8 +3236,9 @@ deref(Checker *c, u32 file, u32 token, Operand p, bool place)
         report(c, file, token, DIAG_NOT_VALUE, 0, 0);
         return poison;
     }
-    if (c->types.kinds[p.type] != TYPE_POINTER) {
-        report(c, file, token, DIAG_NOT_POINTER, p.type, 0);
+    u8 kind = c->types.kinds[p.type];
+    if (kind != TYPE_POINTER) {
+        report(c, file, token, kind == TYPE_MANY ? DIAG_MANY_DEREF : DIAG_NOT_POINTER, p.type, 0);
         return poison;
     }
 
@@ -3258,7 +3300,8 @@ index_place(Checker *c, u32 file, u32 token, Operand base, Operand index, u32 in
         report(c, file, token, DIAG_NOT_VALUE, 0, 0);
         return poison;
     }
-    if (!is_indexable(c, type)) {
+    bool many = c->types.kinds[type] == TYPE_MANY;
+    if (!many && !is_indexable(c, type)) {
         report(c, file, token, DIAG_NOT_INDEXABLE, type, 0);
         return poison;
     }
@@ -3270,10 +3313,10 @@ index_place(Checker *c, u32 file, u32 token, Operand base, Operand index, u32 in
     Pair p = slice ? slice_pair(c, base) : (Pair){ 0, 0 };
     u32 at = value_of(index);
     if (is_constant(index)) {
-        bool known = !slice || (p.second & IR_CONST);
-        u64 n = !slice ? c->types.arg1[type]
-              : known  ? const_bits(c, p.second)
-                       : 0;
+        bool known = slice ? (p.second & IR_CONST) != 0 : !many;
+        u64 n = !known ? 0
+              : slice  ? const_bits(c, p.second)
+                       : c->types.arg1[type];
         if (!exact_fits(&c->exacts, at, 64, false) ||
             (known && exact_bits(&c->exacts, at) >= n)) {
             report(c, file, index_token, DIAG_INDEX_RANGE, at, type);
@@ -3285,7 +3328,10 @@ index_place(Checker *c, u32 file, u32 token, Operand base, Operand index, u32 in
     u32 elem = c->types.arg0[type];
     u32 pointer = pointer_type(c, elem);
     u32 address;
-    if (!slice) {
+    if (many) {
+        assert(!is_place(base));
+        address = emit(c, IR_INDEX, pointer, value_of(base), at);
+    } else if (!slice) {
         address = emit(c, IR_INDEX, pointer, place_address(c, base), at);
     } else if ((p.second & IR_CONST) && (at & IR_CONST)) {
         address = emit(c, IR_INDEX, pointer, p.first, at);
@@ -3340,8 +3386,13 @@ slice_range(Checker *c, u32 file, u8 kind)
         report(c, file, token, DIAG_NOT_VALUE, 0, 0);
         return poison;
     }
-    if (!is_indexable(c, type)) {
+    bool many = c->types.kinds[type] == TYPE_MANY;
+    if (!many && !is_indexable(c, type)) {
         report(c, file, token, DIAG_NOT_INDEXABLE, type, 0);
+        return poison;
+    }
+    if (many && !has_hi) {
+        report(c, file, token, DIAG_MANY_END, 0, type);
         return poison;
     }
     if (!check_index(c, file, lo_token, lo) || !check_index(c, file, hi_token, hi)) {
@@ -3368,6 +3419,10 @@ slice_range(Checker *c, u32 file, u8 kind)
     if (array) {
         first = place_address(c, base);
         len = ir_const(c, TYPE_ID_I64, c->types.arg1[type]);
+    } else if (many) {
+        assert(!is_place(base));
+        first = value_of(base);
+        len = ir_const(c, TYPE_ID_I64, INT64_MAX);
     } else {
         Pair p = slice_pair(c, base);
         first = p.first;
@@ -3416,11 +3471,32 @@ slice_range(Checker *c, u32 file, u8 kind)
     return make_pair(c, result, ptr, emit(c, IR_SECOND, TYPE_ID_I64, 0, 0));
 }
 
+static Operand
+slice_ptr(Checker *c, Operand o, u32 type)
+{
+    u32 first;
+    if (o.type == OPERAND_LOCAL) {
+        first = value_of(load_local(c, o.ref));
+    } else {
+        Pair p = pair_of(c, is_place(o) ? read_slice(c, o) : o);
+        if (!(p.second & IR_CONST)) {
+            emit(c, IR_DROP, 0, p.second, 0);
+        }
+        first = p.first;
+    }
+
+    u32 many = intern_type(c, TYPE_MANY, c->types.arg0[type], 0);
+    return emit_value(c, IR_INDEX, many, first, ir_const(c, TYPE_ID_I64, 0));
+}
+
 static NOINLINE Operand
 slice_field(Checker *c, u32 file, u32 token, Operand o)
 {
     u32 type = is_place(o) ? place_type(c, o) : o.type;
     u32 name = c->files[file].tokens.ids[token];
+    if (name == NAME_PTR) {
+        return slice_ptr(c, o, type);
+    }
     if (name != NAME_LEN) {
         if (is_pair(c, o)) {
             drop_pair(c, o);
@@ -3715,6 +3791,7 @@ can_zero(Checker *c, u32 file, u32 token, u32 type)
             }
             return true;
         case TYPE_POINTER:
+        case TYPE_MANY:
         case TYPE_FN:
             report(c, file, token, DIAG_NEVER_NIL, 0, type);
             return false;
@@ -5546,6 +5623,11 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                 push_type(c, token, t ? slice_type(c, t) : TYPE_ID_NONE);
                 break;
             }
+            case NODE_MANY_TYPE: {
+                u32 t = type_operand(c, file, child, pop(c));
+                push_type(c, token, t ? intern_type(c, TYPE_MANY, t, 0) : TYPE_ID_NONE);
+                break;
+            }
             case NODE_ARRAY_TYPE: {
                 u32 t = type_operand(c, file, child, pop(c));
                 bool ok;
@@ -6431,6 +6513,10 @@ print_type(FILE *out, const Checker *c, u32 type)
             return;
         case TYPE_SLICE:
             fputs("[]", out);
+            print_type(out, c, t->arg0[type]);
+            return;
+        case TYPE_MANY:
+            fputs("[*]", out);
             print_type(out, c, t->arg0[type]);
             return;
         case TYPE_ARRAY:

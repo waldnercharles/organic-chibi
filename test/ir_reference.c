@@ -29,7 +29,7 @@ ty(const Checker *c, u32 type)
     if (kind == TYPE_BOOL) {
         return (Ty){ false, false, 8 };
     }
-    if (kind == TYPE_POINTER || kind == TYPE_SLICE) {
+    if (kind == TYPE_POINTER || kind == TYPE_MANY || kind == TYPE_SLICE) {
         return (Ty){ false, false, 64 };
     }
     return (Ty){ kind == TYPE_FLOAT,

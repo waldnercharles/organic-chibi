@@ -6321,6 +6321,281 @@ TEST_CASE(exports)
     return true;
 }
 
+static const char MANY_POINTERS[] =
+    "extern fn chibi_c_text() -> [*]u8\n"
+    "extern fn chibi_c_find(s: [*]u8, c: u8) -> [*]u8\n"
+    "extern fn chibi_c_count(s: [*]u8) -> int\n"
+    "extern fn chibi_c_lengths(n: int, ..) -> int\n"
+    "\n"
+    "struct P3 { x: i32, y: i32, z: i32 }\n"
+    "struct Buf { items: []int, n: int }\n"
+    "\n"
+    "fn get(p: [*]int, i: int) -> int {\n"
+    "    return p[i]\n"
+    "}\n"
+    "\n"
+    "fn put(p: [*]i32, i: i32, v: i32) {\n"
+    "    p[i] = v\n"
+    "}\n"
+    "\n"
+    "fn third(p: [*]P3, i: int) -> int {\n"
+    "    return int(p[i].y) * 1000 + int((p + 1)[i].z)\n"
+    "}\n"
+    "\n"
+    "fn moved(p: [*]u8, n: u32, m: i8) -> int {\n"
+    "    q := p + n\n"
+    "    return int(q[m])\n"
+    "}\n"
+    "\n"
+    "fn length(s: [*]u8) -> int {\n"
+    "    q := s\n"
+    "    n := 0\n"
+    "    while q[0] != 0 {\n"
+    "        q += 1\n"
+    "        n += 1\n"
+    "    }\n"
+    "    return n\n"
+    "}\n"
+    "\n"
+    "fn after(s: [*]u8, c: u8) -> int {\n"
+    "    return length(chibi_c_find(s, c) + 1) * 1000 + chibi_c_count(s)\n"
+    "}\n"
+    "\n"
+    "fn lengths(s: [*]u8) -> int {\n"
+    "    return chibi_c_lengths(2, s, s + 2)\n"
+    "}\n"
+    "\n"
+    "fn view(a: int, b: int) -> int {\n"
+    "    s := chibi_c_text()[a..b]\n"
+    "    return s.len * 1000 + int(s[1])\n"
+    "}\n"
+    "\n"
+    "fn ends(b: int, k: int) -> int {\n"
+    "    p := chibi_c_text()\n"
+    "    s := p[..b]\n"
+    "    t := p[1..=b]\n"
+    "    return s.len * 100 + t.len + int(t[k])\n"
+    "}\n"
+    "\n"
+    "fn fixed(p: [*]u8) -> []u8 {\n"
+    "    return p[2..5]\n"
+    "}\n"
+    "\n"
+    "fn first(s: []int) -> [*]int {\n"
+    "    return s.ptr\n"
+    "}\n"
+    "\n"
+    "fn items(b: *Buf) -> [*]int {\n"
+    "    return b.items.ptr + b.n\n"
+    "}\n"
+    "\n"
+    "fn local(k: int) -> int {\n"
+    "    a := int.[1, 2, 3, 4]\n"
+    "    p: [*]int = &a\n"
+    "    q := p + 2\n"
+    "    q[k] = 50\n"
+    "    return a[2] * 100 + a[3] + p[1] * 10000\n"
+    "}\n"
+    "\n"
+    "fn same(p: [*]int, q: [*]int) -> bool {\n"
+    "    return p == q\n"
+    "}\n"
+    "\n"
+    "export fn main(argc: i32, argv: [*][*]u8) -> i32 {\n"
+    "    n := 0\n"
+    "    for i in 0..argc {\n"
+    "        n += length(argv[i])\n"
+    "    }\n"
+    "    return i32(n) * 100 + argc\n"
+    "}\n";
+
+static const char MANY_GRID[] =
+    "fn walk_many(a: int, b: int) -> int {\n"
+    "    t := int.[5, 6, 7, 8, 9, 10, 11, 12]\n"
+    "    p: [*]int = &t\n"
+    "    q := p + (a & 3)\n"
+    "    q += b & 3\n"
+    "    q[0] = q[0] + 100\n"
+    "    return q[1] * 1000 + p[b & 7]\n"
+    "}\n"
+    "\n"
+    "fn cut_many(a: int, b: int) -> int {\n"
+    "    t := u8.[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]\n"
+    "    p: [*]u8 = &t\n"
+    "    s := p[a..b]\n"
+    "    if s.len > 0 and a < 10 {\n"
+    "        return s.len * 100 + int(s[0])\n"
+    "    }\n"
+    "    return s.len\n"
+    "}\n"
+    "\n"
+    "fn ends_many(a: int, b: int) -> int {\n"
+    "    t := i16.[-1, -2, -3, -4, -5, -6]\n"
+    "    p: [*]i16 = &t\n"
+    "    s := p[..b]\n"
+    "    u := p[2..=a]\n"
+    "    return s.len * 1000 + u.len\n"
+    "}\n"
+    "\n"
+    "fn ptr_many(a: int, b: int) -> int {\n"
+    "    t := int.[a, b, 3]\n"
+    "    s := t[0..3]\n"
+    "    p := s.ptr\n"
+    "    return (p + 1)[1] * 10 + p[1]\n"
+    "}\n"
+    "\n"
+    "fn same_many(a: int, b: int) -> int {\n"
+    "    t := int.[1, 2, 3, 4]\n"
+    "    p: [*]int = &t\n"
+    "    if p + (a & 3) == p + (b & 3) {\n"
+    "        return 1\n"
+    "    }\n"
+    "    return 0\n"
+    "}\n";
+
+static const char *const MANY_GRID_FUNCTIONS[] = {
+    "walk_many", "cut_many", "ends_many", "ptr_many", "same_many",
+};
+
+enum
+{
+    WORD_B_COND = 0x54000000u,
+    B_COND_FIELDS = 0x00FFFFEFu,
+};
+
+typedef struct
+{
+    int32_t x, y, z;
+} P3;
+
+typedef struct
+{
+    Slice items;
+    int64_t n;
+} ManyBuf;
+
+typedef int64_t MGET(void *, const int64_t *, int64_t);
+typedef void MPUT(void *, int32_t *, int64_t, int64_t);
+typedef int64_t MTHIRD(void *, const P3 *, int64_t);
+typedef int64_t MMOVED(void *, const char *, uint64_t, uint64_t);
+typedef int64_t MLEN(void *, const char *);
+typedef int64_t MAFTER(void *, const char *, uint64_t);
+typedef Slice MFIXED(void *, const char *);
+typedef const int64_t *MFIRST(void *, Slice);
+typedef const int64_t *MITEMS(void *, const ManyBuf *);
+typedef bool MSAME(void *, const int64_t *, const int64_t *);
+typedef int32_t MAIN(int32_t, char **);
+
+static const char MANY_TEXT[] = "0123456789";
+
+const char *
+chibi_c_text(void)
+{
+    return MANY_TEXT;
+}
+
+const char *
+chibi_c_find(const char *s, uint8_t c)
+{
+    return strchr(s, c);
+}
+
+int64_t
+chibi_c_count(const char *s)
+{
+    return (int64_t)strlen(s);
+}
+
+int64_t
+chibi_c_lengths(int64_t n, ...)
+{
+    va_list ap;
+    va_start(ap, n);
+    int64_t total = 0;
+    for (int64_t i = 0; i < n; i++) {
+        total += (int64_t)strlen(va_arg(ap, const char *));
+    }
+    va_end(ap);
+    return total;
+}
+
+TEST_CASE(many_pointers)
+{
+    catch_traps();
+    Program p;
+    REQUIRE(build(&p, MANY_POINTERS));
+    native_set_context(&p.n, DEFAULT_CONTEXT);
+
+    int64_t ints[] = { 10, 20, 30, 40 };
+    REQUIRE(((MGET *)fn(&p, "get"))(CONTEXT, ints, 2) == 30);
+    REQUIRE(((MGET *)fn(&p, "get"))(CONTEXT, ints + 3, -3) == 10);
+    REQUIRE(count_words(&p, "get", WORD_B_COND, B_COND_FIELDS) == 0);
+
+    int32_t words[] = { 1, 2, 3, 4 };
+    ((MPUT *)fn(&p, "put"))(
+        CONTEXT,
+        words + 2,
+        (int64_t)(JUNK << 32 | (uint32_t)-1),
+        (int64_t)(JUNK << 32 | 77u)
+    );
+    REQUIRE(words[1] == 77 && words[0] == 1 && words[2] == 3);
+
+    P3 points[] = { { 1, 2, 3 }, { 4, 5, 6 }, { 7, 8, 9 }, { 10, 11, 12 } };
+    REQUIRE(((MTHIRD *)fn(&p, "third"))(CONTEXT, points, 1) == 5009);
+    REQUIRE(((MTHIRD *)fn(&p, "third"))(CONTEXT, points + 2, -1) == 5009);
+    REQUIRE(((MTHIRD *)fn(&p, "third"))(CONTEXT, points, 2) == 8012);
+
+    MMOVED *moved = (MMOVED *)fn(&p, "moved");
+    REQUIRE(moved(CONTEXT, MANY_TEXT, JUNK << 32 | 5u, JUNK << 8 | (uint8_t)-2) == '3');
+    REQUIRE(moved(CONTEXT, MANY_TEXT, JUNK << 32 | 2u, JUNK << 8 | 7u) == '9');
+
+    REQUIRE(((MLEN *)fn(&p, "length"))(CONTEXT, "chibi") == 5);
+    REQUIRE(((MLEN *)fn(&p, "length"))(CONTEXT, "") == 0);
+    REQUIRE(((MAFTER *)fn(&p, "after"))(CONTEXT, "usr/lib/x", JUNK << 8 | '/') == 5009);
+    REQUIRE(((MLEN *)fn(&p, "lengths"))(CONTEXT, "chibi") == 8);
+
+    int64_t r = 0;
+    REQUIRE(call_i2((I2 *)fn(&p, "view"), 2, 5, &r) == 0 && r == 3051);
+    REQUIRE(call_i2((I2 *)fn(&p, "view"), 0, 2, &r) == 0 && r == 2049);
+    REQUIRE(call_i2((I2 *)fn(&p, "view"), 4, 3, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "view"), 0, -1, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "view"), -1, 2, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "view"), 3, 4, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "ends"), 5, 0, &r) == 0 && r == 554);
+    REQUIRE(call_i2((I2 *)fn(&p, "ends"), 9, 8, &r) == 0 && r == 966);
+    REQUIRE(call_i2((I2 *)fn(&p, "ends"), -1, 0, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "ends"), 3, 3, &r) == TRAP_BOUNDS);
+    REQUIRE(call_i2((I2 *)fn(&p, "ends"), INT64_MAX, 0, &r) == TRAP_OVERFLOW);
+
+    Slice fixed = ((MFIXED *)fn(&p, "fixed"))(CONTEXT, MANY_TEXT);
+    REQUIRE(fixed.ptr == MANY_TEXT + 2 && fixed.len == 3);
+    REQUIRE(((MFIRST *)fn(&p, "first"))(CONTEXT, (Slice){ ints + 1, 2 }) == ints + 1);
+    ManyBuf buf = { { ints, 4 }, 3 };
+    REQUIRE(((MITEMS *)fn(&p, "items"))(CONTEXT, &buf) == ints + 3);
+
+    I1 *local = (I1 *)fn(&p, "local");
+    REQUIRE(local(CONTEXT, 0) == 25004);
+    REQUIRE(local(CONTEXT, 1) == 20350);
+    REQUIRE(local(CONTEXT, -1) == 500304);
+    REQUIRE(local(CONTEXT, -2) == 20304);
+
+    MSAME *same = (MSAME *)fn(&p, "same");
+    REQUIRE(same(CONTEXT, ints, ints) && !same(CONTEXT, ints, ints + 1));
+
+    char a0[] = "chibi", a1[] = "run", a2[] = "x";
+    char *argv[] = { a0, a1, a2, NULL };
+    MAIN *entry = (MAIN *)export_named(&p, "main");
+    REQUIRE(entry(3, argv) == 903);
+    REQUIRE(entry(1, argv) == 501);
+    REQUIRE(entry(0, argv) == 0);
+    release_program(&p);
+
+    REQUIRE(build(&p, MANY_GRID));
+    REQUIRE(agree_on_grid(&p, MANY_GRID_FUNCTIONS, sizeof MANY_GRID_FUNCTIONS / sizeof MANY_GRID_FUNCTIONS[0]));
+    release_program(&p);
+    return true;
+}
+
 TEST_SUITE(arm64_tests)
 {
     RUN_TEST_CASE(hidden_context);
@@ -6330,6 +6605,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(callbacks);
     RUN_TEST_CASE(callback_stack_limit);
     RUN_TEST_CASE(exports);
+    RUN_TEST_CASE(many_pointers);
     RUN_TEST_CASE(narrow_parameters);
     RUN_TEST_CASE(constant_division);
     RUN_TEST_CASE(differential);

@@ -369,7 +369,7 @@ type_info(const Checker *c, u32 type)
         u32 backing = (u32)c->types.arg1[type];
         return backing ? type_info(c, backing) : INFO_UNSUPPORTED;
     }
-    if (kind == TYPE_POINTER || kind == TYPE_FN) {
+    if (kind == TYPE_POINTER || kind == TYPE_MANY || kind == TYPE_FN) {
         return 3;
     }
     if (kind == TYPE_SLICE) {

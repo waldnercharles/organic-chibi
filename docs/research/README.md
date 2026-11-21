@@ -81,13 +81,14 @@ Updated 2026-11-20. Built so far:
 - step 3h.2, stack arguments and C's variadic calls: arguments past the registers in both directions between chibi and C, as AAPCS64 places them, a bare `..` at the end of an `extern fn` with C's default promotions, and Apple's layout behind a switch that the tests turn on.
 - step 3h.3, callbacks that C calls: `extern fn(...)` types for C function pointers, and an adapter for each chibi function passed as one, which supplies a default context that the host sets.
 - step 3h.4, `export fn`: C calls an exported function by its chibi name, through the same adapter.
+- step 3h.5, `[*]T` and the entry point: a pointer into an array that indexes without bounds checks, moves with `p + n` and slices into a checked `[]T`, and `export fn main(argc: i32, argv: [*][*]u8) -> i32` as the entry point.
 
 [checker-and-ir.md](checker-and-ir.md) section 8 has the details and the measurements.
 
 The goal now is self-hosting: translate the compiler into chibi, then use the compiler as the benchmark that chibi improves against (the Compiler rows of 2026-11-16 and 2026-11-17). The order:
 1. **Step 3d:** built (steps 3d.1 to 3d.9). Options A and C of question 14 were timed on 2026-11-19, on x86-64 ([experiments/slice-lowering](../../experiments/slice-lowering/README.md)): C was at least as fast as A on every kernel, and 21–28% faster on a loop that re-slices as a lexer does, so 3d builds C, and step 3d.3 built slices that way. The same kernels still need timing on the owner's M4 Pro. A cloud container runs the arm64 backend's tests under qemu (`make test`), but can't time arm64 code.
 2. Globals and constant tables: built (steps 3g.1 and 3g.2).
-3. Calling C and being called from C: calls into C, stack arguments, C's variadic calls, callbacks that C calls and `export fn` are built (steps 3h.1 to 3h.4). Next comes `[*]T`, the pointer into a C array (rank 5, decided), with the entry point, because C's `main(argc, argv)` needs `[*]T` for `argv`.
+3. Calling C and being called from C: built (steps 3h.1 to 3h.5): calls into C, stack arguments, C's variadic calls, callbacks that C calls, `export fn`, and `[*]T` with the entry point.
 4. SIMD types, and the bit-scan and overflow builtins.
 5. The C backend, the C-to-chibi translator and the bootstrap check.
 6. Then steps 3c, 3e, 3f, 4 and 5, and the spike of cppgm's LowIR as the release backend (the Compiler row of 2026-11-19).
@@ -101,7 +102,7 @@ Measure cycles per IR instruction, and swap one slot while the program runs. Tha
 
 ## Open decisions, ordered by what they block
 
-Updated 2026-11-20. The owner's answers are in [../decisions.md](../decisions.md). This list holds what is still open, in the order of the next step above. Points that a decision row marks "proposed, not yet decided" are open too, and are not repeated here. The compiler's own C (`src/`) shows what the translator meets first: it uses `++`, `--`, `?:` and character literals throughout, calls C's `printf` family and `qsort`, uses `vector_size` types, the bit-scan and overflow builtins, and the `noinline`, `always_inline` and `noreturn` attributes, and has no bitfields and no `goto`.
+Updated 2026-11-21. The owner's answers are in [../decisions.md](../decisions.md). This list holds what is still open, in the order of the next step above. Points that a decision row marks "proposed, not yet decided" are open too, and are not repeated here. The compiler's own C (`src/`) shows what the translator meets first: it uses `++`, `--`, `?:` and character literals throughout, calls C's `printf` family and `qsort`, uses `vector_size` types, the bit-scan and overflow builtins, and the `noinline`, `always_inline` and `noreturn` attributes, and has no bitfields and no `goto`.
 
 1. **Step 3d.** Questions 12–14 of [checker-and-ir.md](checker-and-ir.md) section 9 are decided, and so is the hidden context of rank 7 (the Language row of 2026-11-18). Step 3d.6 passes structs of up to 16 bytes, and float-only structs of up to 32, in registers as C does; its rules open to review are in [checker-and-ir.md](checker-and-ir.md) section 8. Larger structs follow rank 8, decided 2026-11-19 ([adopt-or-settle.md](adopt-or-settle.md) 2.8): parameters behave as copies, and a large struct goes by pointer to a copy that the caller skips when nothing the callee can reach is able to write the original; step 3d.8 built it the same day, and its rules open to review are in section 8 too. The context travels as a hidden first argument, decided 2026-11-20 (the Language row of 2026-11-18); step 3d.9 built it that day, and its rules open to review are in section 8 too. Read-only parameters are decided.
 2. **Globals and constant tables.** Globals start at compile time and no code runs before `main` (the Language row of 2026-11-19). Step 3g.2 built them on 2026-11-20, and its rules open to review are in [checker-and-ir.md](checker-and-ir.md) section 8.
@@ -113,6 +114,7 @@ Updated 2026-11-20. The owner's answers are in [../decisions.md](../decisions.md
    - `export fn`: C names, slices in exported signatures, and `export` on globals (10b). Step 3h.4 built `export fn` with the chibi name as the C name and an `extern fn`'s signature rules; its rules open to review are in [checker-and-ir.md](checker-and-ir.md) section 8.
    - Variadic functions: `xs: ..T` for chibi functions (4e, question 1). Step 3h.2 built a bare `..` for C's variadic tail (question 2), as 4e recommends; its rules open to review are in [checker-and-ir.md](checker-and-ir.md) section 8.
    - Function values (rank 13, 2.13). Callbacks for C don't wait for them: step 3h.3 converts a named function where an `extern fn(...)` type is expected.
+   - `[*]T` (rank 5, decided 2026-11-15). Step 3h.5 built it with a slice's `.ptr`, the conversion from `&a` and the entry point as an `export fn main`; its rules open to review are in [checker-and-ir.md](checker-and-ir.md) section 8, among them what an empty slice's `.ptr` gives once optionals exist.
 4. **SIMD types and builtins.**
    - Vector math beyond the matrix row: element-wise operators and swizzles (rank 14, 2.14).
    - How builtins are named. Sheets 3 and 8 recommend plain predeclared names for type queries, such as `size_of` and `type_of` ([syntax-options-data.md](syntax-options-data.md) 3), and no sheet covers the bit-scan and overflow builtins yet.
@@ -146,7 +148,8 @@ Built by the research thread and open to the owner's review, as their rows in de
 - `extern fn` for C functions without bodies, and how step 3h.1 calls them (Language, 2026-11-20);
 - a bare `..` for C's variadic tail, C's promotions, and how step 3h.2 passes stack and variadic arguments (Language, 2026-11-20);
 - `extern fn(...)` for C function pointer types, and the default context that step 3h.3's adapters supply (Language, 2026-11-20, the callbacks row);
-- how step 3h.4 exports functions: the chibi name as the C name, and an `extern fn`'s signature rules (Language, the `export fn` row of 2026-11-09).
+- how step 3h.4 exports functions: the chibi name as the C name, and an `extern fn`'s signature rules (Language, the `export fn` row of 2026-11-09);
+- how step 3h.5 builds `[*]T`: a slice's `.ptr`, the conversion from `&a`, the arithmetic left out, and the entry point as an `export fn main` (Language, the pointer kinds row of 2026-11-15).
 
 ## Syntax option sheets: how they fit together (2026-11-10)
 
@@ -170,4 +173,4 @@ Keywords and tokens proposed across the sheets:
 |---|---|---|
 | Add | `then`, `extern`, `await`, `task` (only before `fn`), `undefined`. `bitcast` decided 2026-11-10 (sheet 2). The reserved `is` tests a tagged union's tag, as in `e is .key` (sheet 1, decided 2026-11-11). `catch` and `try` decided 2026-11-10: a named error is written `catch err => …`, and `try` goes before each call that can fail, as in Zig (decided 2026-11-11, replacing Swift's one `try` per expression). Error-only cleanup is `defer catch` (decided 2026-11-11), so `errdefer` isn't added | sheets 4, 9 and 10; adopt-or-settle |
 | Remove | `as` and `cast`, decided 2026-11-10 (sheet 2). `type`, `sizeof`, `alignof`, `offsetof` and `typeof`, decided 2026-11-11 in the parser thread's token audit, until sheets 6–8 decide how code asks for sizes and types. `case`, `default`, `goto` and `yield`, decided later the same day; the coroutines sheet picks its own keyword. `::` and `?=` stay lexer tokens that the parser rejects with a hint, and `&&` and `\|\|` stay as tokens that only give hints | sheets 2, 3 and 4; token audit |
-| New tokens | decided 2026-11-10: `+%`, `-%`, `*%`, `+%=`, `-%=`, `*%=` and prefix `-%`; postfix `!!`, `??` and `??=`; ranges `..` and `..=` (the `..<` token was removed on 2026-11-11, so `0..<n` fails at the `<`); `\|` combines error sets. `?.` and `?:` are left out until real code needs them. Still proposed: `[*]` | adopt-or-settle 2.1, 3.1 and 2.5 |
+| New tokens | decided 2026-11-10: `+%`, `-%`, `*%`, `+%=`, `-%=`, `*%=` and prefix `-%`; postfix `!!`, `??` and `??=`; ranges `..` and `..=` (the `..<` token was removed on 2026-11-11, so `0..<n` fails at the `<`); `\|` combines error sets. `?.` and `?:` are left out until real code needs them. `[*]` was decided with rank 5 on 2026-11-15 and parses since step 3h.5 | adopt-or-settle 2.1, 3.1 and 2.5 |

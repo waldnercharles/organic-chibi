@@ -658,6 +658,11 @@ parse_composite_type(Parser *p)
         p->pos += 2;
         parse_type(p);
         emit(p, NODE_SLICE_TYPE, at);
+    } else if (p->tokens.kinds[at + 1] == TK_STAR &&
+               p->tokens.kinds[at + 2] == TK_RBRACK) {
+        p->pos += 3;
+        parse_type(p);
+        emit(p, NODE_MANY_TYPE, at);
     } else {
         p->pos++;
         p->brackets++;
