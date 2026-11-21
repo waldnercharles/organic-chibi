@@ -168,7 +168,7 @@ static u32
 value_type(const IrCode *ir, u32 g)
 {
     u8 kind = ir->kinds[g];
-    return kind >= IR_EQ && kind <= IR_GE ? TYPE_ID_BOOL : ir->types[g];
+    return kind >= IR_EQ && kind <= IR_MUL_OVERFLOWS ? TYPE_ID_BOOL : ir->types[g];
 }
 
 void
@@ -283,7 +283,7 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
         u32 b = ir->bs[g];
         Ty t = ty(c, type);
         u64 x = 0, y = 0;
-        if (kind >= IR_ADD && kind <= IR_GE) {
+        if (kind >= IR_ADD && kind <= IR_MUL_OVERFLOWS) {
             x = OPERAND(a);
             if (kind < IR_NEG || kind > IR_COUNT_ONES) {
                 y = OPERAND(b);
@@ -475,6 +475,21 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
             case IR_LE:
             case IR_GT:
             case IR_GE: v = compare(kind, x, y, t); break;
+            case IR_ADD_OVERFLOWS:
+            case IR_SUB_OVERFLOWS:
+            case IR_MUL_OVERFLOWS: {
+                __int128 p = wide(x, t), q = wide(y, t);
+                unsigned __int128 exact =
+                    kind == IR_ADD_OVERFLOWS   ? (unsigned __int128)(p + q)
+                    : kind == IR_SUB_OVERFLOWS ? (unsigned __int128)(p - q)
+                                               : (unsigned __int128)p * (unsigned __int128)q;
+                u64 r = canon(kind == IR_ADD_OVERFLOWS   ? x + y
+                              : kind == IR_SUB_OVERFLOWS ? x - y
+                                                         : x * y,
+                              t);
+                v = exact != (unsigned __int128)wide(r, t);
+                break;
+            }
             case IR_CONVERT:
             case IR_NARROW:
             case IR_TRUNCATE: {

@@ -41,6 +41,9 @@
     X(IR_LE, "le")                                                             \
     X(IR_GT, "gt")                                                             \
     X(IR_GE, "ge")                                                             \
+    X(IR_ADD_OVERFLOWS, "add-overflows")                                       \
+    X(IR_SUB_OVERFLOWS, "sub-overflows")                                       \
+    X(IR_MUL_OVERFLOWS, "mul-overflows")                                       \
     X(IR_CONVERT, "convert")                                                   \
     X(IR_NARROW, "narrow")                                                     \
     X(IR_TRUNCATE, "truncate")                                                 \

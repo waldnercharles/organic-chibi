@@ -105,6 +105,7 @@ enum
     OP_ASR_IMM = 0x13007C00u,
     OP_LSR_IMM = 0x53007C00u,
     SHIFT_LSR = 0x00400000u,
+    SHIFT_ASR = 0x00800000u,
     SHIFT_IMM12 = 0x00400000u,
     OP_SUBS_EXT = 0x6B200000u,
     OP_ANDS = 0x6A000000u,
@@ -1514,6 +1515,19 @@ compare_cond(const Emit *e, u8 kind, u32 type)
 }
 
 static void
+flag_result(Emit *e, u32 i, u8 cond)
+{
+    u32 next = e->fn->first + i + 1;
+    if (i + 1 < e->fn->count && e->ir->kinds[next] == IR_IF && e->ir->as[next] == i) {
+        e->fused = i;
+        e->fused_cond = cond;
+        return;
+    }
+    u32 d = result(e, i, e->info[TYPE_ID_BOOL]);
+    put(e, OP_CSET | (u32)(cond ^ 1) << 12 | d);
+}
+
+static void
 compare(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
 {
     u8 t = e->info[type];
@@ -1545,15 +1559,7 @@ compare(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
         }
     }
 
-    u8 cond = compare_cond(e, kind, type);
-    u32 next = e->fn->first + i + 1;
-    if (i + 1 < e->fn->count && e->ir->kinds[next] == IR_IF && e->ir->as[next] == i) {
-        e->fused = i;
-        e->fused_cond = cond;
-        return;
-    }
-    u32 d = result(e, i, e->info[TYPE_ID_BOOL]);
-    put(e, OP_CSET | (u32)(cond ^ 1) << 12 | d);
+    flag_result(e, i, compare_cond(e, kind, type));
 }
 
 static void
@@ -1640,6 +1646,51 @@ count_bits(Emit *e, u32 i, u8 kind, u32 type, u32 a)
             break;
         default: assert(false && "not a bit count");
     }
+}
+
+static NOINLINE void
+test_overflow(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
+{
+    u8 t = e->info[type];
+    u32 sf = width(t);
+    bool s = is_signed(t);
+    bool sub = kind == IR_SUB_OVERFLOWS;
+    if (!sub && (a & IR_CONST) && !(b & IR_CONST)) {
+        swap(&a, &b);
+    }
+    u32 field = 0;
+    bool flip = false;
+    bool imm = kind != IR_MUL_OVERFLOWS && arith_imm(e, b, t, s, &field, &flip);
+    u32 ra = fetch(e, a, X16);
+    u32 rb = imm ? 0 : fetch(e, b, X17);
+    release(e, a);
+    release(e, b);
+
+    u32 operand = imm ? field : rb << 16;
+    bool negative = sub != flip;
+    u32 extend = extension(bits_of(t), s) << 13;
+    u8 cond = COND_NE;
+    if (kind == IR_MUL_OVERFLOWS && !sf) {
+        put(e, (s ? OP_SMULL : OP_UMULL) | rb << 16 | ra << 5 | X16);
+        put(e, OP_SUBS_EXT | SF | X16 << 16 | extend | X16 << 5 | ZR);
+    } else if (kind == IR_MUL_OVERFLOWS && s) {
+        put(e, OP_SMULH | rb << 16 | ra << 5 | X8);
+        put(e, OP_MUL | SF | rb << 16 | ra << 5 | X16);
+        put(e, OP_SUBS | SF | SHIFT_ASR | X16 << 16 | 63u << 10 | X8 << 5 | ZR);
+    } else if (kind == IR_MUL_OVERFLOWS) {
+        put(e, OP_UMULH | rb << 16 | ra << 5 | X16);
+        put(e, OP_SUBS_IMM | SF | X16 << 5 | ZR);
+    } else if (is_small(t)) {
+        u32 op = imm ? (negative ? OP_SUB_IMM : OP_ADD_IMM) : (sub ? OP_SUB : OP_ADD);
+        put(e, op | operand | ra << 5 | X16);
+        put(e, OP_SUBS_EXT | X16 << 16 | extend | X16 << 5 | ZR);
+    } else {
+        u32 op = imm ? (negative ? OP_SUBS_IMM : OP_ADDS_IMM)
+                     : (sub ? OP_SUBS : OP_ADDS);
+        put(e, op | sf | operand | ra << 5 | ZR);
+        cond = s ? COND_VS : sub ? COND_LO : COND_HS;
+    }
+    flag_result(e, i, cond);
 }
 
 static void
@@ -3427,6 +3478,9 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
             case IR_LE:
             case IR_GT:
             case IR_GE: compare(e, i, kind, type, a, b); break;
+            case IR_ADD_OVERFLOWS:
+            case IR_SUB_OVERFLOWS:
+            case IR_MUL_OVERFLOWS: test_overflow(e, i, kind, type, a, b); break;
             case IR_CONVERT: convert(e, i, type, a); break;
             case IR_NARROW: narrow(e, i, type, a); break;
             case IR_TRUNCATE: truncate_to(e, i, type, a); break;

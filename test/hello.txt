@@ -1,22 +1,22 @@
-IDENT      @ 1:1 "Example" id=53
+IDENT      @ 1:1 "Example" id=56
 ::         @ 1:9 "::"
-IDENT      @ 1:12 "library" id=54
+IDENT      @ 1:12 "library" id=57
 {          @ 1:20 "{"
-IDENT      @ 2:5 "Run" id=55
+IDENT      @ 2:5 "Run" id=58
 ::         @ 2:9 "::"
 (          @ 2:12 "("
 )          @ 2:13 ")"
 {          @ 2:15 "{"
-IDENT      @ 3:9 "score" id=56
+IDENT      @ 3:9 "score" id=59
 :=         @ 3:15 ":="
 INT        @ 3:18 "0"
-IDENT      @ 4:9 "speed" id=57
+IDENT      @ 4:9 "speed" id=60
 :=         @ 4:15 ":="
 FLOAT      @ 4:18 "120.0"
-IDENT      @ 5:9 "title" id=58
+IDENT      @ 5:9 "title" id=61
 :=         @ 5:15 ":="
 STRING     @ 5:18 ""My Game""
-IDENT      @ 7:9 "lives" id=59
+IDENT      @ 7:9 "lives" id=62
 :          @ 7:14 ":"
 IDENT      @ 7:16 "int" id=33
 =          @ 7:20 "="

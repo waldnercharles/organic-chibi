@@ -6759,6 +6759,368 @@ TEST_CASE(bit_counts)
     return true;
 }
 
+static const char OVERFLOW_TESTS[] =
+    "fn carry(x: u64, y: u64) -> int {\n"
+    "    if add_overflows(x, y) {\n"
+    "        return 1\n"
+    "    }\n"
+    "    return 0\n"
+    "}\n"
+    "fn signed_add(x: int, y: int) -> bool {\n"
+    "    return add_overflows(x, y)\n"
+    "}\n"
+    "fn mul64(x: int, y: int) -> bool {\n"
+    "    return mul_overflows(x, y)\n"
+    "}\n"
+    "fn umul64(x: u64, y: u64) -> bool {\n"
+    "    return mul_overflows(x, y)\n"
+    "}\n"
+    "fn mulu32(x: u32, y: u32) -> bool {\n"
+    "    return mul_overflows(x, y)\n"
+    "}\n"
+    "fn borrow32(x: u32, y: u32) -> bool {\n"
+    "    return sub_overflows(x, y)\n"
+    "}\n"
+    "fn mul16(x: u16, y: u16) -> bool {\n"
+    "    return mul_overflows(x, y)\n"
+    "}\n"
+    "fn sub8(x: i8, y: i8) -> bool {\n"
+    "    return sub_overflows(x, y)\n"
+    "}\n"
+    "fn add_one(x: int) -> bool {\n"
+    "    return add_overflows(x, 1)\n"
+    "}\n"
+    "fn add_minus_one(x: int) -> bool {\n"
+    "    return add_overflows(x, -1)\n"
+    "}\n";
+
+static const char OVERFLOW_GRID[] =
+    "fn ov_int(a: int, b: int) -> int {\n"
+    "    v := int.[\n"
+    "        -9223372036854775808, -9223372036854775807, -4611686018427387905,\n"
+    "        -4611686018427387904, -2, -1, 0, 1, 2, 3, 3037000499, 3037000500,\n"
+    "        4611686018427387903, 4611686018427387904, 9223372036854775806,\n"
+    "        9223372036854775807,\n"
+    "    ]\n"
+    "    x := v[a & 15]\n"
+    "    y := v[b & 15]\n"
+    "    r := 0\n"
+    "    if add_overflows(x, y) { r += 1 }\n"
+    "    if sub_overflows(x, y) { r += 2 }\n"
+    "    if mul_overflows(x, y) { r += 4 }\n"
+    "    s := add_overflows(x, y)\n"
+    "    d := sub_overflows(x, y)\n"
+    "    m := mul_overflows(x, y)\n"
+    "    if s { r += 8 }\n"
+    "    if d { r += 16 }\n"
+    "    if m { r += 32 }\n"
+    "    if add_overflows(x, 1) { r += 64 }\n"
+    "    if sub_overflows(x, 1) { r += 128 }\n"
+    "    if sub_overflows(0, x) { r += 256 }\n"
+    "    if mul_overflows(x, 3) { r += 512 }\n"
+    "    if add_overflows(100000, x) { r += 1024 }\n"
+    "    if sub_overflows(x, 100000) { r += 2048 }\n"
+    "    if add_overflows(x, -1) { r += 4096 }\n"
+    "    if sub_overflows(x, -1) { r += 8192 }\n"
+    "    return r\n"
+    "}\n"
+    "fn ov_u64(a: int, b: int) -> int {\n"
+    "    v := u64.[\n"
+    "        0, 1, 2, 3, 4294967295, 4294967296, 4294967297, 6148914691236517205,\n"
+    "        9223372036854775807, 9223372036854775808, 9223372036854775809,\n"
+    "        12297829382473034410, 18446744073709551613, 18446744073709551614,\n"
+    "        18446744073709551615, 3689348814741910323,\n"
+    "    ]\n"
+    "    x := v[a & 15]\n"
+    "    y := v[b & 15]\n"
+    "    r := 0\n"
+    "    if add_overflows(x, y) { r += 1 }\n"
+    "    if sub_overflows(x, y) { r += 2 }\n"
+    "    if mul_overflows(x, y) { r += 4 }\n"
+    "    s := add_overflows(x, y)\n"
+    "    d := sub_overflows(x, y)\n"
+    "    m := mul_overflows(x, y)\n"
+    "    if s { r += 8 }\n"
+    "    if d { r += 16 }\n"
+    "    if m { r += 32 }\n"
+    "    if add_overflows(x, 1) { r += 64 }\n"
+    "    if sub_overflows(x, 1) { r += 128 }\n"
+    "    if sub_overflows(0, x) { r += 256 }\n"
+    "    if mul_overflows(x, 3) { r += 512 }\n"
+    "    if add_overflows(100000, x) { r += 1024 }\n"
+    "    if sub_overflows(x, 100000) { r += 2048 }\n"
+    "    return r\n"
+    "}\n"
+    "fn ov_i32(a: int, b: int) -> int {\n"
+    "    v := i32.[\n"
+    "        -2147483648, -2147483647, -1073741825, -1073741824, -2, -1, 0, 1, 2, 3, 46340,\n"
+    "        46341, 1073741823, 1073741824, 2147483646, 2147483647,\n"
+    "    ]\n"
+    "    x := v[a & 15]\n"
+    "    y := v[b & 15]\n"
+    "    r := 0\n"
+    "    if add_overflows(x, y) { r += 1 }\n"
+    "    if sub_overflows(x, y) { r += 2 }\n"
+    "    if mul_overflows(x, y) { r += 4 }\n"
+    "    s := add_overflows(x, y)\n"
+    "    d := sub_overflows(x, y)\n"
+    "    m := mul_overflows(x, y)\n"
+    "    if s { r += 8 }\n"
+    "    if d { r += 16 }\n"
+    "    if m { r += 32 }\n"
+    "    if add_overflows(x, 1) { r += 64 }\n"
+    "    if sub_overflows(x, 1) { r += 128 }\n"
+    "    if sub_overflows(0, x) { r += 256 }\n"
+    "    if mul_overflows(x, 3) { r += 512 }\n"
+    "    if add_overflows(100000, x) { r += 1024 }\n"
+    "    if sub_overflows(x, 100000) { r += 2048 }\n"
+    "    if add_overflows(x, -1) { r += 4096 }\n"
+    "    if sub_overflows(x, -1) { r += 8192 }\n"
+    "    return r\n"
+    "}\n"
+    "fn ov_u32(a: int, b: int) -> int {\n"
+    "    v := u32.[\n"
+    "        0, 1, 2, 3, 65535, 65536, 65537, 1431655765, 2147483647, 2147483648, 2147483649,\n"
+    "        2863311530, 4294967293, 4294967294, 4294967295, 858993459,\n"
+    "    ]\n"
+    "    x := v[a & 15]\n"
+    "    y := v[b & 15]\n"
+    "    r := 0\n"
+    "    if add_overflows(x, y) { r += 1 }\n"
+    "    if sub_overflows(x, y) { r += 2 }\n"
+    "    if mul_overflows(x, y) { r += 4 }\n"
+    "    s := add_overflows(x, y)\n"
+    "    d := sub_overflows(x, y)\n"
+    "    m := mul_overflows(x, y)\n"
+    "    if s { r += 8 }\n"
+    "    if d { r += 16 }\n"
+    "    if m { r += 32 }\n"
+    "    if add_overflows(x, 1) { r += 64 }\n"
+    "    if sub_overflows(x, 1) { r += 128 }\n"
+    "    if sub_overflows(0, x) { r += 256 }\n"
+    "    if mul_overflows(x, 3) { r += 512 }\n"
+    "    if add_overflows(100000, x) { r += 1024 }\n"
+    "    if sub_overflows(x, 100000) { r += 2048 }\n"
+    "    return r\n"
+    "}\n"
+    "fn ov_i16(a: int, b: int) -> int {\n"
+    "    v := i16.[\n"
+    "        -32768, -32767, -16385, -16384, -2, -1, 0, 1, 2, 3, 181, 182, 16383, 16384,\n"
+    "        32766, 32767,\n"
+    "    ]\n"
+    "    x := v[a & 15]\n"
+    "    y := v[b & 15]\n"
+    "    r := 0\n"
+    "    if add_overflows(x, y) { r += 1 }\n"
+    "    if sub_overflows(x, y) { r += 2 }\n"
+    "    if mul_overflows(x, y) { r += 4 }\n"
+    "    s := add_overflows(x, y)\n"
+    "    d := sub_overflows(x, y)\n"
+    "    m := mul_overflows(x, y)\n"
+    "    if s { r += 8 }\n"
+    "    if d { r += 16 }\n"
+    "    if m { r += 32 }\n"
+    "    if add_overflows(x, 1) { r += 64 }\n"
+    "    if sub_overflows(x, 1) { r += 128 }\n"
+    "    if sub_overflows(0, x) { r += 256 }\n"
+    "    if mul_overflows(x, 3) { r += 512 }\n"
+    "    if add_overflows(10000, x) { r += 1024 }\n"
+    "    if sub_overflows(x, 10000) { r += 2048 }\n"
+    "    if add_overflows(x, -1) { r += 4096 }\n"
+    "    if sub_overflows(x, -1) { r += 8192 }\n"
+    "    return r\n"
+    "}\n"
+    "fn ov_u16(a: int, b: int) -> int {\n"
+    "    v := u16.[\n"
+    "        0, 1, 2, 3, 255, 256, 257, 21845, 32767, 32768, 32769, 43690, 65533, 65534,\n"
+    "        65535, 13107,\n"
+    "    ]\n"
+    "    x := v[a & 15]\n"
+    "    y := v[b & 15]\n"
+    "    r := 0\n"
+    "    if add_overflows(x, y) { r += 1 }\n"
+    "    if sub_overflows(x, y) { r += 2 }\n"
+    "    if mul_overflows(x, y) { r += 4 }\n"
+    "    s := add_overflows(x, y)\n"
+    "    d := sub_overflows(x, y)\n"
+    "    m := mul_overflows(x, y)\n"
+    "    if s { r += 8 }\n"
+    "    if d { r += 16 }\n"
+    "    if m { r += 32 }\n"
+    "    if add_overflows(x, 1) { r += 64 }\n"
+    "    if sub_overflows(x, 1) { r += 128 }\n"
+    "    if sub_overflows(0, x) { r += 256 }\n"
+    "    if mul_overflows(x, 3) { r += 512 }\n"
+    "    if add_overflows(40000, x) { r += 1024 }\n"
+    "    if sub_overflows(x, 40000) { r += 2048 }\n"
+    "    return r\n"
+    "}\n"
+    "fn ov_i8(a: int, b: int) -> int {\n"
+    "    v := i8.[\n"
+    "        -128, -127, -65, -64, -2, -1, 0, 1, 2, 3, 11, 12, 63, 64, 126, 127,\n"
+    "    ]\n"
+    "    x := v[a & 15]\n"
+    "    y := v[b & 15]\n"
+    "    r := 0\n"
+    "    if add_overflows(x, y) { r += 1 }\n"
+    "    if sub_overflows(x, y) { r += 2 }\n"
+    "    if mul_overflows(x, y) { r += 4 }\n"
+    "    s := add_overflows(x, y)\n"
+    "    d := sub_overflows(x, y)\n"
+    "    m := mul_overflows(x, y)\n"
+    "    if s { r += 8 }\n"
+    "    if d { r += 16 }\n"
+    "    if m { r += 32 }\n"
+    "    if add_overflows(x, 1) { r += 64 }\n"
+    "    if sub_overflows(x, 1) { r += 128 }\n"
+    "    if sub_overflows(0, x) { r += 256 }\n"
+    "    if mul_overflows(x, 3) { r += 512 }\n"
+    "    if add_overflows(100, x) { r += 1024 }\n"
+    "    if sub_overflows(x, 100) { r += 2048 }\n"
+    "    if add_overflows(x, -1) { r += 4096 }\n"
+    "    if sub_overflows(x, -1) { r += 8192 }\n"
+    "    return r\n"
+    "}\n"
+    "fn ov_u8(a: int, b: int) -> int {\n"
+    "    v := u8.[\n"
+    "        0, 1, 2, 3, 15, 16, 17, 85, 127, 128, 129, 170, 253, 254, 255, 51,\n"
+    "    ]\n"
+    "    x := v[a & 15]\n"
+    "    y := v[b & 15]\n"
+    "    r := 0\n"
+    "    if add_overflows(x, y) { r += 1 }\n"
+    "    if sub_overflows(x, y) { r += 2 }\n"
+    "    if mul_overflows(x, y) { r += 4 }\n"
+    "    s := add_overflows(x, y)\n"
+    "    d := sub_overflows(x, y)\n"
+    "    m := mul_overflows(x, y)\n"
+    "    if s { r += 8 }\n"
+    "    if d { r += 16 }\n"
+    "    if m { r += 32 }\n"
+    "    if add_overflows(x, 1) { r += 64 }\n"
+    "    if sub_overflows(x, 1) { r += 128 }\n"
+    "    if sub_overflows(0, x) { r += 256 }\n"
+    "    if mul_overflows(x, 3) { r += 512 }\n"
+    "    if add_overflows(200, x) { r += 1024 }\n"
+    "    if sub_overflows(x, 200) { r += 2048 }\n"
+    "    return r\n"
+    "}\n";
+
+static const char *const OVERFLOW_GRID_FUNCTIONS[] = {
+    "ov_int", "ov_u64", "ov_i32", "ov_u32", "ov_i16", "ov_u16", "ov_i8", "ov_u8",
+};
+
+typedef bool B2(void *, int64_t, int64_t);
+
+enum
+{
+    WORD_ADDS_X_ZR = 0xAB00001Fu,
+    WORD_ADDS_X_ZR_1 = 0xB100041Fu,
+    WORD_SUBS_X_ZR_1 = 0xF100041Fu,
+    WORD_CMP_X_0 = 0xF100001Fu,
+    WORD_CMP_ASR_63 = 0xEB80FC1Fu,
+    WORD_CMP_UXTW = 0xEB20401Fu,
+    WORD_CMP_SXTB = 0x6B20801Fu,
+    WORD_SMULH = 0x9B407C00u,
+    WORD_UMULH = 0x9BC07C00u,
+    WORD_UMULL = 0x9BA07C00u,
+    WORD_MUL_X = 0x9B007C00u,
+    WORD_CSET_NE = 0x1A9F07E0u,
+    WORD_CSET_VS = 0x1A9F77E0u,
+    WORD_B_LO = 0x54000003u,
+    SOURCE_FIELDS = 0x001F03E0u,
+    THREE_REGISTERS = 0x001F03FFu,
+    RN_FIELD = 0x000003E0u,
+    RD_FIELD = 0x0000001Fu,
+    CSET_FIELDS = 0x0000F01Fu,
+    B_TARGET = 0x00FFFFE0u,
+};
+
+TEST_CASE(overflow_tests)
+{
+    catch_traps();
+    Program p;
+    REQUIRE(build(&p, OVERFLOW_TESTS));
+
+    I2 *carry = (I2 *)fn(&p, "carry");
+    REQUIRE(carry(CONTEXT, -1, 1) == 1);
+    REQUIRE(carry(CONTEXT, -1, 0) == 0);
+    REQUIRE(carry(CONTEXT, INT64_MIN, INT64_MIN) == 1);
+    REQUIRE(carry(CONTEXT, INT64_MIN, INT64_MAX) == 0);
+
+    B2 *signed_add = (B2 *)fn(&p, "signed_add");
+    REQUIRE(signed_add(CONTEXT, INT64_MAX, 1));
+    REQUIRE(!signed_add(CONTEXT, INT64_MAX, 0));
+    REQUIRE(signed_add(CONTEXT, INT64_MIN, -1));
+    REQUIRE(!signed_add(CONTEXT, INT64_MIN, INT64_MAX));
+    REQUIRE(signed_add(CONTEXT, -1, INT64_MIN));
+
+    B2 *mul64 = (B2 *)fn(&p, "mul64");
+    REQUIRE(mul64(CONTEXT, 3037000500, 3037000500));
+    REQUIRE(!mul64(CONTEXT, 3037000499, 3037000499));
+    REQUIRE(mul64(CONTEXT, INT64_MIN, -1));
+    REQUIRE(mul64(CONTEXT, -1, INT64_MIN));
+    REQUIRE(!mul64(CONTEXT, INT64_MIN, 1));
+    REQUIRE(mul64(CONTEXT, 4611686018427387904, 2));
+    REQUIRE(!mul64(CONTEXT, -4611686018427387904, 2));
+
+    B2 *umul64 = (B2 *)fn(&p, "umul64");
+    REQUIRE(umul64(CONTEXT, 4294967296, 4294967296));
+    REQUIRE(!umul64(CONTEXT, 4294967295, 4294967297));
+    REQUIRE(!umul64(CONTEXT, -1, 1));
+    REQUIRE(umul64(CONTEXT, -1, 2));
+
+    B2 *mulu32 = (B2 *)fn(&p, "mulu32");
+    REQUIRE(mulu32(CONTEXT, (int64_t)(JUNK << 32 | 65536u), (int64_t)(JUNK << 32 | 65536u)));
+    REQUIRE(!mulu32(CONTEXT, (int64_t)(JUNK << 32 | 65535u), (int64_t)(JUNK << 32 | 65537u)));
+
+    B2 *borrow32 = (B2 *)fn(&p, "borrow32");
+    REQUIRE(borrow32(CONTEXT, (int64_t)(JUNK << 32 | 5u), (int64_t)(JUNK << 32 | 6u)));
+    REQUIRE(!borrow32(CONTEXT, (int64_t)(JUNK << 32 | 6u), (int64_t)(JUNK << 32 | 6u)));
+    REQUIRE(!borrow32(CONTEXT, (int64_t)(JUNK << 32 | 0xFFFFFFFFu), (int64_t)(JUNK << 32)));
+
+    B2 *mul16 = (B2 *)fn(&p, "mul16");
+    REQUIRE(!mul16(CONTEXT, (int64_t)(JUNK << 16 | 255u), (int64_t)(JUNK << 16 | 257u)));
+    REQUIRE(mul16(CONTEXT, (int64_t)(JUNK << 16 | 256u), (int64_t)(JUNK << 16 | 256u)));
+
+    B2 *sub8 = (B2 *)fn(&p, "sub8");
+    REQUIRE(sub8(CONTEXT, (int64_t)(JUNK << 8 | 0x80u), 1));
+    REQUIRE(!sub8(CONTEXT, (int64_t)(JUNK << 8 | 0x81u), 1));
+    REQUIRE(sub8(CONTEXT, 127, (int64_t)(JUNK << 8 | 0xFFu)));
+    REQUIRE(sub8(CONTEXT, 0, (int64_t)(JUNK << 8 | 0x80u)));
+    REQUIRE(!sub8(CONTEXT, (int64_t)(JUNK << 8 | 0xFFu), (int64_t)(JUNK << 8 | 0x80u)));
+
+    B1 *add_one = (B1 *)fn(&p, "add_one");
+    REQUIRE(add_one(CONTEXT, INT64_MAX));
+    REQUIRE(!add_one(CONTEXT, INT64_MAX - 1));
+    B1 *add_minus_one = (B1 *)fn(&p, "add_minus_one");
+    REQUIRE(add_minus_one(CONTEXT, INT64_MIN));
+    REQUIRE(!add_minus_one(CONTEXT, INT64_MIN + 1));
+
+    REQUIRE(count_words(&p, "carry", WORD_ADDS_X_ZR, SOURCE_FIELDS) == 1);
+    REQUIRE(count_words(&p, "carry", WORD_B_LO, B_TARGET) == 1);
+    REQUIRE(count_words(&p, "carry", WORD_CSET_NE, CSET_FIELDS) == 0);
+    REQUIRE(count_words(&p, "signed_add", WORD_ADDS_X_ZR, SOURCE_FIELDS) == 1);
+    REQUIRE(count_words(&p, "signed_add", WORD_CSET_VS, RD_FIELD) == 1);
+    REQUIRE(count_words(&p, "mul64", WORD_SMULH, THREE_REGISTERS) == 1);
+    REQUIRE(count_words(&p, "mul64", WORD_CMP_ASR_63, SOURCE_FIELDS) == 1);
+    REQUIRE(count_words(&p, "mul64", WORD_CSET_NE, RD_FIELD) == 1);
+    REQUIRE(count_words(&p, "umul64", WORD_UMULH, THREE_REGISTERS) == 1);
+    REQUIRE(count_words(&p, "umul64", WORD_CMP_X_0, RN_FIELD) == 1);
+    REQUIRE(count_words(&p, "umul64", WORD_MUL_X, THREE_REGISTERS) == 0);
+    REQUIRE(count_words(&p, "mulu32", WORD_UMULL, THREE_REGISTERS) == 1);
+    REQUIRE(count_words(&p, "mulu32", WORD_CMP_UXTW, SOURCE_FIELDS) == 1);
+    REQUIRE(count_words(&p, "sub8", WORD_CMP_SXTB, SOURCE_FIELDS) == 1);
+    REQUIRE(count_words(&p, "add_one", WORD_ADDS_X_ZR_1, RN_FIELD) == 1);
+    REQUIRE(count_words(&p, "add_minus_one", WORD_SUBS_X_ZR_1, RN_FIELD) == 1);
+    release_program(&p);
+
+    REQUIRE(build(&p, OVERFLOW_GRID));
+    REQUIRE(agree_on_grid(&p, OVERFLOW_GRID_FUNCTIONS, sizeof OVERFLOW_GRID_FUNCTIONS / sizeof OVERFLOW_GRID_FUNCTIONS[0]));
+    release_program(&p);
+    return true;
+}
+
 TEST_SUITE(arm64_tests)
 {
     RUN_TEST_CASE(hidden_context);
@@ -6770,6 +7132,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(exports);
     RUN_TEST_CASE(many_pointers);
     RUN_TEST_CASE(bit_counts);
+    RUN_TEST_CASE(overflow_tests);
     RUN_TEST_CASE(narrow_parameters);
     RUN_TEST_CASE(constant_division);
     RUN_TEST_CASE(differential);

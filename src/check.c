@@ -2949,6 +2949,68 @@ call_fn(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg, u32 
                                : (Operand){ ret, REF_VALUE | i };
 }
 
+static bool
+int_argument(Checker *c, u32 file, u32 name, u32 m)
+{
+    u32 token = c->stack_tokens[m];
+    Operand a = c->stack[m];
+    if (a.type == TYPE_ID_NONE) {
+        return false;
+    }
+    if (!is_place(a) && !is_value_type(a.type)) {
+        report(c, file, token, DIAG_NOT_VALUE, 0, 0);
+        return false;
+    }
+    if (is_place(a) || !is_int(c, a.type)) {
+        u32 type = is_place(a) ? place_type(c, a) : a.type;
+        report(c, file, token, DIAG_BUILTIN_INT, name, type);
+        return false;
+    }
+    return true;
+}
+
+static Operand
+test_overflow(Checker *c, u32 file, u32 token, u32 name, u32 first_arg, u32 nargs)
+{
+    if (nargs != 2) {
+        report(c, file, token, DIAG_ARG_COUNT, 2, nargs);
+        return poison;
+    }
+    if (!int_argument(c, file, name, first_arg) ||
+        !int_argument(c, file, name, first_arg + 1)) {
+        return poison;
+    }
+
+    Operand a = c->stack[first_arg];
+    Operand b = c->stack[first_arg + 1];
+    u32 type = unify(c, file, token, &a, &b);
+    if (type == TYPE_ID_UNTYPED_INT) {
+        a = convert(c, file, c->stack_tokens[first_arg], a, TYPE_ID_I64);
+        b = convert(c, file, c->stack_tokens[first_arg + 1], b, TYPE_ID_I64);
+        type = a.type == TYPE_ID_NONE || b.type == TYPE_ID_NONE ? TYPE_ID_NONE
+                                                                : TYPE_ID_I64;
+    }
+    if (type == TYPE_ID_NONE) {
+        return poison;
+    }
+
+    u8 kind = (u8)(IR_ADD_OVERFLOWS + name - NAME_ADD_OVERFLOWS);
+    if (!is_constant(a) || !is_constant(b)) {
+        u32 x = operand_ir(c, a);
+        u32 y = operand_ir(c, b);
+        return (Operand){ TYPE_ID_BOOL,
+                          REF_VALUE | REF_RESULT | emit(c, kind, type, x, y) };
+    }
+
+    ExactOp op = kind == IR_ADD_OVERFLOWS ? EXACT_ADD
+               : kind == IR_SUB_OVERFLOWS ? EXACT_SUB
+                                          : EXACT_MUL;
+    ExactStatus status;
+    u32 r = exact_binary(&c->exacts, op, value_of(a), value_of(b), EXACT_INT_BITS, &status);
+    assert(status == EXACT_OK);
+    return (Operand){ TYPE_ID_BOOL, int_fits(c, type, r) ? EXACT_ZERO : EXACT_ONE };
+}
+
 static NOINLINE Operand
 call_builtin(Checker *c, u32 file, u32 token, Operand callee, u32 first_arg, u32 nargs)
 {
@@ -2956,27 +3018,23 @@ call_builtin(Checker *c, u32 file, u32 token, Operand callee, u32 first_arg, u32
         report(c, file, token, DIAG_NOT_CALLABLE, 0, 0);
         return poison;
     }
+    if (callee.ref >= NAME_ADD_OVERFLOWS) {
+        return test_overflow(c, file, token, callee.ref, first_arg, nargs);
+    }
     if (nargs != 1) {
         report(c, file, token, DIAG_ARG_COUNT, 1, nargs);
         return poison;
     }
+    if (!int_argument(c, file, callee.ref, first_arg)) {
+        return poison;
+    }
 
-    u32 arg_token = c->stack_tokens[first_arg];
     Operand a = c->stack[first_arg];
     if (a.type == TYPE_ID_UNTYPED_INT) {
-        a = convert(c, file, arg_token, a, TYPE_ID_I64);
-    }
-    if (a.type == TYPE_ID_NONE) {
-        return poison;
-    }
-    if (!is_place(a) && !is_value_type(a.type)) {
-        report(c, file, arg_token, DIAG_NOT_VALUE, 0, 0);
-        return poison;
-    }
-    if (is_place(a) || !is_int(c, a.type)) {
-        u32 type = is_place(a) ? place_type(c, a) : a.type;
-        report(c, file, arg_token, DIAG_BUILTIN_INT, callee.ref, type);
-        return poison;
+        a = convert(c, file, c->stack_tokens[first_arg], a, TYPE_ID_I64);
+        if (a.type == TYPE_ID_NONE) {
+            return poison;
+        }
     }
 
     u8 kind = (u8)(IR_TRAILING_ZEROS + callee.ref - NAME_TRAILING_ZEROS);
@@ -5411,7 +5469,7 @@ global_place(Checker *c, u32 file, u32 node, u32 decl)
 static NOINLINE Operand
 resolve_builtin(Checker *c, u32 file, u32 node, u32 token, u32 id)
 {
-    if (id - NAME_TRAILING_ZEROS > NAME_COUNT_ONES - NAME_TRAILING_ZEROS) {
+    if (id - NAME_TRAILING_ZEROS > NAME_MUL_OVERFLOWS - NAME_TRAILING_ZEROS) {
         report(c, file, token, DIAG_UNKNOWN_NAME, 0, 0);
         return poison;
     }

@@ -145,7 +145,10 @@ enum
     OTHER(NAME_PTR, "ptr")                                                     \
     OTHER(NAME_TRAILING_ZEROS, "trailing_zeros")                               \
     OTHER(NAME_LEADING_ZEROS, "leading_zeros")                                 \
-    OTHER(NAME_COUNT_ONES, "count_ones")
+    OTHER(NAME_COUNT_ONES, "count_ones")                                       \
+    OTHER(NAME_ADD_OVERFLOWS, "add_overflows")                                 \
+    OTHER(NAME_SUB_OVERFLOWS, "sub_overflows")                                 \
+    OTHER(NAME_MUL_OVERFLOWS, "mul_overflows")
 // clang-format on
 
 #define CHIBI_BUILTIN_NAME_ID(name, text) name,
