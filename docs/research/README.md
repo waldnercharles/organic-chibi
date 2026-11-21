@@ -80,13 +80,14 @@ Updated 2026-11-20. Built so far:
 - step 3h.1, calls into C: `extern fn` declarations without bodies, called with C's convention and no context, and found by name in the running process.
 - step 3h.2, stack arguments and C's variadic calls: arguments past the registers in both directions between chibi and C, as AAPCS64 places them, a bare `..` at the end of an `extern fn` with C's default promotions, and Apple's layout behind a switch that the tests turn on.
 - step 3h.3, callbacks that C calls: `extern fn(...)` types for C function pointers, and an adapter for each chibi function passed as one, which supplies a default context that the host sets.
+- step 3h.4, `export fn`: C calls an exported function by its chibi name, through the same adapter.
 
 [checker-and-ir.md](checker-and-ir.md) section 8 has the details and the measurements.
 
 The goal now is self-hosting: translate the compiler into chibi, then use the compiler as the benchmark that chibi improves against (the Compiler rows of 2026-11-16 and 2026-11-17). The order:
 1. **Step 3d:** built (steps 3d.1 to 3d.9). Options A and C of question 14 were timed on 2026-11-19, on x86-64 ([experiments/slice-lowering](../../experiments/slice-lowering/README.md)): C was at least as fast as A on every kernel, and 21–28% faster on a loop that re-slices as a lexer does, so 3d builds C, and step 3d.3 built slices that way. The same kernels still need timing on the owner's M4 Pro. A cloud container runs the arm64 backend's tests under qemu (`make test`), but can't time arm64 code.
 2. Globals and constant tables: built (steps 3g.1 and 3g.2).
-3. Calling C and being called from C: calls into C, stack arguments, C's variadic calls and callbacks that C calls are built (steps 3h.1 to 3h.3). Next comes `export fn` with the entry point.
+3. Calling C and being called from C: calls into C, stack arguments, C's variadic calls, callbacks that C calls and `export fn` are built (steps 3h.1 to 3h.4). Next comes `[*]T`, the pointer into a C array (rank 5, decided), with the entry point, because C's `main(argc, argv)` needs `[*]T` for `argv`.
 4. SIMD types, and the bit-scan and overflow builtins.
 5. The C backend, the C-to-chibi translator and the bootstrap check.
 6. Then steps 3c, 3e, 3f, 4 and 5, and the spike of cppgm's LowIR as the release backend (the Compiler row of 2026-11-19).
@@ -109,7 +110,7 @@ Updated 2026-11-20. The owner's answers are in [../decisions.md](../decisions.md
 3. **Calling C, and being called from C.**
    - The details of the hidden context (rank 7, decided 2026-11-18): what it holds. Callbacks need no marker: the compiler writes the adapter (decided 2026-11-20). Step 3h.3 built it with one default context per program, a pointer that the host sets; its rules open to review are in [checker-and-ir.md](checker-and-ir.md) section 8. Prior art from Jai, Odin, Go, OCaml, HotSpot, Swift and Koka is in [adopt-or-settle.md](adopt-or-settle.md) 2.7.
    - C imports: where defines, include paths and libraries are given ([syntax-options-effects.md](syntax-options-effects.md) 10a). Step 3h.1 built `extern fn` for C declarations without bodies, as 10a recommends; its rules open to review are in [checker-and-ir.md](checker-and-ir.md) section 8.
-   - `export fn`: C names, slices in exported signatures, and `export` on globals (10b).
+   - `export fn`: C names, slices in exported signatures, and `export` on globals (10b). Step 3h.4 built `export fn` with the chibi name as the C name and an `extern fn`'s signature rules; its rules open to review are in [checker-and-ir.md](checker-and-ir.md) section 8.
    - Variadic functions: `xs: ..T` for chibi functions (4e, question 1). Step 3h.2 built a bare `..` for C's variadic tail (question 2), as 4e recommends; its rules open to review are in [checker-and-ir.md](checker-and-ir.md) section 8.
    - Function values (rank 13, 2.13). Callbacks for C don't wait for them: step 3h.3 converts a named function where an `extern fn(...)` type is expected.
 4. **SIMD types and builtins.**
@@ -144,7 +145,8 @@ Built by the research thread and open to the owner's review, as their rows in de
 - three points of step 3b: an enum used without a value needs a member whose value is 0, a range label needs an integer switch, and `continue sw value` is an error until question 9 is decided (Language, 2026-11-16);
 - `extern fn` for C functions without bodies, and how step 3h.1 calls them (Language, 2026-11-20);
 - a bare `..` for C's variadic tail, C's promotions, and how step 3h.2 passes stack and variadic arguments (Language, 2026-11-20);
-- `extern fn(...)` for C function pointer types, and the default context that step 3h.3's adapters supply (Language, 2026-11-20, the callbacks row).
+- `extern fn(...)` for C function pointer types, and the default context that step 3h.3's adapters supply (Language, 2026-11-20, the callbacks row);
+- how step 3h.4 exports functions: the chibi name as the C name, and an `extern fn`'s signature rules (Language, the `export fn` row of 2026-11-09).
 
 ## Syntax option sheets: how they fit together (2026-11-10)
 

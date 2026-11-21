@@ -3803,7 +3803,6 @@ arm64_compile(Native *n, const Checker *c, Convention convention)
 #endif
 
     free(info);
-    free(adapters);
     free(e.regs);
     free(e.vinfo);
     free(e.spills);
@@ -3821,6 +3820,8 @@ arm64_compile(Native *n, const Checker *c, Convention convention)
     if (e.process) {
         dlclose(e.process);
     }
+    n->exports = adapters;
+    n->nexports = ir->nexports;
     n->error = e.error;
     return e.error == NULL;
 }
@@ -3829,6 +3830,13 @@ void *
 native_entry(const Native *n, u32 decl)
 {
     return (void *)(uintptr_t)n->entries[decl];
+}
+
+void *
+native_export(const Native *n, u32 i)
+{
+    assert(i < n->nexports);
+    return (void *)(uintptr_t)n->exports[i];
 }
 
 void
@@ -3856,5 +3864,6 @@ native_free(Native *n)
     if (n->globals) {
         munmap(n->globals, n->globals_size);
     }
+    free(n->exports);
     *n = (Native){ 0 };
 }

@@ -133,6 +133,7 @@ enum
     X(DIAG_NOT_INTEGER, "expected an integer type")                                                 \
     X(DIAG_FN_VALUE, "`%t` is a function, so it can't be used here")                                \
     X(DIAG_NOT_C, "C has no `%U`, so an `extern fn` can't pass or return it")                       \
+    X(DIAG_NOT_C_EXPORT, "C has no `%U`, so an `export fn` can't pass or return it")                \
     X(DIAG_C_FN_TYPE, "C can't call a chibi `%U`; write `extern %U`")                               \
     X(DIAG_NOT_VARIADIC, "C's `..` takes numbers, `bool`, enums and pointers, not `%U`")            \
     X(DIAG_TOO_LARGE, "an integer constant must fit in 512 bits")                                   \

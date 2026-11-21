@@ -2384,10 +2384,10 @@ close_fn_type(Checker *c)
 }
 
 static void
-refuse_non_c(Checker *c, u32 file, u32 token, u32 type)
+refuse_non_c(Checker *c, u32 file, u32 token, u32 type, u8 not_c)
 {
     if (is_slice(c, type) || is_array(c, type)) {
-        report(c, file, token, DIAG_NOT_C, 0, type);
+        report(c, file, token, not_c, 0, type);
     } else if (c->types.kinds[type] == TYPE_FN && !(c->types.arg1[type] & FN_C_CALL)) {
         report(c, file, token, DIAG_C_FN_TYPE, 0, type);
     }
@@ -2399,9 +2399,9 @@ c_fn_type(Checker *c, u32 file, u32 token, u32 fn)
     assert(c->types.kinds[fn] == TYPE_FN);
     const u32 *params = c->lists + c->types.arg0[fn];
     for (u32 i = 1; i <= params[0]; i++) {
-        refuse_non_c(c, file, token, params[i]);
+        refuse_non_c(c, file, token, params[i], DIAG_NOT_C);
     }
-    refuse_non_c(c, file, token, (u32)c->types.arg1[fn]);
+    refuse_non_c(c, file, token, (u32)c->types.arg1[fn], DIAG_NOT_C);
     return intern_type(c, TYPE_FN, c->types.arg0[fn], c->types.arg1[fn] | FN_C_CALL);
 }
 
@@ -5218,6 +5218,19 @@ data_place(Checker *c, u32 decl)
     return (Operand){ OPERAND_ADDRESS, REF_VALUE | at };
 }
 
+static u32
+add_callback(Checker *c, u32 decl)
+{
+    Ir *ir = &c->ir;
+    if (ir->ncallbacks == ir->callbacks_cap) {
+        ir->callbacks_cap = ir->callbacks_cap ? ir->callbacks_cap * 2 : 16;
+        ir->callbacks = resize(ir->callbacks, ir->callbacks_cap, sizeof *ir->callbacks);
+    }
+    ir->callbacks[ir->ncallbacks] = decl;
+    c->decls.values[decl] = ++ir->ncallbacks;
+    return ir->ncallbacks;
+}
+
 static NOINLINE Operand
 callback(Checker *c, u32 file, u32 token, u32 decl, u32 to)
 {
@@ -5235,16 +5248,9 @@ callback(Checker *c, u32 file, u32 token, u32 decl, u32 to)
         return poison;
     }
 
-    Ir *ir = &c->ir;
     u32 k = c->decls.values[decl];
     if (k == 0) {
-        if (ir->ncallbacks == ir->callbacks_cap) {
-            ir->callbacks_cap = ir->callbacks_cap ? ir->callbacks_cap * 2 : 16;
-            ir->callbacks = resize(ir->callbacks, ir->callbacks_cap, sizeof *ir->callbacks);
-        }
-        ir->callbacks[ir->ncallbacks] = decl;
-        k = ++ir->ncallbacks;
-        c->decls.values[decl] = k;
+        k = add_callback(c, decl);
     }
     return emit_value(c, IR_CALLBACK, to, k - 1, decl);
 }
@@ -5794,6 +5800,8 @@ finish_signature(Checker *c, u32 decl)
 {
     u32 file = c->decls.files[decl];
     bool external = c->decls.bodies[decl] == NO_BODY;
+    bool exported = c->decls.flags[decl] & DECL_EXPORT;
+    u8 not_c = external ? DIAG_NOT_C : DIAG_NOT_C_EXPORT;
     u32 m = list_start(c, NODE_FN_START);
     u32 ret = c->decls.flags[decl] & (DECL_PUB | DECL_EXPORT) || external
                 ? TYPE_ID_VOID
@@ -5801,8 +5809,8 @@ finish_signature(Checker *c, u32 decl)
     u32 end = c->sp;
     if (end > m + 1 && c->stack[end - 1].type == OPERAND_RETURN) {
         ret = c->stack[--end].ref;
-        if (external) {
-            refuse_non_c(c, file, c->stack_tokens[end], ret);
+        if (external || exported) {
+            refuse_non_c(c, file, c->stack_tokens[end], ret, not_c);
         }
     }
     bool variadic = end > m + 1 && c->stack[end - 1].type == OPERAND_VARIADIC;
@@ -5817,8 +5825,8 @@ finish_signature(Checker *c, u32 decl)
         Member p = c->members[first + i];
         c->lists[list + 1 + i] = p.type;
         general |= is_compound(c, p.type);
-        if (external) {
-            refuse_non_c(c, file, c->files[file].nodes.tokens[p.node], p.type);
+        if (external || exported) {
+            refuse_non_c(c, file, c->files[file].nodes.tokens[p.node], p.type, not_c);
         }
     }
 
@@ -5829,6 +5837,9 @@ finish_signature(Checker *c, u32 decl)
     c->decls.member_counts[decl] = count;
     c->nscratch = c->stack[m].ref;
     c->sp = m;
+    if (exported) {
+        add_callback(c, decl);
+    }
 }
 
 static NOINLINE void
@@ -6362,6 +6373,7 @@ check_package(Checker *c, const ParsedFile *files, u32 nfiles)
         }
     }
     c->ir.globals_size = c->ir.nglobals;
+    c->ir.nexports = c->ir.ncallbacks;
     if (c->zeroed_align) {
         place_zeroed(c);
     }

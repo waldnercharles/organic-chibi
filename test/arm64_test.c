@@ -6240,6 +6240,87 @@ TEST_CASE(callback_stack_limit)
     return true;
 }
 
+static const char EXPORTS[] =
+    "extern fn chibi_c_each(f: extern fn(x: int) -> int, n: int) -> int\n"
+    "\n"
+    "export fn add3(a: int, b: i32, c: u8) -> int {\n"
+    "    return a + int(b) * 10 + int(c) * 1000\n"
+    "}\n"
+    "\n"
+    "export fn nine(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: int, i: int) -> int {\n"
+    "    return a + 2 * b + 3 * c + 4 * d + 5 * e + 6 * f + 7 * g + 8 * h + 9 * i\n"
+    "}\n"
+    "\n"
+    "export fn bump(p: *int) {\n"
+    "    p.* += 1\n"
+    "}\n"
+    "\n"
+    "export fn half(x: f64) -> f64 {\n"
+    "    return x * 0.5\n"
+    "}\n"
+    "\n"
+    "export fn step(x: int) -> int {\n"
+    "    return 2 * x + 1\n"
+    "}\n"
+    "\n"
+    "fn uses(n: int) -> int {\n"
+    "    return chibi_c_each(step, n) * 1000 + step(n)\n"
+    "}\n"
+    "\n"
+    "fn get_step() -> extern fn(x: int) -> int {\n"
+    "    return step\n"
+    "}\n";
+
+typedef int64_t ADD3(int64_t, int64_t, int64_t);
+typedef int64_t NINE(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t);
+typedef void BUMP(int64_t *);
+typedef double HALF(double);
+
+static void *
+export_named(Program *p, const char *name)
+{
+    u32 decl = decl_named(p, name);
+    for (u32 i = 0; i < p->c.ir.nexports; i++) {
+        if (p->c.ir.callbacks[i] == decl) {
+            return native_export(&p->n, i);
+        }
+    }
+    fprintf(stderr, "arm64 test: `%s` is not exported\n", name);
+    abort();
+}
+
+TEST_CASE(exports)
+{
+    Program p;
+    REQUIRE(build(&p, EXPORTS));
+    native_set_context(&p.n, DEFAULT_CONTEXT);
+    ADD3 *add3 = (ADD3 *)export_named(&p, "add3");
+    NINE *nine = (NINE *)export_named(&p, "nine");
+    BUMP *bump = (BUMP *)export_named(&p, "bump");
+    HALF *half = (HALF *)export_named(&p, "half");
+    FN1 *step = (FN1 *)export_named(&p, "step");
+    for (int64_t x = 0; x < 20; x++) {
+        int32_t b = (int32_t)(x * -1000);
+        uint8_t c = (uint8_t)(x * 13);
+        REQUIRE(add3(x, (int64_t)(JUNK << 32 | (uint32_t)b), (int64_t)(JUNK << 8 | c)) == x + b * 10LL + c * 1000LL);
+        REQUIRE(nine(1, 2, 3, 4, 5, 6, 7, x, 2 * x) == 140 + 8 * x + 18 * x);
+
+        int64_t v = x * 7;
+        bump(&v);
+        REQUIRE(v == x * 7 + 1);
+        REQUIRE(half((double)x) == (double)x * 0.5);
+        REQUIRE(step(x) == 2 * x + 1);
+        REQUIRE(((I1 *)fn(&p, "uses"))(CONTEXT, x % 6) == fold_each(x % 6, 2, 1) * 1000 + 2 * (x % 6) + 1);
+    }
+    REQUIRE(((GET1 *)fn(&p, "get_step"))(CONTEXT) == step);
+
+    native_replace(&p.n, decl_named(&p, "step"), (void *)c_tap);
+    tap_context = NULL;
+    REQUIRE(step(5) == 105 && tap_context == DEFAULT_CONTEXT);
+    release_program(&p);
+    return true;
+}
+
 TEST_SUITE(arm64_tests)
 {
     RUN_TEST_CASE(hidden_context);
@@ -6248,6 +6329,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(variadic_calls);
     RUN_TEST_CASE(callbacks);
     RUN_TEST_CASE(callback_stack_limit);
+    RUN_TEST_CASE(exports);
     RUN_TEST_CASE(narrow_parameters);
     RUN_TEST_CASE(constant_division);
     RUN_TEST_CASE(differential);

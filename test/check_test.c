@@ -229,6 +229,15 @@ static const Case ERRORS[] = {
       "a:2:40: C has no `[2]int`, so an `extern fn` can't pass or return it\n"
       "extern fn f(cb: fn(int) -> int) -> fn() -> void\n"
       "extern fn g(cb: extern fn([]u8) -> void, d: extern fn() -> [2]int) -> void\n" },
+    { "struct S { s: []u8 }\n"
+      "export fn f(s: []u8, cb: fn(x: int) -> int) -> int {\n    return 1\n}\n"
+      "export fn h(p: *S) -> []u8 {\n    return p.s\n}\n",
+      "a:2:13: C has no `[]u8`, so an `export fn` can't pass or return it\n"
+      "a:2:22: C can't call a chibi `fn(int) -> int`; write `extern fn(int) -> int`\n"
+      "a:5:20: C has no `[]u8`, so an `export fn` can't pass or return it\n"
+      "struct S { s: []u8 }\n"
+      "export fn f(s: []u8, cb: fn(int) -> int) -> int\n"
+      "export fn h(p: *S) -> []u8\n" },
     { "struct Hook { f: extern fn(x: int) -> int, n: int }\n"
       "extern fn each(f: extern fn(x: int) -> int)\n"
       "extern fn sum(n: int, ..) -> int\n"
@@ -3938,6 +3947,46 @@ TEST_CASE(callback_list)
     return true;
 }
 
+TEST_CASE(export_list)
+{
+    const char *text = "extern fn each(f: extern fn(x: int) -> int) -> int\n"
+                       "export fn a(x: int) -> int {\n"
+                       "    return x\n"
+                       "}\n"
+                       "fn b(x: int) -> int {\n"
+                       "    return x\n"
+                       "}\n"
+                       "export fn c(x: int) -> int {\n"
+                       "    return x\n"
+                       "}\n"
+                       "fn g() -> int {\n"
+                       "    return each(b) + each(a) + each(c) + a(1)\n"
+                       "}\n";
+    Arena arena = { 0 };
+    Lexer lx;
+    Checker c;
+    ParsedFile *files = check_texts(&c, &arena, &lx, &text, 1, 1);
+
+    const IrCode *code = &c.ir.code;
+    const IrFunc *f = &c.ir.funcs[3];
+    u32 got[3];
+    u32 n = 0;
+    for (u32 i = f->first; i < f->first + f->count; i++) {
+        if (code->kinds[i] == IR_CALLBACK && n < 3) {
+            got[n++] = code->as[i];
+        }
+    }
+    bool ok = c.ndiags == 0 && c.ir.nfuncs == 4 && c.ir.ncallbacks == 3 && c.ir.nexports == 2 &&
+              c.ir.callbacks[0] == 2 && c.ir.callbacks[1] == 4 && c.ir.callbacks[2] == 3 &&
+              n == 3 && got[0] == 2 && got[1] == 0 && got[2] == 1;
+
+    check_free(&c);
+    free(files);
+    arena_free(&arena);
+    REQUIRE(ok);
+    return true;
+}
+
 TEST_CASE(files)
 {
     const char *texts[] = {
@@ -4068,6 +4117,7 @@ TEST_SUITE(check_tests)
     RUN_TEST_CASE(bodies);
     RUN_TEST_CASE(variadic_promotions);
     RUN_TEST_CASE(callback_list);
+    RUN_TEST_CASE(export_list);
     RUN_TEST_CASE(files);
     RUN_TEST_CASE(constants_across_files);
     RUN_TEST_CASE(globals_across_files);

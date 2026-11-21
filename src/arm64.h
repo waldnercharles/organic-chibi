@@ -20,6 +20,8 @@ typedef struct
     size_t size;
     u64 *entries;
     u32 nentries;
+    u64 *exports;
+    u32 nexports;
     u32 *code;
     size_t words;
     u8 *globals;
@@ -40,6 +42,7 @@ typedef enum
 
 bool arm64_compile(Native *n, const Checker *c, Convention convention);
 void *native_entry(const Native *n, u32 decl);
+void *native_export(const Native *n, u32 i);
 void native_replace(Native *n, u32 decl, void *entry);
 void native_set_context(Native *n, void *context);
 void native_free(Native *n);

@@ -152,6 +152,7 @@ typedef struct
     u32 *callbacks;
     u32 ncallbacks;
     u32 callbacks_cap;
+    u32 nexports;
 } Ir;
 
 #endif
