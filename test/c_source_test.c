@@ -9,6 +9,7 @@
 #include <assert.h>
 #include <dlfcn.h>
 #include <setjmp.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,22 +39,11 @@ static const char *const UNSUPPORTED[][2] = {
       "    return int(top_bits(u32x4.{ 1, 2, 3, 4 } == u32x4.{ 1, 0, 3, 0 }))\n"
       "}\n",
       "the C backend doesn't support vectors yet" },
-    { "export fn half(x: f64) -> f64 {\n"
-      "    return x * 0.5\n"
-      "}\n",
-      "the C backend doesn't support `export fn` yet" },
-    { "extern fn labs(x: i64) -> i64\n"
+    { "extern fn tally(..) -> int\n"
       "fn f(a: int) -> int {\n"
-      "    return labs(a)\n"
+      "    return tally(a, 2)\n"
       "}\n",
-      "the C backend doesn't support calls into C yet" },
-    { "fn twice(x: int) -> int {\n"
-      "    return x * 2\n"
-      "}\n"
-      "fn get() -> extern fn(x: int) -> int {\n"
-      "    return twice\n"
-      "}\n",
-      "the C backend doesn't support callbacks yet" },
+      "C11 can't declare an `extern fn` that takes only `..`" },
 };
 
 static bool
@@ -143,10 +133,13 @@ TEST_CASE(emits_doubling_structs)
 
 #if defined(__APPLE__) && defined(__aarch64__)
 #define TARGET " -arch arm64"
+#define LINK " -undefined dynamic_lookup"
 #elif defined(__APPLE__)
 #define TARGET " -arch x86_64"
+#define LINK " -undefined dynamic_lookup"
 #else
 #define TARGET ""
+#define LINK ""
 #endif
 
 #define FLAGS                                                                  \
@@ -207,15 +200,444 @@ static const char *const C_PROGRAMS[] = {
     "}\n",
 };
 
+static const char INTEROP[] =
+    "struct P { x: int, y: int }\n"
+    "struct W { a: int, b: int, c: int }\n"
+    "struct Hook { f: extern fn(x: int) -> int, n: int }\n"
+    "\n"
+    "const table := W.{ 7, 8, 9 }\n"
+    "const K: int = -7\n"
+    "\n"
+    "extern fn labs(x: i64) -> i64\n"
+    "extern fn memset(p: *[8]u8, c: i32, n: u64) -> *[8]u8\n"
+    "extern fn strlen(s: [*]u8) -> u64\n"
+    "extern fn snprintf(buf: [*]u8, n: u64, fmt: [*]u8, ..) -> i32\n"
+    "extern fn qsort(base: *[8]int, n: u64, size: u64, cmp: extern fn(a: *int, b: *int) -> i32)\n"
+    "extern fn chibi_cs_mixed(a: i8, b: f64, c: u16, d: f32, e: i32, f: bool) -> f64\n"
+    "extern fn chibi_cs_eight(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: int) -> int\n"
+    "extern fn chibi_cs_u8() -> u8\n"
+    "extern fn chibi_cs_i8() -> i8\n"
+    "extern fn chibi_cs_u16() -> u16\n"
+    "extern fn chibi_cs_i16() -> i16\n"
+    "extern fn chibi_cs_u32() -> u32\n"
+    "extern fn chibi_cs_i32() -> i32\n"
+    "extern fn chibi_cs_bool(x: int) -> bool\n"
+    "extern fn chibi_cs_f32(x: f32) -> f32\n"
+    "extern fn chibi_cs_point(p: P, k: int) -> P\n"
+    "extern fn chibi_cs_scribble(w: W) -> int\n"
+    "extern fn chibi_cs_wide(k: int) -> W\n"
+    "pub extern fn chibi_cs_tick()\n"
+    "extern fn chibi_cs_va(n: int, ..) -> f64\n"
+    "extern fn chibi_cs_vpoint(p: P, n: int, ..) -> int\n"
+    "extern fn chibi_cs_twice(x: int) -> int\n"
+    "extern fn chibi_cs_each(f: extern fn(x: int) -> int, n: int) -> int\n"
+    "extern fn chibi_cs_same(a: extern fn(x: int) -> int, b: extern fn(x: int) -> int) -> bool\n"
+    "extern fn chibi_cs_call_seven(f: extern fn(a: int, b: i8, c: u16, d: i32, e: u32, f: bool, g: *int) -> int, x: int) -> int\n"
+    "extern fn chibi_cs_call_wide(f: extern fn(w: W, k: int) -> W, k: int) -> int\n"
+    "extern fn chibi_cs_call_void(f: extern fn(p: *int), p: *int)\n"
+    "extern fn chibi_cs_unused(x: int) -> int\n"
+    "\n"
+    "fn after_c(x: int) -> int {\n"
+    "    return labs(x) + labs(x - 10)\n"
+    "}\n"
+    "\n"
+    "fn mixed(x: int) -> f64 {\n"
+    "    return chibi_cs_mixed(i8(x) - 5, f64(x) * 0.5, u16(x) + 300, f32(x) + 1.5, i32(x) * -7, x > 3)\n"
+    "}\n"
+    "\n"
+    "fn eight(x: int) -> int {\n"
+    "    return chibi_cs_eight(x + 1, x * 2, x - 3, 4, x + 5, 6, x * 7, x + 8)\n"
+    "}\n"
+    "\n"
+    "fn narrow(x: int) -> int {\n"
+    "    s := int(chibi_cs_u8() / 3) + int(chibi_cs_i8() / 3) * 10 + int(chibi_cs_u16() / 7)\n"
+    "    s += int(chibi_cs_i16() / 3) + int(chibi_cs_u32() / 5) + int(chibi_cs_i32() / 2)\n"
+    "    if chibi_cs_bool(x) {\n"
+    "        return -s\n"
+    "    }\n"
+    "    return s\n"
+    "}\n"
+    "\n"
+    "fn floats(x: int) -> f64 {\n"
+    "    return f64(chibi_cs_f32(f32(x) + 0.25))\n"
+    "}\n"
+    "\n"
+    "fn point(x: int) -> int {\n"
+    "    p := chibi_cs_point(P.{ x, x + 1 }, 3)\n"
+    "    return p.x * 100 + p.y\n"
+    "}\n"
+    "\n"
+    "fn scribble(x: int) -> int {\n"
+    "    w := W.{ x, 2, 3 }\n"
+    "    s := chibi_cs_scribble(w)\n"
+    "    return s * 1000 + w.a + w.b + w.c\n"
+    "}\n"
+    "\n"
+    "fn from_table(x: int) -> int {\n"
+    "    return chibi_cs_scribble(table) * 10000 + chibi_cs_scribble(table) + x\n"
+    "}\n"
+    "\n"
+    "fn wide(x: int) -> int {\n"
+    "    w := chibi_cs_wide(x)\n"
+    "    return w.a + w.b * 10 + w.c * 100\n"
+    "}\n"
+    "\n"
+    "fn ticks(n: int) -> int {\n"
+    "    for i in 0..n {\n"
+    "        chibi_cs_tick()\n"
+    "    }\n"
+    "    return n\n"
+    "}\n"
+    "\n"
+    "fn fill(x: int) -> int {\n"
+    "    buf: [8]u8\n"
+    "    _ = memset(&buf, i32(x), 8)\n"
+    "    s := 0\n"
+    "    for b in buf {\n"
+    "        s += int(b)\n"
+    "    }\n"
+    "    return s\n"
+    "}\n"
+    "\n"
+    "fn format(buf: [*]u8, fmt: [*]u8, x: int) -> i32 {\n"
+    "    return snprintf(buf, 128, fmt, x, i8(x) - 3, u16(x) + 7, f32(x) * 0.5, f64(x) / 4.0, x > 2, 123456789012, 7, -1, K, 18446744073709551615, 2.5)\n"
+    "}\n"
+    "\n"
+    "fn pairs(x: int) -> f64 {\n"
+    "    return chibi_cs_va(5, x, 0.5, K, f32(x), x * 4, 1.25, int(-9), 2.0, x + 6, 0.75)\n"
+    "}\n"
+    "\n"
+    "fn vpoint(x: int) -> int {\n"
+    "    return chibi_cs_vpoint(P.{ x, x + 1 }, 3, x * 2, x + 5, K)\n"
+    "}\n"
+    "\n"
+    "fn ascending(a: *int, b: *int) -> i32 {\n"
+    "    if a.* < b.* {\n"
+    "        return -1\n"
+    "    }\n"
+    "    if a.* > b.* {\n"
+    "        return 1\n"
+    "    }\n"
+    "    return 0\n"
+    "}\n"
+    "\n"
+    "fn descending(a: *int, b: *int) -> i32 {\n"
+    "    return ascending(b, a)\n"
+    "}\n"
+    "\n"
+    "fn sort(p: *[8]int, up: bool) {\n"
+    "    if up {\n"
+    "        qsort(p, 8, 8, ascending)\n"
+    "    } else {\n"
+    "        qsort(p, 8, 8, descending)\n"
+    "    }\n"
+    "}\n"
+    "\n"
+    "fn tap(x: int) -> int {\n"
+    "    return x * 3 + 1\n"
+    "}\n"
+    "\n"
+    "fn each(n: int) -> int {\n"
+    "    return chibi_cs_each(tap, n) * 1000 + chibi_cs_each(chibi_cs_twice, n)\n"
+    "}\n"
+    "\n"
+    "fn hooked(n: int) -> int {\n"
+    "    f: extern fn(x: int) -> int = tap\n"
+    "    h := Hook.{ .f = f, .n = n + 1 }\n"
+    "    return chibi_cs_each(h.f, h.n)\n"
+    "}\n"
+    "\n"
+    "fn get_tap() -> extern fn(x: int) -> int {\n"
+    "    return tap\n"
+    "}\n"
+    "\n"
+    "fn get_twice() -> extern fn(x: int) -> int {\n"
+    "    return chibi_cs_twice\n"
+    "}\n"
+    "\n"
+    "fn same(x: int) -> int {\n"
+    "    s := x\n"
+    "    if chibi_cs_same(tap, tap) {\n"
+    "        s += 1\n"
+    "    }\n"
+    "    if chibi_cs_same(tap, chibi_cs_twice) {\n"
+    "        s += 10\n"
+    "    }\n"
+    "    f: extern fn(x: int) -> int = tap\n"
+    "    if f == get_tap() {\n"
+    "        s += 100\n"
+    "    }\n"
+    "    if f != get_twice() {\n"
+    "        s += 1000\n"
+    "    }\n"
+    "    return s\n"
+    "}\n"
+    "\n"
+    "fn seven(a: int, b: i8, c: u16, d: i32, e: u32, f: bool, g: *int) -> int {\n"
+    "    s := a + int(b) * 10 + int(c) * 1000 + int(d) * 100000 + int(e) * 10000000 + g.*\n"
+    "    if f {\n"
+    "        s = -s\n"
+    "    }\n"
+    "    return s\n"
+    "}\n"
+    "\n"
+    "fn call_seven(x: int) -> int {\n"
+    "    return chibi_cs_call_seven(seven, x)\n"
+    "}\n"
+    "\n"
+    "fn widen(w: W, k: int) -> W {\n"
+    "    return W.{ w.a + k, w.b * k, w.c - k }\n"
+    "}\n"
+    "\n"
+    "fn call_wide(x: int) -> int {\n"
+    "    return chibi_cs_call_wide(widen, x)\n"
+    "}\n"
+    "\n"
+    "fn bump(p: *int) {\n"
+    "    p.* += 1\n"
+    "}\n"
+    "\n"
+    "fn call_void(x: int) -> int {\n"
+    "    n := x\n"
+    "    chibi_cs_call_void(bump, &n)\n"
+    "    return n\n"
+    "}\n"
+    "\n"
+    "export fn cs_add3(a: int, b: i32, c: u8) -> int {\n"
+    "    return a + int(b) * 10 + int(c) * 1000\n"
+    "}\n"
+    "\n"
+    "export fn cs_half(x: f64) -> f64 {\n"
+    "    return x * 0.5\n"
+    "}\n"
+    "\n"
+    "export fn cs_swap(p: P) -> P {\n"
+    "    return P.{ p.y, p.x }\n"
+    "}\n"
+    "\n"
+    "export fn cs_tick() {\n"
+    "    chibi_cs_tick()\n"
+    "}\n"
+    "\n"
+    "export fn cs_step(x: int) -> int {\n"
+    "    return 2 * x + 1\n"
+    "}\n"
+    "\n"
+    "fn uses(n: int) -> int {\n"
+    "    return chibi_cs_each(cs_step, n) * 1000 + cs_step(n)\n"
+    "}\n"
+    "\n"
+    "fn get_step() -> extern fn(x: int) -> int {\n"
+    "    return cs_step\n"
+    "}\n"
+    "\n"
+    "export fn main(argc: i32, argv: [*][*]u8) -> i32 {\n"
+    "    n := 0\n"
+    "    for i in 0..int(argc) {\n"
+    "        n += int(strlen(argv[i]))\n"
+    "    }\n"
+    "    return argc + i32(n) * 100\n"
+    "}\n";
+
+struct i0_P
+{
+    int64_t x;
+    int64_t y;
+};
+
+struct i0_W
+{
+    int64_t a;
+    int64_t b;
+    int64_t c;
+};
+
+typedef int64_t I0(void *);
+typedef int64_t I1(void *, int64_t);
+typedef double D1(void *, int64_t);
+typedef int32_t FORMAT(void *, uint8_t *, uint8_t *, int64_t);
+typedef void SORT(void *, uint8_t *, uint8_t);
+typedef uint8_t *GET(void *);
+typedef int64_t ADD3(int64_t, int32_t, uint8_t);
+typedef double HALF(double);
+typedef struct i0_P SWAP(struct i0_P);
+typedef void TICK(void);
+typedef int64_t STEP(int64_t);
+typedef int32_t MAIN(int32_t, uint8_t *);
+
 static uint8_t CONTEXT[16];
 static jmp_buf trap_jump;
 static volatile int trap_kind;
+
+void *chibi_context = CONTEXT;
+int64_t chibi_cs_ticks;
 
 NORETURN void
 chibi_trap(int kind)
 {
     trap_kind = kind;
     longjmp(trap_jump, 1);
+}
+
+double
+chibi_cs_mixed(int8_t a, double b, uint16_t c, float d, int32_t e, bool f)
+{
+    return a + b * 2 + c * 3 + d * 4 + e * 5 + (f ? 1000 : 0);
+}
+
+int64_t
+chibi_cs_eight(int64_t a, int64_t b, int64_t c, int64_t d, int64_t e, int64_t f, int64_t g, int64_t h)
+{
+    return a + 2 * b + 3 * c + 4 * d + 5 * e + 6 * f + 7 * g + 8 * h;
+}
+
+uint64_t
+chibi_cs_u8(void)
+{
+    return 0xDEADBEEFCAFE0105u;
+}
+
+uint64_t
+chibi_cs_i8(void)
+{
+    return 0x123456789ABCDE80u;
+}
+
+uint64_t
+chibi_cs_u16(void)
+{
+    return 0xFFFFFFFFFFFF8001u;
+}
+
+uint64_t
+chibi_cs_i16(void)
+{
+    return 0x0000000100008000u;
+}
+
+uint64_t
+chibi_cs_u32(void)
+{
+    return 0xFFFFFFFF80000007u;
+}
+
+uint64_t
+chibi_cs_i32(void)
+{
+    return 0x00000001FFFFFFF9u;
+}
+
+uint64_t
+chibi_cs_bool(int64_t x)
+{
+    return 0xFFFFFFFFFFFFFF00u | (uint64_t)(x & 1);
+}
+
+float
+chibi_cs_f32(float x)
+{
+    return x * 2.0f;
+}
+
+struct i0_P
+chibi_cs_point(struct i0_P p, int64_t k)
+{
+    return (struct i0_P){ p.x + k, p.y * k };
+}
+
+int64_t
+chibi_cs_scribble(struct i0_W w)
+{
+    int64_t s = w.a + w.b * 10 + w.c * 100;
+
+    volatile struct i0_W *v = &w;
+    v->a = 900;
+    v->b = 800;
+    v->c = 700;
+    return s;
+}
+
+struct i0_W
+chibi_cs_wide(int64_t k)
+{
+    return (struct i0_W){ k, k + 1, k + 2 };
+}
+
+void
+chibi_cs_tick(void)
+{
+    chibi_cs_ticks++;
+}
+
+double
+chibi_cs_va(int64_t n, ...)
+{
+    va_list ap;
+    va_start(ap, n);
+    double s = 0;
+    for (int64_t i = 0; i < n; i++) {
+        int64_t k = va_arg(ap, int64_t);
+        double d = va_arg(ap, double);
+        s = s * 2.0 + (double)k + d;
+    }
+    va_end(ap);
+    return s;
+}
+
+int64_t
+chibi_cs_vpoint(struct i0_P p, int64_t n, ...)
+{
+    va_list ap;
+    va_start(ap, n);
+    int64_t s = p.x + 2 * p.y;
+    for (int64_t i = 0; i < n; i++) {
+        s = s * 10 + va_arg(ap, int64_t);
+    }
+    va_end(ap);
+    return s;
+}
+
+int64_t
+chibi_cs_twice(int64_t x)
+{
+    return 2 * x;
+}
+
+int64_t
+chibi_cs_each(int64_t (*f)(int64_t), int64_t n)
+{
+    int64_t s = 0;
+    for (int64_t i = 0; i < n; i++) {
+        s = s * 3 + f(i);
+    }
+    return s;
+}
+
+bool
+chibi_cs_same(int64_t (*a)(int64_t), int64_t (*b)(int64_t))
+{
+    return a == b;
+}
+
+int64_t
+chibi_cs_call_seven(int64_t (*f)(int64_t, int8_t, uint16_t, int32_t, uint32_t, uint8_t, uint8_t *), int64_t x)
+{
+    int64_t g = x * 11;
+    return f(x, (int8_t)(x - 50), (uint16_t)(x * 1000), (int32_t)(x * -100000), (uint32_t)x * 200000000u, (uint8_t)(x & 1), (uint8_t *)&g);
+}
+
+int64_t
+chibi_cs_call_wide(struct i0_W (*f)(struct i0_W, int64_t), int64_t k)
+{
+    struct i0_W w = f((struct i0_W){ k, k + 1, k + 2 }, 7);
+    return w.a + w.b * 10 + w.c * 100;
+}
+
+void
+chibi_cs_call_void(void (*f)(uint8_t *), uint8_t *p)
+{
+    f(p);
+    f(p);
 }
 
 static const char *
@@ -273,7 +695,7 @@ finish_build(Build *b)
     for (u32 j = 0; j < b->jobs; j++) {
         n += snprintf(command + n, sizeof command - (size_t)n, " p%u", j);
     }
-    snprintf(command + n, sizeof command - (size_t)n, " | xargs -P %u -I{} " CHIBI_TEST_CC TARGET " " FLAGS " -c -o {}.o {}.c && " CHIBI_TEST_CC TARGET " -shared -fsanitize=undefined -o programs.so p*.o", b->jobs);
+    snprintf(command + n, sizeof command - (size_t)n, " | xargs -P %u -I{} " CHIBI_TEST_CC TARGET " " FLAGS " -c -o {}.o {}.c && " CHIBI_TEST_CC TARGET " -shared" LINK " -fsanitize=undefined -o programs.so p*.o", b->jobs);
     if (system(command) != 0) {
         fprintf(stderr, "c_source test: `%s` failed\n", command);
         return false;
@@ -503,6 +925,182 @@ TEST_CASE(agrees_with_reference)
     return true;
 }
 
+static void *
+symbol(const Build *b, const char *name)
+{
+    void *f = dlsym(b->library, name);
+    if (!f) {
+        fprintf(stderr, "c_source test: %s is not in the library\n", name);
+        abort();
+    }
+    return f;
+}
+
+static bool
+gives(const char *name, int64_t x, int64_t got, int64_t want)
+{
+    if (got != want) {
+        fprintf(stderr, "c_source test: %s(%lld) gave %lld, expected %lld\n", name, (long long)x, (long long)got, (long long)want);
+    }
+    return got == want;
+}
+
+static bool
+gives_f64(const char *name, int64_t x, double got, double want)
+{
+    if (got != want) {
+        fprintf(stderr, "c_source test: %s(%lld) gave %a, expected %a\n", name, (long long)x, got, want);
+    }
+    return got == want;
+}
+
+static bool
+calls_c(const Build *b, int64_t x)
+{
+    int64_t narrow = 1 - 420 + 4681 - 10922 + 429496731 - 3;
+    int64_t point = ((3 * x + 2) * 10 + 2 * x) * 10 + x + 5;
+
+    bool ok = gives("after_c", x, ((I1 *)symbol(b, "i0_after_c"))(CONTEXT, x), x + llabs(x - 10));
+    ok &= gives_f64("mixed", x, ((D1 *)symbol(b, "i0_mixed"))(CONTEXT, x), -26.0 * (double)x + 901 + (x > 3 ? 1000 : 0));
+    ok &= gives("eight", x, ((I1 *)symbol(b, "i0_eight"))(CONTEXT, x), 70 * x + 133);
+    ok &= gives("narrow", x, ((I1 *)symbol(b, "i0_narrow"))(CONTEXT, x), x & 1 ? -narrow : narrow);
+    ok &= gives_f64("floats", x, ((D1 *)symbol(b, "i0_floats"))(CONTEXT, x), (double)(((float)x + 0.25f) * 2.0f));
+    ok &= gives("point", x, ((I1 *)symbol(b, "i0_point"))(CONTEXT, x), 103 * x + 303);
+    ok &= gives("scribble", x, ((I1 *)symbol(b, "i0_scribble"))(CONTEXT, x), 1001 * x + 320005);
+    ok &= gives("from_table", x, ((I1 *)symbol(b, "i0_from_table"))(CONTEXT, x), 9870987 + x);
+    ok &= gives("wide", x, ((I1 *)symbol(b, "i0_wide"))(CONTEXT, x), 111 * x + 210);
+    ok &= gives("fill", x, ((I1 *)symbol(b, "i0_fill"))(CONTEXT, x), 8 * x);
+    ok &= gives("vpoint", x, ((I1 *)symbol(b, "i0_vpoint"))(CONTEXT, x), point * 10 - 7);
+
+    int64_t ticks = chibi_cs_ticks;
+    ok &= gives("ticks", x, ((I1 *)symbol(b, "i0_ticks"))(CONTEXT, x), x);
+    ok &= gives("chibi_cs_ticks", x, chibi_cs_ticks, ticks + x);
+    return ok;
+}
+
+static bool
+formats(const Build *b, int64_t x)
+{
+    char fmt[64] = "%ld %d %d %.2f %.3f %d %ld %d %d %ld %lu %.1f";
+    char buf[128] = { 0 }, want[128];
+    int n = snprintf(want, sizeof want, fmt, (long)x, (int)(int8_t)(x - 3), (int)(uint16_t)(x + 7), (double)((float)x * 0.5f), (double)x / 4.0, (int)(x > 2), 123456789012L, 7, -1, -7L, 18446744073709551615UL, 2.5);
+    if (((FORMAT *)symbol(b, "i0_format"))(CONTEXT, (uint8_t *)buf, (uint8_t *)fmt, x) != n || strcmp(buf, want) != 0) {
+        fprintf(stderr, "c_source test: format(%lld) gave \"%s\", expected \"%s\"\n", (long long)x, buf, want);
+        return false;
+    }
+
+    int64_t k[5] = { x, -7, x * 4, -9, x + 6 };
+    double d[5] = { 0.5, (double)(float)x, 1.25, 2.0, 0.75 };
+    double s = 0;
+    for (int i = 0; i < 5; i++) {
+        s = s * 2.0 + (double)k[i] + d[i];
+    }
+    return gives_f64("pairs", x, ((D1 *)symbol(b, "i0_pairs"))(CONTEXT, x), s);
+}
+
+static bool
+sorts(const Build *b, int64_t x)
+{
+    int64_t a[8] = { 5, -3, 9, 0, x, -7, 3, x - 4 };
+    SORT *sort = (SORT *)symbol(b, "i0_sort");
+
+    sort(CONTEXT, (uint8_t *)a, 1);
+    bool ok = true;
+    for (int i = 1; i < 8; i++) {
+        ok &= a[i - 1] <= a[i];
+    }
+
+    sort(CONTEXT, (uint8_t *)a, 0);
+    for (int i = 1; i < 8; i++) {
+        ok &= a[i - 1] >= a[i];
+    }
+
+    if (!ok) {
+        fprintf(stderr, "c_source test: sort(%lld) left the numbers out of order\n", (long long)x);
+    }
+    return ok;
+}
+
+static int64_t
+fold_each(int64_t n, int64_t times, int64_t plus)
+{
+    int64_t s = 0;
+    for (int64_t i = 0; i < n; i++) {
+        s = s * 3 + i * times + plus;
+    }
+    return s;
+}
+
+static int64_t
+seven_of(int64_t x)
+{
+    int64_t s = x + (int8_t)(x - 50) * 10 + (uint16_t)(x * 1000) * 1000 +
+                (int64_t)(int32_t)(x * -100000) * 100000 +
+                (int64_t)((uint32_t)x * 200000000u) * 10000000 + x * 11;
+    return x & 1 ? -s : s;
+}
+
+static bool
+calls_back(const Build *b, int64_t x)
+{
+    bool ok = gives("each", x, ((I1 *)symbol(b, "i0_each"))(CONTEXT, x), fold_each(x, 3, 1) * 1000 + fold_each(x, 2, 0));
+    ok &= gives("hooked", x, ((I1 *)symbol(b, "i0_hooked"))(CONTEXT, x), fold_each(x + 1, 3, 1));
+    ok &= gives("same", x, ((I1 *)symbol(b, "i0_same"))(CONTEXT, x), x + 1101);
+    ok &= gives("call_seven", x, ((I1 *)symbol(b, "i0_call_seven"))(CONTEXT, x), seven_of(x));
+    ok &= gives("call_wide", x, ((I1 *)symbol(b, "i0_call_wide"))(CONTEXT, x), 171 * x - 423);
+    ok &= gives("call_void", x, ((I1 *)symbol(b, "i0_call_void"))(CONTEXT, x), x + 2);
+    return ok;
+}
+
+static bool
+exports(const Build *b, int64_t x)
+{
+    int32_t m = (int32_t)(x * -1000);
+    uint8_t c = (uint8_t)(x * 13);
+
+    bool ok = gives("cs_add3", x, ((ADD3 *)symbol(b, "cs_add3"))(x, m, c), x + m * 10LL + c * 1000LL);
+    ok &= gives_f64("cs_half", x, ((HALF *)symbol(b, "cs_half"))((double)x), (double)x * 0.5);
+    ok &= gives("cs_step", x, ((STEP *)symbol(b, "cs_step"))(x), 2 * x + 1);
+    ok &= gives("uses", x, ((I1 *)symbol(b, "i0_uses"))(CONTEXT, x % 6), fold_each(x % 6, 2, 1) * 1000 + 2 * (x % 6) + 1);
+
+    struct i0_P p = ((SWAP *)symbol(b, "cs_swap"))((struct i0_P){ x, x + 5 });
+    ok &= gives("cs_swap", x, p.x * 1000 + p.y, (x + 5) * 1000 + x);
+
+    int64_t ticks = chibi_cs_ticks;
+    ((TICK *)symbol(b, "cs_tick"))();
+    ok &= gives("cs_tick", x, chibi_cs_ticks, ticks + 1);
+    return ok;
+}
+
+TEST_CASE(works_with_c)
+{
+    Build b;
+    REQUIRE(open_build(&b));
+    bool ok = add_package(&b, 0, INTEROP, 'i') && finish_build(&b);
+    for (int64_t x = 0; ok && x < 20; x++) {
+        ok = calls_c(&b, x);
+        ok &= formats(&b, x);
+        ok &= sorts(&b, x);
+        ok &= calls_back(&b, x);
+        ok &= exports(&b, x);
+    }
+
+    if (ok) {
+        char *args[] = { "a", "bb", "ccc", NULL };
+        GET *tap = (GET *)symbol(&b, "i0_get_tap");
+        bool same = ((GET *)symbol(&b, "i0_get_step"))(CONTEXT) == (uint8_t *)symbol(&b, "cs_step");
+        same &= ((GET *)symbol(&b, "i0_get_twice"))(CONTEXT) == (uint8_t *)chibi_cs_twice;
+        same &= tap(CONTEXT) == tap(CONTEXT) && tap(CONTEXT) != (uint8_t *)symbol(&b, "i0_tap");
+        if (!same) {
+            fprintf(stderr, "c_source test: callbacks don't have the expected addresses\n");
+        }
+        ok = gives("main", 3, ((MAIN *)symbol(&b, "main"))(3, (uint8_t *)args), 603) && same;
+    }
+    close_build(&b, ok);
+    REQUIRE(ok);
+    return true;
+}
+
 #endif
 
 TEST_SUITE(c_source_tests)
@@ -511,5 +1109,6 @@ TEST_SUITE(c_source_tests)
     RUN_TEST_CASE(emits_doubling_structs);
 #ifdef CHIBI_TEST_CC
     RUN_TEST_CASE(agrees_with_reference);
+    RUN_TEST_CASE(works_with_c);
 #endif
 }

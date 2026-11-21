@@ -65,13 +65,19 @@ c_source_prelude(FILE *out)
         "#define CHIBI_FN static\n"
         "#endif\n"
         "\n"
+        "#define CHIBI_STRING(x) #x\n"
+        "#define CHIBI_EXPAND(x) CHIBI_STRING(x)\n"
+        "#define CHIBI_SYMBOL(name) "
+        "__asm__(CHIBI_EXPAND(__USER_LABEL_PREFIX__) name)\n"
+        "\n"
         "typedef struct\n"
         "{\n"
         "    uint8_t *ptr;\n"
         "    int64_t len;\n"
         "} chibi_slice;\n"
         "\n"
-        "__attribute__((noreturn, cold)) void chibi_trap(int kind);\n",
+        "__attribute__((noreturn, cold)) void chibi_trap(int kind);\n"
+        "extern void *chibi_context;\n",
         out
     );
 }
@@ -138,11 +144,13 @@ unsupported(const Checker *c)
 {
     const char *vectors = "the C backend doesn't support vectors yet";
     for (u32 d = 1; d < c->decls.count; d++) {
-        u8 flags = c->decls.flags[d];
-        if (c->decls.kinds[d] == DECL_FN && (flags & DECL_EXPORT)) {
-            return "the C backend doesn't support `export fn` yet";
+        u8 kind = c->decls.kinds[d];
+        u32 type = c->decls.types[d];
+        if (kind == DECL_FN && c->decls.bodies[d] == NO_BODY &&
+            (c->types.arg1[type] & FN_VARIADIC) && c->lists[c->types.arg0[type]] == 0) {
+            return "C11 can't declare an `extern fn` that takes only `..`";
         }
-        if (c->decls.kinds[d] != DECL_STRUCT || !(flags & DECL_STORED)) {
+        if (kind != DECL_STRUCT || !(c->decls.flags[d] & DECL_STORED)) {
             continue;
         }
         u32 first = c->decls.members[d];
@@ -161,12 +169,6 @@ unsupported(const Checker *c)
     }
     for (u32 g = 0; g < code->count; g++) {
         u8 kind = code->kinds[g];
-        if (kind == IR_CALL_C) {
-            return "the C backend doesn't support calls into C yet";
-        }
-        if (kind == IR_CALLBACK) {
-            return "the C backend doesn't support callbacks yet";
-        }
         if (kind == IR_SPLAT || kind == IR_LOOKUP || kind == IR_TOP_BITS ||
             c->types.kinds[code->types[g]] == TYPE_VECTOR) {
             return vectors;
@@ -190,7 +192,7 @@ produces(const Source *s, u32 i)
     u32 g = s->fn->first + i;
     u8 kind = s->code->kinds[g];
     u32 type = s->code->types[g];
-    if (kind == IR_CALL) {
+    if (kind == IR_CALL || kind == IR_CALL_C) {
         return type != TYPE_ID_VOID && s->c->types.kinds[type] != TYPE_STRUCT;
     }
     return kind < IR_CALL || (kind == IR_END && type != TYPE_ID_NONE);
@@ -272,6 +274,14 @@ put_name(Source *s, u32 decl)
 }
 
 static void
+put_c_name(Source *s, u32 decl)
+{
+    Name n = names_get(s->c->names, s->c->decls.names[decl]);
+    const char *role = s->c->decls.bodies[decl] == NO_BODY ? "c_" : "adapter_";
+    fprintf(s->out, "chibi_%s%s%.*s", s->prefix, role, (int)n.len, n.text);
+}
+
+static void
 indent(Source *s)
 {
     for (u32 d = 0; d < s->depth; d++) {
@@ -316,6 +326,7 @@ put_line(Source *s, const char *format, ...)
             }
             case 'c': fputs(va_arg(ap, const char *), s->out); break;
             case 'n': put_name(s, va_arg(ap, u32)); break;
+            case 'e': put_c_name(s, va_arg(ap, u32)); break;
             case 'T': fprintf(s->out, "chibi_trap(%d)", va_arg(ap, int)); break;
             case 'L': {
                 u32 at = va_arg(ap, u32);
@@ -421,16 +432,21 @@ put_memory(Source *s, const char *qualifier, const char *what, const u8 *bytes, 
 }
 
 static void
+put_result(Source *s, u32 type)
+{
+    if (type == TYPE_ID_VOID) {
+        fputs("void", s->out);
+    } else {
+        put_object_type(s, type);
+    }
+}
+
+static void
 put_signature(Source *s, const IrFunc *fn)
 {
     const Checker *c = s->c;
-    u32 ret = (u32)c->types.arg1[c->decls.types[fn->decl]];
     fputs("CHIBI_FN ", s->out);
-    if (ret == TYPE_ID_VOID) {
-        fputs("void", s->out);
-    } else {
-        put_object_type(s, ret);
-    }
+    put_result(s, (u32)c->types.arg1[c->decls.types[fn->decl]]);
     putc(' ', s->out);
     put_name(s, fn->decl);
     fputs("(void *ctx", s->out);
@@ -442,6 +458,53 @@ put_signature(Source *s, const IrFunc *fn)
         put_declaration(s, slots[p].type, 's', p);
     }
     putc(')', s->out);
+}
+
+static void
+put_c_signature(Source *s, u32 decl)
+{
+    const Checker *c = s->c;
+    u32 type = c->decls.types[decl];
+    const u32 *params = c->lists + c->types.arg0[type];
+
+    put_result(s, (u32)c->types.arg1[type]);
+    putc(' ', s->out);
+    put_c_name(s, decl);
+    putc('(', s->out);
+    for (u32 p = 0; p < params[0]; p++) {
+        fputs(p ? ", " : "", s->out);
+        put_declaration(s, params[1 + p], 's', p);
+    }
+    if (c->types.arg1[type] & FN_VARIADIC) {
+        fputs(", ...", s->out);
+    } else if (params[0] == 0) {
+        fputs("void", s->out);
+    }
+    putc(')', s->out);
+}
+
+static void
+put_symbol(Source *s, u32 decl)
+{
+    Name n = names_get(s->c->names, s->c->decls.names[decl]);
+    fprintf(s->out, " CHIBI_SYMBOL(\"%.*s\");\n", (int)n.len, n.text);
+}
+
+static void
+put_adapter(Source *s, u32 decl, bool exported)
+{
+    const Checker *c = s->c;
+    u32 type = c->decls.types[decl];
+
+    fputs(exported ? "\n" : "\nstatic ", s->out);
+    put_c_signature(s, decl);
+    fputs((u32)c->types.arg1[type] == TYPE_ID_VOID ? "\n{\n    " : "\n{\n    return ", s->out);
+    put_name(s, decl);
+    fputs("(chibi_context", s->out);
+    for (u32 p = 0; p < c->lists[c->types.arg0[type]]; p++) {
+        fprintf(s->out, ", s%u", p);
+    }
+    fputs(");\n}\n", s->out);
 }
 
 static void
@@ -654,29 +717,29 @@ put_convert(Source *s, u32 i, u8 kind, u32 type, u32 a, u32 b)
 }
 
 static void
-put_call(Source *s, u32 i, u32 type, u32 decl, const u32 *list)
+put_call(Source *s, u32 i, u8 kind, u32 type, u32 decl, const u32 *list)
 {
     const Checker *c = s->c;
-    const IrFunc *callee = &c->ir.funcs[c->decls.funcs[decl] - 1];
-    const IrSlot *params = s->code->slots + callee->first_slot;
+    u32 fn = c->decls.types[decl];
+    const u32 *params = c->lists + c->types.arg0[fn];
     u32 n = list[0];
-    assert(n == callee->nparams);
     u8 result = c->types.kinds[type];
 
     bool block = result == TYPE_SLICE;
-    for (u32 p = 0; p < n; p++) {
-        block |= c->types.kinds[params[p].type] == TYPE_STRUCT;
+    for (u32 p = 0; p < params[0]; p++) {
+        block |= c->types.kinds[params[1 + p]] == TYPE_STRUCT;
     }
     if (block) {
         put_line(s, "{");
         s->depth++;
     }
-    for (u32 p = 0; p < n; p++) {
-        u32 t = params[p].type;
+    for (u32 p = 0, o = 1; p < params[0]; p++) {
+        u32 t = params[1 + p];
         if (c->types.kinds[t] == TYPE_STRUCT) {
-            put_line(s, "struct %n a%u;", c->types.arg0[t], p);
-            put_line(s, "__builtin_memcpy(&a%u, %o, sizeof a%u);", p, list[1 + p], p);
+            put_line(s, "struct %n a%u;", c->types.arg0[t], o);
+            put_line(s, "__builtin_memcpy(&a%u, %o, sizeof a%u);", o, list[o], o);
         }
+        o += c->types.kinds[t] == TYPE_SLICE ? 2 : 1;
     }
 
     indent(s);
@@ -687,23 +750,41 @@ put_call(Source *s, u32 i, u32 type, u32 decl, const u32 *list)
     } else if (type != TYPE_ID_VOID) {
         fprintf(s->out, "v%u = ", i);
     }
-    put_name(s, decl);
-    fputs("(ctx", s->out);
-    for (u32 p = 0; p < n; p++) {
-        u8 kind = c->types.kinds[params[p].type];
-        fputs(", ", s->out);
-        if (kind == TYPE_STRUCT) {
-            fprintf(s->out, "a%u", p);
-        } else if (kind == TYPE_SLICE) {
+    const char *separator = ", ";
+    if (kind == IR_CALL_C) {
+        put_c_name(s, decl);
+        putc('(', s->out);
+        separator = "";
+    } else {
+        put_name(s, decl);
+        fputs("(ctx", s->out);
+    }
+    u32 o = 1;
+    for (u32 p = 0; p < params[0]; p++, o++) {
+        u8 k = c->types.kinds[params[1 + p]];
+        fputs(separator, s->out);
+        separator = ", ";
+        if (k == TYPE_STRUCT) {
+            fprintf(s->out, "a%u", o);
+        } else if (k == TYPE_SLICE) {
             fputs("(chibi_slice){ ", s->out);
-            put_operand(s, list[1 + p]);
+            put_operand(s, list[o]);
             fputs(", ", s->out);
-            put_operand(s, list[2 + p]);
+            put_operand(s, list[++o]);
             fputs(" }", s->out);
-            p++;
         } else {
-            put_operand(s, list[1 + p]);
+            put_operand(s, list[o]);
         }
+    }
+    assert(o == n + 1 || (c->types.arg1[fn] & FN_VARIADIC));
+    for (; o <= n; o++) {
+        fputs(separator, s->out);
+        separator = ", ";
+        if (list[o] & IR_CONST) {
+            u32 t = s->code->consts[s->fn->first_const + (list[o] & ~IR_CONST)].type;
+            fprintf(s->out, "(%s)", value_name(c, t));
+        }
+        put_operand(s, list[o]);
     }
     fputs(");\n", s->out);
 
@@ -854,7 +935,9 @@ put_instruction(Source *s, u32 i)
         case IR_CONVERT:
         case IR_NARROW:
         case IR_TRUNCATE: put_convert(s, i, kind, type, a, b); break;
-        case IR_CALL: put_call(s, i, type, a, extra(s, b)); break;
+        case IR_CALLBACK: put_line(s, "v%u = (uint8_t *)%e;", i, b); break;
+        case IR_CALL:
+        case IR_CALL_C: put_call(s, i, kind, type, a, extra(s, b)); break;
         case IR_STORE: put_line(s, "%s = %o;", a, b); break;
         case IR_STORE_AT:
             put_line(s, "__builtin_memcpy(%o, &(%t){ %o }, sizeof(%t));", a, type, b, type);
@@ -991,6 +1074,21 @@ c_source_package(FILE *out, const Checker *c, const char *prefix)
     for (u32 f = 0; f < ir->nfuncs; f++) {
         put_signature(&s, &ir->funcs[f]);
         fputs(";\n", out);
+    }
+    for (u32 d = 1; d < c->decls.count; d++) {
+        if (c->decls.kinds[d] == DECL_FN && c->decls.bodies[d] == NO_BODY) {
+            put_c_signature(&s, d);
+            put_symbol(&s, d);
+        }
+    }
+    for (u32 k = 0; k < ir->nexports; k++) {
+        put_c_signature(&s, ir->callbacks[k]);
+        put_symbol(&s, ir->callbacks[k]);
+    }
+    for (u32 k = 0; k < ir->ncallbacks; k++) {
+        if (c->decls.bodies[ir->callbacks[k]] != NO_BODY) {
+            put_adapter(&s, ir->callbacks[k], k < ir->nexports);
+        }
     }
     for (u32 f = 0; f < ir->nfuncs; f++) {
         put_function(&s, &ir->funcs[f]);
