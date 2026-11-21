@@ -25,7 +25,7 @@ SRC       := $(filter-out src/main.c, $(wildcard src/*.c vendor/*/*.c))
 TEST_SRC  := test/*.c test/random/*.c $(SRC)
 BENCH_SRC := bench/*.c test/random/*.c $(SRC)
 
-TRANSLATED     := src/arena.c src/str.c src/names.c src/exact.c
+TRANSLATED     := src/arena.c src/str.c src/names.c src/exact.c src/parser.c
 TRANSLATED_SRC := test/*.c test/random/*.c $(filter-out $(TRANSLATED), $(SRC))
 
 run:

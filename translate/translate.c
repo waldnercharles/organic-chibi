@@ -2275,6 +2275,13 @@ call(Tr *t, u32 e)
     return value(ty, t->bits[f], P_POSTFIX);
 }
 
+static bool
+points_to_bytes(const Tr *t, u32 type)
+{
+    const CType *p = &t->types[t->types[type].inner];
+    return p->kind == CT_INT && p->bits == 8 && !p->is_signed;
+}
+
 static Val
 pointer_cast(Tr *t, u32 e, u32 bits_hint, bool have_hint)
 {
@@ -2284,6 +2291,12 @@ pointer_cast(Tr *t, u32 e, u32 bits_hint, bool have_hint)
     Val v = ex(t, x, 0, 0);
     if (v.nil) {
         return v;
+    }
+    if (v.untyped && !points_to_bytes(t, to)) {
+        die(t, e, "a string literal cast to a pointer to something other than bytes");
+    }
+    if (v.untyped) {
+        return (Val){ to, v.bits, P_POSTFIX, true, false, false };
     }
     u32 bits = have_hint
                  ? bits_hint
@@ -2680,6 +2693,19 @@ unary(Tr *t, u32 e)
     }
 }
 
+static void
+put_index(Tr *t, u32 index)
+{
+    put(&t->out, "[");
+    u64 at = t->out.len;
+    Val v = ex(t, index, 0, 0);
+    if (is_kind(t, v.type, CT_BOOL)) {
+        insert(&t->out, at, "if ", 3);
+        put(&t->out, " then 1 else 0");
+    }
+    put(&t->out, "]");
+}
+
 static Val
 subscript(Tr *t, u32 e)
 {
@@ -2687,9 +2713,7 @@ subscript(Tr *t, u32 e)
     u32 index = child(t, e, 1);
     if (is_cast(t, base) && op(t, base) == CAST_ARRAY_DECAY) {
         operand(t, base + 1, P_POSTFIX);
-        put(&t->out, "[");
-        ex(t, index, 0, 0);
-        put(&t->out, "]");
+        put_index(t, index);
         Site s = lvalue_site(t, base + 1);
         return (Val){ ctype(t, e), site_bits(t, s), P_POSTFIX,
                       false,       false,           false };
@@ -2704,9 +2728,7 @@ subscript(Tr *t, u32 e)
         v = bitcast_to(t, at, v.type, v.bits | MANY);
     }
     parens(t, at, v, P_POSTFIX);
-    put(&t->out, "[");
-    ex(t, index, 0, 0);
-    put(&t->out, "]");
+    put_index(t, index);
     return (Val){ ctype(t, e), v.bits >> LEVEL_BITS, P_POSTFIX, false, false,
                   false };
 }
@@ -4650,6 +4672,18 @@ emit_global(Tr *t, u32 v)
     put(&t->out, "\n");
 }
 
+static bool
+calls_later(const Tr *t, u32 def)
+{
+    for (u32 i = def; i < t->a.ends[def]; i++) {
+        u32 f = t->kinds[i] == K_CALL ? callee(t, i) : 0;
+        if (f != 0 && t->defs[f] >= def) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void
 emit_function(Tr *t, u32 def)
 {
@@ -4667,6 +4701,9 @@ emit_function(Tr *t, u32 def)
 
     putf(&t->out, "\n%sfn %s", exported ? "export " : "", text(t, t->a.names[def]));
     put_params(t, def, true);
+    if (is_kind(t, t->types[ctype(t, def)].inner, CT_VOID) && calls_later(t, def)) {
+        put(&t->out, " -> void");
+    }
     put(&t->out, " {");
     t->depth = 1;
     for (u32 k = 0;; k++) {
