@@ -4466,6 +4466,70 @@ TEST_CASE(strings)
     return true;
 }
 
+static const char *const VALUE_IF_FUNCTIONS[] = {
+    "vif_pick",  "vif_small", "vif_side",  "vif_nested", "vif_float", "vif_f32",
+    "vif_narrow", "vif_loop", "vif_arg",   "vif_const",  "vif_bool",  "vif_widen",
+    "vif_spill", "vif_mixed", "vif_while", "vif_ptr",
+};
+
+static const CallCase VALUE_IF_CASES[] = {
+    { "vif_pick", 3, 5, 3, 0 },
+    { "vif_pick", 7, -2, -2, 0 },
+    { "vif_small", 5, 1, 200300, 0 },
+    { "vif_small", 2, 2, 6700, 0 },
+    { "vif_side", 5, 1, 50500, 0 },
+    { "vif_side", 1, 4, 40004, 0 },
+    { "vif_nested", -1, 0, 1, 0 },
+    { "vif_nested", 0, 0, 2, 0 },
+    { "vif_nested", 2, 5, 3, 0 },
+    { "vif_nested", 5, 2, 4, 0 },
+    { "vif_float", 4, 1, 100, 0 },
+    { "vif_float", 3, 0, 25, 0 },
+    { "vif_f32", 5, 1, 150, 0 },
+    { "vif_f32", 1, 5, 25, 0 },
+    { "vif_narrow", 1, 7, 8, 0 },
+    { "vif_narrow", 0, 7, -1, 0 },
+    { "vif_loop", 2, 0, 10, 0 },
+    { "vif_loop", -3, 0, 35, 0 },
+    { "vif_arg", 5, 1, 8, 0 },
+    { "vif_arg", 1, 5, 9, 0 },
+    { "vif_const", 3, 4, 304, 0 },
+    { "vif_bool", 5, 1, 1, 0 },
+    { "vif_bool", -5, -1, 0, 0 },
+    { "vif_bool", 1, 5, 1, 0 },
+    { "vif_widen", 70000, 3, 4464, 0 },
+    { "vif_widen", 5, -2, -2, 0 },
+    { "vif_spill", 9, 3, 16, 0 },
+    { "vif_spill", 1, 5, 12, 0 },
+    { "vif_mixed", 3, 4, 4, 0 },
+    { "vif_mixed", -1, 4, -1, 0 },
+    { "vif_mixed", 6, 4, -7, 0 },
+    { "vif_while", 3, 9, 3, 0 },
+    { "vif_while", -1, 4, 4, 0 },
+    { "vif_while", 0, -2, 0, 0 },
+    { "vif_ptr", 5, 1, 105001, 0 },
+    { "vif_ptr", 1, 5, 1105, 0 },
+};
+
+TEST_CASE(value_ifs)
+{
+    catch_traps();
+    Program p;
+    REQUIRE(build(&p, VALUE_IFS));
+    for (size_t k = 0; k < sizeof VALUE_IF_CASES / sizeof VALUE_IF_CASES[0]; k++) {
+        CallCase t = VALUE_IF_CASES[k];
+        int64_t got = 0;
+        int trap = call_i2((I2 *)fn(&p, t.name), t.a, t.b, &got);
+        if (trap != t.trap || (!trap && got != t.want)) {
+            fprintf(stderr, "arm64 test: %s(%lld, %lld) gave %lld (trap %d)\n", t.name, (long long)t.a, (long long)t.b, (long long)got, trap);
+            REQUIRE(false);
+        }
+    }
+    REQUIRE(agree_on_grid(&p, VALUE_IF_FUNCTIONS, sizeof VALUE_IF_FUNCTIONS / sizeof VALUE_IF_FUNCTIONS[0]));
+    release_program(&p);
+    return true;
+}
+
 typedef int64_t I3(void *, int64_t, int64_t, int64_t);
 
 static int
@@ -5041,6 +5105,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(bitcasts);
     RUN_TEST_CASE(optionals);
     RUN_TEST_CASE(strings);
+    RUN_TEST_CASE(value_ifs);
     RUN_TEST_CASE(vectors);
     RUN_TEST_CASE(narrow_parameters);
     RUN_TEST_CASE(constant_division);

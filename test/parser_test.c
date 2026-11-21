@@ -421,6 +421,14 @@ static const struct
     { "f(found: { break found 1 })", "(call f (label found (block (break found 1))))" },
     { "x := switch k { .a => 1, .b => 2 }", "(:= x (switch k (case (. a) 1) (case (. b) 2)))" },
     { "return switch k {\n  .a => 1\n  _ => 0\n}", "(return (switch k (case (. a) 1) (case _ 0)))" },
+    { "x := if c then 1 else 2", "(:= x (if c 1 2))" },
+    { "x = if a and b then f(1) else if c then 2 else 3", "(= x (if (and a b) (call f 1) (if c 2 3)))" },
+    { "return if c then -x else x + 1", "(return (if c (- x) (+ x 1)))" },
+    { "y := (if c then 1 else 2) * 3", "(:= y (* (if c 1 2) 3))" },
+    { "x := if c\n  then 1\n  else 2", "(:= x (if c 1 2))" },
+    { "switch k { 1 => y = if c then 1 else 2 }", "(switch k (case 1 (= y (if c 1 2))))" },
+    { "f(if c then 1 else 2, s[if c then 0 else 1])", "(call f (if c 1 2) (index s (if c 0 1)))" },
+    { "x := if a or b then c or d else e or f", "(:= x (if (or a b) (or c d) (or e f)))" },
     { "break\nx", "break\nx" },
     { "break found\nx", "(break found)\nx" },
     { "x: int\ny: {}", "(: x int)\n(label y (block))" },
@@ -547,6 +555,13 @@ static const struct
     { "switch x 1 => a", "expected `{`", 9 },
     { "switch x { 1 a }", "expected `,` or `=>`", 13 },
     { "x := switch k { _ => y = 1 }", "expected `,`, `;` or a new line", 23 },
+    { "x := if c then 1", "expected `else`; an `if` expression needs both values", 16 },
+    { "x := if c 1 else 2", "expected `then` after the condition", 10 },
+    { "x := if c { 1 } else { 2 }", "expected `then` after the condition", 10 },
+    { "x := 1 + if c then 1 else 2", "put parentheses around an `if` expression inside another expression", 9 },
+    { "x := -if c then 1 else 2", "put parentheses around an `if` expression inside another expression", 6 },
+    { "x := a or if c then true else false", "put parentheses around an `if` expression inside another expression", 10 },
+    { "then := 1", "expected an expression", 0 },
     { "switch x { 1 => a b }", "expected `,`, `;` or a new line", 18 },
     { "switch x { 1 => a", "expected `}`", 17 },
     { "switch x { => a }", "expected an expression", 11 },
@@ -730,6 +745,8 @@ static const struct
     { "x := switch k { .a => 1, _ => b: { break b 2 } }", "VALUE_SWITCH_START NAME CASE_START ENUM_LITERAL CASE_BODY INT CASE CASE_START NAME CASE_BODY VALUE_LABEL_START BLOCK_START INT BREAK_VALUE BLOCK LABELED_VALUE CASE VALUE_SWITCH VAR_INIT" },
     { "x := switch k { _ => return }", "VALUE_SWITCH_START NAME CASE_START NAME CASE_BODY RETURN CASE VALUE_SWITCH VAR_INIT" },
     { "f(switch k { _ => 1 }, switch k { _ => 1 } + 1)", "NAME CALL_ARGS VALUE_SWITCH_START NAME CASE_START NAME CASE_BODY INT CASE SWITCH_ITEM VALUE_SWITCH_START NAME CASE_START NAME CASE_BODY INT CASE VALUE_SWITCH INT ADD CALL EXPR_STMT" },
+    { "x := if c then 1 else 2", "NAME VALUE_IF_THEN INT VALUE_IF_ELSE INT VALUE_IF VAR_INIT" },
+    { "f(if c then 1 else 2, (if c then 1 else 2) + 1)", "NAME CALL_ARGS NAME VALUE_IF_THEN INT VALUE_IF_ELSE INT VALUE_IF_ITEM NAME VALUE_IF_THEN INT VALUE_IF_ELSE INT VALUE_IF INT ADD CALL EXPR_STMT" },
     { "x: T = undefined", "NAME VALUE UNDEFINED VAR_TYPE_INIT" },
     { "a +% -%b", "NAME NAME NEG_WRAP ADD_WRAP EXPR_STMT" },
     { "x *%= 2", "NAME VALUE INT MUL_WRAP_ASSIGN" },
@@ -888,6 +905,7 @@ TEST_CASE(depth_limit)
     REQUIRE(depth_ok("[]", "", 0, ""));
     REQUIRE(depth_ok("[1]", "", 0, "y: "));
     REQUIRE(depth_ok("fn() -> ", "", 0, "y: "));
+    REQUIRE(depth_ok("if c then ", " else y", 0, "z := "));
     return true;
 }
 
@@ -921,6 +939,27 @@ TEST_CASE(long_else_if)
 
     arena_free(&arena);
     free(chain);
+    REQUIRE(ok);
+    return true;
+}
+
+TEST_CASE(long_conditionals)
+{
+    const char *line = "x = if c then 1 else 2\n";
+    size_t line_len = strlen(line);
+    int nlines = PARSER_MAX_DEPTH + 1;
+
+    char *text = malloc(line_len * (size_t)nlines + 1);
+    char *p = text;
+    for (int i = 0; i < nlines; i++) {
+        p = stpcpy(p, line);
+    }
+
+    Arena arena = { 0 };
+    bool ok = parse(&arena, text).count >= 0;
+
+    arena_free(&arena);
+    free(text);
     REQUIRE(ok);
     return true;
 }
@@ -972,5 +1011,6 @@ TEST_SUITE(parser_tests)
     RUN_TEST_CASE(depth_limit);
     RUN_TEST_CASE(long_chains);
     RUN_TEST_CASE(long_else_if);
+    RUN_TEST_CASE(long_conditionals);
     RUN_TEST_CASE(generated_code);
 }

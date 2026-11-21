@@ -133,6 +133,8 @@ parse_items(Parser *p, TokenKind close)
                 *last = NODE_LABELED_ITEM;
             } else if (*last == NODE_VALUE_SWITCH) {
                 *last = NODE_SWITCH_ITEM;
+            } else if (*last == NODE_VALUE_IF) {
+                *last = NODE_VALUE_IF_ITEM;
             }
         }
 
@@ -442,7 +444,9 @@ parse_operand(Parser *p)
                             ? "use `undefined` only as `name: Type = undefined`"
                         : kind == TK_UNWRAP
                             ? "use `!!` only after a value on the same line"
-                            : "expected an expression";
+                        : kind == TK_IF ? "put parentheses around an `if` "
+                                          "expression inside another expression"
+                                        : "expected an expression";
         fail(p, msg);
         return;
     }
@@ -490,9 +494,38 @@ parse_catch_handler(Parser *p, int at)
     return true;
 }
 
+static NOINLINE void
+parse_value_if(Parser *p)
+{
+    if (!descend(p)) {
+        return;
+    }
+
+    int at = p->pos++;
+    parse_binary(p, PREC_OR);
+    if (p->tokens.kinds[p->pos] != TK_THEN) {
+        fail(p, "expected `then` after the condition");
+        return;
+    }
+    emit(p, NODE_VALUE_IF_THEN, p->pos++);
+    parse_binary(p, PREC_OR);
+    if (p->tokens.kinds[p->pos] != TK_ELSE) {
+        fail(p, "expected `else`; an `if` expression needs both values");
+        return;
+    }
+    emit(p, NODE_VALUE_IF_ELSE, p->pos++);
+    parse_binary(p, PREC_OR);
+    emit(p, NODE_VALUE_IF, at);
+    p->depth--;
+}
+
 static void
 parse_binary(Parser *p, int min_prec)
 {
+    if (min_prec == PREC_OR && p->tokens.kinds[p->pos] == TK_IF) {
+        parse_value_if(p);
+        return;
+    }
     parse_operand(p);
 
     int last = PREC_NONE;

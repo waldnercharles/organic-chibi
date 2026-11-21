@@ -134,6 +134,8 @@
     NODE(NODE_PUB, 1, "pub")                                                   \
     NODE(NODE_EXPORT, 1, "export")                                             \
     NODE(NODE_EXTERN, 1, "extern")                                             \
+    NODE(NODE_VALUE_IF, 5, "if")                                               \
+    NODE(NODE_VALUE_IF_ITEM, 5, "if")                                          \
     LIST(NODE_CALL, NODE_CALL_ARGS, 1, "call")                                 \
     LIST(NODE_BLOCK, NODE_BLOCK_START, 0, "block")                             \
     LIST(NODE_IF, NODE_IF_START, 0, "if")                                      \
@@ -167,6 +169,8 @@
     MARKER(NODE_IF_THEN)                                                       \
     MARKER(NODE_ELSE_IF)                                                       \
     MARKER(NODE_ELSE)                                                          \
+    MARKER(NODE_VALUE_IF_THEN)                                                 \
+    MARKER(NODE_VALUE_IF_ELSE)                                                 \
     MARKER(NODE_WHILE_START)                                                   \
     MARKER(NODE_WHILE_BODY)                                                    \
     MARKER(NODE_DEFER_START)                                                   \

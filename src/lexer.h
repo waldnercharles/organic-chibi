@@ -15,6 +15,7 @@
     OTHER(TK_IDENT, "IDENT")                                                   \
     KW(TK_IF, "if")                                                            \
     KW(TK_ELSE, "else")                                                        \
+    KW(TK_THEN, "then")                                                        \
     KW(TK_FOR, "for")                                                          \
     KW(TK_WHILE, "while")                                                      \
     KW(TK_SWITCH, "switch")                                                    \

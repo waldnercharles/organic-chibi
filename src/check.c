@@ -5876,6 +5876,13 @@ result_type(Checker *c, u32 file, u32 node, u32 own, u8 start, u8 end_kind, u8 i
     if (direct && (next == NODE_VAR_TYPE_INIT || next == NODE_ASSIGN)) {
         return expected_type(c, own);
     }
+    if (next == NODE_VALUE_IF_ELSE || next == NODE_VALUE_IF ||
+        next == NODE_VALUE_IF_ITEM) {
+        u32 m = c->sp - own;
+        while (c->stack[--m].type != OPERAND_MARKER + NODE_VALUE_IF_THEN) {
+        }
+        return c->stack[m - 1].ref;
+    }
     return TYPE_ID_NONE;
 }
 
@@ -6711,6 +6718,174 @@ close_for(Checker *c, u32 token)
     push(c, token, OPERAND_STMT, 0);
 }
 
+static NOINLINE void
+value_if_then(Checker *c, u32 file, u32 node, u32 token)
+{
+    u32 cond_token = c->stack_tokens[c->sp - 1];
+    Operand cond = c->stack[c->sp - 1];
+    u32 expected = result_type(c, file, node, 1, NODE_VALUE_IF_THEN, NODE_VALUE_IF, NODE_VALUE_IF_ITEM);
+    u32 mark = c->nfacts;
+    u32 pending = 0;
+    u32 mode = SHORT_FOLD;
+    if (cond.type != TYPE_ID_NONE && cond.type != TYPE_ID_BOOL) {
+        report(c, file, cond_token, is_value_type(cond.type) ? DIAG_NOT_BOOL : DIAG_NOT_VALUE, cond.type, 0);
+    } else if (cond.type == TYPE_ID_BOOL && is_constant(cond)) {
+        mode = exact_sign(&c->exacts, value_of(cond)) != 0 ? SHORT_SKIP : SHORT_PASS;
+        if (mode == SHORT_PASS && c->body.code) {
+            emit(c, IR_IF, 0, ir_const(c, TYPE_ID_BOOL, 0), 0);
+        }
+    } else if (cond.type == TYPE_ID_BOOL) {
+        assert(c->body.code);
+        pending = c->body.narrows ? narrow_then(c, cond) : 0;
+        mode = emit(c, IR_IF, expected, value_of(cond), 0);
+    }
+
+    pop(c);
+    push(c, cond_token, OPERAND_STMT, mark);
+    push(c, cond_token, OPERAND_STMT, pending);
+    push(c, cond_token, OPERAND_STMT, expected);
+    push(c, token, OPERAND_MARKER + NODE_VALUE_IF_THEN, mode);
+}
+
+static NOINLINE Operand
+value_if_branch(Checker *c, u32 file, u32 token, Operand v)
+{
+    if (v.type == TYPE_ID_NONE) {
+        return poison;
+    }
+    if (is_place(v)) {
+        report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
+        return poison;
+    }
+    if (!is_value_type(v.type)) {
+        report(c, file, token, DIAG_NOT_VALUE, 0, 0);
+        return poison;
+    }
+    if (is_pair(c, v)) {
+        report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
+        return poison;
+    }
+    return v;
+}
+
+static NOINLINE void
+value_if_else(Checker *c, u32 file, u32 token)
+{
+    u32 a_token = c->stack_tokens[c->sp - 1];
+    Operand a = value_if_branch(c, file, a_token, pop(c));
+    u32 mode = c->stack[c->sp - 1].ref;
+    u32 expected = c->stack[c->sp - 2].ref;
+    u32 pending = c->stack[c->sp - 3].ref;
+    u32 mark = c->stack[c->sp - 4].ref;
+    u32 at = 0;
+    if (mode == SHORT_SKIP && c->body.code) {
+        emit(c, IR_IF, 0, ir_const(c, TYPE_ID_BOOL, 0), 0);
+    } else if (mode == SHORT_PASS && c->body.code) {
+        if (!is_constant(a)) {
+            emit(c, IR_DROP, 0, value_of(a), 0);
+        }
+        emit(c, IR_END, 0, 0, 0);
+    } else if (mode < SHORT_TESTED) {
+        if (expected != TYPE_ID_NONE) {
+            a = convert(c, file, a_token, a, expected);
+            at = emit(c, IR_ELSE, expected, a.type == TYPE_ID_NONE ? 0 : operand_ir(c, a), 0);
+        } else if (!is_constant(a)) {
+            if (may_widen(c, a)) {
+                emit(c, IR_NOP, 0, 0, 0);
+            }
+            at = emit(c, IR_ELSE, a.type, value_of(a), 0);
+        } else {
+            at = emit(c, IR_ELSE, 0, 0, 0);
+        }
+        if (c->nfacts != mark) {
+            narrow_else(c, mark, pending);
+        }
+    }
+    push(c, a_token, a.type, a.ref);
+    push(c, token, OPERAND_MARKER + NODE_VALUE_IF_ELSE, at);
+}
+
+static NOINLINE u32
+settle_value_if(Checker *c, u32 file, u32 mode, u32 at, Operand a, u32 a_token, Operand b, u32 b_token)
+{
+    u32 peer = peer_type(c, a.type, b.type);
+    u32 type = peer == a.type
+                 ? value_type(c, file, a_token, (Operand){ peer, a.ref })
+                 : value_type(c, file, b_token, (Operand){ peer, b.ref });
+    if (type == TYPE_ID_NONE) {
+        return TYPE_ID_NONE;
+    }
+
+    IrCode *code = c->body.code;
+    u32 to = c->body.first + at;
+    if (is_constant(a)) {
+        Operand x = convert(c, file, a_token, a, type);
+        if (x.type == TYPE_ID_NONE) {
+            return TYPE_ID_NONE;
+        }
+        code->as[to] = operand_ir(c, x);
+    } else if (a.type != type) {
+        if (!may_widen(c, a) || !widens(c, a.type, type)) {
+            report(c, file, a_token, DIAG_MISMATCH, a.type, type);
+            return TYPE_ID_NONE;
+        }
+        code->kinds[to - 1] = IR_CONVERT;
+        code->types[to - 1] = type;
+        code->as[to - 1] = value_of(a);
+        code->as[to] = at - 1;
+    }
+    code->types[to] = type;
+    code->types[c->body.first + mode] = type;
+    return type;
+}
+
+static NOINLINE Operand
+value_if(Checker *c, u32 file)
+{
+    u32 b_token = c->stack_tokens[c->sp - 1];
+    Operand b = value_if_branch(c, file, b_token, pop(c));
+    u32 at = pop(c).ref;
+    u32 a_token = c->stack_tokens[c->sp - 1];
+    Operand a = pop(c);
+    u32 mode = pop(c).ref;
+    u32 expected = pop(c).ref;
+    pop(c);
+    u32 mark = pop(c).ref;
+    if (c->nfacts != mark) {
+        undo_facts(c, mark);
+    }
+
+    if (mode == SHORT_FOLD) {
+        return poison;
+    }
+    if (mode == SHORT_SKIP || mode == SHORT_PASS) {
+        if (mode == SHORT_SKIP && c->body.code) {
+            if (!is_constant(b)) {
+                emit(c, IR_DROP, 0, value_of(b), 0);
+            }
+            emit(c, IR_END, 0, 0, 0);
+        }
+        Operand v = mode == SHORT_SKIP ? a : b;
+        u32 v_token = mode == SHORT_SKIP ? a_token : b_token;
+        return expected == TYPE_ID_NONE || v.type == TYPE_ID_NONE
+                 ? v
+                 : convert(c, file, v_token, v, expected);
+    }
+
+    u32 type = expected;
+    if (a.type != TYPE_ID_NONE && b.type != TYPE_ID_NONE && type == TYPE_ID_NONE) {
+        type = settle_value_if(c, file, mode, at, a, a_token, b, b_token);
+    }
+    Operand v = type == TYPE_ID_NONE || a.type == TYPE_ID_NONE
+                  ? poison
+                  : convert(c, file, b_token, b, type);
+    if (v.type == TYPE_ID_NONE) {
+        emit(c, IR_END, 0, 0, 0);
+        return poison;
+    }
+    return emit_value(c, IR_END, type, operand_ir(c, v), 0);
+}
+
 static u32
 literal_end(const u8 *kinds, u32 i)
 {
@@ -6848,6 +7023,13 @@ body_marker(Checker *c, u32 file, u32 node, u8 kind, u32 token)
         case NODE_OR_ELSE_TARGET:
             push(c, token, OPERAND_MARKER + NODE_VALUE, or_else_target(c, file, node, token));
             return;
+        case NODE_VALUE_IF_THEN:
+            if (c->nunread != c->unread_done) {
+                reserve_copies(c, c->sp);
+            }
+            value_if_then(c, file, node, token);
+            return;
+        case NODE_VALUE_IF_ELSE: value_if_else(c, file, token); return;
         default: break;
     }
     push(c, token, OPERAND_MARKER + kind, c->nscratch);
@@ -7034,6 +7216,10 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                 logical_left(c, file, token, kind);
             } else if (kind == NODE_OR_ELSE_LEFT) {
                 or_else_left(c, file, i, token);
+            } else if (kind == NODE_VALUE_IF_THEN) {
+                value_if_then(c, file, i, token);
+            } else if (kind == NODE_VALUE_IF_ELSE) {
+                value_if_else(c, file, token);
             } else if (kind == NODE_VALUE_LABEL_START) {
                 report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
                 i = closing_node(kinds, i, kind, NODE_LABELED_VALUE, NODE_LABELED_ITEM);
@@ -7163,6 +7349,10 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                 break;
             }
             case NODE_OR_ELSE: push_operand(c, token, or_else(c, file)); break;
+            case NODE_VALUE_IF:
+            case NODE_VALUE_IF_ITEM:
+                push_operand(c, token, value_if(c, file));
+                break;
             case NODE_UNDEFINED: push(c, token, TYPE_ID_UNDEFINED, 0); break;
             case NODE_NEG:
             case NODE_NEG_WRAP:
