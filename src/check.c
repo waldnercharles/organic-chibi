@@ -6364,6 +6364,12 @@ claim_literal(Checker *c, u32 file, u32 token, u8 kind)
     }
 }
 
+static u32
+child_token(const u32 *tokens, u32 begin, u32 i)
+{
+    return i > begin ? tokens[i - 1] : tokens[i];
+}
+
 static void
 walk(Checker *c, u32 decl, u32 begin, u32 end)
 {
@@ -6408,8 +6414,6 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
             }
             continue;
         }
-
-        u32 child = i > begin ? tokens[i - 1] : token;
 
         switch (kind) {
             case NODE_NAME: {
@@ -6588,34 +6592,34 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                     push_operand(c, token, poison);
                     break;
                 }
-                u32 t = type_operand(c, file, child, o);
+                u32 t = type_operand(c, file, child_token(tokens, begin, i), o);
                 push_type(c, token, t ? pointer_type(c, t) : TYPE_ID_NONE);
                 break;
             }
             case NODE_OPTIONAL_TYPE: {
-                u32 t = type_operand(c, file, child, pop(c));
+                u32 t = type_operand(c, file, child_token(tokens, begin, i), pop(c));
                 push_type(c, token, t ? optional_type(c, t) : TYPE_ID_NONE);
                 break;
             }
             case NODE_SLICE_TYPE: {
-                u32 t = type_operand(c, file, child, pop(c));
+                u32 t = type_operand(c, file, child_token(tokens, begin, i), pop(c));
                 push_type(c, token, t ? slice_type(c, t) : TYPE_ID_NONE);
                 break;
             }
             case NODE_MANY_TYPE: {
-                u32 t = type_operand(c, file, child, pop(c));
+                u32 t = type_operand(c, file, child_token(tokens, begin, i), pop(c));
                 push_type(c, token, t ? intern_type(c, TYPE_MANY, t, 0) : TYPE_ID_NONE);
                 break;
             }
             case NODE_ARRAY_TYPE: {
-                u32 t = type_operand(c, file, child, pop(c));
+                u32 t = type_operand(c, file, child_token(tokens, begin, i), pop(c));
                 bool ok;
                 u64 n = array_length(c, file, token, pop(c), &ok);
                 push_type(c, token, t && ok ? intern_type(c, TYPE_ARRAY, t, n) : TYPE_ID_NONE);
                 break;
             }
             case NODE_ERROR_UNION: {
-                u32 t = type_operand(c, file, child, pop(c));
+                u32 t = type_operand(c, file, child_token(tokens, begin, i), pop(c));
                 u32 e = type_operand(c, file, token, pop(c));
                 if (e && e != TYPE_ID_ERROR) {
                     report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
@@ -6625,7 +6629,7 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                 break;
             }
             case NODE_ERROR_UNION_INFERRED: {
-                u32 t = type_operand(c, file, child, pop(c));
+                u32 t = type_operand(c, file, child_token(tokens, begin, i), pop(c));
                 push_type(c, token, t ? intern_type(c, TYPE_ERROR_UNION, t, 0) : TYPE_ID_NONE);
                 break;
             }
@@ -6635,12 +6639,12 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                     unsupported(c, file, i);
                     break;
                 }
-                u32 t = type_operand(c, file, child, pop(c));
+                u32 t = type_operand(c, file, child_token(tokens, begin, i), pop(c));
                 push_type(c, token, t ? c_fn_type(c, file, token, t) : TYPE_ID_NONE);
                 break;
             }
             case NODE_MEMBER_TYPE: {
-                u32 t = type_operand(c, file, child, pop(c));
+                u32 t = type_operand(c, file, child_token(tokens, begin, i), pop(c));
                 if (t) {
                     claim_contained(c, t, file, token);
                 }
@@ -6671,7 +6675,7 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                 break;
             }
             case NODE_PARAM_TYPE: {
-                u32 t = type_operand(c, file, child, pop(c));
+                u32 t = type_operand(c, file, child_token(tokens, begin, i), pop(c));
                 push_member(c, file, i, t, MEMBER_NONE);
                 break;
             }
@@ -6690,10 +6694,10 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
             }
             case NODE_ENUM_BACKING:
             case NODE_UNION_TAG: {
-                u32 t = type_operand(c, file, child, pop(c));
+                u32 t = type_operand(c, file, child_token(tokens, begin, i), pop(c));
                 u8 k = c->types.kinds[t];
                 if (t && k != TYPE_INT && !(kind == NODE_UNION_TAG && k == TYPE_ENUM)) {
-                    report(c, file, child, DIAG_NOT_INTEGER, 0, 0);
+                    report(c, file, child_token(tokens, begin, i), DIAG_NOT_INTEGER, 0, 0);
                     t = TYPE_ID_NONE;
                 }
                 if (t && k == TYPE_ENUM) {
@@ -6703,7 +6707,12 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                 break;
             }
             case NODE_FN_RETURN:
-                push(c, token, OPERAND_RETURN, type_operand(c, file, child, pop(c)));
+                push(
+                    c,
+                    token,
+                    OPERAND_RETURN,
+                    type_operand(c, file, child_token(tokens, begin, i), pop(c))
+                );
                 break;
             case NODE_VARIADIC: push(c, token, OPERAND_VARIADIC, 0); break;
             case NODE_STRUCT:
@@ -6739,7 +6748,7 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                 break;
             }
             case NODE_VAR_TYPE:
-                declare_zeroed(c, file, i, token, child);
+                declare_zeroed(c, file, i, token, child_token(tokens, begin, i));
                 mark_line(c, token);
                 push(c, token, OPERAND_STMT, 0);
                 break;
