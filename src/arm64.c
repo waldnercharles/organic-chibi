@@ -414,7 +414,8 @@ type_info(const Checker *c, u32 type)
         u32 backing = (u32)c->types.arg1[type];
         return backing ? type_info(c, backing) : INFO_UNSUPPORTED;
     }
-    if (kind == TYPE_POINTER || kind == TYPE_MANY || kind == TYPE_FN) {
+    if (kind == TYPE_POINTER || kind == TYPE_MANY || kind == TYPE_FN ||
+        kind == TYPE_OPTIONAL) {
         return 3;
     }
     if (kind == TYPE_SLICE) {
@@ -2043,6 +2044,19 @@ check_align(Emit *e, u32 i, u32 type, u32 a, u32 align)
     u32 ra = fetch(e, a, X16);
     put(e, OP_ANDS_IMM | SF | field | ra << 5 | ZR);
     trap_if(e, COND_NE, TRAP_ALIGN);
+    if (can_take_over(e, i, a)) {
+        take_over(e, a, i, e->info[type]);
+        return;
+    }
+    release(e, a);
+    mov(e, SF, result(e, i, e->info[type]), ra);
+}
+
+static NOINLINE void
+check_nil(Emit *e, u32 i, u32 type, u32 a)
+{
+    u32 ra = fetch(e, a, X16);
+    trap_if_zero(e, ra, SF, TRAP_NIL);
     if (can_take_over(e, i, a)) {
         take_over(e, a, i, e->info[type]);
         return;
@@ -3920,6 +3934,7 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                 case IR_TRUNCATE: truncate_to(e, i, type, a); break;
                 case IR_BITCAST: bitcast_to(e, i, type, a); break;
                 case IR_CHECK_ALIGN: check_align(e, i, type, a, b); break;
+                case IR_CHECK_NIL: check_nil(e, i, type, a); break;
                 case IR_CALL:
                 case IR_CALL_C:
                     call(e, i, type, a, b, n, kind == IR_CALL ? FIRST_INT_ARG : 0);

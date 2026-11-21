@@ -505,8 +505,6 @@ rejects(const char *text)
 TEST_CASE(unsupported_types)
 {
     REQUIRE(rejects("fn b(a: int) -> !void {\n    if a > 0 {\n        return\n    }\n}\n"));
-    REQUIRE(rejects("fn o(p: ?int) -> ?int {\n    return p\n}\n"));
-    REQUIRE(rejects("fn s(p: ?[]u8) -> int {\n    return 0\n}\n"));
     return true;
 }
 
@@ -4205,9 +4203,9 @@ typedef struct
     int64_t b;
     int64_t want;
     int trap;
-} BitcastCase;
+} CallCase;
 
-static const BitcastCase BITCAST_CASES[] = {
+static const CallCase BITCAST_CASES[] = {
     { "bc_f32", 7, 2, 1075139925, 0 },
     { "bc_f32", -6, 1, 3233808384, 0 },
     { "bc_f32", 13, -3, 3230313131, 0 },
@@ -4249,7 +4247,7 @@ TEST_CASE(bitcasts)
     Program p;
     REQUIRE(build(&p, BITCASTS));
     for (size_t k = 0; k < sizeof BITCAST_CASES / sizeof BITCAST_CASES[0]; k++) {
-        BitcastCase t = BITCAST_CASES[k];
+        CallCase t = BITCAST_CASES[k];
         int64_t got = 0;
         int trap = call_i2((I2 *)fn(&p, t.name), t.a, t.b, &got);
         if (trap != t.trap || (!trap && got != t.want)) {
@@ -4258,6 +4256,79 @@ TEST_CASE(bitcasts)
         }
     }
     REQUIRE(agree_on_grid(&p, BITCAST_FUNCTIONS, sizeof BITCAST_FUNCTIONS / sizeof BITCAST_FUNCTIONS[0]));
+    release_program(&p);
+    return true;
+}
+
+static const char *const OPTIONAL_FUNCTIONS[] = {
+    "opt_list",    "opt_unwrap", "opt_or_else", "opt_assign", "opt_compare",
+    "opt_bitcast", "opt_struct", "opt_chain",   "opt_global", "opt_copies",
+    "opt_high",    "opt_literal",
+};
+
+static const CallCase OPTIONAL_CASES[] = {
+    { "opt_list", 0, 5, 0, 0 },
+    { "opt_list", 3, 2, 363, 0 },
+    { "opt_list", -2, 4, 182, 0 },
+    { "opt_list", 5, -3, -29, 0 },
+    { "opt_unwrap", 7, 1, 8, 0 },
+    { "opt_unwrap", -4, 3, -3, 0 },
+    { "opt_unwrap", 7, 0, 0, TRAP_NIL },
+    { "opt_unwrap", 2, -5, 0, TRAP_NIL },
+    { "opt_or_else", 5, 3, 5000, 0 },
+    { "opt_or_else", 3, 5, 5107, 0 },
+    { "opt_or_else", 4, 4, 4107, 0 },
+    { "opt_or_else", -2, -7, -2000, 0 },
+    { "opt_assign", 3, 5, 353, 0 },
+    { "opt_assign", 4, 7, 747, 0 },
+    { "opt_assign", -1, 2, -81, 0 },
+    { "opt_assign", 0, -3, -303, 0 },
+    { "opt_compare", 2, 2, 126, 0 },
+    { "opt_compare", 2, 3, 62, 0 },
+    { "opt_compare", -1, -1, 126, 0 },
+    { "opt_bitcast", 6, 1, 62, 0 },
+    { "opt_bitcast", -3, 9, -28, 0 },
+    { "opt_bitcast", 6, 0, 0, TRAP_NIL },
+    { "opt_bitcast", 6, -1, 0, TRAP_NIL },
+    { "opt_struct", 5, 9, 5, 0 },
+    { "opt_struct", 0, 9, 9, 0 },
+    { "opt_struct", -4, -6, -6, 0 },
+    { "opt_chain", 3, 9, 3, 0 },
+    { "opt_chain", 1, 9, 9, 0 },
+    { "opt_chain", 1, 2, 7, 0 },
+    { "opt_chain", 5, 1, 5, 0 },
+    { "opt_global", 5, 3, 45, 0 },
+    { "opt_global", 3, 5, 44, 0 },
+    { "opt_global", -2, -2, 39, 0 },
+    { "opt_copies", 5, 3, 8, 0 },
+    { "opt_copies", 5, 0, 110, 0 },
+    { "opt_copies", -7, -2, 86, 0 },
+    { "opt_high", 1, 2, 12, 0 },
+    { "opt_high", 2, 3, 3, 0 },
+    { "opt_high", 3, 5, 15, 0 },
+    { "opt_high", 1, 0, 10, 0 },
+    { "opt_high", 2, 4, 0, TRAP_NIL },
+    { "opt_literal", 5, 9, 500507, 0 },
+    { "opt_literal", 5, 0, 510605, 0 },
+    { "opt_literal", -1, 2, 25535855, 0 },
+    { "opt_literal", 200, 4, 20020007, 0 },
+};
+
+TEST_CASE(optionals)
+{
+    catch_traps();
+    Program p;
+    REQUIRE(build(&p, OPTIONALS));
+    for (size_t k = 0; k < sizeof OPTIONAL_CASES / sizeof OPTIONAL_CASES[0]; k++) {
+        CallCase t = OPTIONAL_CASES[k];
+        int64_t got = 0;
+        int trap = call_i2((I2 *)fn(&p, t.name), t.a, t.b, &got);
+        if (trap != t.trap || (!trap && got != t.want)) {
+            fprintf(stderr, "arm64 test: %s(%lld, %lld) gave %lld (trap %d)\n", t.name, (long long)t.a, (long long)t.b, (long long)got, trap);
+            REQUIRE(false);
+        }
+    }
+    REQUIRE(agree_on_grid(&p, OPTIONAL_FUNCTIONS, sizeof OPTIONAL_FUNCTIONS / sizeof OPTIONAL_FUNCTIONS[0]));
     release_program(&p);
     return true;
 }
@@ -4835,6 +4906,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(bit_counts);
     RUN_TEST_CASE(overflow_tests);
     RUN_TEST_CASE(bitcasts);
+    RUN_TEST_CASE(optionals);
     RUN_TEST_CASE(vectors);
     RUN_TEST_CASE(narrow_parameters);
     RUN_TEST_CASE(constant_division);

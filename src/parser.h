@@ -160,6 +160,7 @@
     MARKER(NODE_AND_LEFT)                                                      \
     MARKER(NODE_OR_LEFT)                                                       \
     MARKER(NODE_OR_ELSE_LEFT)                                                  \
+    MARKER(NODE_OR_ELSE_TARGET)                                                \
     MARKER(NODE_CATCH_LEFT)                                                    \
     MARKER(NODE_BLOCK_START)                                                   \
     MARKER(NODE_IF_START)                                                      \

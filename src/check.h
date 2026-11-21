@@ -45,6 +45,7 @@ typedef enum
     TYPE_ENUM,
     TYPE_UNION,
     TYPE_MANY,
+    TYPE_NIL,
 } TypeKind;
 
 // clang-format off
@@ -69,6 +70,7 @@ typedef enum
     X(TYPE_ID_UNDEFINED, TYPE_UNDEFINED, 0, 0, "undefined")                    \
     X(TYPE_ID_INFERRED, TYPE_INFERRED, 0, 0, "(inferred)")                     \
     X(TYPE_ID_ENUM_LITERAL, TYPE_ENUM_LITERAL, 0, 0, "enum literal")           \
+    X(TYPE_ID_NIL, TYPE_NIL, 0, 0, "nil")                                      \
     X(TYPE_ID_U8X16, TYPE_VECTOR, TYPE_ID_U8, 16, "u8x16")                     \
     X(TYPE_ID_I8X16, TYPE_VECTOR, TYPE_ID_I8, 16, "i8x16")                     \
     X(TYPE_ID_U16X8, TYPE_VECTOR, TYPE_ID_U16, 8, "u16x8")                     \
@@ -181,6 +183,11 @@ enum
     X(DIAG_DEREF, "use `.*` to dereference")                                                        \
     X(DIAG_MANY_DEREF, "`%T` points at many items, so write `p[0]`, not `p.*`")                     \
     X(DIAG_NEVER_NIL, "`%U` is never nil, so this needs a value")                                   \
+    X(DIAG_NIL_MISMATCH, "`%U` is never nil")                                                       \
+    X(DIAG_NIL_TYPE, "`nil` needs a type here, as in `p: ?*T = nil`")                               \
+    X(DIAG_MAYBE_NIL, "`%T` may be nil, so it needs `!!` or `?\?` first")                            \
+    X(DIAG_NOT_OPTIONAL, "`%T` is never nil, so `%t` does nothing")                                 \
+    X(DIAG_ALWAYS_NIL, "this is always `nil`, so `!!` always traps")                                \
     X(DIAG_NOT_INDEXABLE, "`%T` can't be indexed")                                                  \
     X(DIAG_NOT_INDEX, "an index must be an integer, found `%T`")                                    \
     X(DIAG_INDEX_RANGE, "index %v is out of range for `%U`")                                        \

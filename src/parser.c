@@ -405,6 +405,12 @@ parse_operand(Parser *p)
         return;
     }
 
+    if (kind == TK_QUESTION) {
+        parse_composite_type(p);
+        parse_postfix(p);
+        return;
+    }
+
     if (kind == TK_FN) {
         parse_function(p, false);
         return;
@@ -753,7 +759,7 @@ parse_simple(Parser *p)
     }
 
     int op = p->pos++;
-    emit(p, NODE_VALUE, op);
+    emit(p, assign == NODE_OR_ELSE_ASSIGN ? NODE_OR_ELSE_TARGET : NODE_VALUE, op);
     parse_binary(p, PREC_OR);
     emit(p, assign, op);
 

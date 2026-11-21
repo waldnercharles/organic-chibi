@@ -156,7 +156,7 @@ is_address(const Checker *c, u32 type)
 {
     u8 kind = c->types.kinds[type];
     return kind == TYPE_POINTER || kind == TYPE_MANY || kind == TYPE_SLICE ||
-           kind == TYPE_STRUCT || kind == TYPE_FN;
+           kind == TYPE_STRUCT || kind == TYPE_FN || kind == TYPE_OPTIONAL;
 }
 
 static const char *
@@ -1209,6 +1209,10 @@ put_instruction(Source *s, u32 i)
             put_line(s, "if ((uintptr_t)%o & %uu) %T;", a, b - 1, TRAP_ALIGN);
             put_line(s, "v%u = %o;", i, a);
             break;
+        case IR_CHECK_NIL:
+            put_line(s, "if (!%o) %T;", a, TRAP_NIL);
+            put_line(s, "v%u = %o;", i, a);
+            break;
         case IR_SPLAT: put_splat(s, i, type, a); break;
         case IR_LOOKUP:
             put_line(s, "v%u = (%t)chibi_lookup((chibi_u8x16)%o, (chibi_u8x16)%o);", i, type, a, b);
@@ -1444,6 +1448,7 @@ c_source_runtime(FILE *out)
         [TRAP_UNREACHABLE] = "unreachable code reached",
         [TRAP_BOUNDS] = "index out of bounds",
         [TRAP_ALIGN] = "misaligned pointer",
+        [TRAP_NIL] = "unexpected nil",
     };
 
     fputs(

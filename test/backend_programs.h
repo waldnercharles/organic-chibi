@@ -25,6 +25,7 @@ extern const char BIT_GRID[];
 extern const char OVERFLOW_TESTS[];
 extern const char OVERFLOW_GRID[];
 extern const char BITCASTS[];
+extern const char OPTIONALS[];
 
 extern const char *const BACKEND_PROGRAMS[];
 extern const u32 NBACKEND_PROGRAMS;

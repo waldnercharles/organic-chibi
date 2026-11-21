@@ -29,7 +29,7 @@ ty(const Checker *c, u32 type)
     if (kind == TYPE_BOOL) {
         return (Ty){ false, false, 8 };
     }
-    if (kind == TYPE_POINTER || kind == TYPE_MANY || kind == TYPE_SLICE) {
+    if (kind == TYPE_POINTER || kind == TYPE_MANY || kind == TYPE_SLICE || kind == TYPE_OPTIONAL) {
         return (Ty){ false, false, 64 };
     }
     return (Ty){ kind == TYPE_FLOAT,
@@ -709,6 +709,12 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                 v = OPERAND(a);
                 if (v & (b - 1)) {
                     fail = TRAP_ALIGN;
+                }
+                break;
+            case IR_CHECK_NIL:
+                v = OPERAND(a);
+                if (v == 0) {
+                    fail = TRAP_NIL;
                 }
                 break;
             case IR_CALL: {

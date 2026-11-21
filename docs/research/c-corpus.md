@@ -490,9 +490,9 @@ The runtime cost of these conventions is zero. `p->pos++` as a separate statemen
 | C's three-part `for` | 245 | lowered to `while`, with `continue` leaving a labeled block so that the step still runs |
 | `switch` | 31, with 496 `case` labels | stacked labels become one arm; a `break` that ends an arm disappears |
 | `sizeof` and `alignof` | 163 and 13 | `size_of(T)` and `align_of(T)`, plain names as the builtin spelling card recommends |
-| Pointer conversions | 46 written, 430 implicit, mostly from `void *` | `bitcast(T, x)`, decided on 2026-11-10 and not built yet |
+| Pointer conversions | 46 written, 430 implicit, mostly from `void *` | `bitcast(T, x)`, decided on 2026-11-10 and built in step 3k.1 |
 | Pointer and integer conversions | 25 | `bitcast`, as above |
-| `NULL` | 68 lines | optional pointers `?*T` and `nil`, decided on 2026-11-10 and not built yet |
+| `NULL` | 68 lines | optional pointers `?*T` and `nil`, decided on 2026-11-10 and built in step 3e.1 |
 | `assert` | 98 | a call to a translated function, or nothing when `NDEBUG` is defined |
 | Attributes | `noinline` 106, `always_inline` 12, `unused` 10 | dropped until the attribute design (3.8); output stays the same, speed may not |
 | `static` locals | 12 | moved to package globals |
