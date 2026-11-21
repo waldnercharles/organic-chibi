@@ -609,8 +609,38 @@ convert_from(Gen *g, u8 t, u8 u, const char *operand)
 }
 
 static void
+bitcast_value(Gen *g, u8 t, int depth)
+{
+    static const u8 partners[NTYPES] = {
+        [T_I8] = T_U8,   [T_I16] = T_U16, [T_I32] = T_U32, [T_INT] = T_U64,
+        [T_U8] = T_I8,   [T_U16] = T_I16, [T_U32] = T_I32, [T_U64] = T_INT,
+        [T_F32] = T_U32, [T_F64] = T_U64,
+    };
+    if (is_float(t)) {
+        u8 u = chance(g, 50) ? partners[t] : t == T_F32 ? T_I32 : T_INT;
+        emit(g, "bitcast(%s, (", type_names[t]);
+        nonliteral(g, u, depth - 1);
+        emit(g, " & %s))", t == T_F32 ? "1073741823" : "4611686018427387903");
+        return;
+    }
+    if (type_bits[t] >= 32 && chance(g, 30)) {
+        emit(g, "bitcast(%s, %s(", type_names[t], type_bits[t] == 32 ? "f32" : "f64");
+        nonliteral(g, random_int_type(g), depth - 1);
+        emit(g, "))");
+        return;
+    }
+    emit(g, "bitcast(%s, ", type_names[t]);
+    nonliteral(g, partners[t], depth - 1);
+    emit(g, ")");
+}
+
+static void
 conversion(Gen *g, u8 t, int depth)
 {
+    if (t != T_BOOL && chance(g, 15)) {
+        bitcast_value(g, t, depth);
+        return;
+    }
     u8 u = random_type(g, true);
     if (is_float(u) && is_int(t) && !chance(g, 8)) {
         u = random_int_type(g);
@@ -1295,7 +1325,11 @@ nonliteral(Gen *g, u8 t, int depth)
 
     Var *q = chance(g, 25) ? pick_pointer(g, t) : NULL;
     if (q) {
-        emit(g, "%s.*", q->name);
+        if (chance(g, 15)) {
+            emit(g, "bitcast(*%s, bitcast(%s, %s)).*", type_names[t], chance(g, 50) ? "uintptr" : "*u8", q->name);
+        } else {
+            emit(g, "%s.*", q->name);
+        }
         return;
     }
     Var *a = chance(g, 20) ? pick_array(g, t, ANY, ANY, false) : NULL;
@@ -2157,7 +2191,11 @@ pointer_statement(Gen *g)
         return;
     }
     line(g);
-    emit(g, "%s.*", q->name);
+    if (chance(g, 15)) {
+        emit(g, "bitcast(*%s, bitcast(uintptr, %s)).*", type_names[q->type], q->name);
+    } else {
+        emit(g, "%s.*", q->name);
+    }
     assignment(g, q->type);
 }
 

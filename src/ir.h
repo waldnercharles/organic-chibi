@@ -47,6 +47,8 @@
     X(IR_CONVERT, "convert")                                                   \
     X(IR_NARROW, "narrow")                                                     \
     X(IR_TRUNCATE, "truncate")                                                 \
+    X(IR_BITCAST, "bitcast")                                                   \
+    X(IR_CHECK_ALIGN, "check-align")                                           \
     X(IR_SPLAT, "splat")                                                       \
     X(IR_LOOKUP, "lookup")                                                     \
     X(IR_TOP_BITS, "top-bits")                                                 \
@@ -92,6 +94,7 @@ typedef enum
     TRAP_RANGE,
     TRAP_UNREACHABLE,
     TRAP_BOUNDS,
+    TRAP_ALIGN,
     NTRAPS,
 } TrapKind;
 

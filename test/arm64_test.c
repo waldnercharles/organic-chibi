@@ -4193,6 +4193,75 @@ TEST_CASE(overflow_tests)
     return true;
 }
 
+static const char *const BITCAST_FUNCTIONS[] = {
+    "bc_f32",  "bc_f64",     "bc_from",          "bc_ints",    "bc_pointers", "bc_misaligned",
+    "bc_many", "bc_strided", "bc_float_pointer", "bc_special",
+};
+
+typedef struct
+{
+    const char *name;
+    int64_t a;
+    int64_t b;
+    int64_t want;
+    int trap;
+} BitcastCase;
+
+static const BitcastCase BITCAST_CASES[] = {
+    { "bc_f32", 7, 2, 1075139925, 0 },
+    { "bc_f32", -6, 1, 3233808384, 0 },
+    { "bc_f32", 13, -3, 3230313131, 0 },
+    { "bc_f64", 5, 1, 4609434218613702656, 0 },
+    { "bc_f64", 0, 3, -4609434218613702656, 0 },
+    { "bc_f64", -3, 12, -4599582594428829696, 0 },
+    { "bc_from", 1, 2, 2717, 0 },
+    { "bc_from", 5, 7, 2586, 0 },
+    { "bc_from", -3, 11, 2851, 0 },
+    { "bc_ints", 0, 0, 15032385920, 0 },
+    { "bc_ints", 200, 40000, 15032269472, 0 },
+    { "bc_ints", -3, -1, 15032385899, 0 },
+    { "bc_pointers", 2, 5, 808, 0 },
+    { "bc_pointers", 7, 15, 2323, 0 },
+    { "bc_misaligned", 1, 0, 20, 0 },
+    { "bc_misaligned", 1, 4, 0, TRAP_ALIGN },
+    { "bc_misaligned", 3, 8, 40, 0 },
+    { "bc_many", 1, 0, 84281099, 0 },
+    { "bc_many", 1, 1, 0, TRAP_ALIGN },
+    { "bc_many", 6, 2, 151653138, 0 },
+    { "bc_strided", 0, 0, 16909060, 0 },
+    { "bc_strided", 1, 4, 151653132, 0 },
+    { "bc_strided", 2, 5, 84281096, 0 },
+    { "bc_strided", 0, 2, 0, TRAP_ALIGN },
+    { "bc_strided", 1, 6, 0, TRAP_ALIGN },
+    { "bc_float_pointer", 0, 0, 11, 0 },
+    { "bc_float_pointer", 2, 1, 33, 0 },
+    { "bc_float_pointer", 3, 3, 44, 0 },
+    { "bc_float_pointer", 1, 4, 0, TRAP_ALIGN },
+    { "bc_float_pointer", 3, 5, 0, TRAP_ALIGN },
+    { "bc_special", 0, 0, 32855, 0 },
+    { "bc_special", 5, -7, 32860, 0 },
+    { "bc_special", -100, 3, 32755, 0 },
+};
+
+TEST_CASE(bitcasts)
+{
+    catch_traps();
+    Program p;
+    REQUIRE(build(&p, BITCASTS));
+    for (size_t k = 0; k < sizeof BITCAST_CASES / sizeof BITCAST_CASES[0]; k++) {
+        BitcastCase t = BITCAST_CASES[k];
+        int64_t got = 0;
+        int trap = call_i2((I2 *)fn(&p, t.name), t.a, t.b, &got);
+        if (trap != t.trap || (!trap && got != t.want)) {
+            fprintf(stderr, "arm64 test: %s(%lld, %lld) gave %lld (trap %d)\n", t.name, (long long)t.a, (long long)t.b, (long long)got, trap);
+            REQUIRE(false);
+        }
+    }
+    REQUIRE(agree_on_grid(&p, BITCAST_FUNCTIONS, sizeof BITCAST_FUNCTIONS / sizeof BITCAST_FUNCTIONS[0]));
+    release_program(&p);
+    return true;
+}
+
 typedef int64_t I3(void *, int64_t, int64_t, int64_t);
 
 static int
@@ -4765,6 +4834,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(many_pointers);
     RUN_TEST_CASE(bit_counts);
     RUN_TEST_CASE(overflow_tests);
+    RUN_TEST_CASE(bitcasts);
     RUN_TEST_CASE(vectors);
     RUN_TEST_CASE(narrow_parameters);
     RUN_TEST_CASE(constant_division);

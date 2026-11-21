@@ -152,6 +152,11 @@ enum
     X(DIAG_GLOBALS_TOO_LARGE, "globals can't take more than 2 GB in all")                           \
     X(DIAG_DOES_NOT_FIT, "%v does not fit in `%U`")                                                 \
     X(DIAG_MISMATCH, "`%T` and `%U` don't mix without a conversion")                                \
+    X(DIAG_BITCAST_UNTYPED, "`bitcast` needs a typed value, as in `u64(1)`")                        \
+    X(DIAG_BITCAST_SLICE, "`bitcast` can't change a slice, because its length would need rescaling") \
+    X(DIAG_BITCAST_TYPE, "`bitcast` changes numbers, pointers and vectors, not `%U`")                \
+    X(DIAG_BITCAST_SIZE, "`%T` and `%U` differ in size, so `bitcast` can't change one into the other") \
+    X(DIAG_MISALIGNED, "address %v isn't aligned for `%U`")                                         \
     X(DIAG_DIVIDE_BY_ZERO, "division by zero")                                                      \
     X(DIAG_BAD_SHIFT, "shift count %v is out of range")                                             \
     X(DIAG_NEGATIVE_LENGTH, "an array length can't be negative")                                    \

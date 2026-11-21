@@ -179,6 +179,7 @@ enum
     OP_FCVTZS = 0x1E380000u,
     OP_FCVTZU = 0x1E390000u,
     OP_FMOV_TO_W = 0x1E260000u,
+    OP_FMOV_TO_X = 0x9E660000u,
     OP_CNT_8B = 0x0E205800u,
     OP_ADDV_8B = 0x0E31B800u,
     OP_RBIT = 0x5AC00000u,
@@ -1993,6 +1994,63 @@ truncate_to(Emit *e, u32 i, u32 to, u32 a)
     }
 }
 
+static bool
+consumed_next(const Emit *e, u32 v)
+{
+    if (v + 1 >= e->fn->count) {
+        return false;
+    }
+    u8 kind = e->ir->kinds[e->fn->first + v + 1];
+    return kind == IR_STORE || kind == IR_RET || kind == IR_CALL || kind == IR_CALL_C;
+}
+
+static bool
+can_take_over(const Emit *e, u32 i, u32 a)
+{
+    return !(a & IR_CONST) && e->regs[a] != NO_REG && !consumed_next(e, i);
+}
+
+static NOINLINE void
+bitcast_to(Emit *e, u32 i, u32 to, u32 a)
+{
+    u8 tt = e->info[to];
+    u8 from = operand_info(e, a);
+    if (is_float(from) == is_float(tt)) {
+        if (bits_of(tt) == 64 && can_take_over(e, i, a)) {
+            take_over(e, a, i, tt);
+        } else {
+            truncate_to(e, i, to, a);
+        }
+        return;
+    }
+
+    bool wide = bits_of(tt) == 64;
+    u32 ra = fetch(e, a, is_float(from) ? V30 : X16);
+    release(e, a);
+    u32 d = result(e, i, tt);
+    u32 op = is_float(tt) ? (wide ? OP_FMOV_FROM_X : OP_FMOV_FROM_W)
+                          : (wide ? OP_FMOV_TO_X : OP_FMOV_TO_W);
+    put(e, op | ra << 5 | d);
+}
+
+static NOINLINE void
+check_align(Emit *e, u32 i, u32 type, u32 a, u32 align)
+{
+    u32 field = 0;
+    [[maybe_unused]] bool mask = logical_imm(align - 1, SF, &field);
+    assert(mask);
+
+    u32 ra = fetch(e, a, X16);
+    put(e, OP_ANDS_IMM | SF | field | ra << 5 | ZR);
+    trap_if(e, COND_NE, TRAP_ALIGN);
+    if (can_take_over(e, i, a)) {
+        take_over(e, a, i, e->info[type]);
+        return;
+    }
+    release(e, a);
+    mov(e, SF, result(e, i, e->info[type]), ra);
+}
+
 static void
 add_offset(Emit *e, u32 d, u32 n, u64 offset)
 {
@@ -2021,21 +2079,10 @@ fetch_index(Emit *e, u32 x, u32 scratch)
     return r;
 }
 
-static bool
-consumed_next(const Emit *e, u32 v)
-{
-    if (v + 1 >= e->fn->count) {
-        return false;
-    }
-    u8 kind = e->ir->kinds[e->fn->first + v + 1];
-    return kind == IR_STORE || kind == IR_RET || kind == IR_CALL || kind == IR_CALL_C;
-}
-
 static u32
 offset_address(Emit *e, u32 i, u8 info, u32 a, u64 offset)
 {
-    if (offset == 0 && !(a & IR_CONST) && e->regs[a] != NO_REG &&
-        !consumed_next(e, i)) {
+    if (offset == 0 && can_take_over(e, i, a)) {
         return take_over(e, a, i, info);
     }
     u32 p = fetch(e, a, X16);
@@ -3634,6 +3681,7 @@ lanes(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b, const Native *n)
             return;
         }
         case IR_TOP_BITS: gather_top_bits(e, i, t, a); return;
+        case IR_BITCAST: move_lanes(e, V29, a); break;
         case IR_CALL: call(e, i, type, a, b, n, FIRST_INT_ARG); break;
         case IR_RET:
             move_lanes(e, 0, a);
@@ -3870,6 +3918,8 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                 case IR_CONVERT: convert(e, i, type, a); break;
                 case IR_NARROW: narrow(e, i, type, a); break;
                 case IR_TRUNCATE: truncate_to(e, i, type, a); break;
+                case IR_BITCAST: bitcast_to(e, i, type, a); break;
+                case IR_CHECK_ALIGN: check_align(e, i, type, a, b); break;
                 case IR_CALL:
                 case IR_CALL_C:
                     call(e, i, type, a, b, n, kind == IR_CALL ? FIRST_INT_ARG : 0);

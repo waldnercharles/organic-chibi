@@ -1834,6 +1834,109 @@ fold(Checker *c, u32 file, u32 token, u8 kind, u32 type, Operand a, Operand b)
     return constant_result(c, file, token, type, r);
 }
 
+static bool
+keeps_bits(const Checker *c, u32 type)
+{
+    u8 k = c->types.kinds[type];
+    return k == TYPE_INT || k == TYPE_UINTPTR || k == TYPE_FLOAT ||
+           k == TYPE_POINTER || k == TYPE_MANY || k == TYPE_VECTOR;
+}
+
+static bool
+refuse_bitcast(Checker *c, u32 file, u32 token, u32 type)
+{
+    u8 k = c->types.kinds[type];
+    if (k == TYPE_SLICE) {
+        report(c, file, token, DIAG_BITCAST_SLICE, 0, 0);
+    } else if (k == TYPE_ARRAY || k == TYPE_STRUCT || k == TYPE_OPTIONAL) {
+        report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
+    } else if (!keeps_bits(c, type)) {
+        report(c, file, token, DIAG_BITCAST_TYPE, 0, type);
+    } else {
+        return false;
+    }
+    return true;
+}
+
+static u32
+pointee_align(const Checker *c, u32 type)
+{
+    u8 k = c->types.kinds[type];
+    u32 a = k == TYPE_POINTER || k == TYPE_MANY
+              ? check_type_align(c, c->types.arg0[type])
+              : 1;
+    return a ? a : 1;
+}
+
+static bool
+exact_can_hold(u64 bits, u32 width)
+{
+    u32 exponent_bits = width == 32 ? 8 : 11;
+    u64 ones = (1ull << exponent_bits) - 1;
+    return (bits >> (width - 1 - exponent_bits) & ones) != ones &&
+           bits != 1ull << (width - 1);
+}
+
+static NOINLINE Operand
+bitcast(Checker *c, u32 file, u32 token, u32 type_token, u32 to, u32 value_token, Operand o)
+{
+    if (o.type == TYPE_ID_NONE || to == TYPE_ID_NONE) {
+        return poison;
+    }
+    u32 from = is_place(o) ? place_type(c, o) : o.type;
+    if (from == TYPE_ID_ENUM_LITERAL || is_untyped(from)) {
+        report(c, file, value_token, DIAG_BITCAST_UNTYPED, 0, 0);
+        return poison;
+    }
+    if (!is_value_type(from)) {
+        report(c, file, value_token, DIAG_NOT_VALUE, 0, 0);
+        return poison;
+    }
+    if (refuse_bitcast(c, file, value_token, from) ||
+        refuse_bitcast(c, file, type_token, to)) {
+        return poison;
+    }
+    if (check_type_size(c, from) != check_type_size(c, to)) {
+        report(c, file, token, DIAG_BITCAST_SIZE, from, to);
+        return poison;
+    }
+    if (from == to) {
+        return (Operand){ to, o.ref & ~REF_RESULT };
+    }
+
+    u32 need = pointee_align(c, to);
+    if (is_constant(o)) {
+        u64 bits = constant_bits(c, o);
+        if (is_int(c, to)) {
+            return (Operand){ to, wrap(c, exact_int(&c->exacts, (int64_t)bits), to) };
+        }
+        if (is_float(c, to)) {
+            u32 width = c->types.arg0[to];
+            bits &= width == 64 ? ~0ull : 0xFFFFFFFFull;
+            if (exact_can_hold(bits, width)) {
+                return (Operand){ to, exact_from_float(&c->exacts, bits, width) };
+            }
+        } else if (bits & (need - 1)) {
+            report(c, file, value_token, DIAG_MISALIGNED, value_of(o), to);
+            return poison;
+        } else if (bits == 0) {
+            report(c, file, value_token, DIAG_NEVER_NIL, 0, to);
+            return poison;
+        }
+        if (!c->body.code) {
+            report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
+            return poison;
+        }
+        need = 1;
+    }
+
+    u32 v = emit(c, IR_BITCAST, to, operand_ir(c, o), 0);
+    if (need > pointee_align(c, from)) {
+        v = emit(c, IR_CHECK_ALIGN, to, v, need);
+    }
+    return (Operand){ to, REF_VALUE | v };
+}
+
 static NOINLINE bool
 array_marker(const Checker *c, u32 m)
 {
@@ -6155,6 +6258,14 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
             case NODE_AND:
             case NODE_OR: push_operand(c, token, logical(c, file, kind)); break;
             case NODE_CALL: call(c, file, i); break;
+            case NODE_BITCAST: {
+                u32 value_token = c->stack_tokens[c->sp - 1];
+                Operand v = pop(c);
+                u32 type_token = c->stack_tokens[c->sp - 1];
+                u32 t = type_operand(c, file, type_token, pop(c));
+                push_operand(c, token, bitcast(c, file, token, type_token, t, value_token, v));
+                break;
+            }
             case NODE_POINTER_TYPE: {
                 u32 t = type_operand(c, file, child, pop(c));
                 push_type(c, token, t ? pointer_type(c, t) : TYPE_ID_NONE);
@@ -7544,12 +7655,20 @@ print_function(FILE *out, const Checker *c, const IrFunc *fn)
             case IR_CONVERT:
             case IR_NARROW:
             case IR_TRUNCATE:
+            case IR_BITCAST:
             case IR_SPLAT:
             case IR_TOP_BITS:
                 fputc(' ', out);
                 print_type(out, c, type);
                 fputc(' ', out);
                 print_operand(out, c, fn, a);
+                break;
+            case IR_CHECK_ALIGN:
+                fputc(' ', out);
+                print_type(out, c, type);
+                fputc(' ', out);
+                print_operand(out, c, fn, a);
+                fprintf(out, ", %u", b);
                 break;
             case IR_CALL:
             case IR_CALL_C: {

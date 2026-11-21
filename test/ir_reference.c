@@ -431,6 +431,11 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                     WIDE(b, w);
                     memcpy((void *)(uintptr_t)OPERAND(a), w, sizeof w);
                     break;
+                case IR_BITCAST:
+                    WIDE(a, w);
+                    out[0] = w[0];
+                    out[1] = w[1];
+                    break;
                 case IR_TOP_BITS: {
                     WIDE(a, w);
                     u32 bits = ty(c, c->types.arg0[type]).bits;
@@ -695,6 +700,17 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                 }
                 break;
             }
+            case IR_BITCAST: {
+                u64 s = OPERAND(a);
+                v = canon(t.bits == 64 ? s : s & ((1ull << t.bits) - 1), t);
+                break;
+            }
+            case IR_CHECK_ALIGN:
+                v = OPERAND(a);
+                if (v & (b - 1)) {
+                    fail = TRAP_ALIGN;
+                }
+                break;
             case IR_CALL: {
                 const u32 *list = ir->extra + fn->first_extra + b;
                 const IrFunc *callee = &c->ir.funcs[c->decls.funcs[a] - 1];

@@ -955,6 +955,19 @@ put_convert(Source *s, u32 i, u8 kind, u32 type, u32 a, u32 b)
 }
 
 static void
+put_bitcast(Source *s, u32 i, u32 type, u32 a)
+{
+    if (s->c->types.kinds[type] == TYPE_VECTOR) {
+        put_line(s, "v%u = (%t)%o;", i, type, a);
+        return;
+    }
+    u32 from = a & IR_CONST
+                 ? s->code->consts[s->fn->first_const + (a & ~IR_CONST)].type
+                 : value_type(s, a);
+    put_line(s, "__builtin_memcpy(&v%u, &(%t){ %o }, sizeof v%u);", i, from, a, i);
+}
+
+static void
 put_splat(Source *s, u32 i, u32 type, u32 a)
 {
     start_statement(s);
@@ -1191,6 +1204,11 @@ put_instruction(Source *s, u32 i)
         case IR_CONVERT:
         case IR_NARROW:
         case IR_TRUNCATE: put_convert(s, i, kind, type, a, b); break;
+        case IR_BITCAST: put_bitcast(s, i, type, a); break;
+        case IR_CHECK_ALIGN:
+            put_line(s, "if ((uintptr_t)%o & %uu) %T;", a, b - 1, TRAP_ALIGN);
+            put_line(s, "v%u = %o;", i, a);
+            break;
         case IR_SPLAT: put_splat(s, i, type, a); break;
         case IR_LOOKUP:
             put_line(s, "v%u = (%t)chibi_lookup((chibi_u8x16)%o, (chibi_u8x16)%o);", i, type, a, b);
@@ -1425,6 +1443,7 @@ c_source_runtime(FILE *out)
         [TRAP_RANGE] = "value out of range",
         [TRAP_UNREACHABLE] = "unreachable code reached",
         [TRAP_BOUNDS] = "index out of bounds",
+        [TRAP_ALIGN] = "misaligned pointer",
     };
 
     fputs(

@@ -150,7 +150,7 @@ TEST_CASE(emits_doubling_structs)
 enum
 {
     MAX_JOBS = 8,
-    GRID_FUNCTIONS = 229,
+    GRID_FUNCTIONS = 239,
 };
 
 typedef struct

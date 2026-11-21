@@ -489,6 +489,15 @@ const char VECTOR_RUNS[] =
     "    d: [2]Block\n"
     "    d[1] = c\n"
     "    return int(b.v[1][k]) * 10000 + int(c.v[1][k]) * 100 + int(d[1].v[1][k]) + int(d[0].v[3][k])\n"
+    "}\n"
+    "\n"
+    "fn bitcast_lanes(a: int, b: int) -> int {\n"
+    "    v := u8x16.{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }\n"
+    "    s: u8x16 = u8(a & 255)\n"
+    "    w := bitcast(u32x4, v +% s)\n"
+    "    x := bitcast(i16x8, w)\n"
+    "    y := bitcast(u8x16, x)\n"
+    "    return int(w[b & 3]) + int(x[a & 7]) * 3 + int(y[b & 15])\n"
     "}\n";
 
 const VectorRun VECTOR_BODY_RESULTS[] = {
@@ -662,6 +671,9 @@ const VectorRun VECTOR_RESULTS[] = {
     { "copies", { 5, 3 }, 50707, 0 },
     { "copies", { 255, 15 }, 2550707, 0 },
     { "copies", { 1, 16 }, 0, TRAP_BOUNDS },
+    { "bitcast_lanes", { 0, 0 }, 67307525, 0 },
+    { "bitcast_lanes", { 250, 3 }, 168365058, 0 },
+    { "bitcast_lanes", { 9, 13 }, 286275145, 0 },
 };
 
 const size_t NVECTOR_RESULTS = sizeof VECTOR_RESULTS / sizeof VECTOR_RESULTS[0];
