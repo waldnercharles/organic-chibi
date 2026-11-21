@@ -3416,6 +3416,41 @@ test_overflow(Checker *c, u32 file, u32 token, u32 name, u32 first_arg, u32 narg
 }
 
 static NOINLINE Operand
+call_size_of(Checker *c, u32 file, u32 token, u32 name, u32 first_arg, u32 nargs)
+{
+    if (nargs != 1) {
+        report(c, file, token, DIAG_ARG_COUNT, 1, nargs);
+        return poison;
+    }
+    Operand t = c->stack[first_arg];
+    u32 t_token = c->stack_tokens[first_arg];
+    if (t.type != TYPE_ID_TYPE) {
+        report(c, file, t_token, DIAG_SIZE_TYPE, name, 0);
+        return poison;
+    }
+
+    claim_contained(c, t.ref, file, t_token);
+    if (!has_layout(c, t.ref)) {
+        u32 base = t.ref;
+        while (is_array(c, base)) {
+            base = c->types.arg0[base];
+        }
+        if (!is_struct(c, base) || !(c->decls.flags[c->types.arg0[base]] & DECL_CYCLE)) {
+            report(c, file, t_token, DIAG_UNSUPPORTED, 0, 0);
+        }
+        return poison;
+    }
+
+    u64 n = name == NAME_SIZE_OF ? check_type_size(c, t.ref)
+                                 : check_type_align(c, t.ref);
+    if (n > INT64_MAX) {
+        report(c, file, t_token, DIAG_SIZE_TOO_LARGE, t.ref, 0);
+        return poison;
+    }
+    return (Operand){ TYPE_ID_UNTYPED_INT, exact_int(&c->exacts, (int64_t)n) };
+}
+
+static NOINLINE Operand
 call_builtin(Checker *c, u32 file, u32 token, Operand callee, u32 first_arg, u32 nargs)
 {
     if (callee.type != OPERAND_BUILTIN) {
@@ -3430,6 +3465,9 @@ call_builtin(Checker *c, u32 file, u32 token, Operand callee, u32 first_arg, u32
         case NAME_LOOKUP: return call_lookup(c, file, token, first_arg, nargs);
         case NAME_TOP_BITS:
             return call_top_bits(c, file, token, first_arg, nargs);
+        case NAME_SIZE_OF:
+        case NAME_ALIGN_OF:
+            return call_size_of(c, file, token, callee.ref, first_arg, nargs);
         default: break;
     }
     if (callee.ref >= NAME_ADD_OVERFLOWS) {
@@ -3704,7 +3742,7 @@ expression_statement(Checker *c, u32 file, u32 token)
     Operand v = pop(c);
     push(c, token, OPERAND_STMT, 0);
     if (v.type != TYPE_ID_NONE && v.type != TYPE_ID_VOID) {
-        report(c, file, v_token, DIAG_UNUSED, 0, 0);
+        report(c, file, v_token, v.type == TYPE_ID_TYPE ? DIAG_NOT_VALUE : DIAG_UNUSED, 0, 0);
     }
 }
 
@@ -5995,7 +6033,7 @@ global_place(Checker *c, u32 file, u32 node, u32 decl)
 static NOINLINE Operand
 resolve_builtin(Checker *c, u32 file, u32 node, u32 token, u32 id)
 {
-    if (id - NAME_TRAILING_ZEROS > NAME_TOP_BITS - NAME_TRAILING_ZEROS) {
+    if (id - NAME_TRAILING_ZEROS > NAME_ALIGN_OF - NAME_TRAILING_ZEROS) {
         report(c, file, token, DIAG_UNKNOWN_NAME, 0, 0);
         return poison;
     }
@@ -6266,8 +6304,16 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                 push_operand(c, token, bitcast(c, file, token, type_token, t, value_token, v));
                 break;
             }
-            case NODE_POINTER_TYPE: {
-                u32 t = type_operand(c, file, child, pop(c));
+            case NODE_POINTER_TYPE:
+            case NODE_POINTER_OPERAND: {
+                Operand o = pop(c);
+                if (o.type != TYPE_ID_TYPE && kind == NODE_POINTER_OPERAND &&
+                    is_value_type(o.type)) {
+                    report(c, file, token, DIAG_DEREF, 0, 0);
+                    push_operand(c, token, poison);
+                    break;
+                }
+                u32 t = type_operand(c, file, child, o);
                 push_type(c, token, t ? pointer_type(c, t) : TYPE_ID_NONE);
                 break;
             }

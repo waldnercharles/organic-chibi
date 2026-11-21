@@ -383,6 +383,16 @@ static const struct
     { "bitcast([4]u8, x)", "(bitcast (array 4 u8) x)" },
     { "bitcast(\n  u32,\n  a + b\n)", "(bitcast u32 (+ a b))" },
     { "n := u32(total)", "(:= n (call u32 total))" },
+    { "n := size_of(*Node)", "(:= n (call size_of (ptr Node)))" },
+    { "size_of([4]u32) + align_of([]u8)", "(+ (call size_of (array 4 u32)) (call align_of (slice u8)))" },
+    { "f([*]u8, [2, 3]int, [2][3]int)", "(call f (many u8) (array 2 3 int) (array 2 (array 3 int)))" },
+    { "q := (*u8)(p)", "(:= q (call (ptr u8) p))" },
+    { "*p = 5", "(= (ptr p) 5)" },
+    { "if a == *p {}", "(if (== a (ptr p)) (block))" },
+    { "* a", "(ptr a)" },
+    { "a + * b", "(+ a (ptr b))" },
+    { "a +% * b", "(+% a (ptr b))" },
+    { "[4]int", "(array 4 int)" },
     { "union Bits {\n  f: f32\n  u: u32\n}", "(union Bits (: f f32) (: u u32))" },
     { "union Shape: u8 { circle: Circle, rect: Rect, none }",
       "(union Shape (: u8) (: circle Circle) (: rect Rect) none)" },
@@ -445,8 +455,6 @@ static const struct
     u32 pos;
 } ERRORS[] = {
     { "a +", "expected an expression", 3 },
-    { "a + * b", "use `.*` to dereference", 4 },
-    { "* a", "use `.*` to dereference", 0 },
     { "()", "expected an expression", 1 },
     { "(a", "expected `)`", 2 },
     { "a)", "expected `;` or a new line", 1 },
@@ -474,7 +482,7 @@ static const struct
     { "x: 1", "expected a type", 3 },
     { "x :=", "expected an expression", 4 },
     { "a\n[i]", "expected a type", 5 },
-    { "[4]int", "expected `.{` or `.[` after a type", 6 },
+    { "x := [4]int{1, 2}", "expected `.{` or `.[` after a type", 11 },
     { ".[1, 2", "expected `,` or `]`", 6 },
     { "u8.[1 2]", "expected `,` or `]`", 6 },
     { "{ a", "expected `}`", 3 },
@@ -558,7 +566,6 @@ static const struct
     { "extern fn f(x: int, .., )", "`..` must be the last parameter", 20 },
     { "import \"a\".b", "expected `;` or a new line", 10 },
     { "*%x", "expected an expression", 0 },
-    { "a +% * b", "use `.*` to dereference", 5 },
     { "x := undefined", "use `undefined` only as `name: Type = undefined`", 5 },
     { "x = undefined", "use `undefined` only as `name: Type = undefined`", 4 },
     { "const N: int = undefined", "use `undefined` only as `name: Type = undefined`", 15 },
@@ -868,7 +875,10 @@ TEST_CASE(depth_limit)
     REQUIRE(depth_ok("for x in a {", "}", 11, ""));
     REQUIRE(depth_ok("switch a { 1 => ", "}", 0, ""));
     REQUIRE(depth_ok("*", "", 0, "y: "));
+    REQUIRE(depth_ok("*", "", 0, ""));
+    REQUIRE(depth_ok("*f(", ")", 0, ""));
     REQUIRE(depth_ok("[]", "", 0, "y: "));
+    REQUIRE(depth_ok("[]", "", 0, ""));
     REQUIRE(depth_ok("[1]", "", 0, "y: "));
     REQUIRE(depth_ok("fn() -> ", "", 0, "y: "));
     return true;

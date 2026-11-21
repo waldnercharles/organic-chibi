@@ -178,6 +178,7 @@ enum
     X(DIAG_ADDRESS_LOOP_VARIABLE, "`%n` is a loop variable, so `&` can't take its address")         \
     X(DIAG_ADDRESS_CONSTANT, "`%n` is a constant, so `&` can't take its address")                   \
     X(DIAG_NOT_POINTER, "`%T` is not a pointer, so `.*` can't follow it")                           \
+    X(DIAG_DEREF, "use `.*` to dereference")                                                        \
     X(DIAG_MANY_DEREF, "`%T` points at many items, so write `p[0]`, not `p.*`")                     \
     X(DIAG_NEVER_NIL, "`%U` is never nil, so this needs a value")                                   \
     X(DIAG_NOT_INDEXABLE, "`%T` can't be indexed")                                                  \
@@ -210,6 +211,8 @@ enum
     X(DIAG_BUILTIN_MANY, "`%n` takes a `[*]` pointer, found `%U`")                                  \
     X(DIAG_UNALIGNED_TYPE, "`%n` reads and writes numbers and vectors, found `%U`")                 \
     X(DIAG_LOAD_TYPE, "`unaligned_load` takes a type first, as in `unaligned_load(u8x16, p)`")      \
+    X(DIAG_SIZE_TYPE, "`%n` takes a type, as in `%n(u32)`")                                         \
+    X(DIAG_SIZE_TOO_LARGE, "the size of `%T` doesn't fit in `int`")                                 \
     X(DIAG_STORE_UNTYPED, "`unaligned_store` needs a typed value, as in `u32(0)`")                  \
     X(DIAG_LOOKUP_TYPES, "`lookup` takes two `u8x16` or two `i8x16`, found `%T` and `%U`")          \
     X(DIAG_RETURN_VALUE, "this function returns nothing, so `return` takes no value")               \

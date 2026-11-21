@@ -160,7 +160,9 @@ enum
     OTHER(NAME_UNALIGNED_LOAD, "unaligned_load")                               \
     OTHER(NAME_UNALIGNED_STORE, "unaligned_store")                             \
     OTHER(NAME_LOOKUP, "lookup")                                               \
-    OTHER(NAME_TOP_BITS, "top_bits")
+    OTHER(NAME_TOP_BITS, "top_bits")                                           \
+    OTHER(NAME_SIZE_OF, "size_of")                                             \
+    OTHER(NAME_ALIGN_OF, "align_of")
 // clang-format on
 
 #define CHIBI_BUILTIN_NAME_ID(name, text) name,

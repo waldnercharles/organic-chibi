@@ -78,6 +78,7 @@
     NODE(NODE_ENUM_LITERAL, 0, ".")                                            \
     NODE(NODE_IMPORT, 0, "import")                                             \
     NODE(NODE_POINTER_TYPE, 1, "ptr")                                          \
+    NODE(NODE_POINTER_OPERAND, 1, "ptr")                                       \
     NODE(NODE_OPTIONAL_TYPE, 1, "optional")                                    \
     NODE(NODE_ERROR_UNION, 2, "!")                                             \
     NODE(NODE_ERROR_UNION_INFERRED, 1, "!")                                    \

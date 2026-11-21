@@ -380,21 +380,28 @@ parse_operand(Parser *p)
         }
     }
 
-    if (kind == TK_STAR || kind == TK_LBRACK) {
-        parse_composite_type(p);
+    if (kind == TK_STAR) {
+        if (!descend(p)) {
+            return;
+        }
+        p->pos++;
+        parse_type(p);
         TokenKind next = p->tokens.kinds[p->pos + 1];
-        if (p->tokens.kinds[p->pos] == TK_PERIOD &&
-            (next == TK_LBRACE || next == TK_LBRACK)) {
-            parse_postfix(p);
-            return;
-        }
+        bool literal = p->tokens.kinds[p->pos] == TK_PERIOD &&
+                       (next == TK_LBRACE || next == TK_LBRACK);
+        emit(p, literal ? NODE_POINTER_TYPE : NODE_POINTER_OPERAND, at);
+        p->depth--;
+        parse_postfix(p);
+        return;
+    }
 
-        if (kind == TK_STAR) {
-            p->pos = at;
-            fail(p, "use `.*` to dereference");
+    if (kind == TK_LBRACK) {
+        parse_composite_type(p);
+        if (p->tokens.kinds[p->pos] == TK_LBRACE) {
+            fail(p, "expected `.{` or `.[` after a type");
             return;
         }
-        fail(p, "expected `.{` or `.[` after a type");
+        parse_postfix(p);
         return;
     }
 
