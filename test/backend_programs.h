@@ -28,6 +28,7 @@ extern const char BITCASTS[];
 extern const char OPTIONALS[];
 extern const char STRINGS[];
 extern const char VALUE_IFS[];
+extern const char STRING_TABLES[];
 
 extern const char *const BACKEND_PROGRAMS[];
 extern const u32 NBACKEND_PROGRAMS;

@@ -593,27 +593,72 @@ put_string_byte(FILE *out, u8 b)
 }
 
 static void
-put_memory(Source *s, const char *qualifier, const char *what, const u8 *bytes, u32 n, u32 size)
+put_bytes(FILE *out, const u8 *bytes, u32 n)
 {
-    FILE *out = s->out;
-    fprintf(
-        out,
-        "\nstatic %suint8_t chibi_%s%s[%u] __attribute__((aligned(16)))",
-        qualifier,
-        s->prefix,
-        what,
-        size
-    );
-    if (n) {
-        fputs(" =", out);
-    }
+    fputs("\n    \"", out);
     for (u32 i = 0; i < n; i++) {
-        if (i % BYTES_PER_LINE == 0) {
-            fputs(i ? "\"\n    \"" : "\n    \"", out);
+        if (i && i % BYTES_PER_LINE == 0) {
+            fputs("\"\n    \"", out);
         }
         put_string_byte(out, bytes[i]);
     }
-    fputs(n ? "\";\n" : ";\n", out);
+    fputc('"', out);
+}
+
+static void
+put_memory(Source *s, const char *qualifier, const char *what, const u8 *bytes, u32 n, u32 size, IrRelocs relocs)
+{
+    FILE *out = s->out;
+    if (!relocs.count) {
+        fprintf(
+            out,
+            "\nstatic %suint8_t chibi_%s%s[%u] __attribute__((aligned(16)))",
+            qualifier,
+            s->prefix,
+            what,
+            size
+        );
+        if (n) {
+            fputs(" =", out);
+            put_bytes(out, bytes, n);
+        }
+        fputs(";\n", out);
+        return;
+    }
+
+    fprintf(out, "\nstatic %sstruct {\n", qualifier);
+    u32 at = 0;
+    for (u32 k = 0; k < relocs.count; k++) {
+        u32 slot = relocs.offsets[k];
+        assert(slot % 8 == 0 && slot >= at);
+        if (slot > at) {
+            fprintf(out, "    uint8_t b%u[%u];\n", at, slot - at);
+        }
+        fprintf(out, "    const uint8_t *p%u;\n", slot);
+        at = slot + 8;
+    }
+    if (size > at) {
+        fprintf(out, "    uint8_t b%u[%u];\n", at, size - at);
+    }
+
+    fprintf(out, "} chibi_%s%s __attribute__((aligned(16))) = {", s->prefix, what);
+    at = 0;
+    for (u32 k = 0; k < relocs.count; k++) {
+        u32 slot = relocs.offsets[k];
+        if (slot > at) {
+            put_bytes(out, bytes + at, slot - at);
+            fputc(',', out);
+        }
+
+        u64 offset;
+        memcpy(&offset, bytes + slot, sizeof offset);
+        fprintf(out, "\n    (const uint8_t *)&chibi_%sdata + %llu,", s->prefix, (unsigned long long)offset);
+        at = slot + 8;
+    }
+    if (size > at) {
+        put_bytes(out, bytes + at, n > at ? n - at : 0);
+    }
+    fputs("\n};\n", out);
 }
 
 static void
@@ -1141,10 +1186,10 @@ put_instruction(Source *s, u32 i)
         case IR_LOAD_AT: put_load(s, i, type, a); break;
         case IR_ADDR: put_line(s, "v%u = (uint8_t *)&%S;", i, a); break;
         case IR_DATA:
-            put_line(s, "v%u = (uint8_t *)chibi_%cdata + %u;", i, s->prefix, a);
+            put_line(s, "v%u = (uint8_t *)&chibi_%cdata + %u;", i, s->prefix, a);
             break;
         case IR_GLOBAL:
-            put_line(s, "v%u = chibi_%cglobals + %u;", i, s->prefix, a);
+            put_line(s, "v%u = (uint8_t *)&chibi_%cglobals + %u;", i, s->prefix, a);
             break;
         case IR_C_GLOBAL: put_line(s, "v%u = (uint8_t *)&%e;", i, b); break;
         case IR_INDEX: put_index(s, i, type, a, b); break;
@@ -1413,10 +1458,10 @@ c_source_package(FILE *out, const Checker *c, const char *prefix)
         }
     }
     if (ir->ndata) {
-        put_memory(&s, "const ", "data", ir->data, ir->ndata, ir->ndata);
+        put_memory(&s, "const ", "data", ir->data, ir->ndata, ir->ndata, ir->data_relocs);
     }
     if (ir->globals_size) {
-        put_memory(&s, "", "globals", ir->globals, ir->nglobals, ir->globals_size);
+        put_memory(&s, "", "globals", ir->globals, ir->nglobals, ir->globals_size, ir->global_relocs);
     }
 
     fputs("\n", out);

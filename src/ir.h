@@ -3,6 +3,8 @@
 
 #include "common.h"
 
+#include <string.h>
+
 // clang-format off
 #define CHIBI_IR(X)                                                            \
     X(IR_LOAD, "load")                                                         \
@@ -175,6 +177,13 @@ typedef struct
 
 typedef struct
 {
+    u32 *offsets;
+    u32 count;
+    u32 cap;
+} IrRelocs;
+
+typedef struct
+{
     IrCode code;
     IrFunc *funcs;
     u32 nfuncs;
@@ -182,14 +191,27 @@ typedef struct
     u8 *data;
     u32 ndata;
     u32 data_cap;
+    IrRelocs data_relocs;
     u8 *globals;
     u32 nglobals;
     u32 globals_cap;
     u32 globals_size;
+    IrRelocs global_relocs;
     u32 *callbacks;
     u32 ncallbacks;
     u32 callbacks_cap;
     u32 nexports;
 } Ir;
+
+static inline void
+ir_relocate(u8 *image, IrRelocs relocs, const u8 *data)
+{
+    for (u32 k = 0; k < relocs.count; k++) {
+        u64 v;
+        memcpy(&v, image + relocs.offsets[k], sizeof v);
+        v += (u64)(uintptr_t)data;
+        memcpy(image + relocs.offsets[k], &v, sizeof v);
+    }
+}
 
 #endif

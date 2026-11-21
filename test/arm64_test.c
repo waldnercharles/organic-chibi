@@ -4530,6 +4530,58 @@ TEST_CASE(value_ifs)
     return true;
 }
 
+static const char *const STRING_TABLE_FUNCTIONS[] = {
+    "st_name",   "st_optional", "st_keyword", "st_pair",          "st_grid_byte",
+    "st_nested", "st_pointer",  "st_escape",  "st_find",          "st_global",
+    "st_global_struct", "st_global_slots", "st_global_box", "st_spare",
+};
+
+static const CallCase STRING_TABLE_CASES[] = {
+    { "st_name", 1, 2, 111111, 0 },
+    { "st_optional", 1, 2, 1101, 0 },
+    { "st_optional", 0, 0, 970, 0 },
+    { "st_keyword", 1, 2, 10104101, 0 },
+    { "st_keyword", 1, 1, 11905119, 0 },
+    { "st_keyword", 0, 0, 10502045, 0 },
+    { "st_pair", 1, 2, 99102, 0 },
+    { "st_grid_byte", 1, 2, 120, 0 },
+    { "st_nested", 1, 2, 80134, 0 },
+    { "st_pointer", 1, 2, 121002, 0 },
+    { "st_escape", 1, 2, 1959, 0 },
+    { "st_escape", 0, 1, 432, 0 },
+    { "st_find", 1, 2, 33, 0 },
+};
+
+static const char *
+global_string(Program *p, const char *name, u32 offset)
+{
+    const char *s;
+    memcpy(&s, p->n.globals + p->c.decls.values[decl_named(p, name)] + offset, sizeof s);
+    return s;
+}
+
+TEST_CASE(string_tables)
+{
+    catch_traps();
+    Program p;
+    REQUIRE(build(&p, STRING_TABLES));
+    REQUIRE(strcmp(global_string(&p, "st_label", 0), "label") == 0);
+    REQUIRE(strcmp(global_string(&p, "st_table", 24), "three") == 0);
+    REQUIRE(strcmp(global_string(&p, "st_kw", 16), "al") == 0);
+    REQUIRE(agree_on_grid(&p, STRING_TABLE_FUNCTIONS, sizeof STRING_TABLE_FUNCTIONS / sizeof STRING_TABLE_FUNCTIONS[0]));
+    for (size_t k = 0; k < sizeof STRING_TABLE_CASES / sizeof STRING_TABLE_CASES[0]; k++) {
+        CallCase t = STRING_TABLE_CASES[k];
+        int64_t got = 0;
+        int trap = call_i2((I2 *)fn(&p, t.name), t.a, t.b, &got);
+        if (trap != t.trap || (!trap && got != t.want)) {
+            fprintf(stderr, "arm64 test: %s(%lld, %lld) gave %lld (trap %d)\n", t.name, (long long)t.a, (long long)t.b, (long long)got, trap);
+            REQUIRE(false);
+        }
+    }
+    release_program(&p);
+    return true;
+}
+
 typedef int64_t I3(void *, int64_t, int64_t, int64_t);
 
 static int
@@ -5106,6 +5158,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(optionals);
     RUN_TEST_CASE(strings);
     RUN_TEST_CASE(value_ifs);
+    RUN_TEST_CASE(string_tables);
     RUN_TEST_CASE(vectors);
     RUN_TEST_CASE(narrow_parameters);
     RUN_TEST_CASE(constant_division);

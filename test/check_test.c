@@ -345,6 +345,30 @@ static const Case DECLARATIONS[] = {
         "struct Point { x: int, y: int = 7 }\n"
         "enum Mode: u8 { red = 1, blue = 2 }\n",
     },
+    {
+        "const NAMES: [3][*]u8 = .[\"zero\", \"one\", \"\"]\n"
+        "const MAYBE: [3]?[*]u8 = .[\"a\", nil, \"q\\\"\\n\"]\n"
+        "const WORD := \"word\"\n"
+        "const BYTES := *u8.[WORD, \"b\"]\n"
+        "const KWS: [2]Kw = .[.{ \"if\", 2, nil }, .{ .len = 4, .alias = \"elif\", .name = \"else\" }]\n"
+        "const GRID: [2][3][*]u8 = .[NAMES, NAMES]\n"
+        "label: [*]u8 = \"label\"\n"
+        "maybe: ?*u8 = WORD\n"
+        "table: [3][*]u8 = NAMES\n"
+        "kw: Kw = .{ .alias = \"b\", .name = \"a\", .len = 1 }\n"
+        "struct Kw { name: [*]u8, len: int, alias: ?[*]u8 }\n",
+        "const NAMES: [3][*]u8 = .[\"zero\", \"one\", \"\"]\n"
+        "const MAYBE: [3]?[*]u8 = .[\"a\", nil, \"q\\\"\\n\"]\n"
+        "const WORD = \"word\"\n"
+        "const BYTES: [2]*u8 = .[\"word\", \"b\"]\n"
+        "const KWS: [2]Kw = .[.{ \"if\", 2, nil }, .{ \"else\", 4, \"elif\" }]\n"
+        "const GRID: [2][3][*]u8 = .[.[\"zero\", \"one\", \"\"], .[\"zero\", \"one\", \"\"]]\n"
+        "label: [*]u8 = \"label\"\n"
+        "maybe: ?*u8 = \"word\"\n"
+        "table: [3][*]u8 = .[\"zero\", \"one\", \"\"]\n"
+        "kw: Kw = .{ \"a\", 1, \"b\" }\n"
+        "struct Kw { name: [*]u8, len: int, alias: ?[*]u8 }\n",
+    },
 };
 
 static const Case ERRORS[] = {
@@ -1879,7 +1903,6 @@ static const Case ERRORS[] = {
         "    return 0\n"
         "}\n",
         "a:2:7: the checker doesn't support this yet\n"
-        "a:5:12: the checker doesn't support this yet\n"
         "a:6:6: a string needs a type here, as in `s: [*]u8 = \"text\"`\n"
         "a:7:12: the checker doesn't support this yet\n"
         "a:7:31: a string needs a type here, as in `s: [*]u8 = \"text\"`\n"
@@ -1906,10 +1929,41 @@ static const Case ERRORS[] = {
         "const A = ?\n"
         "const B = \"a\\tb\"\n"
         "const C = \"a\\tb\"\n"
-        "g = ?\n"
+        "g: [*]u8 = \"global\"\n"
         "h = ?\n"
         "struct P { name: [*]u8, m: ? }\n"
         "fn f(p: ?[*]u8, q: [*]u8, d: [*]u8) -> int\n",
+    },
+    {
+        "const BAD: [2]i32 = .[\"a\", 1]\n"
+        "const P: [*]u8 = \"a\"\n"
+        "const WIDE: [2][*]u16 = .[\"a\", \"b\"]\n"
+        "const SL: [1][]u8 = .[\"abc\"]\n"
+        "const N: [2][*]u8 = .[\"n\", nil]\n"
+        "struct D { s: [*]u8 = \"x\" }\n"
+        "g: [2]u8 = .[\"a\", \"b\"]\n"
+        "h: [2]?[*]u8 = .[nil, \"h\"]\n"
+        "fn f(i: int) -> u8 {\n"
+        "    return h[i & 1]!![0]\n"
+        "}\n",
+        "a:1:23: `untyped string` and `i32` don't mix without a conversion\n"
+        "a:2:7: the checker doesn't support this yet\n"
+        "a:3:27: `untyped string` and `[*]u16` don't mix without a conversion\n"
+        "a:3:32: `untyped string` and `[*]u16` don't mix without a conversion\n"
+        "a:4:23: `untyped string` and `[]u8` don't mix without a conversion\n"
+        "a:5:28: `[*]u8` is never nil\n"
+        "a:6:12: the checker doesn't support this yet\n"
+        "a:7:14: `untyped string` and `u8` don't mix without a conversion\n"
+        "a:7:19: `untyped string` and `u8` don't mix without a conversion\n"
+        "const BAD = ?\n"
+        "const P = ?\n"
+        "const WIDE = ?\n"
+        "const SL = ?\n"
+        "const N = ?\n"
+        "struct D { s: [*]u8 }\n"
+        "g = ?\n"
+        "h: [2]?[*]u8 = .[nil, \"h\"]\n"
+        "fn f(i: int) -> u8\n",
     },
     {
         "struct Node { next: ?*Node, v: int }\n"

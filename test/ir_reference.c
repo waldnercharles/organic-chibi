@@ -300,9 +300,16 @@ ir_reference_init(IrReference *r, const Checker *c)
         r->frames[f] = (u32)size;
     }
 
+    r->data = malloc(ir->ndata + 1);
+    if (ir->ndata) {
+        memcpy(r->data, ir->data, ir->ndata);
+        ir_relocate(r->data, ir->data_relocs, r->data);
+    }
+
     r->globals = calloc(ir->globals_size + 1, 1);
     if (ir->nglobals) {
         memcpy(r->globals, ir->globals, ir->nglobals);
+        ir_relocate(r->globals, ir->global_relocs, r->data);
     }
 }
 
@@ -314,6 +321,7 @@ ir_reference_free(IrReference *r)
     free(r->opens);
     free(r->offsets);
     free(r->frames);
+    free(r->data);
     free(r->globals);
 }
 
@@ -477,7 +485,7 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                 break;
             }
             case IR_ADDR: v = (u64)(uintptr_t)(frame + offsets[a]); break;
-            case IR_DATA: v = (u64)(uintptr_t)(c->ir.data + a); break;
+            case IR_DATA: v = (u64)(uintptr_t)(r->data + a); break;
             case IR_GLOBAL: v = (u64)(uintptr_t)(r->globals + a); break;
             case IR_INDEX: {
                 u32 base = OPERAND_TYPE(a);

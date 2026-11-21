@@ -4339,6 +4339,7 @@ arm64_compile(Native *n, const Checker *c, Convention convention)
         n->globals_size = globals_size;
         if (ir->nglobals) {
             memcpy(n->globals, ir->globals, ir->nglobals);
+            ir_relocate(n->globals, ir->global_relocs, n->memory + table);
         }
     }
 
@@ -4350,6 +4351,7 @@ arm64_compile(Native *n, const Checker *c, Convention convention)
     jit_write(true);
     if (ir->ndata) {
         memcpy(n->memory + table, ir->data, ir->ndata);
+        ir_relocate(n->memory + table, ir->data_relocs, n->memory + table);
     }
     Emit e = { .c = c,
                .ir = &ir->code,

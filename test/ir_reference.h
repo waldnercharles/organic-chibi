@@ -11,6 +11,7 @@ typedef struct
     u32 *opens;
     u32 *offsets;
     u32 *frames;
+    u8 *data;
     u8 *globals;
     u64 steps;
 } IrReference;

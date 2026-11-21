@@ -1657,13 +1657,18 @@ splat(Checker *c, u32 file, u32 token, Operand o, u32 to)
     return emit_value(c, IR_SPLAT, to, value_of(e), 0);
 }
 
+static bool
+points_to_bytes(const Checker *c, u32 type)
+{
+    const Types *t = &c->types;
+    u32 target = t->kinds[type] == TYPE_OPTIONAL ? t->arg0[type] : type;
+    return is_pointer(c, target) && t->arg0[target] == TYPE_ID_U8;
+}
+
 static NOINLINE Operand
 string_pointer(Checker *c, u32 file, u32 token, Operand o, u32 to)
 {
-    const Types *t = &c->types;
-    bool optional = t->kinds[to] == TYPE_OPTIONAL;
-    u32 target = optional ? t->arg0[to] : to;
-    if (!is_pointer(c, target) || t->arg0[target] != TYPE_ID_U8) {
+    if (!points_to_bytes(c, to)) {
         report(c, file, token, DIAG_MISMATCH, o.type, to);
         return poison;
     }
@@ -1672,6 +1677,8 @@ string_pointer(Checker *c, u32 file, u32 token, Operand o, u32 to)
         return poison;
     }
 
+    bool optional = c->types.kinds[to] == TYPE_OPTIONAL;
+    u32 target = optional ? c->types.arg0[to] : to;
     u32 at = emit(c, IR_DATA, target, c->string_offsets[value_of(o)], 0);
     return (Operand){ to, REF_VALUE | (optional ? REF_NONNIL : 0) | at };
 }
@@ -5212,15 +5219,70 @@ reserve_data(Checker *c, u32 file, u32 token, u32 type)
 }
 
 static void
-put_data(Checker *c, u8 *to, u32 type, Operand v)
+add_reloc(IrRelocs *r, u32 at)
 {
-    u64 size = check_type_size(c, type);
-    if (is_aggregate(c, type)) {
-        memcpy(to, c->ir.data + value_of(v), size);
+    if (r->count == r->cap) {
+        r->cap = r->cap ? r->cap * 2 : 64;
+        r->offsets = resize(r->offsets, r->cap, sizeof *r->offsets);
+    }
+
+    u32 k = r->count++;
+    while (k && r->offsets[k - 1] > at) {
+        r->offsets[k] = r->offsets[k - 1];
+        k--;
+    }
+    r->offsets[k] = at;
+}
+
+static void
+put_bits(Checker *c, u8 *to, u32 type, Operand v)
+{
+    u64 bits = constant_bits(c, v);
+    memcpy(to, &bits, check_type_size(c, type));
+}
+
+static u32
+first_reloc(const IrRelocs *r, u64 at)
+{
+    u32 lo = 0;
+    u32 hi = r->count;
+    while (lo < hi) {
+        u32 mid = lo + (hi - lo) / 2;
+        if (r->offsets[mid] < at) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+
+static void
+put_data(Checker *c, bool global, u32 at, u32 type, Operand v)
+{
+    u8 *to = (global ? c->ir.globals : c->ir.data) + at;
+    IrRelocs *relocs = global ? &c->ir.global_relocs : &c->ir.data_relocs;
+    if (v.type == TYPE_ID_UNTYPED_STRING) {
+        u64 offset = c->string_offsets[value_of(v)];
+        memcpy(to, &offset, sizeof offset);
+        add_reloc(relocs, at);
         return;
     }
-    u64 bits = constant_bits(c, v);
-    memcpy(to, &bits, size);
+    if (!is_aggregate(c, type)) {
+        put_bits(c, to, type, v);
+        return;
+    }
+
+    u32 from = value_of(v);
+    u64 size = check_type_size(c, type);
+    assert(global || from + size <= at);
+    memcpy(to, c->ir.data + from, size);
+
+    const IrRelocs *own = &c->ir.data_relocs;
+    u32 end = first_reloc(own, from + size);
+    for (u32 k = first_reloc(own, from); k < end; k++) {
+        add_reloc(relocs, at + (own->offsets[k] - from));
+    }
 }
 
 static u32
@@ -5364,7 +5426,7 @@ vector_literal(Checker *c, u32 file, u32 node, u32 m, u32 base, u32 type)
     if (ok && constant) {
         u32 at = reserve_data(c, file, token, type);
         for (u32 k = 0; at != NO_SLOT && k < n; k++) {
-            put_data(c, c->ir.data + at + k * size, elem, c->stack[m + 1 + k]);
+            put_bits(c, c->ir.data + at + k * size, elem, c->stack[m + 1 + k]);
         }
         if (at != NO_SLOT) {
             r = load_at(c, type, emit(c, IR_DATA, pointer_type(c, type), at, 0));
@@ -5532,7 +5594,7 @@ put_defaults(Checker *c, u8 *to, u32 type)
         }
         u8 *field = to + check_field_offset(c, field_layout(c, decl, k));
         if (m.value < MEMBER_NONE) {
-            put_data(c, field, m.type, (Operand){ m.type, m.value });
+            put_bits(c, field, m.type, (Operand){ m.type, m.value });
         } else {
             put_defaults(c, field, m.type);
         }
@@ -5542,6 +5604,9 @@ put_defaults(Checker *c, u8 *to, u32 type)
 static Operand
 constant_item(Checker *c, u32 file, u32 token, Operand v, u32 type)
 {
+    if (v.type == TYPE_ID_UNTYPED_STRING && points_to_bytes(c, type)) {
+        return v;
+    }
     Operand x = convert(c, file, token, v, type);
     if (x.type != TYPE_ID_NONE && !is_constant(x)) {
         report(c, file, token, DIAG_NOT_CONSTANT, 0, 0);
@@ -5577,7 +5642,7 @@ constant_array(Checker *c, u32 file, u8 kind)
 
     u32 at = !ok ? NO_SLOT : adopt ? first : reserve_data(c, file, token, type);
     for (u32 k = 0; at != NO_SLOT && !adopt && k < n; k++) {
-        put_data(c, c->ir.data + at + k * size, elem, c->stack[m + 1 + k]);
+        put_data(c, false, at + (u32)(k * size), elem, c->stack[m + 1 + k]);
     }
 
     c->sp = base;
@@ -5623,7 +5688,7 @@ constant_struct(Checker *c, u32 file, u8 kind)
             at = NO_SLOT;
             continue;
         }
-        put_data(c, c->ir.data + at + check_field_offset(c, field_layout(c, decl, member)), field, v);
+        put_data(c, false, at + (u32)check_field_offset(c, field_layout(c, decl, member)), field, v);
     }
 
     c->sp = base;
@@ -7833,7 +7898,7 @@ set_global(Checker *c, u32 decl, u32 node)
     if (given || (kind == NODE_VAR_TYPE && has_defaults(c, elem))) {
         at = reserve_global(c, file, token, t);
         if (at != NO_SLOT && given) {
-            put_data(c, c->ir.globals + at, t, x);
+            put_data(c, true, at, t, x);
         } else if (at != NO_SLOT) {
             put_defaults(c, c->ir.globals + at, t);
         }
@@ -8491,53 +8556,6 @@ print_bits(FILE *out, const Checker *c, u32 type, u64 bits)
 }
 
 static void
-print_data(FILE *out, const Checker *c, const u8 *data, u32 type)
-{
-    if (is_array(c, type) || is_vector(c, type)) {
-        bool lanes = is_vector(c, type);
-        u32 elem = c->types.arg0[type];
-        u64 size = check_type_size(c, elem);
-        fputs(lanes ? ".{ " : ".[", out);
-        for (u64 k = 0; k < c->types.arg1[type]; k++) {
-            fputs(k ? ", " : "", out);
-            print_data(out, c, data + k * size, elem);
-        }
-        fputs(lanes ? " }" : "]", out);
-        return;
-    }
-    if (is_struct(c, type)) {
-        u32 decl = c->types.arg0[type];
-        u32 first = c->decls.members[decl];
-        u32 count = c->decls.member_counts[decl];
-        fputs(count ? ".{ " : ".{}", out);
-        for (u32 k = first; k < first + count; k++) {
-            fputs(k > first ? ", " : "", out);
-            u64 offset = check_field_offset(c, field_layout(c, decl, k));
-            print_data(out, c, data + offset, c->members[k].type);
-        }
-        fputs(count ? " }" : "", out);
-        return;
-    }
-    if (is_slice(c, type)) {
-        fputs(".[]", out);
-        return;
-    }
-
-    u64 size = check_type_size(c, type);
-    u64 bits = 0;
-    memcpy(&bits, data, size);
-    if (c->types.kinds[type] == TYPE_FLOAT) {
-        print_float(out, bits, c->types.arg0[type]);
-        return;
-    }
-    if (size < 8 && signed_type(c, type)) {
-        u32 shift = 64 - 8 * (u32)size;
-        bits = (u64)((int64_t)(bits << shift) >> shift);
-    }
-    print_bits(out, c, type, bits);
-}
-
-static void
 print_string(FILE *out, const Checker *c, u32 string)
 {
     const u8 *s = c->ir.data + c->string_offsets[string];
@@ -8583,13 +8601,66 @@ string_at(const Checker *c, u32 offset)
 }
 
 static void
+print_data(FILE *out, const Checker *c, bool global, u64 at, u32 type)
+{
+    if (is_array(c, type) || is_vector(c, type)) {
+        bool lanes = is_vector(c, type);
+        u32 elem = c->types.arg0[type];
+        u64 size = check_type_size(c, elem);
+        fputs(lanes ? ".{ " : ".[", out);
+        for (u64 k = 0; k < c->types.arg1[type]; k++) {
+            fputs(k ? ", " : "", out);
+            print_data(out, c, global, at + k * size, elem);
+        }
+        fputs(lanes ? " }" : "]", out);
+        return;
+    }
+    if (is_struct(c, type)) {
+        u32 decl = c->types.arg0[type];
+        u32 first = c->decls.members[decl];
+        u32 count = c->decls.member_counts[decl];
+        fputs(count ? ".{ " : ".{}", out);
+        for (u32 k = first; k < first + count; k++) {
+            fputs(k > first ? ", " : "", out);
+            u64 offset = check_field_offset(c, field_layout(c, decl, k));
+            print_data(out, c, global, at + offset, c->members[k].type);
+        }
+        fputs(count ? " }" : "", out);
+        return;
+    }
+    if (is_slice(c, type)) {
+        fputs(".[]", out);
+        return;
+    }
+
+    const IrRelocs *relocs = global ? &c->ir.global_relocs : &c->ir.data_relocs;
+    u64 size = check_type_size(c, type);
+    u64 bits = 0;
+    memcpy(&bits, (global ? c->ir.globals : c->ir.data) + at, size);
+    u32 k = first_reloc(relocs, at);
+    if (k < relocs->count && relocs->offsets[k] == at) {
+        print_string(out, c, string_at(c, (u32)bits));
+        return;
+    }
+    if (c->types.kinds[type] == TYPE_FLOAT) {
+        print_float(out, bits, c->types.arg0[type]);
+        return;
+    }
+    if (size < 8 && signed_type(c, type)) {
+        u32 shift = 64 - 8 * (u32)size;
+        bits = (u64)((int64_t)(bits << shift) >> shift);
+    }
+    print_bits(out, c, type, bits);
+}
+
+static void
 print_constant(FILE *out, const Checker *c, u32 type, u32 value)
 {
     u8 kind = c->types.kinds[type];
     if (type == TYPE_ID_UNTYPED_STRING) {
         print_string(out, c, value);
     } else if (is_aggregate(c, type)) {
-        print_data(out, c, c->ir.data + value, type);
+        print_data(out, c, false, value, type);
     } else if (type == TYPE_ID_BOOL) {
         fputs(exact_sign(&c->exacts, value) ? "true" : "false", out);
     } else if (kind == TYPE_FLOAT) {
@@ -8752,7 +8823,7 @@ print_decl(FILE *out, const Checker *c, u32 decl)
             print_type(out, c, type);
             if (!(d->flags[decl] & DECL_ZEROED) && d->bodies[decl] != NO_BODY) {
                 fputs(" = ", out);
-                print_data(out, c, c->ir.globals + d->values[decl], type);
+                print_data(out, c, true, d->values[decl], type);
             }
             break;
         default: assert(false && "unknown declaration kind");
@@ -8858,7 +8929,7 @@ print_function(FILE *out, const Checker *c, const IrFunc *fn)
                 if (kind == IR_DATA && b == 0 && c->types.arg0[type] == TYPE_ID_U8) {
                     print_string(out, c, string_at(c, a));
                 } else if (kind == IR_DATA && b == 0) {
-                    print_data(out, c, c->ir.data + a, c->types.arg0[type]);
+                    print_data(out, c, false, a, c->types.arg0[type]);
                 } else {
                     print_name(out, c, c->decls.names[b]);
                 }
@@ -9110,7 +9181,9 @@ check_free(Checker *c)
     free(c->builders);
     free(c->ir.funcs);
     free(c->ir.data);
+    free(c->ir.data_relocs.offsets);
     free(c->ir.globals);
+    free(c->ir.global_relocs.offsets);
     free(c->ir.callbacks);
 
     exacts_free(&c->exacts);
