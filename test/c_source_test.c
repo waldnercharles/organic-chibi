@@ -20,7 +20,7 @@ typedef struct
 {
     Arena arena;
     Lexer lx;
-    ParsedFile file;
+    ParsedFile files[2];
     Checker c;
 } Package;
 
@@ -33,35 +33,48 @@ static const char *const UNSUPPORTED[][2] = {
 };
 
 static bool
-check_source(Package *p, const char *text)
+check_files(Package *p, const char *const *texts, const char *const *paths, u32 n)
 {
     *p = (Package){ 0 };
-    size_t len = strlen(text);
-    lexer_init(&p->lx, &p->arena, len);
-    char *src = arena_alloc(&p->arena, len + LEXER_SOURCE_PADDING, 16);
-    memset(src, 0, len + LEXER_SOURCE_PADDING);
-    memcpy(src, text, len);
+    size_t total = 0;
+    for (u32 i = 0; i < n; i++) {
+        total += strlen(texts[i]);
+    }
+    lexer_init(&p->lx, &p->arena, total);
 
-    Tokens tokens = lexer_alloc_tokens(&p->arena, len);
-    int ntokens = lexer_tokenize(&p->lx, src, tokens);
-    Nodes nodes = parser_alloc_nodes(&p->arena, ntokens);
-    Parser parser;
-    int count = parser_parse(&parser, tokens, ntokens, nodes);
-    if (count < 0) {
-        fprintf(stderr, "c_source test: the program does not parse\n%s", text);
-        return false;
+    for (u32 i = 0; i < n; i++) {
+        size_t len = strlen(texts[i]);
+        char *src = arena_alloc(&p->arena, len + LEXER_SOURCE_PADDING, 16);
+        memset(src, 0, len + LEXER_SOURCE_PADDING);
+        memcpy(src, texts[i], len);
+
+        Tokens tokens = lexer_alloc_tokens(&p->arena, len);
+        int ntokens = lexer_tokenize(&p->lx, src, tokens);
+        Nodes nodes = parser_alloc_nodes(&p->arena, ntokens);
+        Parser parser;
+        int count = parser_parse(&parser, tokens, ntokens, nodes);
+        if (count < 0) {
+            fprintf(stderr, "c_source test: the program does not parse\n%s", texts[i]);
+            return false;
+        }
+        p->files[i] = (ParsedFile){ paths[i], src,        tokens,
+                                    nodes,    (u32)count, (u32)parser.top_count,
+                                    false };
     }
 
-    p->file = (ParsedFile){ "a",   src,        tokens,
-                            nodes, (u32)count, (u32)parser.top_count,
-                            false };
     check_init(&p->c, &p->lx.names);
-    check_package(&p->c, &p->file, 1);
+    check_package(&p->c, p->files, n);
     if (p->c.ndiags) {
         check_print_diagnostics(stderr, &p->c);
         return false;
     }
     return true;
+}
+
+static bool
+check_source(Package *p, const char *text)
+{
+    return check_files(p, &text, (const char *const[]){ "a" }, 1);
 }
 
 static void
@@ -1264,6 +1277,241 @@ TEST_CASE(runs_vectors)
     return true;
 }
 
+static const char LINES_A[] =
+    "fn plain(a: int, b: int) -> int {\n"
+    "    x := a + 1\n"
+    "    y := x * b\n"
+    "\n"
+    "    // Lines without code, more than\n"
+    "    // the C keeps as empty lines.\n"
+    "\n"
+    "\n"
+    "\n"
+    "\n"
+    "\n"
+    "\n"
+    "    return y + b\n"
+    "}\n"
+    "\n"
+    "fn branches(a: int, b: int) -> int {\n"
+    "    if a + b > 100 {\n"
+    "        return 1\n"
+    "    } else if a * b > 100 {\n"
+    "        return 2\n"
+    "    } else {\n"
+    "        return a - b - 1000\n"
+    "    }\n"
+    "}\n"
+    "\n"
+    "fn loops(a: int, b: int) -> int {\n"
+    "    i := 0\n"
+    "    total := 0\n"
+    "    while i * b < a {\n"
+    "        total += i\n"
+    "        i += 1\n"
+    "    }\n"
+    "    for k in 0..a {\n"
+    "        total += k * b\n"
+    "    }\n"
+    "    return total / (b - 3)\n"
+    "}\n"
+    "\n"
+    "fn arms(a: int, b: int) -> int {\n"
+    "    switch a {\n"
+    "        1 => return b * 2\n"
+    "        2 => {\n"
+    "            c := b + 1\n"
+    "            return c * c\n"
+    "        }\n"
+    "        _ => {}\n"
+    "    }\n"
+    "    v := switch b {\n"
+    "        5 => a * 1000\n"
+    "        _ => a - b\n"
+    "    }\n"
+    "    return v - 10\n"
+    "}\n"
+    "\n"
+    "fn spread(a: int, b: int) -> int {\n"
+    "    return add(\n"
+    "        a,\n"
+    "        b * 2,\n"
+    "    )\n"
+    "}\n"
+    "\n"
+    "fn add(a: int, b: int) -> int {\n"
+    "    return a + b\n"
+    "}\n"
+    "\n"
+    "fn block(a: int, b: int) -> int {\n"
+    "    v := blk: {\n"
+    "        if a > 0 {\n"
+    "            break blk a * b\n"
+    "        }\n"
+    "        break blk 0\n"
+    "    }\n"
+    "    return v + 1\n"
+    "}\n"
+    "\n"
+    "fn twice(a: int, b: int) -> int => a * b\n"
+    "\n"
+    "fn scrutinee(a: int, b: int) -> int {\n"
+    "    switch a + b {\n"
+    "        0 => return 1\n"
+    "        _ => return 2\n"
+    "    }\n"
+    "}\n"
+    "\n"
+    "fn effect(a: int, b: int) -> int {\n"
+    "    consume(a * b)\n"
+    "    return 0\n"
+    "}\n"
+    "\n"
+    "fn consume(x: int) {}\n"
+    "\n"
+    "fn header(a: int, b: int) -> int {\n"
+    "    total := 0\n"
+    "    for k in 0..a + b {\n"
+    "        total += k\n"
+    "    }\n"
+    "    return total\n"
+    "}\n"
+    "\n"
+    "fn outer(a: int, b: int) -> int {\n"
+    "    return inner(a) + b\n"
+    "}\n"
+    "\n"
+    "fn inner(a: int) => a * 3\n"
+    "\n"
+    "fn lanes(a: int, b: int) -> int {\n"
+    "    v: i64x2 = a; return v[1] * b\n"
+    "}\n"
+    "\n"
+    "fn flat(a: int, b: int) -> int {\n"
+    "return later(a) * b\n"
+    "}\n"
+    "\n"
+    "fn later(a: int) => a + 1\n"
+    "\n"
+    "fn flat2(a: int, b: int) -> int {\n"
+    "return a * b\n"
+    "}\n";
+
+static const char LINES_B[] =
+    "fn pick(a: int, b: int) -> int {\n"
+    "    table: [3]int = .[10, 20, 30]\n"
+    "    v: int = table[a]\n"
+    "    return v * b\n"
+    "}\n";
+
+static const char *const LINE_TEXTS[] = { LINES_A, LINES_B };
+static const char *const LINE_PATHS[] = {
+    "lines/q\"s\\b?\?/\n\303\251.chibi",
+    "b.chibi",
+};
+
+typedef struct
+{
+    const char *name;
+    int64_t a;
+    int64_t b;
+    u32 file;
+    int line;
+    int kind;
+} LineTrap;
+
+static const LineTrap LINE_TRAPS[] = {
+    { "plain", INT64_MAX, 1, 0, 2, TRAP_OVERFLOW },
+    { "plain", 3, INT64_MAX, 0, 3, TRAP_OVERFLOW },
+    { "plain", 0, INT64_MAX, 0, 13, TRAP_OVERFLOW },
+    { "branches", INT64_MAX, 1, 0, 17, TRAP_OVERFLOW },
+    { "branches", 2, INT64_MIN, 0, 19, TRAP_OVERFLOW },
+    { "branches", INT64_MIN, 0, 0, 22, TRAP_OVERFLOW },
+    { "loops", INT64_MAX, INT64_C(1) << 62, 0, 29, TRAP_OVERFLOW },
+    { "loops", 3, INT64_MAX, 0, 34, TRAP_OVERFLOW },
+    { "loops", 0, 3, 0, 36, TRAP_DIVIDE },
+    { "arms", 1, INT64_MAX, 0, 41, TRAP_OVERFLOW },
+    { "arms", 2, INT64_MAX, 0, 43, TRAP_OVERFLOW },
+    { "arms", 2, INT64_C(1) << 32, 0, 44, TRAP_OVERFLOW },
+    { "arms", INT64_MAX, 5, 0, 49, TRAP_OVERFLOW },
+    { "arms", INT64_MIN, 1, 0, 50, TRAP_OVERFLOW },
+    { "arms", INT64_MIN + 6, 1, 0, 52, TRAP_OVERFLOW },
+    { "spread", 1, INT64_MAX, 0, 56, TRAP_OVERFLOW },
+    { "spread", INT64_MAX, 1, 0, 63, TRAP_OVERFLOW },
+    { "block", 2, INT64_MAX, 0, 69, TRAP_OVERFLOW },
+    { "block", INT64_MAX, 1, 0, 73, TRAP_OVERFLOW },
+    { "twice", INT64_MAX, 2, 0, 76, TRAP_OVERFLOW },
+    { "scrutinee", INT64_MAX, 1, 0, 79, TRAP_OVERFLOW },
+    { "effect", INT64_MAX, 2, 0, 86, TRAP_OVERFLOW },
+    { "header", INT64_MAX, 1, 0, 94, TRAP_OVERFLOW },
+    { "outer", INT64_MAX, 0, 0, 104, TRAP_OVERFLOW },
+    { "outer", 1, INT64_MAX, 0, 101, TRAP_OVERFLOW },
+    { "lanes", INT64_MAX, 2, 0, 107, TRAP_OVERFLOW },
+    { "flat", 1, INT64_MAX, 0, 111, TRAP_OVERFLOW },
+    { "flat", INT64_MAX, 1, 0, 114, TRAP_OVERFLOW },
+    { "flat2", INT64_MAX, 2, 0, 117, TRAP_OVERFLOW },
+    { "pick", 3, 1, 1, 3, TRAP_BOUNDS },
+    { "pick", 1, INT64_MAX, 1, 4, TRAP_OVERFLOW },
+};
+
+static const char *volatile trap_file;
+static volatile int trap_line;
+
+NORETURN void
+chibi_lines_trap(int kind, const char *file, int line)
+{
+    trap_file = file;
+    trap_line = line;
+    chibi_trap(kind);
+}
+
+TEST_CASE(maps_lines)
+{
+    Build b;
+    REQUIRE(open_build(&b, 1));
+    fputs(
+        "__attribute__((noreturn)) void\n"
+        "chibi_lines_trap(int kind, const char *file, int line);\n"
+        "#define chibi_trap(kind) chibi_lines_trap(kind, __FILE__, __LINE__)\n",
+        b.outs[0]
+    );
+    Package p;
+    bool ok = check_files(&p, LINE_TEXTS, LINE_PATHS, 2) &&
+              c_source_package(b.outs[0], &p.c, "l0_") == NULL;
+    release(&p);
+    ok = finish_build(&b, "") && ok;
+
+    for (size_t k = 0; ok && k < sizeof LINE_TRAPS / sizeof LINE_TRAPS[0]; k++) {
+        const LineTrap *t = &LINE_TRAPS[k];
+        char name[32];
+        snprintf(name, sizeof name, "l0_%s", t->name);
+        trap_file = "";
+        trap_line = 0;
+        int64_t result;
+        int kind = call_i2((I2 *)symbol(&b, name), t->a, t->b, &result);
+        ok = kind == t->kind && trap_line == t->line &&
+             strcmp(trap_file, LINE_PATHS[t->file]) == 0;
+        if (!ok) {
+            fprintf(
+                stderr,
+                "c_source test: %s(%lld, %lld) gave trap %d at %s:%d, want %d at %s:%d\n",
+                t->name,
+                (long long)t->a,
+                (long long)t->b,
+                kind,
+                trap_file,
+                trap_line,
+                t->kind,
+                LINE_PATHS[t->file],
+                t->line
+            );
+        }
+    }
+    close_build(&b, ok);
+    REQUIRE(ok);
+    return true;
+}
+
 #endif
 
 TEST_SUITE(c_source_tests)
@@ -1274,5 +1522,6 @@ TEST_SUITE(c_source_tests)
     RUN_TEST_CASE(agrees_with_reference);
     RUN_TEST_CASE(works_with_c);
     RUN_TEST_CASE(runs_vectors);
+    RUN_TEST_CASE(maps_lines);
 #endif
 }

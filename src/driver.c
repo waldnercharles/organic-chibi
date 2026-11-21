@@ -242,8 +242,8 @@ static void
 put_program(FILE *out, const Checker *c)
 {
     c_source_prelude(out);
-    c_source_package(out, c, "p_");
     c_source_runtime(out);
+    c_source_package(out, c, "p_");
 }
 
 static void

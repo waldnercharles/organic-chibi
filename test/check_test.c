@@ -5152,6 +5152,134 @@ TEST_CASE(vectors)
     return true;
 }
 
+static u32
+token_line(const ParsedFile *f, u32 token)
+{
+    u32 line = 1;
+    for (u32 p = 0; p < f->tokens.starts[token]; p++) {
+        line += f->src[p] == '\n';
+    }
+    return line;
+}
+
+static bool
+has_positions(const Checker *c, const ParsedFile *f, const IrFunc *fn, u32 steps)
+{
+    const IrLine *lines = c->ir.code.lines + fn->first_line;
+    u32 head = token_line(f, f->nodes.tokens[c->decls.roots[fn->decl]]);
+    u32 body = f->nodes.tokens[c->decls.bodies[fn->decl]];
+    bool arrow = f->tokens.kinds[body] == TK_FAT_ARROW;
+    u32 want = arrow ? steps + 3 : 1;
+    bool ok = fn->nlines == want && lines[want - 1].end == fn->count;
+    for (u32 k = 0; ok && k < want; k++) {
+        u32 line = token_line(f, lines[k].token);
+        ok = (k == 0 || lines[k].end > lines[k - 1].end) &&
+             line == (want > 1 && k == want - 1 ? head : head + 1 + k);
+    }
+    if (!ok) {
+        fprintf(
+            stderr,
+            "check test: the function at line %u has %u positions, want %u\n",
+            head,
+            fn->nlines,
+            want
+        );
+    }
+    return ok;
+}
+
+TEST_CASE(positions)
+{
+    enum
+    {
+        STEPS = 70,
+    };
+    static const char *const names[] = { "first", "second", "third" };
+    size_t cap = 3 * (STEPS + 4) * 16 + 128;
+    char *text = malloc(cap);
+    size_t len = (size_t)snprintf(text, cap, "fn outer() -> int {\n    return first() + second()\n}\n");
+    for (u32 k = 0; k < 3; k++) {
+        if (k == 2) {
+            len += (size_t)snprintf(text + len, cap - len, "fn again() -> int {\n    return third()\n}\n");
+        }
+        len += (size_t)snprintf(text + len, cap - len, "fn %s() => blk: {\n    x := 0\n", names[k]);
+        for (u32 i = 0; i < STEPS; i++) {
+            len += (size_t)snprintf(text + len, cap - len, "    x += %u\n", k + 1);
+        }
+        len += (size_t)snprintf(text + len, cap - len, "    break blk x\n}\n");
+    }
+
+    Arena arena = { 0 };
+    Lexer lx;
+    Checker c;
+    const char *texts[] = { text };
+    ParsedFile *files = check_texts(&c, &arena, &lx, texts, 1, 1);
+    bool ok = c.ndiags == 0 && c.ir.nfuncs == 5;
+    u32 total = 0;
+    for (u32 f = 0; ok && f < c.ir.nfuncs; f++) {
+        ok = has_positions(&c, files, &c.ir.funcs[f], STEPS);
+        total += c.ir.funcs[f].nlines;
+    }
+    ok = ok && total == c.ir.code.nlines;
+
+    check_free(&c);
+    free(files);
+    arena_free(&arena);
+    free(text);
+    REQUIRE(ok);
+    return true;
+}
+
+TEST_CASE(statement_positions)
+{
+    static const char text[] =
+        "fn walk(n: int) -> int {\n"
+        "    x := 0\n"
+        "    y: int\n"
+        "    while x < n {\n"
+        "        x += 1\n"
+        "    }\n"
+        "    for k in 0..n {\n"
+        "        y += k\n"
+        "    }\n"
+        "    if x > 3 {\n"
+        "        x = 1\n"
+        "    } else {\n"
+        "        x = 2\n"
+        "    }\n"
+        "    return x + y\n"
+        "}\n";
+    static const u32 want[] = { 2, 3, 4, 5, 4, 7, 8, 7, 10, 11, 13, 15 };
+
+    Arena arena = { 0 };
+    Lexer lx;
+    Checker c;
+    const char *texts[] = { text };
+    ParsedFile *files = check_texts(&c, &arena, &lx, texts, 1, 1);
+    bool ok = c.ndiags == 0 && c.ir.nfuncs == 1;
+    u32 got[16];
+    u32 n = 0;
+    for (u32 k = 0; ok && k < c.ir.funcs[0].nlines && n < 16; k++) {
+        u32 token = c.ir.code.lines[c.ir.funcs[0].first_line + k].token;
+        got[n++] = token_line(files, token);
+    }
+    ok = ok && n == sizeof want / sizeof want[0] &&
+         memcmp(got, want, sizeof want) == 0;
+    if (!ok) {
+        fprintf(stderr, "check test: statement positions:");
+        for (u32 k = 0; k < n; k++) {
+            fprintf(stderr, " %u", got[k]);
+        }
+        fputc('\n', stderr);
+    }
+
+    check_free(&c);
+    free(files);
+    arena_free(&arena);
+    REQUIRE(ok);
+    return true;
+}
+
 TEST_SUITE(check_tests)
 {
     RUN_TEST_CASE(declarations);
@@ -5167,4 +5295,6 @@ TEST_SUITE(check_tests)
     RUN_TEST_CASE(depth_limit);
     RUN_TEST_CASE(doubling_structs);
     RUN_TEST_CASE(vectors);
+    RUN_TEST_CASE(positions);
+    RUN_TEST_CASE(statement_positions);
 }

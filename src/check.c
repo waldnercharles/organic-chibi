@@ -889,6 +889,24 @@ emit_extra(Checker *c, u8 kind, u32 type, u32 a, const u32 *words, u32 n)
     return emit(c, kind, type, a, extra - c->body.first_extra);
 }
 
+static void
+mark_line(Checker *c, u32 token)
+{
+    Body *b = &c->body;
+    IrCode *code = b->code;
+    u32 end = code->count - b->first;
+    if (end == b->marked) {
+        return;
+    }
+
+    if (code->nlines == code->lines_cap) {
+        code->lines_cap = code->lines_cap ? code->lines_cap * 2 : 64;
+        code->lines = resize(code->lines, code->lines_cap, sizeof *code->lines);
+    }
+    code->lines[code->nlines++] = (IrLine){ end, token };
+    b->marked = end;
+}
+
 static u32
 ir_const(Checker *c, u32 type, u64 bits)
 {
@@ -5106,6 +5124,7 @@ open_switch(Checker *c, u32 file)
     s->at = s->type
               ? emit(c, IR_SWITCH, s->type, operand_ir(c, v), 0)
               : emit(c, IR_SWITCH, TYPE_ID_BOOL, ir_const(c, TYPE_ID_BOOL, 0), 0);
+    mark_line(c, token);
     if (s->label) {
         push_loop(
             c,
@@ -5715,6 +5734,7 @@ body_marker(Checker *c, u32 file, u32 node, u8 kind, u32 token)
         case NODE_IF_THEN: {
             u32 cond_token = c->stack_tokens[c->sp - 1];
             emit(c, IR_IF, 0, condition(c, file, cond_token, pop(c)), 0);
+            mark_line(c, cond_token);
             push(c, cond_token, OPERAND_STMT, 0);
             c->stack[list_start(c, NODE_IF_START)].ref += IF_OPENED;
             break;
@@ -5776,6 +5796,7 @@ body_marker(Checker *c, u32 file, u32 node, u8 kind, u32 token)
             bool forever = cond.type == TYPE_ID_BOOL && is_constant(cond) &&
                            exact_sign(&c->exacts, value_of(cond)) != 0;
             emit(c, IR_IF, 0, condition(c, file, cond_token, cond), 0);
+            mark_line(c, cond_token);
             push(c, cond_token, OPERAND_STMT, 0);
             push(c, token, OPERAND_MARKER + kind, forever);
             return;
@@ -6281,11 +6302,13 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                 u32 t = is_place(v) ? place_type(c, v)
                                     : value_type(c, file, v_token, v);
                 declare_local(c, file, i, t, t ? convert(c, file, v_token, v, t) : poison);
+                mark_line(c, token);
                 push(c, token, OPERAND_STMT, 0);
                 break;
             }
             case NODE_VAR_TYPE:
                 declare_zeroed(c, file, i, token, child);
+                mark_line(c, token);
                 push(c, token, OPERAND_STMT, 0);
                 break;
             case NODE_VAR_TYPE_INIT: {
@@ -6301,6 +6324,7 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                     t,
                     v.type == TYPE_ID_UNDEFINED ? v : convert(c, file, v_token, v, t)
                 );
+                mark_line(c, token);
                 push(c, token, OPERAND_STMT, 0);
                 break;
             }
@@ -6318,18 +6342,28 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
             case NODE_BIT_XOR_ASSIGN:
             case NODE_SHL_ASSIGN:
             case NODE_SHR_ASSIGN:
-            case NODE_OR_ELSE_ASSIGN: assign(c, file, i, token, kind); break;
-            case NODE_EXPR_STMT: expression_statement(c, file, token); break;
+            case NODE_OR_ELSE_ASSIGN:
+                assign(c, file, i, token, kind);
+                mark_line(c, token);
+                break;
+            case NODE_EXPR_STMT:
+                expression_statement(c, file, token);
+                mark_line(c, token);
+                break;
             case NODE_RETURN:
             case NODE_RETURN_VALUE:
                 return_value(c, file, token, kind == NODE_RETURN_VALUE);
+                mark_line(c, token);
                 break;
             case NODE_BREAK:
             case NODE_BREAK_LABEL:
             case NODE_BREAK_VALUE:
             case NODE_CONTINUE:
             case NODE_CONTINUE_LABEL:
-            case NODE_CONTINUE_VALUE: jump(c, file, token, kind); break;
+            case NODE_CONTINUE_VALUE:
+                jump(c, file, token, kind);
+                mark_line(c, token);
+                break;
             case NODE_BLOCK: {
                 u32 m = list_start(c, NODE_BLOCK_START);
                 unbind_to(c, c->stack[m].ref);
@@ -6355,7 +6389,10 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                 break;
             }
             case NODE_IF: close_if(c, token); break;
-            case NODE_WHILE: close_while(c, token); break;
+            case NODE_WHILE:
+                close_while(c, token);
+                mark_line(c, token);
+                break;
             case NODE_RANGE:
             case NODE_RANGE_INCLUSIVE:
                 if (in_body && kinds[i + 1] == NODE_FOR_VALUE) {
@@ -6368,16 +6405,21 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                 break;
             case NODE_FOR_VALUE:
                 for_value(c, file, i, token, kinds[i - 1] == NODE_RANGE_INCLUSIVE);
+                mark_line(c, token);
                 break;
             case NODE_FOR_INDEX:
                 if (!in_body) {
                     unsupported(c, file, i);
                 }
                 break;
-            case NODE_FOR: close_for(c, token); break;
+            case NODE_FOR:
+                close_for(c, token);
+                mark_line(c, token);
+                break;
             case NODE_CASE:
                 if (in_body) {
                     close_arm(c, file, token);
+                    mark_line(c, token);
                 } else {
                     c->sp = list_start(c, NODE_CASE_START);
                 }
@@ -6560,7 +6602,7 @@ grow(void *p, u32 *cap, u32 need, size_t size)
 }
 
 static void
-reserve_code(IrCode *code, u32 count, u32 nextra, u32 nslots, u32 nconsts)
+reserve_code(IrCode *code, u32 count, u32 nextra, u32 nslots, u32 nconsts, u32 nlines)
 {
     if (code->count + count > code->cap) {
         code->cap = (code->count + count) * 2;
@@ -6587,16 +6629,23 @@ reserve_code(IrCode *code, u32 count, u32 nextra, u32 nslots, u32 nconsts)
         code->nconsts + nconsts,
         sizeof *code->consts
     );
+    code->lines = grow(
+        code->lines,
+        &code->lines_cap,
+        code->nlines + nlines,
+        sizeof *code->lines
+    );
 }
 
 static void
-append_code(IrCode *to, const IrCode *from, u32 first, u32 first_extra, u32 first_slot, u32 first_const)
+append_code(IrCode *to, const IrCode *from, u32 first, u32 first_extra, u32 first_slot, u32 first_const, u32 first_line)
 {
     u32 count = from->count - first;
     u32 nextra = from->nextra - first_extra;
     u32 nslots = from->nslots - first_slot;
     u32 nconsts = from->nconsts - first_const;
-    reserve_code(to, count, nextra, nslots, nconsts);
+    u32 nlines = from->nlines - first_line;
+    reserve_code(to, count, nextra, nslots, nconsts, nlines);
 
     if (count) {
         memcpy(to->kinds + to->count, from->kinds + first, count * sizeof *to->kinds);
@@ -6625,10 +6674,18 @@ append_code(IrCode *to, const IrCode *from, u32 first, u32 first_extra, u32 firs
             nconsts * sizeof *to->consts
         );
     }
+    if (nlines) {
+        memcpy(
+            to->lines + to->nlines,
+            from->lines + first_line,
+            nlines * sizeof *to->lines
+        );
+    }
     to->count += count;
     to->nextra += nextra;
     to->nslots += nslots;
     to->nconsts += nconsts;
+    to->nlines += nlines;
 }
 
 static u32
@@ -6648,6 +6705,8 @@ finish_ir(Checker *c, u32 decl, u32 nparams)
         .nslots = code->nslots - b->first_slot,
         .first_const = b->first_const,
         .nconsts = code->nconsts - b->first_const,
+        .first_line = b->first_line,
+        .nlines = code->nlines - b->first_line,
         .calls = b->calls,
         .copies = b->copies,
         .stack_args = b->stack_args,
@@ -6659,7 +6718,8 @@ finish_ir(Checker *c, u32 decl, u32 nparams)
         fn.first_extra = deferred->nextra;
         fn.first_slot = deferred->nslots;
         fn.first_const = deferred->nconsts;
-        append_code(deferred, code, b->first, b->first_extra, b->first_slot, b->first_const);
+        fn.first_line = deferred->nlines;
+        append_code(deferred, code, b->first, b->first_extra, b->first_slot, b->first_const, b->first_line);
     } else if (ir->nfuncs > c->flushed) {
         IrCode *deferred = &c->deferred;
         for (u32 i = c->flushed; i < ir->nfuncs; i++) {
@@ -6667,9 +6727,11 @@ finish_ir(Checker *c, u32 decl, u32 nparams)
             ir->funcs[i].first_extra += code->nextra;
             ir->funcs[i].first_slot += code->nslots;
             ir->funcs[i].first_const += code->nconsts;
+            ir->funcs[i].first_line += code->nlines;
         }
-        append_code(code, deferred, 0, 0, 0, 0);
-        deferred->count = deferred->nextra = deferred->nslots = deferred->nconsts = 0;
+        append_code(code, deferred, 0, 0, 0, 0, 0);
+        deferred->count = deferred->nextra = deferred->nslots = 0;
+        deferred->nconsts = deferred->nlines = 0;
     }
 
     ir->funcs = grow(ir->funcs, &ir->funcs_cap, ir->nfuncs + 1, sizeof *ir->funcs);
@@ -6696,7 +6758,7 @@ check_body(Checker *c, u32 decl)
     Body outer = c->body;
     IrCode *code = c->nbodies == 0 ? &c->ir.code : &c->builders[c->nbodies];
     if (c->nbodies > 0) {
-        code->count = code->nextra = code->nslots = code->nconsts = 0;
+        code->count = code->nextra = code->nslots = code->nconsts = code->nlines = 0;
     }
     c->nbodies++;
     c->body = (Body){
@@ -6705,6 +6767,7 @@ check_body(Checker *c, u32 decl)
         .first_extra = code->nextra,
         .first_slot = code->nslots,
         .first_const = code->nconsts,
+        .first_line = code->nlines,
         .decl = decl,
         .owner = ++c->owners,
         .ret = (u32)c->types.arg1[fn],
@@ -6770,6 +6833,7 @@ check_body(Checker *c, u32 decl)
             );
         }
     }
+    mark_line(c, tokens[end - 1]);
     if (c->types.arg1[fn] == TYPE_ID_INFERRED) {
         d->types[decl] = intern_type(c, TYPE_FN, c->types.arg0[fn], c->body.ret);
         d->flags[decl] |= is_compound(c, c->body.ret) ? DECL_GENERAL_CALL : 0;
@@ -6989,7 +7053,7 @@ check_package(Checker *c, const ParsedFile *files, u32 nfiles)
     for (u32 f = 0; f < nfiles; f++) {
         nodes += files[f].count;
     }
-    reserve_code(&c->ir.code, nodes, nodes / 4, nodes / 4, nodes / 4);
+    reserve_code(&c->ir.code, nodes, nodes / 4, nodes / 4, nodes / 4, nodes / 8);
     for (u32 decl = 1; decl < d->count; decl++) {
         if (d->kinds[decl] == DECL_FN && d->phases[decl] == PHASE_RESOLVED) {
             check_body(c, decl);
@@ -7678,6 +7742,7 @@ check_free(Checker *c)
         free(code->extra);
         free(code->slots);
         free(code->consts);
+        free(code->lines);
     }
     free(c->builders);
     free(c->ir.funcs);

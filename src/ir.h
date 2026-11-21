@@ -122,6 +122,12 @@ typedef struct
 
 typedef struct
 {
+    u32 end;
+    u32 token;
+} IrLine;
+
+typedef struct
+{
     u8 *kinds;
     u32 *types;
     u32 *as;
@@ -137,6 +143,9 @@ typedef struct
     IrConst *consts;
     u32 nconsts;
     u32 consts_cap;
+    IrLine *lines;
+    u32 nlines;
+    u32 lines_cap;
 } IrCode;
 
 typedef struct
@@ -151,6 +160,8 @@ typedef struct
     u32 nslots;
     u32 first_const;
     u32 nconsts;
+    u32 first_line;
+    u32 nlines;
     u32 calls;
     u32 copies;
     u32 stack_args;

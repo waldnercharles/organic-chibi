@@ -76,6 +76,8 @@ static const char CODE[] =
     "}\n"
     "_ = g()\n";
 
+static const char ODD_NAME[] = "b \"q\\?\?=.chibi";
+
 static const char FIB[] =
     "fn fib(n: int) -> int {\n"
     "    a := 0\n"
@@ -258,16 +260,16 @@ TEST_CASE(builds_programs)
 
     char a[64], b[64], program[64];
     snprintf(a, sizeof a, "%s/a.chibi", dir);
-    snprintf(b, sizeof b, "%s/b.chibi", dir);
+    snprintf(b, sizeof b, "%s/%s", dir, ODD_NAME);
     snprintf(program, sizeof program, "%s/it's a program", dir);
-    bool ok = write_file(dir, "a.chibi", FIB_MAIN) && write_file(dir, "b.chibi", FIB);
+    bool ok = write_file(dir, "a.chibi", FIB_MAIN) && write_file(dir, ODD_NAME, FIB);
 
     ok = ok && drives_to((char *[]){ "chibi", "build", a, "-o", program, b, NULL }, 0, "", "");
     ok = ok && runs_to((char *[]){ program, "hello", "91", NULL }, "hello\n4660046610375530309\n", 3, 0);
     ok = ok && runs_to((char *[]){ program, "zero", "0", NULL }, "zero\n0\n", 3, 0);
     ok = ok && runs_to((char *[]){ program, "x", "92", NULL }, "x\ntrap: integer overflow\n", 0, SIGABRT);
 
-    static const char *const files[] = { "a.chibi", "b.chibi", "it's a program" };
+    static const char *const files[] = { "a.chibi", ODD_NAME, "it's a program" };
     remove_files(dir, files, sizeof files / sizeof files[0]);
     REQUIRE(ok);
     return true;
@@ -412,8 +414,19 @@ TEST_CASE(writes_c)
     bool ok = write_file(dir, "a.chibi", FIB_MAIN) && write_file(dir, "b.chibi", FIB);
 
     Drive d = drive((char *[]){ "chibi", "c", a, b, NULL });
-    ok = ok && d.status == 0 && d.err_len == 0 && strncmp(d.out, "#include <stdint.h>\n", 20) == 0 &&
-         strstr(d.out, "\nCHIBI_FN int64_t p_fib(void *ctx, int64_t s0)\n") && strstr(d.out, "\nchibi_trap(int kind)\n");
+    const char *runtime = strstr(d.out, "\nchibi_trap(int kind)\n");
+    const char *lines = strstr(d.out, "\n#line ");
+    char adapter[160];
+    snprintf(
+        adapter,
+        sizeof adapter,
+        "\n#line 21 \"%s\"\nint32_t chibi_p_adapter_main(int32_t s0, uint8_t * s1) { return ",
+        a
+    );
+    ok = ok && d.status == 0 && d.err_len == 0 &&
+         strncmp(d.out, "#include <stdint.h>\n", 20) == 0 &&
+         strstr(d.out, "\nCHIBI_FN int64_t p_fib(void *ctx, int64_t s0)\n") &&
+         runtime && lines && runtime < lines && strstr(d.out, adapter);
     ok = ok && drives_to((char *[]){ "chibi", "c", "-o", c, a, b, NULL }, 0, "", "");
 
     FILE *f = fopen(c, "r");

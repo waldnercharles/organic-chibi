@@ -345,6 +345,8 @@ typedef struct
     u32 first_extra;
     u32 first_slot;
     u32 first_const;
+    u32 first_line;
+    u32 marked;
     u32 decl;
     u32 owner;
     u32 ret;

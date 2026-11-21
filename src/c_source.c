@@ -10,6 +10,7 @@ enum
 {
     NONE = UINT32_MAX,
     BYTES_PER_LINE = 64,
+    BLANK_LINES = 8,
 };
 
 typedef struct
@@ -18,6 +19,14 @@ typedef struct
     bool sign;
     u32 bits;
 } Scalar;
+
+typedef struct
+{
+    u32 *at;
+    u32 count;
+    u32 cap;
+    u32 scanned;
+} LineStarts;
 
 typedef struct
 {
@@ -33,7 +42,10 @@ typedef struct
     u32 *last;
     u32 *arms;
     u8 *labels;
+    LineStarts *line_starts;
     u32 depth;
+    u32 line;
+    bool open;
 } Source;
 
 static const char *const operators[NIR_KINDS] = {
@@ -438,11 +450,31 @@ indent(Source *s)
 }
 
 static void
+start_statement(Source *s)
+{
+    if (s->open) {
+        putc(' ', s->out);
+    } else {
+        indent(s);
+    }
+}
+
+static void
+end_statement(Source *s)
+{
+    if (s->line) {
+        s->open = true;
+    } else {
+        putc('\n', s->out);
+    }
+}
+
+static void
 put_line(Source *s, const char *format, ...)
 {
     va_list ap;
     va_start(ap, format);
-    indent(s);
+    start_statement(s);
     for (const char *p = format; *p; p++) {
         if (*p != '%') {
             putc(*p, s->out);
@@ -486,7 +518,7 @@ put_line(Source *s, const char *format, ...)
             default: assert(false && "unknown format");
         }
     }
-    putc('\n', s->out);
+    end_statement(s);
     va_end(ap);
 }
 
@@ -551,6 +583,16 @@ put_struct(Source *s, u32 decl, u8 *done)
 }
 
 static void
+put_string_byte(FILE *out, u8 b)
+{
+    if (b >= 0x20 && b < 0x7F && b != '"' && b != '\\' && b != '?') {
+        putc(b, out);
+    } else {
+        fprintf(out, "\\%03o", b);
+    }
+}
+
+static void
 put_memory(Source *s, const char *qualifier, const char *what, const u8 *bytes, u32 n, u32 size)
 {
     FILE *out = s->out;
@@ -569,12 +611,7 @@ put_memory(Source *s, const char *qualifier, const char *what, const u8 *bytes, 
         if (i % BYTES_PER_LINE == 0) {
             fputs(i ? "\"\n    \"" : "\n    \"", out);
         }
-        u8 b = bytes[i];
-        if (b >= 0x20 && b < 0x7F && b != '"' && b != '\\' && b != '?') {
-            putc(b, out);
-        } else {
-            fprintf(out, "\\%03o", b);
-        }
+        put_string_byte(out, bytes[i]);
     }
     fputs(n ? "\";\n" : ";\n", out);
 }
@@ -638,21 +675,73 @@ put_symbol(Source *s, u32 decl)
     fprintf(s->out, " CHIBI_SYMBOL(\"%.*s\");\n", (int)n.len, n.text);
 }
 
+static u32
+line_at(Source *s, u32 file, u32 token)
+{
+    const char *src = s->c->files[file].src;
+    LineStarts *l = &s->line_starts[file];
+    u32 pos = s->c->files[file].tokens.starts[token];
+    if (pos >= l->scanned) {
+        u32 n = 0;
+        for (u32 p = l->scanned; p < pos; p++) {
+            n += src[p] == '\n';
+        }
+        if (l->count + n > l->cap) {
+            l->cap = (l->count + n) * 2;
+            l->at = realloc(l->at, l->cap * sizeof *l->at);
+        }
+        const char *q = src + l->scanned;
+        for (u32 k = 0; k < n; k++) {
+            q = (const char *)memchr(q, '\n', (size_t)(src + pos - q)) + 1;
+            l->at[l->count++] = (u32)(q - src);
+        }
+        l->scanned = pos;
+        return l->count + 1;
+    }
+
+    u32 lo = 0;
+    u32 hi = l->count;
+    while (lo < hi) {
+        u32 mid = lo + (hi - lo) / 2;
+        if (l->at[mid] <= pos) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo + 1;
+}
+
+static void
+put_position(Source *s, u32 decl)
+{
+    const Checker *c = s->c;
+    u32 file = c->decls.files[decl];
+    u32 token = c->files[file].nodes.tokens[c->decls.roots[decl]];
+    fprintf(s->out, "#line %u \"", line_at(s, file, token));
+    for (const char *p = c->files[file].path; *p; p++) {
+        put_string_byte(s->out, (u8)*p);
+    }
+    fputs("\"\n", s->out);
+}
+
 static void
 put_adapter(Source *s, u32 decl, bool exported)
 {
     const Checker *c = s->c;
     u32 type = c->decls.types[decl];
 
-    fputs(exported ? "\n" : "\nstatic ", s->out);
+    fputs("\n", s->out);
+    put_position(s, decl);
+    fputs(exported ? "" : "static ", s->out);
     put_c_signature(s, decl);
-    fputs((u32)c->types.arg1[type] == TYPE_ID_VOID ? "\n{\n    " : "\n{\n    return ", s->out);
+    fputs((u32)c->types.arg1[type] == TYPE_ID_VOID ? " { " : " { return ", s->out);
     put_name(s, decl);
     fputs("(chibi_context", s->out);
     for (u32 p = 0; p < c->lists[c->types.arg0[type]]; p++) {
         fprintf(s->out, ", s%u", p);
     }
-    fputs(");\n}\n", s->out);
+    fputs("); }\n", s->out);
 }
 
 static void
@@ -868,13 +957,14 @@ put_convert(Source *s, u32 i, u8 kind, u32 type, u32 a, u32 b)
 static void
 put_splat(Source *s, u32 i, u32 type, u32 a)
 {
-    indent(s);
+    start_statement(s);
     fprintf(s->out, "v%u = (%s){ ", i, value_name(s->c, type));
     for (u64 k = 0; k < s->c->types.arg1[type]; k++) {
         fputs(k ? ", " : "", s->out);
         put_operand(s, a);
     }
-    fputs(" };\n", s->out);
+    fputs(" };", s->out);
+    end_statement(s);
 }
 
 static void
@@ -903,7 +993,7 @@ put_call(Source *s, u32 i, u8 kind, u32 type, u32 decl, const u32 *list)
         o += c->types.kinds[t] == TYPE_SLICE ? 2 : 1;
     }
 
-    indent(s);
+    start_statement(s);
     if (result == TYPE_SLICE) {
         fputs("chibi_slice r = ", s->out);
     } else if (result == TYPE_STRUCT) {
@@ -947,7 +1037,8 @@ put_call(Source *s, u32 i, u8 kind, u32 type, u32 decl, const u32 *list)
         }
         put_operand(s, list[o]);
     }
-    fputs(");\n", s->out);
+    fputs(");", s->out);
+    end_statement(s);
 
     if (result == TYPE_SLICE) {
         put_line(s, "v%u = r.ptr;", i);
@@ -1178,11 +1269,34 @@ put_instruction(Source *s, u32 i)
 }
 
 static void
+go_to_line(Source *s, u32 line)
+{
+    if (line == s->line) {
+        return;
+    }
+    if (s->open) {
+        putc('\n', s->out);
+        s->open = false;
+        s->line++;
+    }
+
+    if (s->line && line - s->line <= BLANK_LINES) {
+        for (; s->line < line; s->line++) {
+            putc('\n', s->out);
+        }
+    } else {
+        fprintf(s->out, "#line %u\n", line);
+        s->line = line;
+    }
+}
+
+static void
 put_function(Source *s, const IrFunc *fn)
 {
     s->fn = fn;
     find_ends(s);
     fputs("\n", s->out);
+    put_position(s, fn->decl);
     put_signature(s, fn);
     fputs("\n{\n", s->out);
     s->depth = 1;
@@ -1201,14 +1315,23 @@ put_function(Source *s, const IrFunc *fn)
         }
     }
 
-    for (u32 i = 0; i < fn->count; i++) {
-        put_instruction(s, i);
-        if (s->labels[i] || s->code->kinds[fn->first + i] == IR_LOOP) {
-            put_line(s, "L%u:;", i);
+    u32 file = s->c->decls.files[fn->decl];
+    const IrLine *lines = s->code->lines + fn->first_line;
+    u32 i = 0;
+    for (u32 k = 0; k < fn->nlines; k++) {
+        go_to_line(s, line_at(s, file, lines[k].token));
+        for (; i < lines[k].end; i++) {
+            put_instruction(s, i);
+            if (s->labels[i] || s->code->kinds[fn->first + i] == IR_LOOP) {
+                put_line(s, "L%u:;", i);
+            }
         }
     }
+    assert(i == fn->count);
     put_line(s, "%T;", TRAP_UNREACHABLE);
-    fputs("}\n", s->out);
+    fputs(s->open ? "\n}\n" : "}\n", s->out);
+    s->line = 0;
+    s->open = false;
 }
 
 const char *
@@ -1228,6 +1351,7 @@ c_source_package(FILE *out, const Checker *c, const char *prefix)
     u32 *words = malloc(6 * (size_t)cap * sizeof *words);
     u8 *labels = malloc(cap);
     u8 *done = calloc(c->decls.count, 1);
+    LineStarts *line_starts = calloc(c->nfiles, sizeof *line_starts);
     Source s = { .out = out,
                  .c = c,
                  .prefix = prefix,
@@ -1238,7 +1362,8 @@ c_source_package(FILE *out, const Checker *c, const char *prefix)
                  .stack = words + 3 * cap,
                  .last = words + 4 * cap,
                  .arms = words + 5 * cap,
-                 .labels = labels };
+                 .labels = labels,
+                 .line_starts = line_starts };
 
     if (needs_vector_helpers(&ir->code)) {
         put_vector_helpers(out);
@@ -1280,6 +1405,10 @@ c_source_package(FILE *out, const Checker *c, const char *prefix)
         put_function(&s, &ir->funcs[f]);
     }
 
+    for (u32 f = 0; f < c->nfiles; f++) {
+        free(line_starts[f].at);
+    }
+    free(line_starts);
     free(done);
     free(labels);
     free(words);
