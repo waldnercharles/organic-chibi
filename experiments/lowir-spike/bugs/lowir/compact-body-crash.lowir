@@ -1,0 +1,101 @@
+target linux 1
+declare function @chibi_trap(%arg0 : i32) -> void [unwind=no, return=noreturn, linkage=c, binding=strong, cold=yes]
+function @p_h0(%__param0 : ptr, %__param1 : u32, %__param2 : ptr, %__param3 : i64) -> obj<16x8> [result_classes=integer_integer, linkage=c, binding=strong] {
+  slot $3 : i64
+  slot $6 : obj<16x8>
+  slot $7 : i64
+  slot $8 : i64
+  block ^25:
+    store i64 0, $3
+    store i64 0, $7
+    store i64 0, $8
+    %z6 = addr $6
+    store i64 0, %z6
+    %z6b = index i8 %z6, 8
+    store i64 0, %z6b
+    %t47 = convert zext i64 u32 %__param1
+    store i64 %t47, $7
+    jump ^26
+  block ^26:
+    %t48 = load i64 $7
+    store i64 %t48, $8
+    jump ^1
+  block ^1:
+    %t63 = load i64 $8
+    store i64 %t63, $3
+    %t64 = load i64 $3
+    %t65 = binary and i64 %t64, 255
+    %t66 = convert trunc u8 i64 %t65
+    %t67 = binary umod u8 %t66, 3
+    %t68 = convert zext i64 u8 %t67
+    jump ^38
+  block ^38:
+    %t75 = binary sub i64 %__param3, %t68
+    %t76 = cmp lt i64 0, 0
+    %t77 = cmp gt i64 0, 2
+    %t78 = cmp gt i64 2, %t75
+    %t79 = binary or i64 %t76, %t77
+    %t80 = binary or i64 %t79, %t78
+    branch unlikely %t80, ^6, ^34
+  block ^34:
+    %t83 = addr $6
+    %t85 = load obj<16x8> %t83
+    return obj<16x8> %t85
+  block ^6:
+    call void @chibi_trap(6)
+    unreachable
+}
+function @p_h2(%__param0 : ptr, %__param1 : u16) -> f32 [linkage=c, binding=strong] {
+  slot $0 : i64
+  slot $1 : obj<16x4>
+  slot $16 : u32
+  block ^0:
+    store i64 0, $0
+    store u32 0, $16
+    jump ^1
+  block ^1:
+    %t1 = load i64 $0
+    %t2 = cmp lt i64 %t1, 3
+    branch %t2, ^2, ^38
+  block ^2:
+    %t3 = load i64 $0
+    jump ^5
+  block ^5:
+    %t5 = binary add nowrap i64 %t3, 1
+    store i64 %t5, $0
+    %t6 = load i64 $0
+    %t7 = binary and i64 %t6, 4294967295
+    %t8 = convert trunc u32 i64 %t7
+    switch %t8, ^8, 2:^6, 3:^6
+  block ^6:
+    %t9 = convert zext i32 u16 %__param1
+    switch %t9, ^13, -3:^14, 3:^12
+  block ^12:
+    %t16 = binary and u16 %__param1, 32767
+    %t17 = copy i16 %t16
+    %t18 = binary and i16 %t17, 32767
+    %t19 = convert sext u32 i16 %t18
+    store u32 %t19, $16
+    jump ^14
+  block ^13:
+    %t20 = load i64 $0
+    %t21 = binary and i64 %t20, 4294967295
+    %t22 = convert trunc u32 i64 %t21
+    store u32 %t22, $16
+    jump ^14
+  block ^14:
+    %t23 = load u32 $16
+    %t33 = addr $1
+    %t34 = call obj<16x8> @p_h0(%__param0, %t23, %t33, 4)
+    jump ^25
+  block ^25:
+    jump ^1
+  block ^8:
+    %t100 = cmp ult u16 3, %__param1
+    branch unlikely %t100, ^4, ^1
+  block ^38:
+    jump ^38
+  block ^4:
+    call void @chibi_trap(1)
+    unreachable
+}

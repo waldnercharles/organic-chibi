@@ -1,0 +1,27 @@
+function @f(%x : i64) -> i64 [linkage=c, binding=strong] {
+  slot $buffer : obj<2x2>
+  slot $i : i64
+
+  block ^entry:
+    store i64 0, $i
+    jump ^header
+
+  block ^header:
+    %i = load i64 $i
+    %more = cmp lt i64 %i, 2
+    branch %more, ^body, ^exit
+
+  block ^body:
+    %p = addr $buffer
+    %half = convert trunc u16 i64 %x
+    store u16 %half, %p
+    %i1 = binary add i64 %i, 1
+    store i64 %i1, $i
+    jump ^header
+
+  block ^exit:
+    %q = addr $buffer
+    %v = load u16 %q
+    %v64 = convert zext i64 u16 %v
+    return i64 %v64
+}

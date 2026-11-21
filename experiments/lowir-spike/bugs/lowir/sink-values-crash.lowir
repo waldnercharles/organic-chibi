@@ -1,0 +1,107 @@
+target linux 1
+declare function @chibi_trap(%arg0 : i32) -> void [unwind=no, return=noreturn, linkage=c, binding=strong, cold=yes]
+function @p_h5(%__param0 : ptr, %__param1 : f32) -> i64 [linkage=c, binding=strong] {
+  slot $4 : i64
+  block ^44:
+    store i64 0, $4
+    %t248 = convert fpext f64 f32 %__param1
+    jump ^45
+  block ^45:
+    %t252 = convert fptoui u32 f64 %t248
+    %t253 = binary umod u32 %t252, 2
+    %t254 = load i64 $4
+    jump ^46
+  block ^46:
+    %t258 = convert trunc u32 i64 %t254
+    %t259 = binary umod u32 %t258, 3
+    jump ^47
+  block ^47:
+    %t261 = binary add nowrap u32 %t259, 1
+    %t263 = convert zext i64 u32 %t253
+    %t264 = convert zext i64 u32 %t261
+    jump ^48
+  block ^48:
+    %t271 = binary sub i64 %t264, %t263
+    return i64 %t271
+}
+function @p_e0(%__param0 : ptr, %__param1 : i64, %__param2 : i64, %__param3 : i64, %__param4 : f64) -> i64 [linkage=c, binding=strong] {
+  slot $1 : u8
+  slot $2 : i32
+  slot $3 : i64
+  slot $6 : i32
+  slot $7 : i64
+  slot $11 : i64
+  slot $13 : i1
+  block ^0:
+    store u8 0, $1
+    store i32 0, $2
+    store i64 0, $3
+    store i32 0, $6
+    store i64 0, $7
+    store i64 0, $11
+    %t2 = binary and i64 %__param3, 255
+    %t3 = convert trunc u8 i64 %t2
+    store i8 %t3, $1
+    %t4 = load u8 $1
+    %t5 = convert zext i32 u8 %t4
+    store i32 %t5, $2
+    jump ^1
+  block ^1:
+    %t6 = load i64 $3
+    %t7 = cmp lt i64 %t6, 2
+    branch %t7, ^2, ^9
+  block ^2:
+    %t8 = load i64 $3
+    jump ^5
+  block ^5:
+    %t10 = binary add nowrap i64 %t8, 1
+    store i64 %t10, $3
+    %t12 = load i32 $2
+    %t13 = cmp eq i32 %t12, 0
+    branch unlikely %t13, ^6, ^1
+  block ^9:
+    %t25 = load i32 $2
+    store i32 %t25, $6
+    %t26 = load i32 $6
+    switch %t26, ^14, -11:^15, 6:^28
+  block ^15:
+    jump ^39
+  block ^28:
+    %t43 = load i64 $11
+    %t44 = cmp lt i64 %t43, 2
+    branch %t44, ^29, ^39
+  block ^29:
+    %t45 = load i64 $11
+    jump ^31
+  block ^31:
+    %t47 = binary add nowrap i64 %t45, 1
+    store i64 %t47, $11
+    %t48 = load i32 $6
+    %t49 = unary bitnot i32 %t48
+    store i32 %t49, $6
+    jump ^28
+  block ^14:
+    %t60 = binary and i64 %__param1, 65535
+    %t61 = convert trunc u16 i64 %t60
+    %t62 = cmp ult u16 56, %t61
+    %t63 = convert trunc i1 i64 %t62
+    store i1 %t63, $13
+    %t64 = load i1 $13
+    %t65 = cmp eq i1 %t64, 0
+    switch %t65, ^36, 1:^39
+  block ^39:
+    %t74 = load i32 $6
+    %t75 = binary and i32 %t74, 127
+    %t76 = convert trunc i8 i32 %t75
+    %t77 = binary or i8 %t76, 0
+    %t78 = convert sitofp f32 i8 %t77
+    %t79 = call i64 @p_h5(%__param0, %t78)
+    jump ^40
+  block ^6:
+    call void @chibi_trap(2)
+    unreachable
+  block ^40:
+    unreachable
+  block ^36:
+    unreachable
+}

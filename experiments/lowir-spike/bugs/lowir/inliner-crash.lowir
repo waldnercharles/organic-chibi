@@ -1,0 +1,58 @@
+declare function @trap(%kind : i32) -> void [unwind=no, return=noreturn, linkage=c, cold=yes]
+
+function @h(%x : i64) -> i64 [linkage=c, binding=strong] {
+  slot $n : i64
+
+  block ^entry:
+    store i64 0, $n
+    %small = cmp ult i64 %x, 31909797
+    branch %small, ^switch1, ^preheader
+
+  block ^switch1:
+    %low = binary and i64 %x, 255
+    %byte = convert trunc u8 i64 %low
+    %wide = convert zext i32 u8 %byte
+    switch %wide, ^default1, -44:^switch2
+
+  block ^switch2:
+    switch %wide, ^default2, -61:^arm
+
+  block ^arm:
+    jump ^arm_exit
+
+  block ^arm_exit:
+    jump ^preheader
+
+  block ^preheader:
+    jump ^header
+
+  block ^header:
+    jump ^body
+
+  block ^body:
+    %i = load i64 $n
+    %overflows = cmp gt i64 %i, 9223372036854775806
+    branch unlikely %overflows, ^overflow, ^next
+
+  block ^next:
+    %j = binary add nowrap i64 %i, 1
+    store i64 %j, $n
+    jump ^header
+
+  block ^overflow:
+    call void @trap(1)
+    unreachable
+
+  block ^default1:
+    unreachable
+
+  block ^default2:
+    unreachable
+}
+
+function @e(%x : i64) -> i64 [linkage=c, binding=strong] {
+  block ^entry:
+    %masked = binary and i64 %x, 32767
+    %r = call i64 @h(%masked)
+    return i64 %r
+}

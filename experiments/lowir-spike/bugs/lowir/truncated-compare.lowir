@@ -1,0 +1,17 @@
+function @f(%x : i64) -> i64 [no_inline=yes] {
+  block ^0:
+    %m = binary and i64 %x, 4095
+    %t = convert trunc u8 i64 %m
+    %z = cmp eq u8 %t, 0
+    return i64 %z
+}
+
+function @main(%argc : i32, %argv : ptr) -> i32 [role=entry] {
+  block ^0:
+    %n = convert sext i64 i32 %argc
+    %x = binary shl i64 %n, 8
+    %r = call i64 @f(%x)
+    %bad = cmp ne i64 %r, 1
+    %code = convert zext i32 i1 %bad
+    return i32 %code
+}
