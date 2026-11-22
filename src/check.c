@@ -928,7 +928,7 @@ emit(Checker *c, u8 kind, u32 type, u32 a, u32 b)
 {
     IrCode *code = c->body.code;
     if (code->count == code->cap) {
-        code->cap = code->cap ? code->cap * 2 : 256;
+        code->cap *= 2;
         code->kinds = resize(code->kinds, code->cap, sizeof *code->kinds);
         code->types = resize(code->types, code->cap, sizeof *code->types);
         code->as = resize(code->as, code->cap, sizeof *code->as);
@@ -974,7 +974,7 @@ mark_line(Checker *c, u32 token)
     }
 
     if (code->nlines == code->lines_cap) {
-        code->lines_cap = code->lines_cap ? code->lines_cap * 2 : 64;
+        code->lines_cap *= 2;
         code->lines = resize(code->lines, code->lines_cap, sizeof *code->lines);
     }
     code->lines[code->nlines++] = (IrLine){ end, token };
@@ -986,7 +986,7 @@ ir_const(Checker *c, u32 type, u64 bits)
 {
     IrCode *code = c->body.code;
     if (code->nconsts == code->consts_cap) {
-        code->consts_cap = code->consts_cap ? code->consts_cap * 2 : 64;
+        code->consts_cap *= 2;
         code->consts = resize(code->consts, code->consts_cap, sizeof *code->consts);
     }
     code->consts[code->nconsts] = (IrConst){ bits, type };
@@ -1037,7 +1037,7 @@ add_slot(Checker *c, u32 name, u32 type, u32 node)
 {
     IrCode *code = c->body.code;
     if (code->nslots == code->slots_cap) {
-        code->slots_cap = code->slots_cap ? code->slots_cap * 2 : 16;
+        code->slots_cap *= 2;
         code->slots = resize(code->slots, code->slots_cap, sizeof *code->slots);
     }
     code->slots[code->nslots] = (IrSlot){ name, type, node, 0 };
@@ -8282,6 +8282,26 @@ finish_ir(Checker *c, u32 decl, u32 nparams)
 }
 
 static void
+code_init(IrCode *code)
+{
+    *code = (IrCode){
+        .kinds = malloc(256 * sizeof *code->kinds),
+        .types = malloc(256 * sizeof *code->types),
+        .as = malloc(256 * sizeof *code->as),
+        .bs = malloc(256 * sizeof *code->bs),
+        .cap = 256,
+        .extra = malloc(64 * sizeof *code->extra),
+        .extra_cap = 64,
+        .slots = malloc(16 * sizeof *code->slots),
+        .slots_cap = 16,
+        .consts = malloc(64 * sizeof *code->consts),
+        .consts_cap = 64,
+        .lines = malloc(64 * sizeof *code->lines),
+        .lines_cap = 64,
+    };
+}
+
+static void
 check_body(Checker *c, u32 decl)
 {
     Decls *d = &c->decls;
@@ -8296,7 +8316,10 @@ check_body(Checker *c, u32 decl)
 
     Body outer = c->body;
     IrCode *code = c->nbodies == 0 ? &c->ir.code : &c->builders[c->nbodies];
-    if (c->nbodies > 0) {
+    if (c->nbodies > c->nbuilders) {
+        code_init(code);
+        c->nbuilders = c->nbodies;
+    } else if (c->nbodies > 0) {
         code->count = code->nextra = code->nslots = code->nconsts = code->nlines = 0;
     }
     c->nbodies++;
@@ -8506,21 +8529,18 @@ check_init(Checker *c, const Names *names)
     c->bound = calloc(names->count, sizeof *c->bound);
     c->bindings = calloc(names->count, sizeof *c->bindings);
 
-    Types *t = &c->types;
-    reserve_types(c, 256);
-    for (u32 id = 0; id < NFIXED_TYPES; id++) {
-        add_type(c, fixed_kinds[id], fixed_arg0[id], fixed_arg1[id]);
-    }
-    t->map_mask = 63;
-    t->map = calloc(t->map_mask + 1, sizeof *t->map);
-
-    exacts_init(&c->exacts);
+    c->types.cap = 256;
+    c->types.kinds = malloc(c->types.cap * sizeof *c->types.kinds);
+    c->types.arg0 = malloc(c->types.cap * sizeof *c->types.arg0);
+    c->types.arg1 = malloc(c->types.cap * sizeof *c->types.arg1);
+    c->types.pointers = malloc(c->types.cap * sizeof *c->types.pointers);
+    c->types.optionals = malloc(c->types.cap * sizeof *c->types.optionals);
+    c->types.slices = malloc(c->types.cap * sizeof *c->types.slices);
+    c->types.map_mask = 63;
+    c->types.map = calloc(c->types.map_mask + 1, sizeof *c->types.map);
 
     c->lists_cap = 64;
     c->lists = malloc(c->lists_cap * sizeof *c->lists);
-    c->lists[0] = 0;
-    c->nlists = 1;
-
     c->members_cap = 64;
     c->members = malloc(c->members_cap * sizeof *c->members);
     c->scratch_cap = 64;
@@ -8531,7 +8551,18 @@ check_init(Checker *c, const Names *names)
     c->claims = malloc(CHECK_MAX_DEPTH * sizeof *c->claims);
     c->cases_cap = 64;
     c->cases = malloc(c->cases_cap * sizeof *c->cases);
-    c->builders = calloc(CHECK_MAX_DEPTH, sizeof *c->builders);
+    c->builders = malloc(CHECK_MAX_DEPTH * sizeof *c->builders);
+    c->ir.funcs_cap = 64;
+    c->ir.funcs = malloc(c->ir.funcs_cap * sizeof *c->ir.funcs);
+    code_init(&c->ir.code);
+    code_init(&c->deferred);
+    exacts_init(&c->exacts);
+
+    c->lists[0] = 0;
+    c->nlists = 1;
+    for (u32 id = 0; id < NFIXED_TYPES; id++) {
+        add_type(c, fixed_kinds[id], fixed_arg0[id], fixed_arg1[id]);
+    }
 }
 
 static void
@@ -9338,6 +9369,19 @@ check_dump_ir(FILE *out, const Checker *c)
     }
 }
 
+static void
+code_free(IrCode *code)
+{
+    free(code->kinds);
+    free(code->types);
+    free(code->as);
+    free(code->bs);
+    free(code->extra);
+    free(code->slots);
+    free(code->consts);
+    free(code->lines);
+}
+
 void
 check_free(Checker *c)
 {
@@ -9366,20 +9410,12 @@ check_free(Checker *c)
     free(t->slices);
     free(t->map);
 
-    for (u32 i = 0; i <= CHECK_MAX_DEPTH + 1; i++) {
-        IrCode *code = i < CHECK_MAX_DEPTH  ? &c->builders[i]
-                     : i == CHECK_MAX_DEPTH ? &c->ir.code
-                                            : &c->deferred;
-        free(code->kinds);
-        free(code->types);
-        free(code->as);
-        free(code->bs);
-        free(code->extra);
-        free(code->slots);
-        free(code->consts);
-        free(code->lines);
+    for (u32 i = 1; i <= c->nbuilders; i++) {
+        code_free(&c->builders[i]);
     }
     free(c->builders);
+    code_free(&c->ir.code);
+    code_free(&c->deferred);
     free(c->ir.funcs);
     free(c->ir.data);
     free(c->ir.data_relocs.offsets);

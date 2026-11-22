@@ -311,7 +311,9 @@ static int
 compile_program(FILE *out, FILE *err, int argc, char **argv, bool executable)
 {
     Options o;
-    Program p = { 0 };
+    Program p;
+    p.arena = (Arena){ 0 };
+    p.checked = false;
     bool ok = parse_options(err, &o, argc, argv, executable) &&
               check_program(err, &p, o.files, o.nfiles);
 

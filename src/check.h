@@ -471,6 +471,7 @@ typedef struct
     u32 nclaims;
     Ir ir;
     IrCode *builders;
+    u32 nbuilders;
     IrCode deferred;
     u32 flushed;
     u32 nbodies;
