@@ -4329,7 +4329,8 @@ arm64_compile(Native *n, const Checker *c, Convention convention)
     n->size = size;
     n->entries = memory;
     n->nentries = c->decls.count;
-    n->code = (u32 *)(n->memory + code);
+    u32 *start = (u32 *)(n->memory + code);
+    n->code = start;
 
     if (ir->globals_size) {
         size_t globals_size = ((size_t)ir->globals_size + page - 1) & ~(page - 1);
@@ -4358,9 +4359,12 @@ arm64_compile(Native *n, const Checker *c, Convention convention)
     }
     Emit e = { .c = c,
                .ir = &ir->code,
+               .fn = &ir->funcs[0],
                .info = info,
                .data = n->memory + table,
                .globals = n->globals,
+               .code = start,
+               .at = start,
                .regs = malloc(16 * sizeof *e.regs),
                .vinfo = malloc(16 * sizeof *e.vinfo),
                .spills = malloc(16 * sizeof *e.spills),
