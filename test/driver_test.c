@@ -1,5 +1,6 @@
 #define _DEFAULT_SOURCE
 
+#include "../src/check.h"
 #include "../src/common.h"
 #include "../src/driver.h"
 #include "../vendor/pico_unit/pico_unit.h"
@@ -64,6 +65,19 @@ static const char TWICE_C[] =
     "chibi_test_twice(int64_t x)\n"
     "{\n"
     "    return 2 * x;\n"
+    "}\n";
+
+static const char TARGET_MAIN[] =
+    "extern fn tg_gone(x: int) -> int\n"
+    "\n"
+    "export fn main() -> i32 {\n"
+    "    x := 0\n"
+    "    if target_os == .windows {\n"
+    "        while x < 10 {\n"
+    "            x += tg_gone(x)\n"
+    "        }\n"
+    "    }\n"
+    "    return i32(x) + 2 + i32(target_os) * 10 + i32(target_arch)\n"
     "}\n";
 
 static const char ENTRY[] =
@@ -360,6 +374,27 @@ TEST_CASE(names_programs)
     return true;
 }
 
+TEST_CASE(builds_for_target)
+{
+    char dir[] = "/tmp/chibi-d-XXXXXX";
+    REQUIRE(mkdtemp(dir));
+    setenv("CC", CHIBI_TEST_CC, 1);
+
+    char source[64], program[64];
+    snprintf(source, sizeof source, "%s/t.chibi", dir);
+    snprintf(program, sizeof program, "%s/t", dir);
+    bool ok = write_file(dir, "t.chibi", TARGET_MAIN);
+
+    ok = ok && drives_to((char *[]){ "chibi", "build", "-o", program, source, "--", "-O0", NULL }, 0, "", "");
+    int code = 2 + 10 * (TARGET_OS_HOST - NAME_LINUX) + (TARGET_ARCH_HOST - NAME_ARM64);
+    ok = ok && runs_to((char *[]){ program, NULL }, "", code, 0);
+
+    static const char *const files[] = { "t.chibi", "t" };
+    remove_files(dir, files, sizeof files / sizeof files[0]);
+    REQUIRE(ok);
+    return true;
+}
+
 TEST_CASE(links_c)
 {
     char dir[] = "/tmp/chibi-d-XXXXXX";
@@ -524,6 +559,7 @@ TEST_SUITE(driver_tests)
     RUN_TEST_CASE(builds_programs);
     RUN_TEST_CASE(builds_release_fast);
     RUN_TEST_CASE(names_programs);
+    RUN_TEST_CASE(builds_for_target);
     RUN_TEST_CASE(links_c);
     RUN_TEST_CASE(reports_compiler_failure);
     RUN_TEST_CASE(reports_errors);

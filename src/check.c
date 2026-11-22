@@ -7448,9 +7448,53 @@ global_place(Checker *c, u32 file, u32 node, u32 decl)
     return r;
 }
 
+static const u32 target_names[NTARGETS + 1] = { NAME_LINUX, NAME_ARM64, NAME_X86_64 + 1 };
+
+static u32
+target_type(Checker *c, u32 k)
+{
+    if (c->target_types[k]) {
+        return c->target_types[k];
+    }
+
+    Decls *d = &c->decls;
+    u32 decl = d->count++;
+    u32 type = add_type(c, TYPE_ENUM, decl, TYPE_ID_U8);
+    d->names[decl] = NAME_TARGET_OS_TYPE + k;
+    d->kinds[decl] = DECL_ENUM;
+    d->phases[decl] = PHASE_CHECKED;
+    d->types[decl] = type;
+
+    u32 first = c->nmembers;
+    u32 n = target_names[k + 1] - target_names[k];
+    reserve_members(c, n);
+    for (u32 i = 0; i < n; i++) {
+        c->members[c->nmembers++] = (Member){
+            .name = target_names[k] + i,
+            .value = exact_int(&c->exacts, i),
+        };
+    }
+    d->members[decl] = first;
+    d->member_counts[decl] = n;
+    index_members(c, decl, first);
+    enum_runs(c, decl);
+
+    c->target_types[k] = type;
+    return type;
+}
+
 static NOINLINE Operand
 resolve_builtin(Checker *c, u32 file, u32 node, u32 token, u32 id)
 {
+    u32 k = id - NAME_TARGET_OS;
+    if (k < NTARGETS) {
+        c->target_read[k] = true;
+        u32 value = c->target[k] - target_names[k];
+        return (Operand){ target_type(c, k), exact_int(&c->exacts, value) };
+    }
+    if (k - NTARGETS < NTARGETS) {
+        return (Operand){ TYPE_ID_TYPE, target_type(c, k - NTARGETS) };
+    }
     if (id - NAME_TRAILING_ZEROS > NAME_ASSERT - NAME_TRAILING_ZEROS) {
         report(c, file, token, DIAG_UNKNOWN_NAME, 0, 0);
         return poison;
@@ -8622,7 +8666,7 @@ compare_diagnostics(const void *a, const void *b)
 void
 check_init(Checker *c, const Names *names)
 {
-    *c = (Checker){ .names = names };
+    *c = (Checker){ .names = names, .target = { TARGET_OS_HOST, TARGET_ARCH_HOST } };
     c->package_names = calloc(names->count, sizeof *c->package_names);
     c->bound = calloc(names->count, sizeof *c->bound);
     c->bindings = calloc(names->count, sizeof *c->bindings);
@@ -8684,7 +8728,7 @@ check_package(Checker *c, const ParsedFile *files, u32 nfiles)
     c->files = files;
     c->nfiles = nfiles;
 
-    u32 cap = 1;
+    u32 cap = 1 + NTARGETS;
     for (u32 f = 0; f < nfiles; f++) {
         cap += files[f].top_count;
     }

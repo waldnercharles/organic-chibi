@@ -4977,6 +4977,33 @@ TEST_CASE(asserts)
     return true;
 }
 
+static const char *const TARGET_FUNCTIONS[] = { "tg_arch", "tg_os", "tg_value" };
+
+static const CallCase TARGET_CASES[] = {
+    { "tg_arch", 5, 3, 8, 0 },
+    { "tg_os", 2, 10, TARGET_OS_HOST == NAME_MACOS ? 20 : 16, 0 },
+    { "tg_value", 2, 1, TARGET_OS_HOST == NAME_MACOS ? 221 : 21, 0 },
+};
+
+TEST_CASE(targets)
+{
+    catch_traps();
+    Program p;
+    REQUIRE(build(&p, TARGETS));
+    for (size_t k = 0; k < sizeof TARGET_CASES / sizeof TARGET_CASES[0]; k++) {
+        CallCase t = TARGET_CASES[k];
+        int64_t got = 0;
+        int trap = call_i2((I2 *)fn(&p, t.name), t.a, t.b, &got);
+        if (trap != t.trap || (!trap && got != t.want)) {
+            fprintf(stderr, "arm64 test: %s(%lld, %lld) gave %lld (trap %d)\n", t.name, (long long)t.a, (long long)t.b, (long long)got, trap);
+            REQUIRE(false);
+        }
+    }
+    REQUIRE(agree_on_grid(&p, TARGET_FUNCTIONS, sizeof TARGET_FUNCTIONS / sizeof TARGET_FUNCTIONS[0]));
+    release_program(&p);
+    return true;
+}
+
 static const char *const RELEASE_FAST_FUNCTIONS[] = {
     "rf_wrap", "rf_shift", "rf_convert", "rf_enum", "rf_div", "rf_float", "rf_assert",
 };
@@ -5598,6 +5625,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(rest_args);
     RUN_TEST_CASE(inline_marks);
     RUN_TEST_CASE(asserts);
+    RUN_TEST_CASE(targets);
     RUN_TEST_CASE(release_fast);
     RUN_TEST_CASE(vectors);
     RUN_TEST_CASE(narrow_parameters);

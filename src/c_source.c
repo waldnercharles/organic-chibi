@@ -45,6 +45,7 @@ typedef struct
     LineStarts *line_starts;
     u32 depth;
     u32 line;
+    u32 skip;
     bool open;
 } Source;
 
@@ -826,6 +827,7 @@ find_ends(Source *s)
         } else if (kind == IR_ELSE || kind == IR_CASE) {
             s->links[s->last[depth - 1]] = i;
             s->last[depth - 1] = i;
+            s->opens[i] = s->stack[depth - 1];
         } else if (kind == IR_END) {
             u32 open = s->stack[--depth];
             s->opens[i] = open;
@@ -1178,6 +1180,12 @@ put_switch(Source *s, u32 i, u32 type, u32 a, const u32 *x)
     put_line(s, "}");
 }
 
+static bool
+is_true(const Source *s, u32 x)
+{
+    return s->code->consts[s->fn->first_const + (x & ~IR_CONST)].bits != 0;
+}
+
 static void
 put_instruction(Source *s, u32 i)
 {
@@ -1322,10 +1330,31 @@ put_instruction(Source *s, u32 i)
             break;
         case IR_RET: put_return(s, type, a, b); break;
         case IR_IF:
+            if (a & IR_CONST) {
+                assert(type == TYPE_ID_NONE);
+                bool taken = is_true(s, a);
+                if (!taken && s->links[i] == NONE) {
+                    s->skip = s->ends[i] + 1;
+                    break;
+                }
+                if (!taken) {
+                    s->skip = s->links[i];
+                }
+                put_line(s, "{");
+                s->depth++;
+                break;
+            }
             put_line(s, "if (%o) {", a);
             s->depth++;
             break;
-        case IR_ELSE:
+        case IR_ELSE: {
+            u32 cond = s->code->as[s->fn->first + s->opens[i]];
+            if (cond & IR_CONST) {
+                if (is_true(s, cond)) {
+                    s->skip = s->ends[i];
+                }
+                break;
+            }
             if (type != TYPE_ID_NONE) {
                 put_line(s, "v%u = %o;", s->ends[i], a);
             }
@@ -1333,11 +1362,13 @@ put_instruction(Source *s, u32 i)
             put_line(s, "} else {");
             s->depth++;
             break;
+        }
         case IR_END:
             if (s->code->kinds[s->fn->first + s->opens[i]] == IR_IF) {
                 if (type != TYPE_ID_NONE) {
                     put_line(s, "v%u = %o;", i, a);
                 }
+                assert(s->depth > 1);
                 s->depth--;
                 put_line(s, "}");
             }
@@ -1387,6 +1418,7 @@ static void
 put_function(Source *s, const IrFunc *fn)
 {
     s->fn = fn;
+    s->skip = 0;
     find_ends(s);
     fputs("\n", s->out);
     put_position(s, fn->decl);
@@ -1412,8 +1444,15 @@ put_function(Source *s, const IrFunc *fn)
     const IrLine *lines = s->code->lines + fn->first_line;
     u32 i = 0;
     for (u32 k = 0; k < fn->nlines; k++) {
+        if (lines[k].end <= s->skip) {
+            i = lines[k].end;
+            continue;
+        }
         go_to_line(s, line_at(s, file, lines[k].token));
         for (; i < lines[k].end; i++) {
+            if (i < s->skip) {
+                continue;
+            }
             put_instruction(s, i);
             if (s->labels[i] || s->code->kinds[fn->first + i] == IR_LOOP) {
                 put_line(s, "L%u:;", i);
@@ -1425,6 +1464,32 @@ put_function(Source *s, const IrFunc *fn)
     fputs(s->open ? "\n}\n" : "}\n", s->out);
     s->line = 0;
     s->open = false;
+}
+
+static void
+put_target_guards(FILE *out, const Checker *c)
+{
+    static const char *const macros[] = { "__linux__",
+                                          "__APPLE__",
+                                          "_WIN32",
+                                          "__aarch64__",
+                                          "__x86_64__" };
+    for (u32 k = 0; k < NTARGETS; k++) {
+        if (c->target_read[k]) {
+            Name name = names_get(c->names, NAME_TARGET_OS + k);
+            Name value = names_get(c->names, c->target[k]);
+            fprintf(out, "\n#ifndef %s\n", macros[c->target[k] - NAME_LINUX]);
+            fprintf(
+                out,
+                "#error \"chibi wrote this C for %.*s %.*s\"\n",
+                (int)name.len,
+                name.text,
+                (int)value.len,
+                value.text
+            );
+            fputs("#endif\n", out);
+        }
+    }
 }
 
 const char *
@@ -1458,6 +1523,7 @@ c_source_package(FILE *out, const Checker *c, const char *prefix)
                  .labels = labels,
                  .line_starts = line_starts };
 
+    put_target_guards(out, c);
     if (needs_vector_helpers(&ir->code)) {
         put_vector_helpers(out);
     }

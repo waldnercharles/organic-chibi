@@ -135,6 +135,29 @@ enum
     PHASE_CHECKED,
 };
 
+enum
+{
+    TARGET_OS,
+    TARGET_ARCH,
+    NTARGETS,
+};
+
+enum
+{
+#if defined(__APPLE__)
+    TARGET_OS_HOST = NAME_MACOS,
+#elif defined(_WIN32)
+    TARGET_OS_HOST = NAME_WINDOWS,
+#else
+    TARGET_OS_HOST = NAME_LINUX,
+#endif
+#if defined(__aarch64__)
+    TARGET_ARCH_HOST = NAME_ARM64,
+#else
+    TARGET_ARCH_HOST = NAME_X86_64,
+#endif
+};
+
 // clang-format off
 #define CHIBI_DIAGNOSTICS(X)                                                                        \
     X(DIAG_UNKNOWN_NAME, "unknown name `%t`")                                                       \
@@ -436,6 +459,9 @@ typedef struct
     const ParsedFile *files;
     u32 nfiles;
     bool release_fast;
+    bool target_read[NTARGETS];
+    u32 target[NTARGETS];
+    u32 target_types[NTARGETS];
     Decls decls;
     Types types;
     u32 *package_names;

@@ -33,7 +33,7 @@ static const char *const UNSUPPORTED[][2] = {
 };
 
 static bool
-check_files(Package *p, const char *const *texts, const char *const *paths, u32 n)
+check_files(Package *p, const char *const *texts, const char *const *paths, u32 n, const u32 *target)
 {
     *p = (Package){ 0 };
     size_t total = 0;
@@ -63,6 +63,9 @@ check_files(Package *p, const char *const *texts, const char *const *paths, u32 
     }
 
     check_init(&p->c, &p->lx.names);
+    if (target) {
+        memcpy(p->c.target, target, sizeof p->c.target);
+    }
     check_package(&p->c, p->files, n);
     if (p->c.ndiags) {
         check_print_diagnostics(stderr, &p->c);
@@ -74,7 +77,7 @@ check_files(Package *p, const char *const *texts, const char *const *paths, u32 
 static bool
 check_source(Package *p, const char *text)
 {
-    return check_files(p, &text, (const char *const[]){ "a" }, 1);
+    return check_files(p, &text, (const char *const[]){ "a" }, 1, NULL);
 }
 
 static void
@@ -156,6 +159,120 @@ TEST_CASE(writes_inline_marks)
     return true;
 }
 
+static const u32 LINUX_X86_64[NTARGETS] = { NAME_LINUX, NAME_X86_64 };
+
+static const char OS_GUARD[] =
+    "\n#ifndef __linux__\n"
+    "#error \"chibi wrote this C for target_os linux\"\n"
+    "#endif\n";
+
+static const char ARCH_GUARD[] =
+    "\n#ifndef __x86_64__\n"
+    "#error \"chibi wrote this C for target_arch x86_64\"\n"
+    "#endif\n";
+
+static const char TARGET_TG_ARCH_C[] =
+    "CHIBI_FN int64_t t_tg_arch(void *ctx, int64_t s0, int64_t s1)\n"
+    "{\n"
+    "    int64_t v1;\n"
+    "    int64_t v2;\n"
+    "    int64_t v3;\n"
+    "    int64_t v6;\n"
+    "    int64_t v7;\n"
+    "    int64_t v8;\n"
+    "#line 4\n"
+    "\n"
+    "\n"
+    "\n"
+    "    v6 = s0; v7 = s1; if (__builtin_sub_overflow(v6, v7, &v8)) chibi_trap(1); return v8; chibi_trap(5);\n"
+    "}\n";
+
+static const char TARGET_TG_OS_C[] =
+    "CHIBI_FN int64_t t_tg_os(void *ctx, int64_t s0, int64_t s1)\n"
+    "{\n"
+    "    int64_t s2;\n"
+    "    int64_t v0;\n"
+    "    int64_t v4;\n"
+    "    int64_t v5;\n"
+    "    uint8_t v6;\n"
+    "    int64_t v8;\n"
+    "    int64_t v9;\n"
+    "    int64_t v10;\n"
+    "    int64_t v11;\n"
+    "    int64_t v18;\n"
+    "    int64_t v19;\n"
+    "    int64_t v20;\n"
+    "    int64_t v21;\n"
+    "    int64_t v24;\n"
+    "    int64_t v25;\n"
+    "    int64_t v26;\n"
+    "    int64_t v27;\n"
+    "    int64_t v31;\n"
+    "#line 11\n"
+    "    v0 = s0; s2 = v0;\n"
+    "    {\n"
+    "\n"
+    "\n"
+    "\n"
+    "        {\n"
+    "\n"
+    "\n"
+    "            v24 = s2; if (__builtin_mul_overflow(v24, 3, &v25)) chibi_trap(1); v26 = s1; if (__builtin_add_overflow(v25, v26, &v27)) chibi_trap(1); s2 = v27;\n"
+    "\n"
+    "        } } v31 = s2; return v31; chibi_trap(5);\n"
+    "}\n";
+
+static char *
+target_source(const char *text, const u32 *target)
+{
+    char *got = NULL;
+    size_t len = 0;
+    FILE *out = open_memstream(&got, &len);
+    assert(out);
+    Package p;
+    bool ok = check_files(&p, &text, (const char *const[]){ "a" }, 1, target) &&
+              c_source_package(out, &p.c, "t_") == NULL;
+    release(&p);
+    fclose(out);
+    if (!ok) {
+        free(got);
+        return NULL;
+    }
+    return got;
+}
+
+static u32
+count_text(const char *text, const char *part)
+{
+    u32 n = 0;
+    for (const char *at = strstr(text, part); at; at = strstr(at + 1, part)) {
+        n++;
+    }
+    return n;
+}
+
+TEST_CASE(writes_target_guards)
+{
+    char *all = target_source(TARGETS, LINUX_X86_64);
+    char *arch = target_source("fn f() -> bool {\n    return target_arch == .arm64\n}\n", LINUX_X86_64);
+    char *none = target_source("fn f() -> int {\n    return 1\n}\n", LINUX_X86_64);
+    REQUIRE(all && arch && none);
+
+    bool ok = count_text(all, OS_GUARD) == 1 && count_text(all, ARCH_GUARD) == 1 &&
+              count_text(all, "#error") == 2 && count_text(all, TARGET_TG_ARCH_C) == 1 &&
+              count_text(all, TARGET_TG_OS_C) == 1 && count_text(all, "c_tg_missing(") == 1;
+    ok = ok && count_text(arch, ARCH_GUARD) == 1 && count_text(arch, "#error") == 1;
+    ok = ok && count_text(none, "#error") == 0;
+    if (!ok) {
+        fprintf(stderr, "c_source test: target guards\n%s\n%s\n%s", all, arch, none);
+    }
+    free(all);
+    free(arch);
+    free(none);
+    REQUIRE(ok);
+    return true;
+}
+
 #ifdef CHIBI_TEST_CC
 
 #if defined(__APPLE__) && defined(__aarch64__)
@@ -178,7 +295,7 @@ TEST_CASE(writes_inline_marks)
 enum
 {
     MAX_JOBS = 8,
-    GRID_FUNCTIONS = 348,
+    GRID_FUNCTIONS = 351,
 };
 
 typedef struct
@@ -1595,7 +1712,7 @@ TEST_CASE(maps_lines)
         b.outs[0]
     );
     Package p;
-    bool ok = check_files(&p, LINE_TEXTS, LINE_PATHS, 2) &&
+    bool ok = check_files(&p, LINE_TEXTS, LINE_PATHS, 2, NULL) &&
               c_source_package(b.outs[0], &p.c, "l0_") == NULL;
     release(&p);
     ok = finish_build(&b, "") && ok;
@@ -1631,6 +1748,45 @@ TEST_CASE(maps_lines)
     return true;
 }
 
+TEST_CASE(refuses_other_targets)
+{
+    static const u32 windows[NTARGETS] = { NAME_WINDOWS, TARGET_ARCH_HOST };
+    char *text = target_source(TARGETS, windows);
+    REQUIRE(text);
+
+    char dir[] = "/tmp/chibi-c-XXXXXX";
+    REQUIRE(mkdtemp(dir));
+    char source[64], log[64], command[256];
+    snprintf(source, sizeof source, "%s/t.c", dir);
+    snprintf(log, sizeof log, "%s/t.log", dir);
+    snprintf(command, sizeof command, CHIBI_TEST_CC TARGET " -std=c11 -fsyntax-only '%s' 2> '%s'", source, log);
+
+    FILE *out = fopen(source, "w");
+    assert(out);
+    c_source_prelude(out);
+    fputs(text, out);
+    fclose(out);
+    free(text);
+    bool refused = system(command) != 0;
+
+    char said[4096] = "";
+    FILE *in = fopen(log, "r");
+    assert(in);
+    size_t n = fread(said, 1, sizeof said - 1, in);
+    said[n] = 0;
+    fclose(in);
+    unlink(source);
+    unlink(log);
+    rmdir(dir);
+
+    bool ok = refused && strstr(said, "chibi wrote this C for target_os windows");
+    if (!ok) {
+        fprintf(stderr, "c_source test: C written for windows gave\n%s", said);
+    }
+    REQUIRE(ok);
+    return true;
+}
+
 #endif
 
 TEST_SUITE(c_source_tests)
@@ -1638,10 +1794,12 @@ TEST_SUITE(c_source_tests)
     RUN_TEST_CASE(reports_unsupported);
     RUN_TEST_CASE(emits_doubling_structs);
     RUN_TEST_CASE(writes_inline_marks);
+    RUN_TEST_CASE(writes_target_guards);
 #ifdef CHIBI_TEST_CC
     RUN_TEST_CASE(agrees_with_reference);
     RUN_TEST_CASE(works_with_c);
     RUN_TEST_CASE(runs_vectors);
     RUN_TEST_CASE(maps_lines);
+    RUN_TEST_CASE(refuses_other_targets);
 #endif
 }

@@ -35,6 +35,7 @@ extern const char OPTIONAL_FNS[];
 extern const char REST_ARGS[];
 extern const char INLINE_MARKS[];
 extern const char ASSERTS[];
+extern const char TARGETS[];
 extern const char RELEASE_FAST_GRID[];
 
 extern const char *const BACKEND_PROGRAMS[];

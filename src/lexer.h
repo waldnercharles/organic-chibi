@@ -167,7 +167,16 @@ enum
     OTHER(NAME_TOP_BITS, "top_bits")                                           \
     OTHER(NAME_SIZE_OF, "size_of")                                             \
     OTHER(NAME_ALIGN_OF, "align_of")                                           \
-    OTHER(NAME_ASSERT, "assert")
+    OTHER(NAME_ASSERT, "assert")                                               \
+    OTHER(NAME_TARGET_OS, "target_os")                                         \
+    OTHER(NAME_TARGET_ARCH, "target_arch")                                     \
+    OTHER(NAME_TARGET_OS_TYPE, "TargetOs")                                     \
+    OTHER(NAME_TARGET_ARCH_TYPE, "TargetArch")                                 \
+    OTHER(NAME_LINUX, "linux")                                                 \
+    OTHER(NAME_MACOS, "macos")                                                 \
+    OTHER(NAME_WINDOWS, "windows")                                             \
+    OTHER(NAME_ARM64, "arm64")                                                 \
+    OTHER(NAME_X86_64, "x86_64")
 // clang-format on
 
 #define CHIBI_BUILTIN_NAME_ID(name, text) name,

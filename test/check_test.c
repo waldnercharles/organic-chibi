@@ -17,7 +17,7 @@ typedef struct
 } Case;
 
 static ParsedFile *
-check_texts(Checker *c, Arena *arena, Lexer *lx, const char *const *texts, u32 n, u32 entry, bool release_fast)
+check_texts(Checker *c, Arena *arena, Lexer *lx, const char *const *texts, u32 n, u32 entry, bool release_fast, const u32 *target)
 {
     size_t total = 0;
     for (u32 i = 0; i < n; i++) {
@@ -48,17 +48,20 @@ check_texts(Checker *c, Arena *arena, Lexer *lx, const char *const *texts, u32 n
 
     check_init(c, &lx->names);
     c->release_fast = release_fast;
+    if (target) {
+        memcpy(c->target, target, sizeof c->target);
+    }
     check_package(c, files, n);
     return files;
 }
 
 static char *
-check_files(const char *const *texts, u32 n, u32 entry, bool ir, bool release_fast)
+check_files(const char *const *texts, u32 n, u32 entry, bool ir, bool release_fast, const u32 *target)
 {
     Arena arena = { 0 };
     Lexer lx;
     Checker c;
-    ParsedFile *files = check_texts(&c, &arena, &lx, texts, n, entry, release_fast);
+    ParsedFile *files = check_texts(&c, &arena, &lx, texts, n, entry, release_fast, target);
 
     char *got = NULL;
     size_t got_len = 0;
@@ -80,7 +83,7 @@ check_files(const char *const *texts, u32 n, u32 entry, bool ir, bool release_fa
 static bool
 compiles_to(const char *const *texts, u32 n, u32 entry, bool ir, const char *want)
 {
-    char *got = check_files(texts, n, entry, ir, false);
+    char *got = check_files(texts, n, entry, ir, false, NULL);
     bool same = strcmp(got, want) == 0;
     if (!same) {
         fprintf(stderr, "check \"%s\"\n  got:\n%s  want:\n%s", texts[0], got, want);
@@ -6949,7 +6952,7 @@ TEST_CASE(variadic_promotions)
     Arena arena = { 0 };
     Lexer lx;
     Checker c;
-    ParsedFile *files = check_texts(&c, &arena, &lx, &text, 1, 1, false);
+    ParsedFile *files = check_texts(&c, &arena, &lx, &text, 1, 1, false, NULL);
 
     const IrCode *code = &c.ir.code;
     const IrFunc *f = &c.ir.funcs[0];
@@ -6988,7 +6991,7 @@ TEST_CASE(callback_list)
     Arena arena = { 0 };
     Lexer lx;
     Checker c;
-    ParsedFile *files = check_texts(&c, &arena, &lx, &text, 1, 1, false);
+    ParsedFile *files = check_texts(&c, &arena, &lx, &text, 1, 1, false, NULL);
 
     const IrCode *code = &c.ir.code;
     const IrFunc *f = &c.ir.funcs[1];
@@ -7028,7 +7031,7 @@ TEST_CASE(export_list)
     Arena arena = { 0 };
     Lexer lx;
     Checker c;
-    ParsedFile *files = check_texts(&c, &arena, &lx, &text, 1, 1, false);
+    ParsedFile *files = check_texts(&c, &arena, &lx, &text, 1, 1, false, NULL);
 
     const IrCode *code = &c.ir.code;
     const IrFunc *f = &c.ir.funcs[3];
@@ -7222,7 +7225,7 @@ TEST_CASE(depth_limit)
     snprintf(text + len, cap - len, "const C%u := 0\n", n);
 
     const char *texts[] = { text };
-    char *got = check_files(texts, 1, 1, false, false);
+    char *got = check_files(texts, 1, 1, false, false, NULL);
     free(text);
 
     const char
@@ -7251,7 +7254,7 @@ checks_doubling_structs(const char *leaf, const char *want)
     snprintf(text + len, cap - len, "struct L%u { %s }\nextern fn f(x: L0) -> int\n", n, leaf);
 
     const char *texts[] = { text };
-    char *got = check_files(texts, 1, 1, false, false);
+    char *got = check_files(texts, 1, 1, false, false, NULL);
     free(text);
 
     bool ok = strncmp(got, want, strlen(want)) == 0;
@@ -7283,7 +7286,7 @@ static bool
 load_program(Program *p, const char *text, bool release_fast)
 {
     *p = (Program){ 0 };
-    p->files = check_texts(&p->c, &p->arena, &p->lx, &text, 1, 1, release_fast);
+    p->files = check_texts(&p->c, &p->arena, &p->lx, &text, 1, 1, release_fast, NULL);
     check_print_diagnostics(stderr, &p->c);
     if (p->c.ndiags) {
         return false;
@@ -7623,7 +7626,7 @@ static const VectorRun RELEASE_FAST_RUNS[] = {
 TEST_CASE(release_fast)
 {
     const char *texts[] = { RELEASE_FAST };
-    char *got = check_files(texts, 1, 1, true, true);
+    char *got = check_files(texts, 1, 1, true, true, NULL);
     bool same = strcmp(got, RELEASE_FAST_IR) == 0;
     if (!same) {
         fprintf(stderr, "release-fast IR\n  got:\n%s  want:\n%s", got, RELEASE_FAST_IR);
@@ -7818,7 +7821,7 @@ static bool
 dumps_ir(const char *text, bool release_fast, const char *want)
 {
     const char *texts[] = { text };
-    char *got = check_files(texts, 1, 1, true, release_fast);
+    char *got = check_files(texts, 1, 1, true, release_fast, NULL);
     bool same = strcmp(got, want) == 0;
     if (!same) {
         fprintf(stderr, "IR\n  got:\n%s  want:\n%s", got, want);
@@ -7835,6 +7838,231 @@ TEST_CASE(asserts)
     REQUIRE(runs_to(ASSERT_PROGRAM, ASSERT_RUNS, sizeof ASSERT_RUNS / sizeof ASSERT_RUNS[0], false));
     size_t n = sizeof ASSERT_RELEASE_FAST_RUNS / sizeof ASSERT_RELEASE_FAST_RUNS[0];
     REQUIRE(runs_to(ASSERT_PROGRAM, ASSERT_RELEASE_FAST_RUNS, n, true));
+    return true;
+}
+
+static const char TARGET_PROGRAM[] =
+    "const PAGE: u64 = if target_os == .macos and target_arch == .arm64 then 16384 else 4096\n"
+    "\n"
+    "os: TargetOs = target_os\n"
+    "\n"
+    "extern fn mac_only() -> int\n"
+    "\n"
+    "fn pick(x: int) -> int {\n"
+    "    if target_os == .macos {\n"
+    "        return mac_only()\n"
+    "    } else if target_arch == .arm64 or target_os == .windows {\n"
+    "        return x + 1\n"
+    "    }\n"
+    "    return x + int(PAGE)\n"
+    "}\n"
+    "\n"
+    "fn arch() -> TargetArch {\n"
+    "    return target_arch\n"
+    "}\n"
+    "\n"
+    "fn code() -> u8 {\n"
+    "    return u8(target_os) * 10 + u8(target_arch)\n"
+    "}\n"
+    "\n"
+    "fn named(o: TargetOs) -> int {\n"
+    "    return switch o {\n"
+    "        .linux => 1,\n"
+    "        .macos => 2,\n"
+    "        .windows => 3,\n"
+    "    }\n"
+    "}\n"
+    "\n"
+    "fn same() -> bool {\n"
+    "    return os == target_os\n"
+    "}\n";
+
+static const char TARGET_LINUX_IR[] =
+    "fn pick(x: int) -> int\n"
+    "    slots: x: int\n"
+    "    if @0 false\n"
+    "        %1 = call-c int mac_only()\n"
+    "        ret int %1\n"
+    "    else\n"
+    "        if @4 false\n"
+    "            %5 = load int x\n"
+    "            %6 = add int %5, 1\n"
+    "            ret int %6\n"
+    "        end\n"
+    "    end\n"
+    "    %10 = load int x\n"
+    "    %11 = add int %10, 4096\n"
+    "    ret int %11\n"
+    "fn arch() -> TargetArch\n"
+    "    slots:\n"
+    "    ret TargetArch .x86_64\n"
+    "fn code() -> u8\n"
+    "    slots:\n"
+    "    ret u8 1\n"
+    "fn named(o: TargetOs) -> int\n"
+    "    slots: o: TargetOs\n"
+    "    block @0\n"
+    "        %1 = load TargetOs o\n"
+    "        switch @2 TargetOs %1 [.linux => 0, .macos => 1, .windows => 2]\n"
+    "            exit @0 int 1\n"
+    "        case 1\n"
+    "            exit @0 int 2\n"
+    "        case 2\n"
+    "            exit @0 int 3\n"
+    "        end\n"
+    "    %9 = end int\n"
+    "    ret int %9\n"
+    "fn same() -> bool\n"
+    "    slots:\n"
+    "    %0 = global *TargetOs os\n"
+    "    %1 = load-at TargetOs %0\n"
+    "    %2 = eq TargetOs %1, .linux\n"
+    "    ret bool %2\n";
+
+static const char TARGET_MACOS_IR[] =
+    "fn pick(x: int) -> int\n"
+    "    slots: x: int\n"
+    "    if @0 true\n"
+    "        %1 = call-c int mac_only()\n"
+    "        ret int %1\n"
+    "    else\n"
+    "        if @4 false\n"
+    "        end\n"
+    "        if @6 true\n"
+    "            %7 = load int x\n"
+    "            %8 = add int %7, 1\n"
+    "            ret int %8\n"
+    "        end\n"
+    "    end\n"
+    "    %12 = load int x\n"
+    "    %13 = add int %12, 16384\n"
+    "    ret int %13\n"
+    "fn arch() -> TargetArch\n"
+    "    slots:\n"
+    "    ret TargetArch .arm64\n"
+    "fn code() -> u8\n"
+    "    slots:\n"
+    "    ret u8 10\n"
+    "fn named(o: TargetOs) -> int\n"
+    "    slots: o: TargetOs\n"
+    "    block @0\n"
+    "        %1 = load TargetOs o\n"
+    "        switch @2 TargetOs %1 [.linux => 0, .macos => 1, .windows => 2]\n"
+    "            exit @0 int 1\n"
+    "        case 1\n"
+    "            exit @0 int 2\n"
+    "        case 2\n"
+    "            exit @0 int 3\n"
+    "        end\n"
+    "    %9 = end int\n"
+    "    ret int %9\n"
+    "fn same() -> bool\n"
+    "    slots:\n"
+    "    %0 = global *TargetOs os\n"
+    "    %1 = load-at TargetOs %0\n"
+    "    %2 = eq TargetOs %1, .macos\n"
+    "    ret bool %2\n";
+
+static const char TARGET_DECLS[] =
+    "const PAGE: u64 = 4096\n"
+    "os: TargetOs = .linux\n"
+    "extern fn mac_only() -> int\n"
+    "fn pick(x: int) -> int\n"
+    "fn arch() -> TargetArch\n"
+    "fn code() -> u8\n"
+    "fn named(o: TargetOs) -> int\n"
+    "fn same() -> bool\n"
+    "enum TargetOs: u8 { linux = 0, macos = 1, windows = 2 }\n"
+    "enum TargetArch: u8 { arm64 = 0, x86_64 = 1 }\n";
+
+static const char TARGET_ERRORS[] =
+    "fn f(x: int) -> int {\n"
+    "    if target_os == .armm64 {\n"
+    "        return 1\n"
+    "    }\n"
+    "    if target_os == target_arch {\n"
+    "        return 2\n"
+    "    }\n"
+    "    y := linux\n"
+    "    z := target_os()\n"
+    "    target_arch = .arm64\n"
+    "    w: TargetOs = 1\n"
+    "    return switch target_arch {\n"
+    "        .arm64 => 3,\n"
+    "    }\n"
+    "}\n";
+
+static const char TARGET_ERRORS_IR[] =
+    "a:2:18: `TargetOs` has no member `armm64`\n"
+    "a:5:18: `TargetOs` and `TargetArch` don't mix without a conversion\n"
+    "a:8:10: unknown name `linux`\n"
+    "a:9:10: expected a function or a type\n"
+    "a:10:5: only a variable, a field, an element or `p.*` can be assigned to\n"
+    "a:11:19: `untyped integer` and `TargetOs` don't mix without a conversion\n"
+    "a:12:12: the switch doesn't handle `.x86_64`; add an arm for it or a `_` arm\n"
+    "fn f(x: int) -> int\n"
+    "    slots: x: int, y: ?, z: ?, w: TargetOs\n"
+    "    if @0 false\n"
+    "        ret int 1\n"
+    "    end\n"
+    "    if @3 false\n"
+    "        ret int 2\n"
+    "    end\n"
+    "    block @6\n"
+    "        switch @7 TargetArch .x86_64 [.arm64 => 0]\n"
+    "            exit @6 int 3\n"
+    "        end\n"
+    "    %10 = end int\n"
+    "    ret int %10\n";
+
+static const char TARGET_SHADOWED[] =
+    "const target_os := 5\n"
+    "enum TargetArch { a, b }\n"
+    "\n"
+    "fn f() -> int {\n"
+    "    return target_os\n"
+    "}\n"
+    "\n"
+    "fn g() -> TargetArch {\n"
+    "    return .b\n"
+    "}\n"
+    "\n"
+    "fn h() -> bool {\n"
+    "    return target_arch == .x86_64\n"
+    "}\n";
+
+static const char TARGET_SHADOWED_IR[] =
+    "fn f() -> int\n"
+    "    slots:\n"
+    "    ret int 5\n"
+    "fn g() -> TargetArch\n"
+    "    slots:\n"
+    "    ret TargetArch .b\n"
+    "fn h() -> bool\n"
+    "    slots:\n"
+    "    ret bool false\n";
+
+static bool
+dumps_for_target(const char *text, bool ir, u32 os, u32 arch, const char *want)
+{
+    const char *texts[] = { text };
+    const u32 target[NTARGETS] = { os, arch };
+    char *got = check_files(texts, 1, 1, ir, false, target);
+    bool same = strcmp(got, want) == 0;
+    if (!same) {
+        fprintf(stderr, "target dump\n  got:\n%s  want:\n%s", got, want);
+    }
+    free(got);
+    return same;
+}
+
+TEST_CASE(targets)
+{
+    REQUIRE(dumps_for_target(TARGET_PROGRAM, true, NAME_LINUX, NAME_X86_64, TARGET_LINUX_IR));
+    REQUIRE(dumps_for_target(TARGET_PROGRAM, true, NAME_MACOS, NAME_ARM64, TARGET_MACOS_IR));
+    REQUIRE(dumps_for_target(TARGET_PROGRAM, false, NAME_LINUX, NAME_X86_64, TARGET_DECLS));
+    REQUIRE(dumps_for_target(TARGET_ERRORS, true, NAME_LINUX, NAME_X86_64, TARGET_ERRORS_IR));
+    REQUIRE(dumps_for_target(TARGET_SHADOWED, true, NAME_MACOS, NAME_ARM64, TARGET_SHADOWED_IR));
     return true;
 }
 
@@ -7899,7 +8127,7 @@ TEST_CASE(positions)
     Lexer lx;
     Checker c;
     const char *texts[] = { text };
-    ParsedFile *files = check_texts(&c, &arena, &lx, texts, 1, 1, false);
+    ParsedFile *files = check_texts(&c, &arena, &lx, texts, 1, 1, false, NULL);
     bool ok = c.ndiags == 0 && c.ir.nfuncs == 5;
     u32 total = 0;
     for (u32 f = 0; ok && f < c.ir.nfuncs; f++) {
@@ -7941,7 +8169,7 @@ TEST_CASE(statement_positions)
     Lexer lx;
     Checker c;
     const char *texts[] = { text };
-    ParsedFile *files = check_texts(&c, &arena, &lx, texts, 1, 1, false);
+    ParsedFile *files = check_texts(&c, &arena, &lx, texts, 1, 1, false, NULL);
     bool ok = c.ndiags == 0 && c.ir.nfuncs == 1;
     u32 got[16];
     u32 n = 0;
@@ -7984,6 +8212,7 @@ TEST_SUITE(check_tests)
     RUN_TEST_CASE(vectors);
     RUN_TEST_CASE(release_fast);
     RUN_TEST_CASE(asserts);
+    RUN_TEST_CASE(targets);
     RUN_TEST_CASE(positions);
     RUN_TEST_CASE(statement_positions);
 }

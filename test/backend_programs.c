@@ -4050,6 +4050,40 @@ const char ASSERTS[] =
     "    return a ^ b\n"
     "}\n";
 
+const char TARGETS[] =
+    "extern fn tg_missing(x: int) -> int\n"
+    "\n"
+    "fn tg_arch(a: int, b: int) -> int {\n"
+    "    if target_arch == .arm64 {\n"
+    "        return a + b\n"
+    "    }\n"
+    "    return a - b\n"
+    "}\n"
+    "\n"
+    "fn tg_os(a: int, b: int) -> int {\n"
+    "    x := a\n"
+    "    if target_os == .windows {\n"
+    "        while x < b {\n"
+    "            x += tg_missing(x)\n"
+    "        }\n"
+    "    } else if target_os == .macos {\n"
+    "        x = x * 5 + b\n"
+    "    } else {\n"
+    "        x = x * 3 + b\n"
+    "    }\n"
+    "    return x\n"
+    "}\n"
+    "\n"
+    "fn tg_value(a: int, b: int) -> int {\n"
+    "    k := if target_arch == .x86_64 then 7 else 11\n"
+    "    if target_os != .windows {\n"
+    "        k += int(target_os) * 100\n"
+    "    } else {\n"
+    "        k = tg_missing(k)\n"
+    "    }\n"
+    "    return a * k - b\n"
+    "}\n";
+
 const char RELEASE_FAST_GRID[] =
     "enum RfLevel: u16 { low = 1, big = 300 }\n"
     "enum RfSign: i8 { minus = -1, plus = 1 }\n"
@@ -4133,6 +4167,7 @@ const char *const BACKEND_PROGRAMS[] = {
     REST_ARGS,
     INLINE_MARKS,
     ASSERTS,
+    TARGETS,
 };
 
 const u32 NBACKEND_PROGRAMS = sizeof BACKEND_PROGRAMS / sizeof BACKEND_PROGRAMS[0];
