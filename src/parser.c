@@ -14,7 +14,7 @@ enum
 };
 
 #define PREFIX_NODE(name, token) [token] = name,
-static const u8 prefix_nodes[NKINDS] = {
+static const u8 prefix_nodes[256] = {
     CHIBI_NODES(PREFIX_NODE, PREFIX_NODE, CHIBI_SKIP, CHIBI_SKIP, CHIBI_SKIP, CHIBI_SKIP, CHIBI_SKIP)
 };
 
@@ -26,12 +26,12 @@ typedef struct
 } BinaryOp;
 
 #define BINARY_OP(name, token, prec, marker) [token] = { prec, name, marker },
-static const BinaryOp binary_ops[NKINDS] = {
+static const BinaryOp binary_ops[256] = {
     CHIBI_NODES(CHIBI_SKIP, CHIBI_SKIP, BINARY_OP, CHIBI_SKIP, CHIBI_SKIP, CHIBI_SKIP, CHIBI_SKIP)
 };
 
 #define ASSIGN_NODE(name, token) [token] = name,
-static const u8 assign_nodes[NKINDS] = {
+static const u8 assign_nodes[256] = {
     CHIBI_NODES(CHIBI_SKIP, CHIBI_SKIP, CHIBI_SKIP, ASSIGN_NODE, CHIBI_SKIP, CHIBI_SKIP, CHIBI_SKIP)
 };
 
@@ -43,7 +43,7 @@ static const u8 assign_nodes[NKINDS] = {
     [name] = 2 + (marker != NODE_NONE),
 #define NODE_ARITY(name, arity, label) [name] = arity,
 #define LIST_ARITY(name, start, before, label) [name] = before,
-static const u8 node_arity[NNODES] = {
+static const u8 node_arity[256] = {
     CHIBI_NODES(ARITY_0, ARITY_1, BINARY_ARITY, ARITY_3, NODE_ARITY, LIST_ARITY, ARITY_0)
 };
 

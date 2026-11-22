@@ -96,12 +96,7 @@ static const u8 list_starts[NNODES] = {
     CHIBI_NODES(CHIBI_SKIP, CHIBI_SKIP, CHIBI_SKIP, CHIBI_SKIP, CHIBI_SKIP, LIST_START, CHIBI_SKIP)
 };
 
-#define IS_MARKER(name) [name] = 1,
-static const u8 is_marker[NNODES] = {
-    CHIBI_NODES(CHIBI_SKIP, CHIBI_SKIP, CHIBI_SKIP, CHIBI_SKIP, CHIBI_SKIP, CHIBI_SKIP, IS_MARKER)
-};
-
-static const bool takes_place[NNODES] = {
+static const bool takes_place[256] = {
     [NODE_ADDR] = true,
     [NODE_VALUE] = true,
     [NODE_OR_ELSE_TARGET] = true,
@@ -115,7 +110,7 @@ static const u8 decl_kinds[NNODES] = {
     [NODE_VAR_TYPE_INIT] = DECL_VAR,
 };
 
-static const u8 operator_classes[NNODES] = {
+static const u8 operator_classes[256] = {
     [NODE_ADD] = OP_ARITH,    [NODE_SUB] = OP_ARITH,
     [NODE_MUL] = OP_ARITH,    [NODE_DIV] = OP_ARITH,
     [NODE_MOD] = OP_INT,      [NODE_ADD_WRAP] = OP_INT,
@@ -128,7 +123,7 @@ static const u8 operator_classes[NNODES] = {
     [NODE_NE] = OP_EQUALITY,
 };
 
-static const u8 binary_irs[NNODES] = {
+static const u8 binary_irs[256] = {
     [NODE_ADD] = IR_ADD,
     [NODE_SUB] = IR_SUB,
     [NODE_MUL] = IR_MUL,
@@ -7546,7 +7541,7 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
     for (u32 i = begin; i < end; i++) {
         u8 kind = kinds[i];
         u32 token = tokens[i];
-        if (is_marker[kind]) {
+        if (kind >= NODE_FIRST_MARKER) {
             if (kind == NODE_FN_BODY) {
                 if (!in_body && list_start(c, NODE_FN_START) == base) {
                     c->decls.bodies[decl] = i;
