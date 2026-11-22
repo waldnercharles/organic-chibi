@@ -29,7 +29,7 @@ typedef struct
 } Program;
 
 static bool
-check_text(Program *p, const char *text)
+check_text(Program *p, const char *text, bool release_fast)
 {
     *p = (Program){ 0 };
     size_t len = strlen(text);
@@ -52,6 +52,7 @@ check_text(Program *p, const char *text)
                             nodes, (u32)count, (u32)parser.top_count,
                             false };
     check_init(&p->c, &p->lx.names);
+    p->c.release_fast = release_fast;
     check_package(&p->c, &p->file, 1);
     if (p->c.ndiags) {
         check_print_diagnostics(stderr, &p->c);
@@ -63,7 +64,7 @@ check_text(Program *p, const char *text)
 static bool
 build(Program *p, const char *text)
 {
-    if (!check_text(p, text)) {
+    if (!check_text(p, text, false)) {
         return false;
     }
     if (!arm64_compile(&p->n, &p->c, CONVENTION_HOST)) {
@@ -1898,7 +1899,8 @@ TEST_CASE(store_while_loaded)
         "    y := x\n"
         "    x = 5\n"
         "    return y * 10 + x\n"
-        "}\n"
+        "}\n",
+        false
     ));
     IrCode *code = &p.c.ir.code;
     const IrFunc *f = &p.c.ir.funcs[0];
@@ -2807,7 +2809,7 @@ TEST_CASE(calls_into_c)
     release_program(&p);
 
     for (size_t k = 0; k < sizeof C_CALL_LIMITS / sizeof C_CALL_LIMITS[0]; k++) {
-        REQUIRE(check_text(&p, C_CALL_LIMITS[k][0]));
+        REQUIRE(check_text(&p, C_CALL_LIMITS[k][0], false));
         REQUIRE(!arm64_compile(&p.n, &p.c, CONVENTION_HOST) && strcmp(p.n.error, C_CALL_LIMITS[k][1]) == 0);
         release_program(&p);
     }
@@ -3175,7 +3177,7 @@ TEST_CASE(stack_arguments)
     }
     release_program(&p);
 
-    REQUIRE(check_text(&p, STACK_ARGUMENTS));
+    REQUIRE(check_text(&p, STACK_ARGUMENTS, false));
     REQUIRE(arm64_compile(&p.n, &p.c, CONVENTION_APPLE));
     for (int64_t x = 0; x < 20; x++) {
         REQUIRE(chibi_calls_agree(&p, x));
@@ -3321,7 +3323,7 @@ TEST_CASE(variadic_calls)
     }
     release_program(&p);
 
-    REQUIRE(check_text(&p, VARIADIC_CALLS));
+    REQUIRE(check_text(&p, VARIADIC_CALLS, false));
     REQUIRE(arm64_compile(&p.n, &p.c, CONVENTION_APPLE));
     for (int64_t x = 0; x < 20; x++) {
         REQUIRE(((I1 *)fn(&p, "vprobe"))(CONTEXT, x) == x);
@@ -3722,7 +3724,7 @@ TEST_CASE(callbacks)
     REQUIRE(((GET1 *)fn(&p, "get_tap"))(CONTEXT) == tapped);
     release_program(&p);
 
-    REQUIRE(check_text(&p, CALLBACKS));
+    REQUIRE(check_text(&p, CALLBACKS, false));
     REQUIRE(arm64_compile(&p.n, &p.c, CONVENTION_APPLE));
     for (int64_t x = 0; x < 20; x++) {
         REQUIRE(sorts(&p, x));
@@ -3753,7 +3755,7 @@ TEST_CASE(callback_stack_limit)
     snprintf(text + at, sizeof text - (size_t)at, ") -> int)\nfn give() {\n    take(many)\n}\n");
 
     Program p;
-    REQUIRE(check_text(&p, text));
+    REQUIRE(check_text(&p, text, false));
     REQUIRE(!arm64_compile(&p.n, &p.c, CONVENTION_HOST));
     REQUIRE(strcmp(p.n.error, "a callback for C needs over 4064 bytes of stack arguments") == 0);
     release_program(&p);
@@ -4929,6 +4931,45 @@ TEST_CASE(inline_marks)
     return true;
 }
 
+static const char *const RELEASE_FAST_FUNCTIONS[] = {
+    "rf_wrap", "rf_shift", "rf_convert", "rf_enum", "rf_div", "rf_float",
+};
+
+static const CallCase RELEASE_FAST_CASES[] = {
+    { "rf_wrap", 13, 12, 3074457345618258479, 0 },
+    { "rf_wrap", 5, 0, -3074457345618258601, 0 },
+    { "rf_shift", 13, 12, 40960, 0 },
+    { "rf_shift", -3, -3, -6917529027641106426, 0 },
+    { "rf_convert", -1, 7, 4294967301, 0 },
+    { "rf_convert", -3, -3, 247, 0 },
+    { "rf_enum", -3, -3, 328674, 0 },
+    { "rf_enum", INT64_MIN, -1, 764, 0 },
+    { "rf_div", 5, 0, 0, TRAP_DIVIDE },
+    { "rf_div", INT64_MIN, -1, 0, TRAP_OVERFLOW },
+    { "rf_float", -1, 7, -93, 0 },
+    { "rf_float", 13, 12, 0, TRAP_RANGE },
+};
+
+TEST_CASE(release_fast)
+{
+    catch_traps();
+    Program p;
+    REQUIRE(check_text(&p, RELEASE_FAST_GRID, true));
+    REQUIRE(arm64_compile(&p.n, &p.c, CONVENTION_HOST));
+    for (size_t k = 0; k < sizeof RELEASE_FAST_CASES / sizeof RELEASE_FAST_CASES[0]; k++) {
+        CallCase t = RELEASE_FAST_CASES[k];
+        int64_t got = 0;
+        int trap = call_i2((I2 *)fn(&p, t.name), t.a, t.b, &got);
+        if (trap != t.trap || (!trap && got != t.want)) {
+            fprintf(stderr, "arm64 test: %s(%lld, %lld) gave %lld (trap %d)\n", t.name, (long long)t.a, (long long)t.b, (long long)got, trap);
+            REQUIRE(false);
+        }
+    }
+    REQUIRE(agree_on_grid(&p, RELEASE_FAST_FUNCTIONS, sizeof RELEASE_FAST_FUNCTIONS / sizeof RELEASE_FAST_FUNCTIONS[0]));
+    release_program(&p);
+    return true;
+}
+
 typedef int64_t I3(void *, int64_t, int64_t, int64_t);
 
 static int
@@ -5511,6 +5552,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(optional_fns);
     RUN_TEST_CASE(rest_args);
     RUN_TEST_CASE(inline_marks);
+    RUN_TEST_CASE(release_fast);
     RUN_TEST_CASE(vectors);
     RUN_TEST_CASE(narrow_parameters);
     RUN_TEST_CASE(constant_division);

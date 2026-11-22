@@ -150,6 +150,13 @@ static const u8 binary_irs[NNODES] = {
     [NODE_NE] = IR_NE,
 };
 
+static const u8 wrapping_irs[NIR_KINDS] = {
+    [IR_ADD] = IR_ADD_WRAP,
+    [IR_SUB] = IR_SUB_WRAP,
+    [IR_MUL] = IR_MUL_WRAP,
+    [IR_NEG] = IR_NEG_WRAP,
+};
+
 static const u8 exact_ops[NNODES] = {
     [NODE_ADD] = EXACT_ADD,      [NODE_SUB] = EXACT_SUB,
     [NODE_MUL] = EXACT_MUL,      [NODE_DIV] = EXACT_DIV,
@@ -1855,6 +1862,15 @@ bits_fit(u64 bits, bool from_signed, u32 to_bits, bool to_signed)
     return room >= 64 || bits < (1ull << room);
 }
 
+static Operand
+wrap_to(Checker *c, u32 v, u32 from, u32 to, u32 bits)
+{
+    if (bits > c->types.arg0[from]) {
+        v = emit(c, IR_CONVERT, TYPE_ID_I8 + (u32)__builtin_ctz(bits) - 3, v, 0);
+    }
+    return emit_value(c, IR_TRUNCATE, to, v, 0);
+}
+
 static NOINLINE Operand
 to_enum(Checker *c, u32 file, u32 token, Operand o, u32 to)
 {
@@ -1871,6 +1887,12 @@ to_enum(Checker *c, u32 file, u32 token, Operand o, u32 to)
             return poison;
         }
         return (Operand){ to, v };
+    }
+    if (c->release_fast) {
+        if (int_widens(c, o.type, backing)) {
+            return emit_value(c, IR_CONVERT, to, value_of(o), 0);
+        }
+        return wrap_to(c, value_of(o), o.type, to, c->types.arg0[backing]);
     }
 
     u32 list = c->decls.values[c->types.arg0[to]];
@@ -1907,6 +1929,9 @@ from_enum(Checker *c, u32 file, u32 token, Operand o, u32 to)
     bool fits = n == 0 ||
                 (bits_fit(list_u64(c, list + 1), from_signed, bits, to_signed) &&
                  bits_fit(list_u64(c, list + n - 1), from_signed, bits, to_signed));
+    if (!fits && c->release_fast) {
+        return wrap_to(c, value_of(o), backing, to, bits);
+    }
     u8 kind = !fits                  ? IR_NARROW
             : widens(c, backing, to) ? IR_CONVERT
                                      : IR_TRUNCATE;
@@ -1967,6 +1992,9 @@ cast(Checker *c, u32 file, u32 token, Operand o, u32 to)
     u32 v = value_of(o);
     if (widens(c, o.type, to) || to_kind == TYPE_FLOAT) {
         return emit_value(c, IR_CONVERT, to, v, 0);
+    }
+    if (c->release_fast && is_int(c, o.type)) {
+        return wrap_to(c, v, o.type, to, t->arg0[to]);
     }
     if (is_int(c, o.type) && masked(c, v, to)) {
         return emit_value(c, IR_TRUNCATE, to, v, 0);
@@ -2216,7 +2244,7 @@ bitcast(Checker *c, u32 file, u32 token, u32 type_token, u32 to, u32 value_token
     if (is_never_nil(c, to) && !is_never_nil(c, from) && !is_constant(o)) {
         v = emit(c, IR_CHECK_NIL, to, v, 0);
     }
-    if (need > pointee_align(c, from)) {
+    if (need > pointee_align(c, from) && !c->release_fast) {
         v = emit(c, IR_CHECK_ALIGN, to, v, need);
     }
     return (Operand){ to, REF_VALUE | v };
@@ -2362,6 +2390,9 @@ shift_lanes(Checker *c, u32 file, u32 token, u8 kind, Operand a, Operand b)
 
     u32 x = operand_ir(c, a);
     u32 y = operand_ir(c, b);
+    if (c->release_fast && !is_constant(b)) {
+        y = emit(c, IR_AND, b.type, y, ir_const(c, b.type, c->types.arg0[elem] - 1));
+    }
     return (Operand){ a.type,
                       REF_VALUE | REF_RESULT |
                           emit(c, binary_irs[kind], a.type, x, y) };
@@ -2414,6 +2445,9 @@ shift(Checker *c, u32 file, u32 token, u8 kind, Operand a, Operand b)
     }
     u32 x = operand_ir(c, a);
     u32 y = operand_ir(c, b);
+    if (c->release_fast && !is_constant(b)) {
+        y = emit(c, IR_AND, b.type, y, ir_const(c, b.type, c->types.arg0[a.type] - 1));
+    }
     return (Operand){ a.type,
                       REF_VALUE | REF_RESULT |
                           emit(c, binary_irs[kind], a.type, x, y) };
@@ -2514,6 +2548,9 @@ binary(Checker *c, u32 file, u32 token, u8 kind, Operand a, Operand b)
     }
 
     u8 ir = binary_irs[kind];
+    if (c->release_fast && wrapping_irs[ir] && is_int(c, type)) {
+        ir = wrapping_irs[ir];
+    }
     if ((ir == IR_DIV || ir == IR_REM) && is_int(c, type) && is_constant(b) &&
         exact_sign(&c->exacts, value_of(b)) == 0) {
         report(c, file, token, DIAG_DIVIDE_BY_ZERO, 0, 0);
@@ -2584,6 +2621,9 @@ unary(Checker *c, u32 file, u32 token, u8 kind, Operand a)
         u8 ir = kind == NODE_NEG      ? IR_NEG
               : kind == NODE_NEG_WRAP ? IR_NEG_WRAP
                                       : IR_BIT_NOT;
+        if (c->release_fast && wrapping_irs[ir] && is_int(c, a.type)) {
+            ir = wrapping_irs[ir];
+        }
         return (Operand){ a.type,
                           REF_VALUE | REF_RESULT |
                               emit(c, ir, a.type, value_of(a), 0) };

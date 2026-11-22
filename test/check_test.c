@@ -17,7 +17,7 @@ typedef struct
 } Case;
 
 static ParsedFile *
-check_texts(Checker *c, Arena *arena, Lexer *lx, const char *const *texts, u32 n, u32 entry)
+check_texts(Checker *c, Arena *arena, Lexer *lx, const char *const *texts, u32 n, u32 entry, bool release_fast)
 {
     size_t total = 0;
     for (u32 i = 0; i < n; i++) {
@@ -47,17 +47,18 @@ check_texts(Checker *c, Arena *arena, Lexer *lx, const char *const *texts, u32 n
     }
 
     check_init(c, &lx->names);
+    c->release_fast = release_fast;
     check_package(c, files, n);
     return files;
 }
 
 static char *
-check_files(const char *const *texts, u32 n, u32 entry, bool ir)
+check_files(const char *const *texts, u32 n, u32 entry, bool ir, bool release_fast)
 {
     Arena arena = { 0 };
     Lexer lx;
     Checker c;
-    ParsedFile *files = check_texts(&c, &arena, &lx, texts, n, entry);
+    ParsedFile *files = check_texts(&c, &arena, &lx, texts, n, entry, release_fast);
 
     char *got = NULL;
     size_t got_len = 0;
@@ -79,7 +80,7 @@ check_files(const char *const *texts, u32 n, u32 entry, bool ir)
 static bool
 compiles_to(const char *const *texts, u32 n, u32 entry, bool ir, const char *want)
 {
-    char *got = check_files(texts, n, entry, ir);
+    char *got = check_files(texts, n, entry, ir, false);
     bool same = strcmp(got, want) == 0;
     if (!same) {
         fprintf(stderr, "check \"%s\"\n  got:\n%s  want:\n%s", texts[0], got, want);
@@ -6909,7 +6910,7 @@ TEST_CASE(variadic_promotions)
     Arena arena = { 0 };
     Lexer lx;
     Checker c;
-    ParsedFile *files = check_texts(&c, &arena, &lx, &text, 1, 1);
+    ParsedFile *files = check_texts(&c, &arena, &lx, &text, 1, 1, false);
 
     const IrCode *code = &c.ir.code;
     const IrFunc *f = &c.ir.funcs[0];
@@ -6948,7 +6949,7 @@ TEST_CASE(callback_list)
     Arena arena = { 0 };
     Lexer lx;
     Checker c;
-    ParsedFile *files = check_texts(&c, &arena, &lx, &text, 1, 1);
+    ParsedFile *files = check_texts(&c, &arena, &lx, &text, 1, 1, false);
 
     const IrCode *code = &c.ir.code;
     const IrFunc *f = &c.ir.funcs[1];
@@ -6988,7 +6989,7 @@ TEST_CASE(export_list)
     Arena arena = { 0 };
     Lexer lx;
     Checker c;
-    ParsedFile *files = check_texts(&c, &arena, &lx, &text, 1, 1);
+    ParsedFile *files = check_texts(&c, &arena, &lx, &text, 1, 1, false);
 
     const IrCode *code = &c.ir.code;
     const IrFunc *f = &c.ir.funcs[3];
@@ -7182,7 +7183,7 @@ TEST_CASE(depth_limit)
     snprintf(text + len, cap - len, "const C%u := 0\n", n);
 
     const char *texts[] = { text };
-    char *got = check_files(texts, 1, 1, false);
+    char *got = check_files(texts, 1, 1, false, false);
     free(text);
 
     const char
@@ -7211,7 +7212,7 @@ checks_doubling_structs(const char *leaf, const char *want)
     snprintf(text + len, cap - len, "struct L%u { %s }\nextern fn f(x: L0) -> int\n", n, leaf);
 
     const char *texts[] = { text };
-    char *got = check_files(texts, 1, 1, false);
+    char *got = check_files(texts, 1, 1, false, false);
     free(text);
 
     bool ok = strncmp(got, want, strlen(want)) == 0;
@@ -7240,10 +7241,10 @@ typedef struct
 } Program;
 
 static bool
-load_program(Program *p, const char *text)
+load_program(Program *p, const char *text, bool release_fast)
 {
     *p = (Program){ 0 };
-    p->files = check_texts(&p->c, &p->arena, &p->lx, &text, 1, 1);
+    p->files = check_texts(&p->c, &p->arena, &p->lx, &text, 1, 1, release_fast);
     check_print_diagnostics(stderr, &p->c);
     if (p->c.ndiags) {
         return false;
@@ -7272,10 +7273,10 @@ release_program(Program *p)
 }
 
 static bool
-runs_to(const char *text, const VectorRun *runs, size_t n)
+runs_to(const char *text, const VectorRun *runs, size_t n, bool release_fast)
 {
     Program p;
-    bool ok = load_program(&p, text);
+    bool ok = load_program(&p, text, release_fast);
     for (size_t i = 0; ok && i < n; i++) {
         const VectorRun *r = &runs[i];
         u64 args[3] = { (u64)r->args[0], (u64)r->args[1], (u64)r->args[2] };
@@ -7336,16 +7337,263 @@ grid_agrees(Program *p, const GridFunction *g)
 
 TEST_CASE(vectors)
 {
-    REQUIRE(runs_to(VECTOR_BODY, VECTOR_BODY_RESULTS, NVECTOR_BODY_RESULTS));
-    REQUIRE(runs_to(VECTOR_RUNS, VECTOR_RESULTS, NVECTOR_RESULTS));
+    REQUIRE(runs_to(VECTOR_BODY, VECTOR_BODY_RESULTS, NVECTOR_BODY_RESULTS, false));
+    REQUIRE(runs_to(VECTOR_RUNS, VECTOR_RESULTS, NVECTOR_RESULTS, false));
 
     Program p;
-    bool ok = load_program(&p, VECTOR_GRID);
+    bool ok = load_program(&p, VECTOR_GRID, false);
     for (size_t f = 0; ok && f < NVECTOR_GRID_FUNCTIONS; f++) {
         ok = grid_agrees(&p, &VECTOR_GRID_FUNCTIONS[f]);
     }
     release_program(&p);
     REQUIRE(ok);
+    return true;
+}
+
+static const char RELEASE_FAST[] =
+    "enum Level: u16 { low = 1, big = 300 }\n"
+    "enum Sign: i8 { minus = -1, plus = 1 }\n"
+    "\n"
+    "fn add(a: i32, b: i32) -> i32 {\n"
+    "    return a + b\n"
+    "}\n"
+    "\n"
+    "fn sub(a: u8, b: u8) -> u8 {\n"
+    "    return a - b\n"
+    "}\n"
+    "\n"
+    "fn bump(x: int) -> int {\n"
+    "    y := x\n"
+    "    y += 1\n"
+    "    y *= 3\n"
+    "    return y\n"
+    "}\n"
+    "\n"
+    "fn neg(a: i16) -> i16 {\n"
+    "    return -a\n"
+    "}\n"
+    "\n"
+    "fn half(x: f64) -> f64 {\n"
+    "    return -x * 0.5\n"
+    "}\n"
+    "\n"
+    "fn shl(a: int, n: int) -> int {\n"
+    "    return a << n\n"
+    "}\n"
+    "\n"
+    "fn twice(a: int) -> int {\n"
+    "    return a << 1\n"
+    "}\n"
+    "\n"
+    "fn shr(a: u32, n: u8) -> u32 {\n"
+    "    return a >> n\n"
+    "}\n"
+    "\n"
+    "fn lanes(v: u32x4, n: u32) -> u32x4 {\n"
+    "    return v << n\n"
+    "}\n"
+    "\n"
+    "fn narrow(x: int) -> u8 {\n"
+    "    return u8(x)\n"
+    "}\n"
+    "\n"
+    "fn sign(x: i32) -> u32 {\n"
+    "    return u32(x)\n"
+    "}\n"
+    "\n"
+    "fn widen(x: i32) -> u64 {\n"
+    "    return u64(x)\n"
+    "}\n"
+    "\n"
+    "fn level(x: int) -> u8 {\n"
+    "    return u8(Level(x))\n"
+    "}\n"
+    "\n"
+    "fn sign_bits(x: int) -> u64 {\n"
+    "    return u64(Sign(x))\n"
+    "}\n"
+    "\n"
+    "fn grade(x: u8) -> u16 {\n"
+    "    return u16(Level(x))\n"
+    "}\n"
+    "\n"
+    "fn tilt(x: i8) -> u16 {\n"
+    "    return u16(Level(x))\n"
+    "}\n"
+    "\n"
+    "fn ratio(a: int, b: int) -> int {\n"
+    "    return a / b\n"
+    "}\n"
+    "\n"
+    "fn whole(x: f64) -> i32 {\n"
+    "    return i32(x)\n"
+    "}\n"
+    "\n"
+    "fn word(p: [*]u8) -> *u32 {\n"
+    "    return bitcast(*u32, p)\n"
+    "}\n";
+
+static const char RELEASE_FAST_IR[] =
+    "fn add(a: i32, b: i32) -> i32\n"
+    "    slots: a: i32, b: i32\n"
+    "    %0 = load i32 a\n"
+    "    %1 = load i32 b\n"
+    "    %2 = add-wrap i32 %0, %1\n"
+    "    ret i32 %2\n"
+    "fn sub(a: u8, b: u8) -> u8\n"
+    "    slots: a: u8, b: u8\n"
+    "    %0 = load u8 a\n"
+    "    %1 = load u8 b\n"
+    "    %2 = sub-wrap u8 %0, %1\n"
+    "    ret u8 %2\n"
+    "fn bump(x: int) -> int\n"
+    "    slots: x: int, y: int\n"
+    "    %0 = load int x\n"
+    "    store int y, %0\n"
+    "    %2 = load int y\n"
+    "    %3 = add-wrap int %2, 1\n"
+    "    store int y, %3\n"
+    "    %5 = load int y\n"
+    "    %6 = mul-wrap int %5, 3\n"
+    "    store int y, %6\n"
+    "    %8 = load int y\n"
+    "    ret int %8\n"
+    "fn neg(a: i16) -> i16\n"
+    "    slots: a: i16\n"
+    "    %0 = load i16 a\n"
+    "    %1 = neg-wrap i16 %0\n"
+    "    ret i16 %1\n"
+    "fn half(x: f64) -> f64\n"
+    "    slots: x: f64\n"
+    "    %0 = load f64 x\n"
+    "    %1 = neg f64 %0\n"
+    "    %2 = mul f64 %1, 0.5\n"
+    "    ret f64 %2\n"
+    "fn shl(a: int, n: int) -> int\n"
+    "    slots: a: int, n: int\n"
+    "    %0 = load int a\n"
+    "    %1 = load int n\n"
+    "    %2 = and int %1, 63\n"
+    "    %3 = shl int %0, %2\n"
+    "    ret int %3\n"
+    "fn twice(a: int) -> int\n"
+    "    slots: a: int\n"
+    "    %0 = load int a\n"
+    "    %1 = shl int %0, 1\n"
+    "    ret int %1\n"
+    "fn shr(a: u32, n: u8) -> u32\n"
+    "    slots: a: u32, n: u8\n"
+    "    %0 = load u32 a\n"
+    "    %1 = load u8 n\n"
+    "    %2 = and u8 %1, 31\n"
+    "    %3 = shr u32 %0, %2\n"
+    "    ret u32 %3\n"
+    "fn lanes(v: u32x4, n: u32) -> u32x4\n"
+    "    slots: v: u32x4, n: u32\n"
+    "    %0 = load u32x4 v\n"
+    "    %1 = load u32 n\n"
+    "    %2 = and u32 %1, 31\n"
+    "    %3 = shl u32x4 %0, %2\n"
+    "    ret u32x4 %3\n"
+    "fn narrow(x: int) -> u8\n"
+    "    slots: x: int\n"
+    "    %0 = load int x\n"
+    "    %1 = truncate u8 %0\n"
+    "    ret u8 %1\n"
+    "fn sign(x: i32) -> u32\n"
+    "    slots: x: i32\n"
+    "    %0 = load i32 x\n"
+    "    %1 = truncate u32 %0\n"
+    "    ret u32 %1\n"
+    "fn widen(x: i32) -> u64\n"
+    "    slots: x: i32\n"
+    "    %0 = load i32 x\n"
+    "    %1 = convert int %0\n"
+    "    %2 = truncate u64 %1\n"
+    "    ret u64 %2\n"
+    "fn level(x: int) -> u8\n"
+    "    slots: x: int\n"
+    "    %0 = load int x\n"
+    "    %1 = truncate Level %0\n"
+    "    %2 = truncate u8 %1\n"
+    "    ret u8 %2\n"
+    "fn sign_bits(x: int) -> u64\n"
+    "    slots: x: int\n"
+    "    %0 = load int x\n"
+    "    %1 = truncate Sign %0\n"
+    "    %2 = convert int %1\n"
+    "    %3 = truncate u64 %2\n"
+    "    ret u64 %3\n"
+    "fn grade(x: u8) -> u16\n"
+    "    slots: x: u8\n"
+    "    %0 = load u8 x\n"
+    "    %1 = convert Level %0\n"
+    "    %2 = convert u16 %1\n"
+    "    ret u16 %2\n"
+    "fn tilt(x: i8) -> u16\n"
+    "    slots: x: i8\n"
+    "    %0 = load i8 x\n"
+    "    %1 = convert i16 %0\n"
+    "    %2 = truncate Level %1\n"
+    "    %3 = convert u16 %2\n"
+    "    ret u16 %3\n"
+    "fn ratio(a: int, b: int) -> int\n"
+    "    slots: a: int, b: int\n"
+    "    %0 = load int a\n"
+    "    %1 = load int b\n"
+    "    %2 = div int %0, %1\n"
+    "    ret int %2\n"
+    "fn whole(x: f64) -> i32\n"
+    "    slots: x: f64\n"
+    "    %0 = load f64 x\n"
+    "    %1 = narrow i32 %0\n"
+    "    ret i32 %1\n"
+    "fn word(p: [*]u8) -> *u32\n"
+    "    slots: p: [*]u8\n"
+    "    %0 = load [*]u8 p\n"
+    "    %1 = bitcast *u32 %0\n"
+    "    ret *u32 %1\n";
+
+static const VectorRun RELEASE_FAST_RUNS[] = {
+    { "add", { 2147483647, 1 }, -2147483648, 0 },
+    { "sub", { 0, 1 }, 255, 0 },
+    { "bump", { INT64_MAX }, INT64_MIN, 0 },
+    { "neg", { -32768 }, -32768, 0 },
+    { "shl", { 1, 65 }, 2, 0 },
+    { "shl", { 3, -1 }, INT64_MIN, 0 },
+    { "twice", { -5 }, -10, 0 },
+    { "shr", { 2147483648, 33 }, 1073741824, 0 },
+    { "narrow", { 300 }, 44, 0 },
+    { "narrow", { -1 }, 255, 0 },
+    { "sign", { -1 }, 4294967295, 0 },
+    { "widen", { -1 }, -1, 0 },
+    { "widen", { 7 }, 7, 0 },
+    { "level", { 300 }, 44, 0 },
+    { "level", { 2 }, 2, 0 },
+    { "level", { 70000 }, 112, 0 },
+    { "sign_bits", { 1 }, 1, 0 },
+    { "sign_bits", { -1 }, -1, 0 },
+    { "sign_bits", { 200 }, -56, 0 },
+    { "grade", { 7 }, 7, 0 },
+    { "tilt", { -1 }, 65535, 0 },
+    { "tilt", { 44 }, 44, 0 },
+    { "ratio", { 1, 0 }, 0, TRAP_DIVIDE },
+    { "ratio", { INT64_MIN, -1 }, 0, TRAP_OVERFLOW },
+};
+
+TEST_CASE(release_fast)
+{
+    const char *texts[] = { RELEASE_FAST };
+    char *got = check_files(texts, 1, 1, true, true);
+    bool same = strcmp(got, RELEASE_FAST_IR) == 0;
+    if (!same) {
+        fprintf(stderr, "release-fast IR\n  got:\n%s  want:\n%s", got, RELEASE_FAST_IR);
+    }
+    free(got);
+    REQUIRE(same);
+
+    size_t n = sizeof RELEASE_FAST_RUNS / sizeof RELEASE_FAST_RUNS[0];
+    REQUIRE(runs_to(RELEASE_FAST, RELEASE_FAST_RUNS, n, true));
     return true;
 }
 
@@ -7410,7 +7658,7 @@ TEST_CASE(positions)
     Lexer lx;
     Checker c;
     const char *texts[] = { text };
-    ParsedFile *files = check_texts(&c, &arena, &lx, texts, 1, 1);
+    ParsedFile *files = check_texts(&c, &arena, &lx, texts, 1, 1, false);
     bool ok = c.ndiags == 0 && c.ir.nfuncs == 5;
     u32 total = 0;
     for (u32 f = 0; ok && f < c.ir.nfuncs; f++) {
@@ -7452,7 +7700,7 @@ TEST_CASE(statement_positions)
     Lexer lx;
     Checker c;
     const char *texts[] = { text };
-    ParsedFile *files = check_texts(&c, &arena, &lx, texts, 1, 1);
+    ParsedFile *files = check_texts(&c, &arena, &lx, texts, 1, 1, false);
     bool ok = c.ndiags == 0 && c.ir.nfuncs == 1;
     u32 got[16];
     u32 n = 0;
@@ -7493,6 +7741,7 @@ TEST_SUITE(check_tests)
     RUN_TEST_CASE(depth_limit);
     RUN_TEST_CASE(doubling_structs);
     RUN_TEST_CASE(vectors);
+    RUN_TEST_CASE(release_fast);
     RUN_TEST_CASE(positions);
     RUN_TEST_CASE(statement_positions);
 }

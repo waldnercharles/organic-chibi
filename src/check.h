@@ -435,6 +435,7 @@ typedef struct
     const Names *names;
     const ParsedFile *files;
     u32 nfiles;
+    bool release_fast;
     Decls decls;
     Types types;
     u32 *package_names;

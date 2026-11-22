@@ -700,7 +700,7 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                     }
                 } else if (
                     !fits(wide(s, from), t) ||
-                    (c->types.kinds[type] == TYPE_ENUM &&
+                    (kind == IR_NARROW && c->types.kinds[type] == TYPE_ENUM &&
                      !is_member(ir->extra + fn->first_extra + b, t, canon(s, t)))
                 ) {
                     assert(kind == IR_NARROW);

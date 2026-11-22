@@ -4017,6 +4017,44 @@ const char INLINE_MARKS[] =
     "    return inl_fact(a & 7) + inl_mix(a, b)\n"
     "}\n";
 
+const char RELEASE_FAST_GRID[] =
+    "enum RfLevel: u16 { low = 1, big = 300 }\n"
+    "enum RfSign: i8 { minus = -1, plus = 1 }\n"
+    "\n"
+    "fn rf_wrap(a: int, b: int) -> int {\n"
+    "    x := i8(a) * i8(b) * 37\n"
+    "    y := u16(a) - u16(b)\n"
+    "    z := -i32(a) + i32(b) * 2147483647\n"
+    "    return int(x) + int(y) + int(z) + a * 3074457345618258603 + b\n"
+    "}\n"
+    "\n"
+    "fn rf_shift(a: int, b: int) -> int {\n"
+    "    return (a << b) + int(u32(a) >> u8(b)) + int(i16(a) << i16(b)) + (a >> (b + 60))\n"
+    "}\n"
+    "\n"
+    "fn rf_convert(a: int, b: int) -> int {\n"
+    "    n := u8(a) + u8(b)\n"
+    "    s := u32(i32(a) - i32(b))\n"
+    "    w := u64(i32(b))\n"
+    "    return int(n) + int(s) + int(w)\n"
+    "}\n"
+    "\n"
+    "fn rf_enum(a: int, b: int) -> int {\n"
+    "    l := RfLevel(a)\n"
+    "    s := RfSign(b)\n"
+    "    t := RfLevel(u8(b))\n"
+    "    v := RfLevel(i8(a))\n"
+    "    return int(u8(l)) + int(u64(s)) + int(t) * 3 + int(v) * 5\n"
+    "}\n"
+    "\n"
+    "fn rf_div(a: int, b: int) -> int {\n"
+    "    return a / b\n"
+    "}\n"
+    "\n"
+    "fn rf_float(a: int, b: int) -> int {\n"
+    "    return int(i8(f64(a) * 100.5)) + b\n"
+    "}\n";
+
 const char *const BACKEND_PROGRAMS[] = {
     ARITHMETIC,
     CONTROL,

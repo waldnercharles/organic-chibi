@@ -15,9 +15,10 @@
 #define O_BINARY 0
 #endif
 
-static const char USAGE[] = "usage: chibi build [-o program] file.chibi... "
-                            "[-- C compiler arguments]\n"
-                            "       chibi c [-o program.c] file.chibi...\n"
+static const char USAGE[] = "usage: chibi build [--release-fast] [-o program] "
+                            "file.chibi... [-- C compiler arguments]\n"
+                            "       chibi c [--release-fast] [-o program.c] "
+                            "file.chibi...\n"
                             "       chibi tokens file.chibi\n";
 
 typedef struct
@@ -28,6 +29,7 @@ typedef struct
     u32 nfiles;
     char **cc_args;
     u32 ncc_args;
+    bool release_fast;
 } Options;
 
 typedef struct
@@ -37,6 +39,7 @@ typedef struct
     ParsedFile *files;
     Checker c;
     bool checked;
+    bool release_fast;
 } Program;
 
 static char *
@@ -113,6 +116,8 @@ parse_options(FILE *err, Options *o, int argc, char **argv, bool executable)
                 return false;
             }
             o->output = argv[++i];
+        } else if (strcmp(argv[i], "--release-fast") == 0) {
+            o->release_fast = true;
         } else if (executable && strcmp(argv[i], "--") == 0) {
             o->cc_args = argv + i + 1;
             o->ncc_args = (u32)(argc - i - 1);
@@ -184,6 +189,7 @@ check_program(FILE *err, Program *p, const char *const *paths, u32 n)
     }
 
     check_init(&p->c, &p->lx.names);
+    p->c.release_fast = p->release_fast;
     p->checked = true;
     check_package(&p->c, p->files, n);
     if (p->c.ndiags) {
@@ -293,8 +299,9 @@ compile_program(FILE *out, FILE *err, int argc, char **argv, bool executable)
     Program p;
     p.arena = (Arena){ 0 };
     p.checked = false;
-    bool ok = parse_options(err, &o, argc, argv, executable) &&
-              check_program(err, &p, o.files, o.nfiles);
+    bool ok = parse_options(err, &o, argc, argv, executable);
+    p.release_fast = o.release_fast;
+    ok = ok && check_program(err, &p, o.files, o.nfiles);
 
     const char *unsupported = ok ? c_source_unsupported(&p.c) : NULL;
     if (unsupported) {

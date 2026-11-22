@@ -3,6 +3,7 @@
 #include "../src/common.h"
 #include "../src/driver.h"
 #include "../vendor/pico_unit/pico_unit.h"
+#include "backend_programs.h"
 
 #include <fcntl.h>
 #include <signal.h>
@@ -17,8 +18,8 @@
 #ifdef CHIBI_TEST_CC
 
 static const char USAGE[] =
-    "usage: chibi build [-o program] file.chibi... [-- C compiler arguments]\n"
-    "       chibi c [-o program.c] file.chibi...\n"
+    "usage: chibi build [--release-fast] [-o program] file.chibi... [-- C compiler arguments]\n"
+    "       chibi c [--release-fast] [-o program.c] file.chibi...\n"
     "       chibi tokens file.chibi\n";
 
 static const char FIB_MAIN[] =
@@ -90,6 +91,39 @@ static const char FIB[] =
     "        i += 1\n"
     "    }\n"
     "    return a\n"
+    "}\n";
+
+static const char RELEASE_FAST_MAIN[] =
+    "extern fn putchar(c: i32) -> i32\n"
+    "extern fn atoi(s: [*]u8) -> i32\n"
+    "\n"
+    "fn put_number(n: int) {\n"
+    "    digits: [20]u8\n"
+    "    k := 0\n"
+    "    m := u64(n)\n"
+    "    while true {\n"
+    "        digits[k] = u8(48 + m % 10)\n"
+    "        k += 1\n"
+    "        m = m / 10\n"
+    "        if m == 0 { break }\n"
+    "    }\n"
+    "    while k > 0 {\n"
+    "        k -= 1\n"
+    "        _ = putchar(i32(digits[k]))\n"
+    "    }\n"
+    "    _ = putchar(10)\n"
+    "}\n"
+    "\n"
+    "export fn main(argc: i32, argv: [*][*]u8) -> i32 {\n"
+    "    a := int(atoi(argv[1]))\n"
+    "    b := int(atoi(argv[2]))\n"
+    "    put_number(rf_wrap(a, b))\n"
+    "    put_number(rf_shift(a, b))\n"
+    "    put_number(rf_convert(a, b))\n"
+    "    put_number(rf_enum(a, b))\n"
+    "    put_number(rf_div(a, b))\n"
+    "    put_number(rf_float(a, b))\n"
+    "    return argc\n"
     "}\n";
 
 typedef struct
@@ -269,7 +303,31 @@ TEST_CASE(builds_programs)
     ok = ok && runs_to((char *[]){ program, "zero", "0", NULL }, "zero\n0\n", 3, 0);
     ok = ok && runs_to((char *[]){ program, "x", "92", NULL }, "x\ntrap: integer overflow\n", 0, SIGABRT);
 
+    ok = ok && drives_to((char *[]){ "chibi", "build", "--release-fast", a, "-o", program, b, NULL }, 0, "", "");
+    ok = ok && runs_to((char *[]){ program, "x", "92", NULL }, "x\n7540113804746346429\n", 3, 0);
+    ok = ok && runs_to((char *[]){ program, "hello", "91", NULL }, "hello\n4660046610375530309\n", 3, 0);
+
     static const char *const files[] = { "a.chibi", ODD_NAME, "it's a program" };
+    remove_files(dir, files, sizeof files / sizeof files[0]);
+    REQUIRE(ok);
+    return true;
+}
+
+TEST_CASE(builds_release_fast)
+{
+    char dir[] = "/tmp/chibi-d-XXXXXX";
+    REQUIRE(mkdtemp(dir));
+    setenv("CC", CHIBI_TEST_CC, 1);
+    char a[64], b[64], program[64];
+    snprintf(a, sizeof a, "%s/main.chibi", dir);
+    snprintf(b, sizeof b, "%s/rf.chibi", dir);
+    snprintf(program, sizeof program, "%s/rf", dir);
+    bool ok = write_file(dir, "main.chibi", RELEASE_FAST_MAIN) && write_file(dir, "rf.chibi", RELEASE_FAST_GRID);
+    ok = ok && drives_to((char *[]){ "chibi", "build", "--release-fast", a, b, "-o", program, "--", "-fsanitize=undefined", "-fno-sanitize-recover=all", NULL }, 0, "", "");
+    ok = ok && runs_to((char *[]){ program, "-1", "7", NULL }, "15372286730238842187\n33554174\n4294967301\n327958\n0\n18446744073709551523\n", 3, 0);
+    ok = ok && runs_to((char *[]){ program, "5", "0", NULL }, "15372286728091293015\n15\n10\n30\ntrap: division by zero\n", 0, SIGABRT);
+    ok = ok && runs_to((char *[]){ program, "-3", "-3", NULL }, "9223372034707292239\n11529215046068445190\n247\n328674\n1\ntrap: value out of range\n", 0, SIGABRT);
+    static const char *const files[] = { "main.chibi", "rf.chibi", "rf" };
     remove_files(dir, files, sizeof files / sizeof files[0]);
     REQUIRE(ok);
     return true;
@@ -460,6 +518,7 @@ TEST_SUITE(driver_tests)
 {
 #ifdef CHIBI_TEST_CC
     RUN_TEST_CASE(builds_programs);
+    RUN_TEST_CASE(builds_release_fast);
     RUN_TEST_CASE(names_programs);
     RUN_TEST_CASE(links_c);
     RUN_TEST_CASE(reports_compiler_failure);
