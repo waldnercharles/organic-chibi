@@ -180,7 +180,35 @@ enum
     MARK_ADDRESSED = 8,
     MARK_ZEROED = 16,
     MARK_DEMANDED = 32,
+    MARK_TOLERANT = 64,
+    MARK_UNDEFINED = 128,
 };
+
+enum
+{
+    PATH_DEPTH = 8,
+    MAX_PATHS = 256,
+    SCAN_LIMIT = 64,
+};
+
+enum
+{
+    ALLOC_NONE,
+    ALLOC_PLAIN,
+    ALLOC_ZEROED,
+};
+
+typedef struct
+{
+    u32 fields[PATH_DEPTH];
+    u32 len;
+} Path;
+
+typedef struct
+{
+    u32 root;
+    Path path;
+} Access;
 
 enum
 {
@@ -302,6 +330,14 @@ typedef struct
     Flow *flows;
     u32 nflows;
     u32 flows_cap;
+
+    Path zeroed[MAX_PATHS];
+    bool dead[MAX_PATHS];
+    u32 nzeroed;
+    bool overflow;
+    Path kills[MAX_PATHS];
+    u32 nkills;
+    Path zeroing;
 
     u8 *main_files;
     u32 *alias;
@@ -1483,6 +1519,30 @@ literal_of(const Tr *t, u32 e)
     return e;
 }
 
+static u8
+allocation(Tr *t, u32 e)
+{
+    e = strip(t, e);
+    while (is_cast(t, e) && (op(t, e) == CAST_BIT || op(t, e) == CAST_NOOP)) {
+        e = strip(t, e + 1);
+    }
+    if (t->kinds[e] != K_CALL) {
+        return ALLOC_NONE;
+    }
+    u32 f = callee(t, e);
+    if (f == 0 || t->defs[t->canon[f]] != 0) {
+        return ALLOC_NONE;
+    }
+    const char *name = text(t, t->a.names[f]);
+    if (strcmp(name, "calloc") == 0) {
+        return ALLOC_ZEROED;
+    }
+    if (strcmp(name, "malloc") == 0 || strcmp(name, "realloc") == 0) {
+        return ALLOC_PLAIN;
+    }
+    return ALLOC_NONE;
+}
+
 static void
 flow_init(Tr *t, Site to, u32 e, bool call)
 {
@@ -1492,6 +1552,10 @@ flow_init(Tr *t, Site to, u32 e, bool call)
         return;
     }
     if (t->kinds[list] != K_INIT_LIST) {
+        const CType *c = &t->types[ctype(t, e)];
+        if (c->kind == CT_POINTER && allocation(t, e) == ALLOC_ZEROED) {
+            zero_type(t, (Site){ to.decl, to.level + 1 }, c->inner);
+        }
         add_flow(t, to, e, call);
         return;
     }
@@ -1509,6 +1573,432 @@ flow_init(Tr *t, Site to, u32 e, bool call)
     flow_init(t, to, list + 1, false);
 }
 
+static bool
+has_prefix(const Path *p, const Path *prefix)
+{
+    return prefix->len <= p->len &&
+           memcmp(p->fields, prefix->fields, prefix->len * sizeof *p->fields) == 0;
+}
+
+static bool
+killed(const Tr *t, const Path *p)
+{
+    for (u32 k = 0; k < t->nkills; k++) {
+        if (has_prefix(p, &t->kills[k])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void
+zeroed_paths(Tr *t, u32 type)
+{
+    const CType *c = &t->types[type];
+    if (c->kind == CT_POINTER) {
+        if (t->nzeroed == MAX_PATHS) {
+            t->overflow = true;
+            return;
+        }
+        t->dead[t->nzeroed] = false;
+        t->zeroed[t->nzeroed++] = t->zeroing;
+    } else if (c->kind == CT_ARRAY) {
+        zeroed_paths(t, c->inner);
+    } else if (c->kind == CT_RECORD && t->zeroing.len < PATH_DEPTH) {
+        for (u32 f = c->decl + 1; f < t->a.ends[c->decl]; f = t->a.ends[f]) {
+            if (t->kinds[f] == K_FIELD) {
+                t->zeroing.fields[t->zeroing.len++] = f;
+                zeroed_paths(t, ctype(t, f));
+                t->zeroing.len--;
+            }
+        }
+    }
+}
+
+static void
+zeroed_literal(Tr *t, u32 list)
+{
+    u32 decl = t->types[ctype(t, list)].decl;
+    u32 end = t->a.ends[decl];
+    u32 field = decl + 1;
+    for (u32 k = list + 1; k < t->a.ends[list]; k = t->a.ends[k]) {
+        while (field < end && t->kinds[field] != K_FIELD) {
+            field = t->a.ends[field];
+        }
+        if (field >= end || t->zeroing.len == PATH_DEPTH) {
+            return;
+        }
+        u32 l = literal_of(t, k);
+        t->zeroing.fields[t->zeroing.len++] = field;
+        if (t->kinds[strip(t, k)] == K_IMPLICIT_VALUE_INIT) {
+            zeroed_paths(t, ctype(t, field));
+        } else if (t->kinds[l] == K_INIT_LIST && is_kind(t, ctype(t, l), CT_RECORD)) {
+            zeroed_literal(t, l);
+        }
+        t->zeroing.len--;
+        field = t->a.ends[field];
+    }
+}
+
+static void
+zero_path(Tr *t, u32 field, u32 type)
+{
+    const CType *c = &t->types[type];
+    if (c->kind == CT_POINTER) {
+        if (killed(t, &t->zeroing)) {
+            t->marks[field] |= MARK_UNDEFINED;
+        } else {
+            set_site(t, (Site){ field, 0 }, NULLABLE);
+        }
+    } else if (c->kind == CT_ARRAY) {
+        zero_path(t, field, c->inner);
+    } else if (c->kind == CT_RECORD) {
+        if (t->zeroing.len == PATH_DEPTH) {
+            zero_record(t, c->decl);
+            return;
+        }
+        for (u32 f = c->decl + 1; f < t->a.ends[c->decl]; f = t->a.ends[f]) {
+            if (t->kinds[f] == K_FIELD) {
+                t->zeroing.fields[t->zeroing.len++] = f;
+                zero_path(t, f, ctype(t, f));
+                t->zeroing.len--;
+            }
+        }
+    }
+}
+
+static bool
+pointer_root(Tr *t, u32 e, Access *a)
+{
+    e = strip(t, e);
+    while (is_cast(t, e) && op(t, e) == CAST_NOOP) {
+        e = strip(t, e + 1);
+    }
+    if (!is_cast(t, e) || op(t, e) != CAST_LVALUE) {
+        return false;
+    }
+    e = strip(t, e + 1);
+    if (t->kinds[e] != K_DECL_REF) {
+        return false;
+    }
+    u32 d = decl_of(t, e);
+    a->root = d;
+    a->path.len = 0;
+    return t->kinds[d] == K_VAR || t->kinds[d] == K_PARAM;
+}
+
+static bool
+access_of(Tr *t, u32 e, Access *a)
+{
+    e = strip(t, e);
+    switch (t->kinds[e]) {
+        case K_DECL_REF: {
+            u32 d = decl_of(t, e);
+            a->root = d;
+            a->path.len = 0;
+            return t->kinds[d] == K_VAR || t->kinds[d] == K_PARAM;
+        }
+        case K_UNARY: return op(t, e) == OP_MUL && pointer_root(t, e + 1, a);
+        case K_MEMBER: {
+            bool ok = (t->a.flags[e] & AST_ARROW) ? pointer_root(t, e + 1, a)
+                                                  : access_of(t, e + 1, a);
+            if (!ok || a->path.len == PATH_DEPTH) {
+                return false;
+            }
+            a->path.fields[a->path.len++] = node_of(t, t->a.refs[e]);
+            return true;
+        }
+        default: return false;
+    }
+}
+
+static bool
+relative(const Access *a, const Access *base, Path *rel)
+{
+    if (a->root != base->root || !has_prefix(&a->path, &base->path)) {
+        return false;
+    }
+    rel->len = a->path.len - base->path.len;
+    memcpy(rel->fields, a->path.fields + base->path.len, rel->len * sizeof *rel->fields);
+    return true;
+}
+
+static bool
+unkilled_under(const Tr *t, const Path *prefix)
+{
+    for (u32 k = 0; k < t->nzeroed; k++) {
+        if (!t->dead[k] && has_prefix(&t->zeroed[k], prefix)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool
+unkilled_field(const Tr *t, u32 field)
+{
+    for (u32 k = 0; k < t->nzeroed; k++) {
+        const Path *p = &t->zeroed[k];
+        if (!t->dead[k] && p->fields[p->len - 1] == field) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool
+frees(Tr *t, u32 call)
+{
+    u32 f = callee(t, call);
+    return f != 0 && t->defs[t->canon[f]] == 0 &&
+           strcmp(text(t, t->a.names[f]), "free") == 0;
+}
+
+static bool
+reads_unkilled(Tr *t, u32 e, const Access *base)
+{
+    for (u32 i = e; i < t->a.ends[e];) {
+        u8 k = t->kinds[i];
+        Access a;
+        Path rel;
+        if (k == K_TYPE_TRAIT) {
+            i = t->a.ends[i];
+        } else if (k == K_CALL) {
+            if (allocation(t, i) == ALLOC_NONE && !frees(t, i)) {
+                return true;
+            }
+            i = t->a.ends[i + 1];
+        } else if (is_cast(t, i) && op(t, i) == CAST_LVALUE &&
+                   is_kind(t, ctype(t, i), CT_RECORD) &&
+                   t->kinds[strip(t, i + 1)] != K_COMPOUND_LITERAL) {
+            return true;
+        } else if (k == K_MEMBER && access_of(t, i, &a)) {
+            if (relative(&a, base, &rel)) {
+                if (unkilled_under(t, &rel)) {
+                    return true;
+                }
+            } else if (a.root != base->root &&
+                       unkilled_field(t, a.path.fields[a.path.len - 1])) {
+                return true;
+            }
+            i = t->a.ends[i];
+        } else if (k == K_MEMBER) {
+            if (unkilled_field(t, node_of(t, t->a.refs[i]))) {
+                return true;
+            }
+            i++;
+        } else if (k == K_DECL_REF && decl_of(t, i) == base->root) {
+            return true;
+        } else {
+            i++;
+        }
+    }
+    return false;
+}
+
+static void
+add_kill(Tr *t, const Path *rel)
+{
+    if (t->nkills == MAX_PATHS) {
+        return;
+    }
+    t->kills[t->nkills++] = *rel;
+    for (u32 k = 0; k < t->nzeroed; k++) {
+        if (has_prefix(&t->zeroed[k], rel)) {
+            t->dead[k] = true;
+        }
+    }
+}
+
+static u32
+zeroing_param(Tr *t, u32 def)
+{
+    u32 body = function_body(t, def);
+    if (body == 0 || t->a.ends[body] == body + 1) {
+        return 0;
+    }
+    u32 s = body + 1;
+    if (t->kinds[s] != K_BINARY || op(t, s) != OP_ASSIGN ||
+        t->kinds[literal_of(t, child(t, s, 1))] != K_INIT_LIST) {
+        return 0;
+    }
+    u32 l = strip(t, child(t, s, 0));
+    Access a;
+    if (t->kinds[l] != K_UNARY || !access_of(t, l, &a) || t->kinds[a.root] != K_PARAM) {
+        return 0;
+    }
+    for (u32 k = 0;; k++) {
+        u32 p = param_of(t, def, k);
+        if (p == 0) {
+            return 0;
+        }
+        if (t->canon[p] == a.root) {
+            return k + 1;
+        }
+    }
+}
+
+static bool
+kills_by_call(Tr *t, u32 call, const Access *base)
+{
+    u32 f = callee(t, call);
+    if (f != 0 && t->defs[t->canon[f]] == 0) {
+        return !reads_unkilled(t, call, base);
+    }
+    u32 def = f != 0 ? t->defs[t->canon[f]] : 0;
+    u32 z = def != 0 ? zeroing_param(t, def) : 0;
+    if (z == 0) {
+        return false;
+    }
+
+    Path rel = { 0 };
+    bool found = false;
+    u32 k = 0;
+    for (u32 a = t->a.ends[call + 1]; a < t->a.ends[call]; a = t->a.ends[a], k++) {
+        u32 x = strip(t, a);
+        Access acc;
+        if (k + 1 == z && t->kinds[x] == K_UNARY && op(t, x) == OP_AND &&
+            access_of(t, x + 1, &acc) && relative(&acc, base, &rel) && rel.len != 0) {
+            found = true;
+        } else if (reads_unkilled(t, a, base)) {
+            return false;
+        }
+    }
+    u32 body = function_body(t, def);
+    Access none = { 0 };
+    if (!found || reads_unkilled(t, child(t, body + 1, 1), &none)) {
+        return false;
+    }
+    add_kill(t, &rel);
+    for (u32 s = t->a.ends[body + 1]; s < t->a.ends[body]; s = t->a.ends[s]) {
+        if (reads_unkilled(t, s, &none)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void
+scan_kills(Tr *t, u32 event, const Access *base)
+{
+    u32 block = t->parents[event];
+    if (t->kinds[block] != K_COMPOUND) {
+        return;
+    }
+    u32 n = 0;
+    for (u32 s = t->a.ends[event]; s < t->a.ends[block] && n < SCAN_LIMIT;
+         s = t->a.ends[s], n++) {
+        u8 k = t->kinds[s];
+        Access a;
+        Path rel;
+        if (k == K_BINARY && op(t, s) == OP_ASSIGN &&
+            access_of(t, child(t, s, 0), &a)) {
+            if (reads_unkilled(t, child(t, s, 1), base) ||
+                (a.root == base->root && has_prefix(&base->path, &a.path))) {
+                return;
+            }
+            if (relative(&a, base, &rel)) {
+                add_kill(t, &rel);
+            }
+        } else if (k == K_CALL) {
+            if (!kills_by_call(t, s, base)) {
+                return;
+            }
+        } else if ((k != K_BINARY && k != K_COMPOUND_ASSIGN && k != K_UNARY &&
+                    k != K_DECL_STMT && k != K_NULL_STMT) ||
+                   reads_unkilled(t, s, base)) {
+            return;
+        }
+    }
+}
+
+static u32
+literal_event(Tr *t, u32 list, Access *base, Path *prefix, u32 *top)
+{
+    prefix->len = 0;
+    *top = list;
+    u32 x = list;
+    for (;;) {
+        u32 p = t->parents[x];
+        u8 k = t->kinds[p];
+        if (k == K_PAREN || k == K_COMPOUND_LITERAL ||
+            (is_cast(t, p) && (op(t, p) == CAST_NOOP || op(t, p) == CAST_LVALUE))) {
+            x = p;
+            continue;
+        }
+        if (k == K_INIT_LIST && is_kind(t, ctype(t, p), CT_RECORD)) {
+            if (prefix->len == PATH_DEPTH) {
+                return 0;
+            }
+            u32 field = t->types[ctype(t, p)].decl + 1;
+            for (u32 c = p + 1;; c = t->a.ends[c]) {
+                while (t->kinds[field] != K_FIELD) {
+                    field = t->a.ends[field];
+                }
+                if (c == x) {
+                    break;
+                }
+                field = t->a.ends[field];
+            }
+            u32 *fields = prefix->fields;
+            memmove(fields + 1, fields, prefix->len * sizeof *fields);
+            fields[0] = field;
+            prefix->len++;
+            *top = p;
+            x = p;
+            continue;
+        }
+        if (k == K_BINARY && op(t, p) == OP_ASSIGN && child(t, p, 1) == x &&
+            access_of(t, child(t, p, 0), base)) {
+            return p;
+        }
+        if (k == K_VAR && t->a.details[p] == 0 && t->kinds[t->parents[p]] == K_DECL_STMT &&
+            nchildren(t, t->parents[p]) == 1) {
+            base->root = t->canon[p];
+            base->path.len = 0;
+            return t->parents[p];
+        }
+        return 0;
+    }
+}
+
+static void
+zero_literal(Tr *t, u32 list)
+{
+    Access base;
+    Path prefix;
+    u32 top;
+    u32 event = literal_event(t, list, &base, &prefix, &top);
+    t->nzeroed = 0;
+    t->nkills = 0;
+    t->overflow = false;
+    if (event != 0 && prefix.len < PATH_DEPTH) {
+        t->zeroing.len = 0;
+        zeroed_literal(t, top);
+        if (!t->overflow) {
+            scan_kills(t, event, &base);
+        }
+    }
+
+    u32 decl = t->types[ctype(t, list)].decl;
+    u32 field = decl + 1;
+    for (u32 k = list + 1; k < t->a.ends[list]; k = t->a.ends[k]) {
+        while (t->kinds[field] != K_FIELD) {
+            field = t->a.ends[field];
+        }
+        if (t->kinds[strip(t, k)] == K_IMPLICIT_VALUE_INIT) {
+            if (prefix.len == PATH_DEPTH) {
+                zero_type(t, (Site){ field, 0 }, ctype(t, field));
+            } else {
+                t->zeroing = prefix;
+                t->zeroing.fields[t->zeroing.len++] = field;
+                zero_path(t, field, ctype(t, field));
+            }
+        }
+        field = t->a.ends[field];
+    }
+}
+
 static void
 flow_fields(Tr *t, u32 list)
 {
@@ -1519,6 +2009,7 @@ flow_fields(Tr *t, u32 list)
     if (strcmp(text(t, t->a.details[c.decl]), "struct") != 0) {
         die(t, list, "an initializer for a union");
     }
+    bool zeroes = false;
     u32 field = c.decl + 1;
     for (u32 k = list + 1; k < t->a.ends[list]; k = t->a.ends[k]) {
         while (field < t->a.ends[c.decl] && t->kinds[field] != K_FIELD) {
@@ -1527,8 +2018,24 @@ flow_fields(Tr *t, u32 list)
         if (field >= t->a.ends[c.decl]) {
             die(t, list, "an initializer with more values than fields");
         }
-        flow_init(t, (Site){ field, 0 }, k, false);
+        if (t->kinds[strip(t, k)] == K_IMPLICIT_VALUE_INIT) {
+            zeroes = true;
+        } else {
+            flow_init(t, (Site){ field, 0 }, k, false);
+        }
         field = t->a.ends[field];
+    }
+    if (zeroes) {
+        zero_literal(t, list);
+    }
+}
+
+static void
+seed_nil(Tr *t, Site s)
+{
+    set_site(t, s, NULLABLE);
+    if (s.decl != 0 && s.level == 0) {
+        t->marks[s.decl] |= MARK_TOLERANT;
     }
 }
 
@@ -1537,18 +2044,43 @@ seed_condition(Tr *t, u32 e)
 {
     e = strip(t, e);
     if (is_pointer(t, e)) {
-        set_site(t, value_site(t, e), NULLABLE);
+        seed_nil(t, value_site(t, e));
     }
+}
+
+static bool
+local_var(const Tr *t, u32 v)
+{
+    return t->kinds[v] == K_VAR && t->a.details[v] == 0 && t->parents[v] != 0 &&
+           t->kinds[t->parents[v]] == K_DECL_STMT;
+}
+
+static u32
+write_target(Tr *t, u32 i)
+{
+    u8 k = t->kinds[i];
+    if ((k == K_BINARY && op(t, i) == OP_ASSIGN) || k == K_COMPOUND_ASSIGN ||
+        (k == K_UNARY &&
+         (op(t, i) == OP_INC || op(t, i) == OP_DEC || op(t, i) == OP_AND))) {
+        return strip(t, i + 1);
+    }
+    return 0;
 }
 
 static void
 scan_node(Tr *t, u32 i, u32 fn)
 {
+    u32 target = write_target(t, i);
+    if (target != 0 && t->kinds[target] == K_DECL_REF &&
+        t->kinds[decl_of(t, target)] == K_VAR) {
+        t->marks[decl_of(t, target)] &= (u8)~MARK_DEMANDED;
+    }
+
     switch (t->kinds[i]) {
         case K_VAR: {
             Site s = { i, 0 };
             if (t->a.flags[i] & AST_HAS_INIT) {
-                flow_init(t, s, init_of(t, i), false);
+                flow_init(t, s, init_of(t, i), local_var(t, i));
             } else if (t->a.details[i] != 0 || t->parents[i] == 0 ||
                        t->kinds[t->parents[i]] == K_TRANSLATION_UNIT) {
                 zero_type(t, s, ctype(t, i));
@@ -1563,9 +2095,9 @@ scan_node(Tr *t, u32 i, u32 fn)
                 flow_init(t, lvalue_site(t, l), r, false);
             } else if ((o == OP_EQ || o == OP_NE) && is_pointer(t, l)) {
                 if (is_null(t, r)) {
-                    set_site(t, value_site(t, l), NULLABLE);
+                    seed_nil(t, value_site(t, l));
                 } else if (is_null(t, l)) {
-                    set_site(t, value_site(t, r), NULLABLE);
+                    seed_nil(t, value_site(t, r));
                 }
             } else if ((o == OP_LT || o == OP_GT || o == OP_LE || o == OP_GE) &&
                        is_pointer(t, l)) {
@@ -1656,7 +2188,9 @@ apply_flow(Tr *t, Flow f)
 {
     bool changed = false;
     bool demanded = f.call && f.to.level == 0 && (t->marks[f.to.decl] & MARK_DEMANDED);
-    if (!demanded && nullable(t, f.from)) {
+    bool tolerant = f.to.level != 0 || (t->marks[f.to.decl] & MARK_TOLERANT);
+    if (!demanded && (tolerant || allocation(t, f.from) == ALLOC_NONE) &&
+        nullable(t, f.from)) {
         changed |= set_site(t, f.to, NULLABLE);
     }
     if (many_value(t, f.from)) {
@@ -1679,6 +2213,60 @@ apply_flow(Tr *t, Flow f)
         changed |= set_site(t, b, x);
     }
     return changed;
+}
+
+static bool
+tolerate_site(Tr *t, Site s)
+{
+    if (s.decl == 0 || s.level != 0 || (t->marks[s.decl] & MARK_TOLERANT)) {
+        return false;
+    }
+    t->marks[s.decl] |= MARK_TOLERANT;
+    return true;
+}
+
+static bool
+tolerate(Tr *t, u32 e)
+{
+    e = strip(t, e);
+    switch (t->kinds[e]) {
+        case K_IMPLICIT_CAST:
+        case K_CAST: {
+            Op c = op(t, e);
+            if (c == CAST_LVALUE) {
+                return tolerate_site(t, lvalue_site(t, e + 1));
+            }
+            return (c == CAST_BIT || c == CAST_NOOP) && tolerate(t, e + 1);
+        }
+        case K_CALL: return tolerate_site(t, (Site){ callee(t, e), 0 });
+        case K_BINARY: {
+            Op o = op(t, e);
+            if (o == OP_ASSIGN) {
+                return tolerate_site(t, lvalue_site(t, child(t, e, 0)));
+            }
+            return o == OP_COMMA && tolerate(t, child(t, e, 1));
+        }
+        case K_CONDITIONAL: {
+            bool a = tolerate(t, child(t, e, 1));
+            bool b = tolerate(t, child(t, e, 2));
+            return a || b;
+        }
+        default: return false;
+    }
+}
+
+static void
+find_tolerant(Tr *t)
+{
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (u32 k = 0; k < t->nflows; k++) {
+            Flow f = t->flows[k];
+            if (f.to.level != 0 || (t->marks[f.to.decl] & MARK_TOLERANT)) {
+                changed |= tolerate(t, f.from);
+            }
+        }
+    }
 }
 
 static bool
@@ -1718,7 +2306,9 @@ demand(Tr *t, u32 fn, u32 e)
             s = value_site(t, base);
         }
     }
-    if (s.decl != 0 && s.level == 0 && t->kinds[s.decl] == K_PARAM) {
+    if (s.decl != 0 && s.level == 0 &&
+        (t->kinds[s.decl] == K_PARAM ||
+         (local_var(t, s.decl) && (t->a.flags[s.decl] & AST_HAS_INIT)))) {
         t->marks[s.decl] |= MARK_DEMANDED;
     }
     for (u32 c = e + 1; c < t->a.ends[e]; c = t->a.ends[c]) {
@@ -1791,6 +2381,7 @@ analyze(Tr *t)
         scan_node(t, i, fn);
     }
 
+    find_tolerant(t);
     for (bool changed = true; changed;) {
         changed = false;
         for (u32 k = 0; k < t->nflows; k++) {
@@ -4939,14 +5530,7 @@ static bool
 writes(Tr *t, u32 root, u32 decl)
 {
     for (u32 i = root; i < t->a.ends[root]; i++) {
-        u8 k = t->kinds[i];
-        u32 target = 0;
-        if ((k == K_BINARY && op(t, i) == OP_ASSIGN) || k == K_COMPOUND_ASSIGN) {
-            target = strip(t, i + 1);
-        } else if (k == K_UNARY && (op(t, i) == OP_INC || op(t, i) == OP_DEC ||
-                                    op(t, i) == OP_AND)) {
-            target = strip(t, i + 1);
-        }
+        u32 target = write_target(t, i);
         if (target != 0 && t->kinds[target] == K_DECL_REF && decl_of(t, target) == decl) {
             return true;
         }
@@ -5570,14 +6154,7 @@ static void
 mark_assigned_params(Tr *t, u32 fn)
 {
     for (u32 i = fn; i < t->a.ends[fn]; i++) {
-        u8 k = t->kinds[i];
-        u32 target = 0;
-        if ((k == K_BINARY && op(t, i) == OP_ASSIGN) || k == K_COMPOUND_ASSIGN) {
-            target = strip(t, i + 1);
-        } else if (k == K_UNARY && (op(t, i) == OP_INC || op(t, i) == OP_DEC ||
-                                    op(t, i) == OP_AND)) {
-            target = strip(t, i + 1);
-        }
+        u32 target = write_target(t, i);
         while (target != 0 && t->kinds[target] == K_MEMBER &&
                !(t->a.flags[target] & AST_ARROW)) {
             target = strip(t, target + 1);
@@ -5658,7 +6235,11 @@ emit_record(Tr *t, u32 r)
             continue;
         }
         char *ty = type_text(t, ctype(t, f), t->bits[f]);
-        putf(&t->out, "\n    %s: %s,", text(t, t->a.names[f]), ty);
+        putf(&t->out, "\n    %s: %s", text(t, t->a.names[f]), ty);
+        if ((t->marks[f] & MARK_UNDEFINED) && !(t->bits[f] & NULLABLE)) {
+            put(&t->out, " = undefined");
+        }
+        put(&t->out, ",");
         free(ty);
     }
     put(&t->out, "\n}\n");
