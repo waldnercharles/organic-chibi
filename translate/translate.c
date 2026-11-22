@@ -115,6 +115,7 @@ typedef enum
     X(CAST_INT_TO_FLOAT, "IntegralToFloating")                                 \
     X(CAST_FLOAT_TO_INT, "FloatingToIntegral")                                 \
     X(CAST_FLOAT, "FloatingCast")                                              \
+    X(CAST_VECTOR_SPLAT, "VectorSplat")                                        \
     X(WORD_STATIC, "static")                                                   \
     X(WORD_EXTERN, "extern")                                                   \
     X(WORD_SIZEOF, "sizeof")                                                   \
@@ -142,6 +143,7 @@ enum
     CT_FUNCTION,
     CT_RECORD,
     CT_OPAQUE,
+    CT_VECTOR,
 };
 
 typedef struct
@@ -584,6 +586,24 @@ skip_attribute(Spelling *s)
     } while (depth > 0);
 }
 
+static u32
+attribute_lanes(Spelling *s)
+{
+    const char *p = s->p + strlen("__attribute__");
+    const char *size = "((__vector_size__(";
+    const char *ext = "((ext_vector_type(";
+    u32 lanes = 0;
+    if (strncmp(p, size, strlen(size)) == 0 || strncmp(p, ext, strlen(ext)) == 0) {
+        p += strlen(size);
+        while (*p >= '0' && *p <= '9') {
+            lanes = lanes * 10 + (u32)(*p - '0');
+            p++;
+        }
+    }
+    skip_attribute(s);
+    return lanes;
+}
+
 static u32 type_at(Spelling *s);
 static u32 ctype_of_string(Tr *t, u32 sid, u32 node);
 
@@ -610,11 +630,12 @@ specifiers(Spelling *s)
     bool is_char = false;
     bool is_int = false;
     u32 base = 0;
+    u32 lanes = 0;
 
     for (;;) {
         skip_spaces(s);
         if (starts_word(s->p, "__attribute__")) {
-            skip_attribute(s);
+            lanes = attribute_lanes(s);
             continue;
         }
 
@@ -689,22 +710,22 @@ specifiers(Spelling *s)
         }
     }
 
-    if (base != 0) {
+    if (base == 0 && is_char) {
+        base = simple_type(t, CT_INT, 8, is_signed);
+    } else if (base == 0 && is_short) {
+        base = simple_type(t, CT_INT, 16, !is_unsigned);
+    } else if (base == 0 && longs > 0) {
+        base = simple_type(t, CT_INT, 64, !is_unsigned);
+    } else if (base == 0 && (is_int || is_unsigned || is_signed)) {
+        base = simple_type(t, CT_INT, 32, !is_unsigned);
+    }
+    if (base == 0) {
+        die_type(s, "a type spelling with no type");
+    }
+    if (lanes == 0) {
         return base;
     }
-    if (is_char) {
-        return simple_type(t, CT_INT, 8, is_signed);
-    }
-    if (is_short) {
-        return simple_type(t, CT_INT, 16, !is_unsigned);
-    }
-    if (longs > 0) {
-        return simple_type(t, CT_INT, 64, !is_unsigned);
-    }
-    if (is_int || is_unsigned || is_signed) {
-        return simple_type(t, CT_INT, 32, !is_unsigned);
-    }
-    die_type(s, "a type spelling with no type");
+    return intern_type(t, (CType){ .kind = CT_VECTOR, .inner = base, .count = lanes }, NULL);
 }
 
 static u32
@@ -856,7 +877,11 @@ ctype_of_string(Tr *t, u32 sid, u32 node)
 static u32
 ctype(Tr *t, u32 node)
 {
-    return ctype_of_string(t, t->a.types[node], node);
+    u32 sid = t->a.types[node];
+    if (sid != 0 && t->a.desugared[node] != 0 && starts_word(text(t, sid), "typeof")) {
+        sid = t->a.desugared[node];
+    }
+    return ctype_of_string(t, sid, node);
 }
 
 static bool
@@ -1678,6 +1703,17 @@ put_type(Tr *t, Out *o, u32 type, u32 bits)
             put_type(t, o, c->inner, bits);
             break;
         case CT_RECORD: put(o, text(t, t->names[c->decl])); break;
+        case CT_VECTOR: {
+            const CType *lane = &t->types[c->inner];
+            putf(
+                o,
+                "%c%ux%llu",
+                lane->is_signed ? 'i' : 'u',
+                lane->bits,
+                (unsigned long long)c->count
+            );
+            break;
+        }
         default: put(o, "?"); break;
     }
 }
@@ -1798,6 +1834,9 @@ is_condition(Tr *t, u32 e)
     }
     if (t->kinds[e] != K_BINARY) {
         return is_kind(t, ctype(t, e), CT_BOOL);
+    }
+    if (is_kind(t, ctype(t, e), CT_VECTOR)) {
+        return false;
     }
 
     Op o = op(t, e);
@@ -2224,6 +2263,33 @@ overflow_name(const Tr *t, u32 e)
                                                     : NULL;
 }
 
+static bool
+small_lanes(Tr *t, u32 e)
+{
+    e = strip(t, e);
+    if (t->kinds[e] != K_BINARY) {
+        return false;
+    }
+    u32 r = strip(t, child(t, e, 1));
+    if (t->kinds[r] == K_IMPLICIT_CAST && op(t, r) == CAST_VECTOR_SPLAT) {
+        r = strip(t, r + 1);
+    }
+    __int128 k;
+    if (!constant_value(t, r, &k)) {
+        return false;
+    }
+    return (op(t, e) == OP_AND && k < 16) || (op(t, e) == OP_SHR && k >= 4);
+}
+
+static const char *
+simd_builtin(const Tr *t, u32 f)
+{
+    const char *w = text(t, t->a.names[f]);
+    return strcmp(w, "simd_lookup16") == 0 ? "lookup"
+         : strcmp(w, "simd_mask16") == 0   ? "top_bits"
+                                           : NULL;
+}
+
 static Val
 call(Tr *t, u32 e)
 {
@@ -2240,6 +2306,29 @@ call(Tr *t, u32 e)
     if (strcmp(w, "__builtin_clzll") == 0 || strcmp(w, "__builtin_ctzll") == 0) {
         char *ty = type_text(t, ctype(t, e), 0);
         putf(&t->out, "%s(%s(", ty, w[11] == 'l' ? "leading_zeros" : "trailing_zeros");
+        ex(t, first_arg, 0, 0);
+        put(&t->out, "))");
+        free(ty);
+        return value(ctype(t, e), 0, P_POSTFIX);
+    }
+    const char *simd = simd_builtin(t, f);
+    if (simd != NULL && strcmp(simd, "lookup") == 0) {
+        u32 index = t->a.ends[first_arg];
+        put(&t->out, "lookup(");
+        ex(t, first_arg, 0, 0);
+        put(&t->out, ", ");
+        if (small_lanes(t, index)) {
+            ex(t, index, 0, 0);
+        } else {
+            operand(t, index, P_MUL);
+            put(&t->out, " & 15");
+        }
+        put(&t->out, ")");
+        return value(ctype(t, e), 0, P_POSTFIX);
+    }
+    if (simd != NULL) {
+        char *ty = type_text(t, ctype(t, e), 0);
+        putf(&t->out, "%s(top_bits(", ty);
         ex(t, first_arg, 0, 0);
         put(&t->out, "))");
         free(ty);
@@ -2357,25 +2446,43 @@ c_escape(const Tr *t, u32 e, const char *s, u32 *k)
     return (u8)v;
 }
 
-static void
-put_string(Tr *t, u32 e)
+static u32
+string_start(const Tr *t, u32 e)
 {
-    if (strncmp(text(t, t->a.types[e]), "char[", 5) != 0) {
+    const char *ty = text(t, t->a.types[e]);
+    if (strncmp(ty, "const ", 6) == 0) {
+        ty += 6;
+    }
+    if (strncmp(ty, "char[", 5) != 0) {
         die(t, e, "a string literal that isn't made of `char`");
     }
 
-    const char *s = text(t, t->a.details[e]);
     u32 k = 0;
-    if (json_char(t, e, s, &k) != '"') {
+    if (json_char(t, e, text(t, t->a.details[e]), &k) != '"') {
         die(t, e, "a string literal escaped in an unexpected way");
     }
+    return k;
+}
+
+static bool
+string_byte(const Tr *t, u32 e, u32 *k, u8 *b)
+{
+    const char *s = text(t, t->a.details[e]);
+    char ch = json_char(t, e, s, k);
+    if (ch == '"') {
+        return false;
+    }
+    *b = ch == '\\' ? c_escape(t, e, s, k) : (u8)ch;
+    return true;
+}
+
+static void
+put_string(Tr *t, u32 e)
+{
+    u32 k = string_start(t, e);
     put(&t->out, "\"");
-    for (;;) {
-        char ch = json_char(t, e, s, &k);
-        if (ch == '"') {
-            break;
-        }
-        u8 b = ch == '\\' ? c_escape(t, e, s, &k) : (u8)ch;
+    u8 b;
+    while (string_byte(t, e, &k, &b)) {
         switch (b) {
             case '"': put(&t->out, "\\\""); break;
             case '\\': put(&t->out, "\\\\"); break;
@@ -2391,12 +2498,25 @@ put_string(Tr *t, u32 e)
                 if (b < 0x20 || b == 0x7F) {
                     putf(&t->out, "\\u%04X", b);
                 } else {
-                    put_bytes(&t->out, &ch, 1);
+                    put_bytes(&t->out, (const char *)&b, 1);
                 }
                 break;
         }
     }
     put(&t->out, "\"");
+}
+
+static Val
+vector_cast(Tr *t, u32 e)
+{
+    u32 to = ctype(t, e);
+    u64 at = t->out.len;
+    Val v = ex(t, e + 1, 0, 0);
+    if (!same_chibi_type(t, v.type, 0, to, 0)) {
+        return bitcast_to(t, at, to, 0);
+    }
+    v.type = to;
+    return v;
 }
 
 static Val
@@ -2419,9 +2539,13 @@ cast(Tr *t, u32 e, u32 want_type, u32 want_bits)
             return (Val){ t->type_bool, 0, prec, false, false, true };
         }
         case CAST_BIT: {
+            if (is_kind(t, ctype(t, e), CT_VECTOR)) {
+                return vector_cast(t, e);
+            }
             bool hint = want_type != 0 && is_kind(t, want_type, CT_POINTER);
             return pointer_cast(t, e, want_bits, hint);
         }
+        case CAST_VECTOR_SPLAT: return ex(t, x, 0, 0);
         case CAST_ARRAY_DECAY: {
             u32 a = strip(t, x);
             if (t->kinds[a] == K_STRING_LITERAL) {
@@ -2544,6 +2668,12 @@ is_unsigned_int(Tr *t, u32 type)
     return c->kind == CT_INT && !c->is_signed;
 }
 
+static bool
+wraps(Tr *t, u32 type)
+{
+    return is_unsigned_int(t, type) || is_kind(t, type, CT_VECTOR);
+}
+
 static void
 negated_offset(Tr *t, u32 n)
 {
@@ -2570,7 +2700,7 @@ negated_offset(Tr *t, u32 n)
 }
 
 static Val
-pointer_offset(Tr *t, u32 e, u32 p, u32 n, bool negate)
+many_pointer(Tr *t, u32 p)
 {
     u64 at = t->out.len;
     Val v = ex(t, p, 0, 0);
@@ -2580,6 +2710,14 @@ pointer_offset(Tr *t, u32 e, u32 p, u32 n, bool negate)
     if (!(v.bits & MANY)) {
         v = bitcast_to(t, at, v.type, v.bits | MANY);
     }
+    return v;
+}
+
+static Val
+pointer_offset(Tr *t, u32 e, u32 p, u32 n, bool negate)
+{
+    u64 at = t->out.len;
+    Val v = many_pointer(t, p);
     parens(t, at, v, P_ADD);
     put(&t->out, " + ");
     if (negate) {
@@ -2636,7 +2774,7 @@ binary(Tr *t, u32 e)
     u32 type = ctype(t, e);
     u8 prec = binary_prec(o);
     Val a = operand(t, l, prec);
-    put(&t->out, binary_text(o, is_unsigned_int(t, type)));
+    put(&t->out, binary_text(o, wraps(t, type)));
     Val b = operand(t, r, prec + 1);
     return (Val){ type, 0, prec, a.untyped && b.untyped, false, false };
 }
@@ -2659,14 +2797,24 @@ unary(Tr *t, u32 e)
     switch (o) {
         case OP_SUB: {
             u32 type = ctype(t, e);
-            put(&t->out, is_unsigned_int(t, type) ? "-%" : "-");
+            put(&t->out, wraps(t, type) ? "-%" : "-");
             Val v = operand(t, x, P_UNARY);
             return (Val){ type, 0, P_UNARY, v.untyped, false, false };
         }
         case OP_BIT_NOT: {
+            u32 type = ctype(t, e);
+            __int128 k;
+            if (is_unsigned_int(t, type) && constant_value(t, x, &k)) {
+                char *ty = type_text(t, type, 0);
+                putf(&t->out, "~%s(", ty);
+                free(ty);
+                ex(t, x, 0, 0);
+                put(&t->out, ")");
+                return value(type, 0, P_UNARY);
+            }
             put(&t->out, "~");
             Val v = operand(t, x, P_UNARY);
-            return (Val){ ctype(t, e), 0, P_UNARY, v.untyped, false, false };
+            return (Val){ type, 0, P_UNARY, v.untyped, false, false };
         }
         case OP_NOT: {
             u8 prec = cond(t, e);
@@ -2900,13 +3048,56 @@ put_elements(Tr *t, u32 list, u32 type, u32 bits, bool constant, bool multiline)
     return multiline || fits(t, t->out.len);
 }
 
+static void
+put_char_array(Tr *t, u32 e, u64 count)
+{
+    u32 k = string_start(t, e);
+    bool more = true;
+    put(&t->out, ".[");
+    for (u64 i = 0; i < count; i++) {
+        u8 b = 0;
+        more = more && string_byte(t, e, &k, &b);
+        putf(&t->out, i == 0 ? "%u" : ", %u", b);
+    }
+    put(&t->out, "]");
+}
+
+static void
+put_lanes(Tr *t, u32 list, u32 type, bool constant)
+{
+    CType c = t->types[type];
+    u32 item = list + 1;
+
+    char *ty = type_text(t, type, 0);
+    putf(&t->out, "%s.{ ", ty);
+    free(ty);
+    for (u64 k = 0; k < c.count; k++) {
+        put(&t->out, k == 0 ? "" : ", ");
+        if (item < t->a.ends[list]) {
+            put_init(t, item, c.inner, 0, constant);
+            item = t->a.ends[item];
+        } else {
+            put(&t->out, "0");
+        }
+    }
+    put(&t->out, " }");
+}
+
 static Val
 put_init(Tr *t, u32 e, u32 type, u32 bits, bool constant)
 {
     u32 s = e == 0 ? 0 : literal_of(t, e);
     bool zero = s == 0 || t->kinds[s] == K_IMPLICIT_VALUE_INIT;
     u8 kind = t->types[type].kind;
+    if (kind == CT_VECTOR && !zero && t->kinds[s] == K_INIT_LIST) {
+        put_lanes(t, s, type, constant);
+        return value(type, 0, P_POSTFIX);
+    }
     if (kind == CT_ARRAY || kind == CT_RECORD) {
+        if (!zero && t->kinds[s] == K_STRING_LITERAL) {
+            put_char_array(t, s, t->types[type].count);
+            return value(type, bits, P_POSTFIX);
+        }
         if (!zero && t->kinds[s] != K_INIT_LIST) {
             return value_as(t, e, type, bits);
         }
@@ -3170,14 +3361,73 @@ cond(Tr *t, u32 e)
 }
 
 static const char *const reserved_names[] = {
-    "if",        "then",    "else",    "for",    "while", "switch", "break",
-    "continue",  "return",  "defer",   "struct", "union", "enum",   "fn",
-    "package",   "import",  "pub",     "true",   "false", "nil",    "is",
-    "in",        "bitcast", "and",     "or",     "const", "export", "extern",
-    "undefined", "try",     "catch",   "void",   "bool",  "int",    "i8",
-    "i16",       "i32",     "i64",     "u8",     "u16",   "u32",    "u64",
-    "f32",       "f64",     "uintptr", "error",  "u8x16", "i8x16",  "u16x8",
-    "i16x8",     "u32x4",   "i32x4",   "u64x2",  "i64x2", "_",
+    "if",
+    "then",
+    "else",
+    "for",
+    "while",
+    "switch",
+    "break",
+    "continue",
+    "return",
+    "defer",
+    "struct",
+    "union",
+    "enum",
+    "fn",
+    "package",
+    "import",
+    "pub",
+    "true",
+    "false",
+    "nil",
+    "is",
+    "in",
+    "bitcast",
+    "and",
+    "or",
+    "const",
+    "export",
+    "extern",
+    "undefined",
+    "try",
+    "catch",
+    "void",
+    "bool",
+    "int",
+    "i8",
+    "i16",
+    "i32",
+    "i64",
+    "u8",
+    "u16",
+    "u32",
+    "u64",
+    "f32",
+    "f64",
+    "uintptr",
+    "error",
+    "u8x16",
+    "i8x16",
+    "u16x8",
+    "i16x8",
+    "u32x4",
+    "i32x4",
+    "u64x2",
+    "i64x2",
+    "_",
+    "trailing_zeros",
+    "leading_zeros",
+    "count_ones",
+    "add_overflows",
+    "sub_overflows",
+    "mul_overflows",
+    "unaligned_load",
+    "unaligned_store",
+    "lookup",
+    "top_bits",
+    "size_of",
+    "align_of",
 };
 
 static bool
@@ -3336,7 +3586,9 @@ hoisted(const Tr *t, u32 s)
         return false;
     }
     for (u32 c = s + 1; c < t->a.ends[s]; c = t->a.ends[c]) {
-        if (t->kinds[c] != K_VAR || !global_var(t, c)) {
+        u8 k = t->kinds[c];
+        if (k != K_ENUM && k != K_RECORD && k != K_TYPEDEF &&
+            (k != K_VAR || !global_var(t, c))) {
             return false;
         }
     }
@@ -3544,8 +3796,35 @@ mentions(const Tr *t, u32 root, u32 decl)
     return false;
 }
 
+static bool
+mentions_outside(const Tr *t, u32 root, u32 inner, u32 decl)
+{
+    for (u32 i = root; i < t->a.ends[root]; i++) {
+        if (i == inner) {
+            i = t->a.ends[inner] - 1;
+        } else if (t->kinds[i] == K_DECL_REF && decl_of(t, i) == decl) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void
-hoist_overflow(Tr *t, u32 e, u32 root)
+put_overflow_store(Tr *t, u32 e)
+{
+    u32 a = t->a.ends[e + 1];
+    u32 b = t->a.ends[a];
+    u32 r = strip(t, t->a.ends[b]);
+    const char *name = overflow_name(t, e);
+    ex(t, r + 1, 0, 0);
+    put(&t->out, " = ");
+    operand(t, a, P_ADD);
+    put(&t->out, name[0] == 'a' ? " +% " : name[0] == 's' ? " -% " : " *% ");
+    operand(t, b, name[0] == 'm' ? P_MUL + 1 : P_ADD + 1);
+}
+
+static void
+hoist_overflow(Tr *t, u32 e, u32 root, bool after)
 {
     for (u32 at = e; at != root;) {
         u32 p = t->parents[at];
@@ -3565,8 +3844,10 @@ hoist_overflow(Tr *t, u32 e, u32 root)
         die(t, e, "an overflow builtin whose operands have side effects");
     }
     u32 target = strip(t, r + 1);
-    if (!private_local(t, target) || mentions(t, a, decl_of(t, target)) ||
-        mentions(t, b, decl_of(t, target))) {
+    u32 d = decl_of(t, target);
+    bool own = mentions(t, a, d) || mentions(t, b, d);
+    if (!private_local(t, target) ||
+        (own && (!after || mentions_outside(t, root, e, d)))) {
         die(t, e, "an overflow builtin whose result may be one of its operands");
     }
     u32 type = ctype(t, r + 1);
@@ -3574,12 +3855,12 @@ hoist_overflow(Tr *t, u32 e, u32 root)
         die(t, e, "an overflow builtin whose operands and result differ in type");
     }
 
-    const char *name = overflow_name(t, e);
-    ex(t, r + 1, 0, 0);
-    put(&t->out, " = ");
-    operand(t, a, P_ADD);
-    put(&t->out, name[0] == 'a' ? " +% " : name[0] == 's' ? " -% " : " *% ");
-    operand(t, b, name[0] == 'm' ? P_MUL + 1 : P_ADD + 1);
+    if (own) {
+        t->posts = grow(t->posts, &t->posts_cap, t->nposts + 1, sizeof *t->posts);
+        t->posts[t->nposts++] = e;
+        return;
+    }
+    put_overflow_store(t, e);
     line(t);
 }
 
@@ -3590,7 +3871,7 @@ hoist_increments(Tr *t, u32 root, bool after, bool used)
     bool calls = has_call(t, root);
     for (u32 i = root; i < t->a.ends[root]; i++) {
         if (overflow_name(t, i) != NULL) {
-            hoist_overflow(t, i, root);
+            hoist_overflow(t, i, root, after);
             continue;
         }
         if (t->kinds[i] != K_UNARY || (op(t, i) != OP_INC && op(t, i) != OP_DEC) ||
@@ -3633,7 +3914,11 @@ finish_posts(Tr *t, u32 posts)
 {
     for (u32 k = posts; k < t->nposts; k++) {
         line(t);
-        increment(t, t->posts[k]);
+        if (overflow_name(t, t->posts[k]) != NULL) {
+            put_overflow_store(t, t->posts[k]);
+        } else {
+            increment(t, t->posts[k]);
+        }
     }
     t->nposts = posts;
 }
@@ -3667,7 +3952,7 @@ put_var_decl(Tr *t, u32 v, u32 init)
     u64 at = t->out.len;
     Val val = value_as(t, init, type, bits);
     Out head = { 0 };
-    if (same_val_type(t, val, type, bits)) {
+    if (same_val_type(t, val, type, bits) && !is_kind(t, type, CT_ARRAY)) {
         putf(&head, "%s := ", text(t, name));
     } else {
         putf(&head, "%s: %s = ", text(t, name), ty);
@@ -3759,13 +4044,130 @@ compound_assign(Tr *t, u32 e)
         return;
     }
 
+    if (is_kind(t, type, CT_BOOL) &&
+        (o == OP_OR_ASSIGN || o == OP_AND_ASSIGN) && !has_effects(t, l)) {
+        ex(t, l, 0, 0);
+        put(&t->out, " = ");
+        u64 at = t->out.len;
+        if (cond(t, r) < (o == OP_OR_ASSIGN ? P_OR : P_AND)) {
+            wrap(t, at, "(", ")");
+        }
+        put(&t->out, o == OP_OR_ASSIGN ? " or " : " and ");
+        ex(t, l, 0, 0);
+        return;
+    }
+
     u32 lhs_type = ctype_of_string(t, t->a.arg_types[e], e);
     if (lhs_type != type) {
         die(t, e, "a compound assignment that promotes its target");
     }
     ex(t, l, 0, 0);
-    put(&t->out, assign_text(o, is_unsigned_int(t, type)));
+    put(&t->out, assign_text(o, wraps(t, type)));
     operand(t, r, P_LOWEST);
+}
+
+enum
+{
+    ACCESS_NONE,
+    ACCESS_LOAD,
+    ACCESS_STORE,
+};
+
+static u32
+scalar_bytes(const Tr *t, u32 type)
+{
+    const CType *c = &t->types[type];
+    if (c->kind == CT_INT) {
+        return c->bits / 8;
+    }
+    if (c->kind == CT_VECTOR) {
+        return (u32)c->count * t->types[c->inner].bits / 8;
+    }
+    return 0;
+}
+
+static u32
+void_operand(const Tr *t, u32 e)
+{
+    e = strip(t, e);
+    while (t->kinds[e] == K_IMPLICIT_CAST &&
+           (op(t, e) == CAST_BIT || op(t, e) == CAST_NOOP)) {
+        e = strip(t, e + 1);
+    }
+    return e;
+}
+
+static u32
+addressed_name(Tr *t, u32 e)
+{
+    e = void_operand(t, e);
+    if (t->kinds[e] != K_UNARY || op(t, e) != OP_AND) {
+        return 0;
+    }
+    u32 x = strip(t, e + 1);
+    return t->kinds[x] == K_DECL_REF ? x : 0;
+}
+
+static bool
+size_matches(Tr *t, u32 n, u32 type)
+{
+    u32 bytes = scalar_bytes(t, type);
+    n = strip(t, n);
+    if (bytes == 0) {
+        return false;
+    }
+    if (t->kinds[n] == K_TYPE_TRAIT) {
+        u32 arg = t->a.arg_types[n];
+        u32 of = arg != 0 ? ctype_of_string(t, arg, n) : ctype(t, child(t, n, 0));
+        return strcmp(text(t, t->a.names[n]), "sizeof") == 0 &&
+               scalar_bytes(t, of) == bytes;
+    }
+    __int128 v;
+    return constant_value(t, n, &v) && v == bytes;
+}
+
+static u8
+memory_access(Tr *t, u32 call, u32 *var)
+{
+    u32 f = callee(t, call);
+    if (f == 0 || strcmp(text(t, t->a.names[f]), "memcpy") != 0) {
+        return ACCESS_NONE;
+    }
+    u32 to = t->a.ends[call + 1];
+    u32 from = t->a.ends[to];
+    u32 size = t->a.ends[from];
+
+    u32 into = addressed_name(t, to);
+    if (into != 0 && size_matches(t, size, ctype(t, into))) {
+        *var = into;
+        return ACCESS_LOAD;
+    }
+    u32 out = addressed_name(t, from);
+    if (out != 0 && size_matches(t, size, ctype(t, out))) {
+        *var = out;
+        return ACCESS_STORE;
+    }
+    return ACCESS_NONE;
+}
+
+static void
+put_memory_access(Tr *t, u32 call, u8 access, u32 var)
+{
+    u32 to = t->a.ends[call + 1];
+    u32 from = t->a.ends[to];
+    if (access == ACCESS_LOAD) {
+        ex(t, var, 0, 0);
+        char *ty = type_text(t, ctype(t, var), 0);
+        putf(&t->out, " = unaligned_load(%s, ", ty);
+        free(ty);
+        many_pointer(t, void_operand(t, from));
+    } else {
+        put(&t->out, "unaligned_store(");
+        many_pointer(t, void_operand(t, to));
+        put(&t->out, ", ");
+        ex(t, var, 0, 0);
+    }
+    put(&t->out, ")");
 }
 
 static void
@@ -3786,6 +4188,12 @@ put_expr_stmt(Tr *t, u32 e)
             }
             break;
         case K_CALL: {
+            u32 var = 0;
+            u8 access = memory_access(t, e, &var);
+            if (access != ACCESS_NONE) {
+                put_memory_access(t, e, access, var);
+                return;
+            }
             u32 f = callee(t, e);
             u32 result = f ? t->types[ctype(t, f)].inner : 0;
             if (result != 0 && is_kind(t, result, CT_VOID)) {
@@ -4430,6 +4838,15 @@ builtin_function(const Tr *t, u32 f)
 }
 
 static bool
+replaced_call(Tr *t, u32 ref)
+{
+    u32 call = t->parents[t->parents[ref]];
+    u32 var = 0;
+    return t->kinds[call] == K_CALL && t->kinds[t->parents[call]] == K_COMPOUND &&
+           memory_access(t, call, &var) != ACCESS_NONE;
+}
+
+static bool
 address_escapes(const Tr *t, u32 e)
 {
     for (;;) {
@@ -4490,6 +4907,7 @@ mark_uses(Tr *t, u32 root, u32 *work, u32 *nwork)
             continue;
         }
         if (t->kinds[d] != K_FUNCTION || builtin_function(t, d) ||
+            simd_builtin(t, d) != NULL || replaced_call(t, i) ||
             (t->marks[d] & (MARK_EMIT | MARK_EXTERN))) {
             continue;
         }
@@ -4517,6 +4935,10 @@ mark_assigned_params(Tr *t, u32 fn)
         } else if (k == K_UNARY && (op(t, i) == OP_INC || op(t, i) == OP_DEC ||
                                     op(t, i) == OP_AND)) {
             target = strip(t, i + 1);
+        }
+        while (target != 0 && t->kinds[target] == K_MEMBER &&
+               !(t->a.flags[target] & AST_ARROW)) {
+            target = strip(t, target + 1);
         }
         if (target != 0 && t->kinds[target] == K_DECL_REF) {
             u32 d = decl_of(t, target);
@@ -4699,7 +5121,7 @@ emit_function(Tr *t, u32 def)
     t->ntargets = 0;
     mark_assigned_params(t, def);
 
-    putf(&t->out, "\n%sfn %s", exported ? "export " : "", text(t, t->a.names[def]));
+    putf(&t->out, "\n%sfn %s", exported ? "export " : "", text(t, t->names[c]));
     put_params(t, def, true);
     if (is_kind(t, t->types[ctype(t, def)].inner, CT_VOID) && calls_later(t, def)) {
         put(&t->out, " -> void");
@@ -4765,6 +5187,23 @@ name_static_locals(Tr *t)
 }
 
 static void
+name_functions(Tr *t)
+{
+    for (u32 f = 0; f < t->a.count; f++) {
+        if (t->kinds[f] != K_FUNCTION || t->canon[f] != f ||
+            !(t->marks[f] & MARK_EMIT) || !reserved(text(t, t->a.names[f]))) {
+            continue;
+        }
+        if (t->a.details[f] == 0 || strcmp(text(t, t->a.details[f]), "static") != 0) {
+            die(t, f, "an exported function whose name chibi reserves");
+        }
+        char buf[256];
+        snprintf(buf, sizeof buf, "%s_", text(t, t->a.names[f]));
+        t->names[f] = intern_text(t, buf);
+    }
+}
+
+static void
 emit_program(Tr *t)
 {
     u32 n = t->a.count;
@@ -4784,6 +5223,7 @@ emit_program(Tr *t)
         mark_uses(t, def, work, &nwork);
     }
     name_static_locals(t);
+    name_functions(t);
 
     Out body = t->out;
     t->out = (Out){ 0 };
