@@ -1,6 +1,6 @@
 # The cppgm LowIR spike
 
-The Compiler row of 2026-11-19 in [decisions.md](../../docs/decisions.md) asks for a spike of cppgm's LowIR as the release backend in place of LLVM, once the C backend works. The C backend reached that point at commit 5347399 (step 3j.4). This experiment translates chibi's IR to LowIR through LowIR's C API, checks the result against the IR reference interpreter, and times compile and run speed against the C backend with clang `-O2`. All timings come from the cloud's x86-64 Xeon (Granite Rapids, 4 vCPUs) and are wall time unless marked as CPU time, with cppgm 0.10.2 (ABI version 5) built from source with GCC 13, and clang 18.
+The Compiler row of 2026-11-19 in [decisions.md](../../docs/decisions.md) asks for a spike of cppgm's LowIR as the release backend in place of LLVM, once the C backend works. The C backend reached that point at commit 5347399 (step 3j.4). This experiment translates chibi's IR to LowIR through LowIR's C API, checks the result against the IR reference interpreter, and times compile and run speed against the C backend with clang `-O2`. All timings come from the cloud's x86-64 Xeon (Granite Rapids, 4 vCPUs) and are wall time unless marked as CPU time, with cppgm 0.10.2 (ABI version 5) built from source with GCC 13, and clang 18. Hand-off 2 (below) used cppgm's main branch at 0025136 instead, which has the same ABI and fewer bugs.
 
 ## Result
 
@@ -11,19 +11,68 @@ The Compiler row of 2026-11-19 in [decisions.md](../../docs/decisions.md) asks f
 
 LowIR keeps its promise on compile speed and comes close on code speed without checks. Two things stand between it and the release role: an optimizer that isn't yet correct, and overflow checks with about twice clang's overhead.
 
+## Hand-off 2: the compiler through LowIR
+
+At commit d8c3f9c (step 3t.10) all 11 of the compiler's C files translate to chibi. Each file is its own chibi program, so each one compiles through LowIR into its own object; the 11 objects link with one copy of the runtime and the vendored xxHash.
+
+- **It works.** The compiler built through LowIR `-O2` writes the same C as the C build, byte for byte, for all 11 translated files, and for the 200-file corpus below. The test suite passes with the 10 LowIR objects in place of the compiler's C files.
+- **Compile speed:** LowIR `-O2` compiles the 11 files in 1.5 s, against 10.2 s for `chibi c` and clang `-O2`: 6.8× faster. At `-O0` it's 0.23 s against 1.9 s.
+- **Run speed:** the compiler built through LowIR `-O2` runs at 0.95 of the one built through clang `-O2` (0.93 to 0.99 in three interleaved runs). `-O1` runs as fast as `-O2`, and `-O0` at 0.66. The compiler built from the C source runs at the speed of the one built from the translations.
+
+| File | Lines | `chibi c` | clang `-O0` | clang `-O2` | LowIR `-O0` | LowIR `-O1` | LowIR `-O2` |
+|---|---|---|---|---|---|---|---|
+| arena | 148 | 0.004 | 0.052 | 0.063 | 0.005 | 0.007 | 0.007 |
+| str | 83 | 0.003 | 0.039 | 0.066 | 0.005 | 0.006 | 0.006 |
+| names | 156 | 0.004 | 0.056 | 0.082 | 0.006 | 0.009 | 0.009 |
+| exact | 1,267 | 0.005 | 0.107 | 0.490 | 0.011 | 0.052 | 0.092 |
+| parser | 2,188 | 0.006 | 0.152 | 0.526 | 0.013 | 0.072 | 0.081 |
+| lexer | 13,991 | 0.019 | 0.124 | 0.359 | 0.063 | 0.096 | 0.131 |
+| check | 10,011 | 0.021 | 0.751 | 5.802 | 0.067 | 0.622 | 0.737 |
+| arm64 | 5,065 | 0.011 | 0.287 | 1.858 | 0.030 | 0.209 | 0.320 |
+| driver | 798 | 0.005 | 0.056 | 0.187 | 0.007 | 0.019 | 0.025 |
+| c_source | 1,983 | 0.007 | 0.138 | 0.673 | 0.014 | 0.063 | 0.093 |
+| main | 7 | 0.003 | 0.032 | 0.036 | 0.004 | 0.004 | 0.004 |
+| **Total** | | **0.088** | **1.794** | **10.142** | **0.225** | **1.159** | **1.505** |
+
+Seconds, the fastest of 3, one file after another on one thread. The LowIR times include chibi's front end; the C path's front end is the `chibi c` column, which a C build adds to clang's. clang runs with `-march=x86-64-v2`, the project's setting, and each run pays about 30 ms of start-up. The lexer is mostly constant tables, which `chibi c` writes as C initializers and LowIR as data items.
+
+Run speed, as the time to write the corpus as C (`c -o /dev/null` on 200 files, 694,816 lines; fastest of 5 or 7 runs, taken in rounds):
+
+| Build of the compiler | Run 1 | Run 2 | Run 3 (output to a file) |
+|---|---|---|---|
+| C source, clang `-O2` | 0.992 | 0.958 | 1.093 |
+| translations, clang `-O2` | 0.957 | 0.980 | 1.169 |
+| translations, clang `-O0` | 3.651 | | 3.819 |
+| translations, LowIR `-O2` | 1.033 | 1.029 | 1.186 |
+| translations, LowIR `-O1` | 1.043 | 1.039 | 1.167 |
+| translations, LowIR `-O0` | 1.454 | | 1.729 |
+
+The translations keep chibi's overflow checks, which cost LowIR more than clang on the small programs below. What makes up the 5% on the compiler wasn't studied. The binary is 857 KB through LowIR `-O2` and 717 KB through clang `-O2`.
+
 ## What's here
 
-- `lowir.c` and `lowir.h`: the translator, 1,916 lines. `lowir_package` adds one package's functions, data and globals to a LowIR module; `lowir_unsupported` names what it can't translate.
-- `main.c`: `chibi-lowir`, the `chibi` driver with one more command. `chibi-lowir lowir -o program [-O0..3] [-c] [--wrap] [--shared] [--ir file.lowir] [--times] file.chibi... [-- linker arguments]` builds a program through LowIR; `--wrap` turns the overflow checks off, `--times` prints the time of each phase. The other commands are `chibi`'s.
-- `test.c`: the checks below. It includes `test/c_source_test.c` to reuse its programs, its interop functions and its comparison with the reference interpreter.
+- `lowir.c` and `lowir.h`: the translator, 2,365 lines. `lowir_package` adds one package's functions, data and globals to a LowIR module. It translates all of chibi's IR.
+- `main.c`: `chibi-lowir`, the `chibi` driver with one more command. `chibi-lowir lowir -o program [-O0..3] [-c] [--wrap] [--shared] [--ir file.lowir] [--times] [--runtime-suffix name] file.chibi... [-- linker arguments]` builds a program through LowIR; `--wrap` turns the overflow checks off, `--times` prints the time of each phase, and `--runtime-suffix _x` names the runtime `chibi_trap_x` and `chibi_context_x`, so that objects can link into a program that has its own runtime, such as the test suite. The other commands are `chibi`'s.
+- `test.c`: the checks below. It includes `test/c_source_test.c` to reuse its programs, its interop functions, its vector programs and its comparison with the reference interpreter.
 - `bench/`: the seven programs that were timed, with `print.c`, which prints their results.
 - `bugs/`: the cppgm bugs: chibi programs that hit them with the LowIR the translator gave cppgm, standalone LowIR repros in `bugs/lowir/`, and draft reports in `bugs/reports.md`.
 
 ```bash
-git clone --depth 1 --branch v0.10.2 https://github.com/vishvananda/cppgm /tmp/cppgm-0.10.2
-make -C /tmp/cppgm-0.10.2/dev lowir-library CXX=g++ CPPGM_HOST_CXX=g++ -j4   # about 1 minute
-make chibi CPPGM=/tmp/cppgm-0.10.2   # build/lowir-spike/chibi-lowir
-make test CPPGM=/tmp/cppgm-0.10.2    # CHIBI_LOWIR_LEVEL=0..3, CHIBI_DIFFERENTIAL, CHIBI_DIFFERENTIAL_SEED
+git clone https://github.com/vishvananda/cppgm /tmp/cppgm && git -C /tmp/cppgm checkout 0025136
+make -C /tmp/cppgm/dev lowir-library CXX=g++ CPPGM_HOST_CXX=g++ -j4   # about 1 minute
+make chibi CPPGM=/tmp/cppgm   # build/lowir-spike/chibi-lowir
+make test CPPGM=/tmp/cppgm    # CHIBI_LOWIR_LEVEL=0..3, CHIBI_DIFFERENTIAL, CHIBI_DIFFERENTIAL_SEED
+```
+
+The compiler through LowIR, after `make translated` in the repository's root:
+
+```bash
+cd build/translated
+for f in arena str names exact parser lexer check arm64 driver c_source main; do
+    ../lowir-spike/chibi-lowir lowir -c -O2 -o $f.lowir.o entry.chibi $f.chibi
+done
+../lowir-spike/chibi-lowir runtime > runtime.c
+cc -O2 -o chibi-lowir-built *.lowir.o runtime.c ../../vendor/xxhash/xxhash.c -lm
 ```
 
 `CHIBI_LOWIR_CRASHES=dir` compiles each random program in a child process, saves the ones that crash the compiler into `dir`, and counts wrong results instead of stopping at the first.
@@ -37,17 +86,21 @@ make test CPPGM=/tmp/cppgm-0.10.2    # CHIBI_LOWIR_LEVEL=0..3, CHIBI_DIFFERENTIA
 - **Switches:** a range of 16 values or more becomes a subtraction and an unsigned compare; smaller ranges become cases of one LowIR `switch`.
 - **Checks** branch, marked unlikely, to one block per kind of trap in each function, which calls `chibi_trap`, declared cold and noreturn. A checked `+` or `-` is followed by the sign test cppgm's own C front end uses for `__builtin_add_overflow`, a checked 64-bit `*` by a 128-bit multiply, and a narrower `*` by a 64-bit multiply and a range compare. With a constant operand, a checked `+`, `-` or `*` is one compare against a precomputed bound.
 - **Calls into C** use C's convention and no context. Variadic arguments narrower than 32 bits are widened, which C does and LowIR leaves to the producer. Callbacks and exports get adapters that load `chibi_context` and call the chibi function, as in the C backend.
-- **Data and globals** become two internal LowIR globals.
-- **Not translated:** vectors. The compiler's own source uses them, so they come before hand-off 2.
+- **Data and globals** become two internal LowIR globals. An 8-byte slot that holds an offset into the data becomes an address item, so that the linker fills in the address.
+- **Vectors** are `v128` values computed with LowIR's SSE operations. A vector constant, or a splat, puts one 64-bit pattern in the low lane with `fromi64` and copies it with `pshufd`. Lane-wise `+%`, `-%`, `&`, `|`, `^` and `~` are one or two operations; `*%` is `pmullw` for 16-bit lanes and a few operations from `pmullw` or `pmuludq` for the others. Compares give masks: unsigned lanes flip their sign bits before `pcmpgt`, `u8` uses `pminub`, and 64-bit lanes combine 32-bit compares. Shifts of 8-bit lanes shift 16-bit lanes and mask; a signed shift of 8-bit or 64-bit lanes flips the sign bit, shifts logically and subtracts the shifted sign bit. `lookup` is `pshufb` after a saturating add of 0x70, so that an index of 16 or more gives 0, and `top_bits` is `pmovmskb`, `movmskps` or `movmskpd`. Everything is SSE2 but `pshufb`, which is SSSE3; the C build's `-march=x86-64-v2` has both.
 
 ## Correctness
 
 | Test | `-O0` | `-O1` to `-O3` |
 |---|---|---|
-| The C backend's grid: 229 functions of two `int`s on 288 argument pairs, against the reference interpreter | agrees | agrees |
-| The C backend's interop test: calls into C, variadic calls, callbacks, exports, `main` | agrees | agrees |
+| The C backend's grid: 341 functions of two `int`s on 288 argument pairs, against the reference interpreter (229 at hand-off 1) | agrees | agrees |
+| The C backend's interop test: calls into C, variadic calls, callbacks, exports, `main`, C globals | agrees | agrees |
+| The C backend's vector programs: 168 calls with hand-computed results, and a grid of 8 functions, one per lane type, on 5,120 argument sets each (hand-off 2, main) | agrees | agrees |
 | 15,000 random programs from `test/random` (seeds 1111, 2222, 3333), 4 entry points × 6 calls each | agrees | `-O2`: 4 crashes, 2 wrong results; main: none |
 | 15,000 more (seeds 4444, 5555, 6666) | agrees | `-O2`: 11 crashes, 1 wrong result; main: 7 crashes |
+| 15,000 more at hand-off 2 (seeds 7777, 8888, 9999), main only | not run | `-O2`: 9 crashes, no wrong results |
+
+Seven planted faults in the vector translation, in lookups, shifts, the 64-bit multiply and 64-bit compares, each made the vector programs fail. The 9 crashes at hand-off 2 are all in functions already in bug 3: 5 in `opt::compact_body`, 3 in `opt::clone_call` and 1 in `opt::sink_values`.
 
 The bugs, in 0.10.2 at `-O1` and up. [bugs/README.md](bugs/README.md) has a standalone LowIR file for each that needs only cppgm's own tools.
 
@@ -105,4 +158,6 @@ On the seven small programs, LowIR's `-O2` compile takes 1.0–2.8 ms, against 3
 - On code speed it reaches clang only where overflow checks don't run. With checks on, chibi's default, it runs at 0.65–0.8 of clang, between QBE's 0.6 and MIR's 0.9 of gcc. Closing that gap needs an overflow operation in LowIR, or instruction selection that fuses the sign test into a flag check, plus loop-invariant code motion of checks. That work is upstream, or in chibi's own optimizer.
 - Its optimizer isn't trustworthy yet: on 0.10.2, two wrong-code bugs and five crash sites in one day of testing, all at `-O1` and up. Main fixed one of each within 15 hours, in 139 commits. That pace cuts both ways: bugs get fixed fast, and each version chibi adopts needs the random programs run against it first. A release backend that miscompiles a mask-and-compare is a risk chibi's users would carry.
 
-Not done: vectors in the translator, debug information from the IR's line table (step 3j.5), the M4 Pro, and hand-off 2 (building the compiler itself through LowIR and timing it on the corpus).
+- Hand-off 2 tried it on real code: the compiler built through LowIR passes the bootstrap check and the test suite, compiles 6.8× faster than through clang `-O2`, and runs at 0.95 of clang's speed with checks on, where the small programs gave 0.79. The optimizer's crashes remain the blocker.
+
+Not done: debug information from the IR's line table (step 3j.5), the M4 Pro, one program for the whole compiler in place of one per file, and the 15,000 hand-off 2 random programs at `-O0`.

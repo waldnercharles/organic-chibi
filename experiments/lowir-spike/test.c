@@ -44,18 +44,12 @@ add_object(const Build *b, u32 k, const char *text, char tag)
 {
     Package p;
     bool ok = check_source(&p, text);
-    const char *unsupported = ok ? lowir_unsupported(&p.c) : NULL;
-    if (unsupported) {
-        fprintf(stderr, "lowir test: %s\n%s", unsupported, text);
-        ok = false;
-    }
-
     if (ok) {
         char prefix[32];
         snprintf(prefix, sizeof prefix, "%c%u_", tag, k);
         CppgmLowir *m = cppgm_lowir_create(CPPGM_LOWIR_ABI_VERSION, CPPGM_TARGET_LINUX);
         lowir_text = text;
-        lowir_package(m, &p.c, prefix, LOWIR_SHARED);
+        lowir_package(m, &p.c, prefix, LOWIR_SHARED, "");
         lowir_text = NULL;
         ok = cppgm_lowir_validate(m) &&
              cppgm_lowir_compile(m, lowir_level, CPPGM_CODE_PIC);
@@ -66,6 +60,58 @@ add_object(const Build *b, u32 k, const char *text, char tag)
         cppgm_lowir_destroy(m);
     }
     release(&p);
+    return ok;
+}
+
+static void
+put_prototypes(FILE *out, const Package *p, const char *prefix)
+{
+    const Checker *c = &p->c;
+    for (u32 f = 0; f < c->ir.nfuncs; f++) {
+        const IrFunc *fn = &c->ir.funcs[f];
+        const IrSlot *slots = c->ir.code.slots + fn->first_slot;
+        const char *result = integer_name((u32)c->types.arg1[c->decls.types[fn->decl]]);
+        bool plain = fn->nparams <= 4 && result;
+        for (u32 s = 0; s < fn->nparams; s++) {
+            plain &= integer_name(slots[s].type) != NULL;
+        }
+        if (!plain) {
+            continue;
+        }
+
+        Name n = names_get(&p->lx.names, c->decls.names[fn->decl]);
+        fprintf(out, "%s %s%.*s(void *ctx", result, prefix, (int)n.len, n.text);
+        for (u32 s = 0; s < fn->nparams; s++) {
+            fprintf(out, ", %s", integer_name(slots[s].type));
+        }
+        fputs(");\n", out);
+    }
+}
+
+static bool
+add_wrappers(const Build *b, u32 k, const char *text, char tag)
+{
+    Package p;
+    bool ok = check_source(&p, text);
+    char prefix[32];
+    snprintf(prefix, sizeof prefix, "%c%u_", tag, k);
+    char path[64];
+    snprintf(path, sizeof path, "%s/w%s.c", b->dir, prefix);
+    FILE *f = ok ? fopen(path, "w") : NULL;
+    if (f) {
+        fputs("#include <stdint.h>\n\n", f);
+        put_prototypes(f, &p, prefix);
+        put_wrappers(f, &p, prefix);
+        ok = fclose(f) == 0;
+    }
+    release(&p);
+
+    char command[192];
+    snprintf(command, sizeof command, "cc -c -O1 -o %s/w%s.o %s", b->dir, prefix, path);
+    ok = ok && system(command) == 0;
+    if (!ok) {
+        fprintf(stderr, "lowir test: can't build the wrappers in %s\n", path);
+    }
     return ok;
 }
 
@@ -236,6 +282,45 @@ TEST_CASE(lowir_works_with_c)
     return true;
 }
 
+TEST_CASE(lowir_runs_vectors)
+{
+    const char *const programs[] = { VECTOR_RUNS, VECTOR_GRID, VECTOR_BODY,
+                                     VECTOR_MASK, VECTOR_MASK, VECTOR_PICK };
+    Build b;
+    REQUIRE(open_objects(&b));
+    bool ok = true;
+    for (u32 k = 0; ok && k < sizeof programs / sizeof programs[0]; k++) {
+        ok = add_object(&b, k, programs[k], 'v') &&
+             add_wrappers(&b, k, programs[k], 'v');
+    }
+    ok = ok && link_objects(&b);
+
+    ok = ok && runs_agree(&b, 0, VECTOR_RESULTS, NVECTOR_RESULTS, "lowir");
+    ok = ok && runs_agree(&b, 2, VECTOR_BODY_RESULTS, NVECTOR_BODY_RESULTS, "lowir");
+    for (u32 k = 3; ok && k < 5; k++) {
+        ok = runs_agree(
+            &b,
+            k,
+            VECTOR_MASK_RESULTS,
+            sizeof VECTOR_MASK_RESULTS / sizeof VECTOR_MASK_RESULTS[0],
+            "lowir"
+        );
+    }
+    ok = ok && runs_agree(
+                   &b,
+                   5,
+                   VECTOR_PICK_RESULTS,
+                   sizeof VECTOR_PICK_RESULTS / sizeof VECTOR_PICK_RESULTS[0],
+                   "lowir"
+               );
+    for (size_t f = 0; ok && f < NVECTOR_GRID_FUNCTIONS; f++) {
+        ok = grid_agrees(&b, 1, &VECTOR_GRID_FUNCTIONS[f], "lowir");
+    }
+    close_objects(&b, ok);
+    REQUIRE(ok);
+    return true;
+}
+
 int
 main(void)
 {
@@ -247,6 +332,7 @@ main(void)
 
     RUN_TEST_CASE(lowir_agrees_with_reference);
     RUN_TEST_CASE(lowir_works_with_c);
+    RUN_TEST_CASE(lowir_runs_vectors);
 
     printf("lowir test at -O%u: %s\n", lowir_level, pu_test_failed() ? "FAILED" : "passed");
     return pu_test_failed();

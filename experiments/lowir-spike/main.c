@@ -7,6 +7,7 @@
 static const char LOWIR_USAGE[] = "usage: chibi-lowir lowir [-o program] "
                                   "[-O0..3] [-c] [--wrap] "
                                   "[--shared] [--ir file.lowir] [--times] "
+                                  "[--runtime-suffix name] "
                                   "file.chibi... [-- linker arguments]\n"
                                   "       chibi-lowir runtime\n";
 
@@ -14,6 +15,7 @@ typedef struct
 {
     const char *output;
     const char *ir;
+    const char *suffix;
     const char **files;
     u32 nfiles;
     char **link_args;
@@ -35,11 +37,14 @@ seconds(void)
 static bool
 parse_lowir_options(FILE *err, LowirOptions *o, int argc, char **argv)
 {
-    *o = (LowirOptions){ .files = malloc((size_t)argc * sizeof *o->files), .level = 2 };
+    *o = (LowirOptions
+    ){ .suffix = "", .files = malloc((size_t)argc * sizeof *o->files), .level = 2 };
     for (int i = 2; i < argc; i++) {
         const char *a = argv[i];
         if ((strcmp(a, "-o") == 0 || strcmp(a, "--ir") == 0) && i + 1 < argc) {
             *(a[1] == 'o' ? &o->output : &o->ir) = argv[++i];
+        } else if (strcmp(a, "--runtime-suffix") == 0 && i + 1 < argc) {
+            o->suffix = argv[++i];
         } else if (a[0] == '-' && a[1] == 'O' && a[2] >= '0' && a[2] <= '3' && !a[3]) {
             o->level = (u32)(a[2] - '0');
         } else if (strcmp(a, "-c") == 0) {
@@ -93,7 +98,14 @@ link_program(FILE *err, const char *object, const LowirOptions *o)
     size_t size = 0;
     FILE *m = open_memstream(&command, &size);
     const char *cc = getenv("CC");
-    fprintf(m, "%s -O2 -w -o", cc && *cc ? cc : "cc");
+    fprintf(
+        m,
+        "%s -O2 -w -Dchibi_trap=chibi_trap%s -Dchibi_context=chibi_context%s "
+        "-o",
+        cc && *cc ? cc : "cc",
+        o->suffix,
+        o->suffix
+    );
     put_quoted(m, o->output);
     fputs(" -x c - -x none", m);
     put_quoted(m, object);
@@ -120,7 +132,7 @@ lowir_build(FILE *err, const Checker *c, const LowirOptions *o, double *times)
 {
     CppgmLowir *m = cppgm_lowir_create(CPPGM_LOWIR_ABI_VERSION, CPPGM_TARGET_LINUX);
     double t0 = seconds();
-    lowir_package(m, c, "p_", o->flags);
+    lowir_package(m, c, "p_", o->flags, o->suffix);
     double t1 = seconds();
     bool ok = cppgm_lowir_validate(m) && (!o->ir || cppgm_lowir_write(m, o->ir));
     double t2 = seconds();
@@ -166,11 +178,6 @@ lowir_command(FILE *err, int argc, char **argv)
               check_program(err, &p, o.files, o.nfiles);
     times[0] = seconds() - t0;
 
-    const char *unsupported = ok ? lowir_unsupported(&p.c) : NULL;
-    if (unsupported) {
-        fprintf(err, "chibi-lowir: %s\n", unsupported);
-        ok = false;
-    }
     ok = ok && (o.object || has_main(err, &p));
     ok = ok && lowir_build(err, &p.c, &o, times);
     if (ok && o.times) {
