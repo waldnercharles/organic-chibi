@@ -292,8 +292,8 @@ static const Case DECLARATIONS[] = {
       "extern fn labs(x: int) -> int\npub extern fn quit() -> void\nfn f(x: int) -> int\n" },
     { "extern fn printf(fmt: *u8, ..) -> i32\nextern fn any(..)\n",
       "extern fn printf(fmt: *u8, ..) -> i32\nextern fn any(..) -> void\n" },
-    { "fn f(a: i32, xs: ..u64) -> int => 0\nfn g(xs: ..[2]u8) {\n}\n",
-      "fn f(a: i32, xs: ..u64) -> int\nfn g(xs: ..[2]u8) -> (inferred)\n" },
+    { "fn f(a: i32, xs: ..u64) -> int => 0\nfn g(xs: ..[2]u8) {\n}\nfn h(xs: ..i32) => xs.len\n",
+      "fn f(a: i32, xs: ..u64) -> int\nfn g(xs: ..[2]u8) -> void\nfn h(xs: ..i32) -> int\n" },
     { "fn g(cb: fn(int, x: f32) -> u8, h: fn(), k: u8 = 9) => 0\n",
       "fn g(cb: fn(int, f32) -> u8, h: fn() -> void, k: u8 = 9) -> int\n" },
     { "struct S { f: fn(*int, []u8) -> ?int, g: fn(*int, []u8) -> ?int }\n",
@@ -2167,6 +2167,9 @@ static const Case ERRORS[] = {
         "    _ = f(1, 2, p)\n"
         "    _ = f(1, 2, .[3])\n"
         "    take(f)\n"
+        "    take(q)\n"
+        "}\n"
+        "fn q(xs: ..i32) {\n"
         "}\n",
         "a:2:21: C has no `[]u8`, so an `extern fn` can't pass or return it\n"
         "a:3:13: C has no `[]i32`, so an `export fn` can't pass or return it\n"
@@ -2178,12 +2181,14 @@ static const Case ERRORS[] = {
         "a:15:17: `*i32` and `i32` don't mix without a conversion\n"
         "a:16:18: `i32` is not an array, so an array literal can't build it\n"
         "a:17:10: `fn(i32, i32, ..i32) -> i32` and `extern fn(i32) -> void` don't mix without a conversion\n"
+        "a:18:10: `fn(..i32) -> void` and `extern fn(i32) -> void` don't mix without a conversion\n"
         "extern fn take(cb: extern fn(i32) -> void) -> void\n"
         "extern fn h(n: i32, xs: ..u8) -> void\n"
         "export fn e(xs: ..i32) -> void\n"
-        "fn d(a: i32 = 1, xs: ..i32) -> (inferred)\n"
+        "fn d(a: i32 = 1, xs: ..i32) -> void\n"
         "fn f(a: i32, b: i32, xs: ..i32) -> i32\n"
-        "fn g(p: *i32) -> void\n",
+        "fn g(p: *i32) -> void\n"
+        "fn q(xs: ..i32) -> void\n",
     },
     {
         "fn o(xs: ..?int) -> int {\n"

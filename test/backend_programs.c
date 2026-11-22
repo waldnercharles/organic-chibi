@@ -3977,7 +3977,22 @@ const char REST_ARGS[] =
     "\n"
     "fn rst_calls(a: int, b: int) -> int {\n"
     "    return rst_weigh(rst_mk(a, 2), if b > 0 then RstPair.{ 3, 4 } else rst_mk(5, 6), .{ 1, 1 })\n"
-    "}\n";
+    "}\n"
+    "\n"
+    "fn rst_void(a: int, b: int) -> int {\n"
+    "    rst_ticks = 0\n"
+    "    rst_note(1, a & 7, 2)\n"
+    "    rst_note()\n"
+    "    return rst_ticks * 10 + rst_last(a, 4, b)\n"
+    "}\n"
+    "\n"
+    "fn rst_note(xs: ..int) {\n"
+    "    for i in 0..xs.len {\n"
+    "        rst_ticks = rst_ticks * 10 + xs[i]\n"
+    "    }\n"
+    "}\n"
+    "\n"
+    "fn rst_last(xs: ..int) => xs[xs.len - 1]\n";
 
 const char *const BACKEND_PROGRAMS[] = {
     ARITHMETIC,

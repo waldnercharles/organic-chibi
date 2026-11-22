@@ -4808,7 +4808,7 @@ TEST_CASE(optional_fns)
 static const char *const REST_ARG_FUNCTIONS[] = {
     "rst_none",    "rst_one",    "rst_many",  "rst_stack", "rst_index", "rst_order",
     "rst_structs", "rst_nested", "rst_widen", "rst_loop",  "rst_copy",  "rst_slices",
-    "rst_floats",  "rst_strings", "rst_alias", "rst_arrays", "rst_calls",
+    "rst_floats",  "rst_strings", "rst_alias", "rst_arrays", "rst_calls", "rst_void",
 };
 
 static const CallCase REST_ARG_CASES[] = {
@@ -4865,6 +4865,9 @@ static const CallCase REST_ARG_CASES[] = {
     { "rst_calls", 2, 5, 223411, 0 },
     { "rst_calls", 0, -3, 25611, 0 },
     { "rst_calls", 1, 300, 123411, 0 },
+    { "rst_void", 2, 5, 1225, 0 },
+    { "rst_void", 0, -3, 1017, 0 },
+    { "rst_void", 1, 300, 1420, 0 },
 };
 
 TEST_CASE(rest_args)

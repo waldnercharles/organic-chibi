@@ -7300,7 +7300,7 @@ callback(Checker *c, u32 file, u32 token, u32 decl, u32 to)
 {
     need(c, decl, file, token);
     u32 type = c->decls.types[decl];
-    if (c->types.arg1[type] == TYPE_ID_INFERRED) {
+    if ((u32)c->types.arg1[type] == TYPE_ID_INFERRED) {
         need_body(c, decl, file, token);
         type = c->decls.types[decl];
     }
@@ -7506,7 +7506,8 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                     if (kinds[i + 1] == NODE_CALL_ARGS && decl_id &&
                         c->decls.kinds[decl_id] == DECL_FN) {
                         need(c, decl_id, file, token);
-                        if (c->types.arg1[c->decls.types[decl_id]] == TYPE_ID_INFERRED) {
+                        if ((u32)c->types.arg1[c->decls.types[decl_id]] ==
+                            TYPE_ID_INFERRED) {
                             need_body(c, decl_id, file, token);
                         }
                         push(c, token, OPERAND_FN, decl_id);
@@ -8375,8 +8376,9 @@ check_body(Checker *c, u32 decl)
         }
     }
     mark_line(c, tokens[end - 1]);
-    if (c->types.arg1[fn] == TYPE_ID_INFERRED) {
-        d->types[decl] = intern_type(c, TYPE_FN, c->types.arg0[fn], c->body.ret);
+    if ((u32)c->types.arg1[fn] == TYPE_ID_INFERRED) {
+        u64 flags = c->types.arg1[fn] & ~0xFFFFFFFFull;
+        d->types[decl] = intern_type(c, TYPE_FN, c->types.arg0[fn], c->body.ret | flags);
         d->flags[decl] |= is_compound(c, c->body.ret) ? DECL_GENERAL_CALL : 0;
     }
 

@@ -52,7 +52,8 @@
     X(K_INIT_LIST, "InitListExpr")                                             \
     X(K_COMPOUND_LITERAL, "CompoundLiteralExpr")                               \
     X(K_IMPLICIT_VALUE_INIT, "ImplicitValueInitExpr")                          \
-    X(K_PREDEFINED, "PredefinedExpr")
+    X(K_PREDEFINED, "PredefinedExpr")                                          \
+    X(K_VA_ARG, "VAArgExpr")
 
 typedef enum
 {
@@ -145,6 +146,7 @@ enum
     CT_RECORD,
     CT_OPAQUE,
     CT_VECTOR,
+    CT_VA_LIST,
 };
 
 typedef struct
@@ -298,6 +300,7 @@ typedef struct
     u32 labels;
     bool uses_abort;
     bool uses_clear_cache;
+    u32 rest;
     u32 *scope;
     u32 nscope;
     u32 scope_cap;
@@ -685,7 +688,7 @@ specifiers(Spelling *s)
             } while (depth > 0);
             base = intern_type(t, (CType){ .kind = CT_OPAQUE }, NULL);
         } else if (word_is(w, n, "__builtin_va_list")) {
-            base = intern_type(t, (CType){ .kind = CT_OPAQUE }, NULL);
+            base = intern_type(t, (CType){ .kind = CT_VA_LIST }, NULL);
         } else if (word_is(w, n, "struct") || word_is(w, n, "union")) {
             skip_spaces(s);
             if (*s->p == '(') {
@@ -1684,6 +1687,7 @@ put_type(Tr *t, Out *o, u32 type, u32 bits)
             }
             break;
         case CT_FLOAT: putf(o, "f%u", c->bits); break;
+        case CT_VA_LIST: put(o, "int"); break;
         case CT_POINTER: {
             const CType *in = &t->types[c->inner];
             if (in->kind == CT_FUNCTION) {
@@ -2343,6 +2347,60 @@ reads_variable(const Tr *t, u32 e)
            t->kinds[strip(t, e + 1)] == K_DECL_REF;
 }
 
+static bool
+is_string(const Tr *t, u32 e)
+{
+    e = strip(t, e);
+    while (is_cast(t, e)) {
+        e = strip(t, e + 1);
+    }
+    return t->kinds[e] == K_STRING_LITERAL;
+}
+
+static void
+rest_arg(Tr *t, u32 a)
+{
+    u32 type = ctype(t, a);
+    const CType *c = &t->types[type];
+    __int128 k;
+    if (c->kind == CT_INT && constant_value(t, a, &k) && k >= 0) {
+        u32 x = strip(t, a);
+        while (t->kinds[x] == K_IMPLICIT_CAST) {
+            x = strip(t, x + 1);
+        }
+        if (is_enum_constant(t, x)) {
+            put_name(t, decl_of(t, x));
+        } else {
+            put_int(t, k);
+        }
+        return;
+    }
+    if (is_string(t, a)) {
+        die(t, a, "a string literal as a variadic argument");
+    }
+    if (is_null(t, a)) {
+        put(&t->out, "0");
+        return;
+    }
+    if (c->kind != CT_POINTER && !(c->kind == CT_FLOAT && c->bits == 64) &&
+        !(c->kind == CT_INT && c->bits <= 64)) {
+        die(t, a, "a variadic argument other than a pointer, `double` or integer up to 64 bits"
+        );
+    }
+
+    const char *wide = c->kind == CT_FLOAT ? "f64("
+                     : c->is_signed        ? "int("
+                                           : "u64(";
+    u64 at = t->out.len;
+    Val v = c->kind == CT_POINTER ? ex(t, a, 0, 0) : value_as(t, a, type, 0);
+    if ((c->kind == CT_INT && c->bits < 64) || v.untyped) {
+        wrap(t, at, wide, ")");
+    }
+    if (c->kind != CT_INT || c->is_signed) {
+        wrap(t, at, "bitcast(u64, ", ")");
+    }
+}
+
 static Val
 call(Tr *t, u32 e)
 {
@@ -2422,17 +2480,25 @@ call(Tr *t, u32 e)
         put(&t->out, ")");
         return (Val){ t->type_bool, 0, P_POSTFIX, false, false, true };
     }
+    if (strcmp(w, "__builtin_isfinite") == 0 || strcmp(w, "__builtin_signbit") == 0) {
+        die(t, e, "`isfinite` or `signbit` used other than as a condition");
+    }
 
     bool clear_cache = strcmp(w, "__builtin___clear_cache") == 0;
     t->uses_clear_cache |= clear_cache;
     putf(&t->out, "%s(", clear_cache ? "__clear_cache" : text(t, t->names[f]));
     u32 owner = owner_of(t, f);
+    bool rest = t->types[ctype(t, f)].variadic && (t->marks[f] & MARK_EMIT);
     u32 k = 0;
     for (u32 a = first_arg; a < t->a.ends[e]; a = t->a.ends[a], k++) {
         if (k > 0) {
             put(&t->out, ", ");
         }
         u32 p = param_of(t, owner, k);
+        if (p == 0 && rest) {
+            rest_arg(t, a);
+            continue;
+        }
         if (p == 0) {
             ex(t, a, 0, 0);
             continue;
@@ -3016,16 +3082,6 @@ proves_non_nil(const Tr *t, u32 c, u32 decl, bool holds)
            (tested_ref(t, r) == decl && is_null(t, l));
 }
 
-static bool
-is_string(const Tr *t, u32 e)
-{
-    e = strip(t, e);
-    while (is_cast(t, e)) {
-        e = strip(t, e + 1);
-    }
-    return t->kinds[e] == K_STRING_LITERAL;
-}
-
 static Val
 conditional_value(Tr *t, u32 e, u32 type, u32 bits, bool typed)
 {
@@ -3346,6 +3402,76 @@ put_init(Tr *t, u32 e, u32 type, u32 bits, bool constant)
     return value_as(t, e, type, bits);
 }
 
+static bool
+global_var(const Tr *t, u32 d)
+{
+    return t->kinds[d] == K_VAR &&
+           (t->kinds[t->parents[d]] == K_TRANSLATION_UNIT || t->a.details[d] != 0);
+}
+
+static u32
+va_list_decl(const Tr *t, u32 e)
+{
+    e = strip(t, e);
+    while (is_cast(t, e)) {
+        e = strip(t, e + 1);
+    }
+    if (t->kinds[e] != K_DECL_REF || t->kinds[decl_of(t, e)] != K_VAR ||
+        global_var(t, decl_of(t, e))) {
+        die(t, e, "a `va_list` that isn't a local variable");
+    }
+    return decl_of(t, e);
+}
+
+static Val
+va_arg_value(Tr *t, u32 e)
+{
+    u32 sub = t->subst[e];
+    if (sub != 0) {
+        Temp temp = t->temps[sub - 1];
+        put(&t->out, text(t, temp.name));
+        temp.val.prec = P_POSTFIX;
+        return temp.val;
+    }
+
+    if (t->rest == 0) {
+        die(t, e, "a `va_arg` outside a variadic function");
+    }
+    u32 type = ctype(t, e);
+    const CType *c = &t->types[type];
+    bool chars = c->kind == CT_POINTER && t->types[c->inner].kind == CT_INT &&
+                 t->types[c->inner].bits == 8;
+    if (!chars && !(c->kind == CT_FLOAT && c->bits == 64) &&
+        !(c->kind == CT_INT && c->bits <= 64)) {
+        die(t, e, "a `va_arg` of a type other than `char *`, `double` or integer up to 64 bits"
+        );
+    }
+    u32 bits = chars ? NULLABLE | MANY : 0;
+    bool narrow = c->kind == CT_INT && c->bits < 64;
+    bool cast = c->kind != CT_INT || c->is_signed;
+
+    if (cast) {
+        char *ty = type_text(t, type, bits);
+        putf(&t->out, "bitcast(%s, ", ty);
+        free(ty);
+    }
+    if (narrow) {
+        putf(&t->out, "u%u(", c->bits);
+    }
+    putf(&t->out, "%s[", text(t, t->rest));
+    put_name(t, va_list_decl(t, e + 1));
+    put(&t->out, "]");
+    if (narrow) {
+        put(&t->out, " & ");
+        put_int(t, (1ull << c->bits) - 1);
+        put(&t->out, ")");
+    }
+    if (cast) {
+        put(&t->out, ")");
+    }
+    return value(type, bits, P_POSTFIX);
+}
+
 static Val
 ex(Tr *t, u32 e, u32 want_type, u32 want_bits)
 {
@@ -3367,6 +3493,9 @@ ex(Tr *t, u32 e, u32 want_type, u32 want_bits)
             return (Val){ t->type_bool, 0, P_POSTFIX, false, false, true };
         case K_DECL_REF: {
             u32 d = decl_of(t, e);
+            if (is_kind(t, ctype(t, e), CT_VA_LIST)) {
+                die(t, e, "a `va_list` used other than by `va_start`, `va_arg` and `va_end`");
+            }
             put_name(t, d);
             if (t->kinds[d] == K_ENUM_CONSTANT) {
                 return (Val){ ctype(t, e), 0, P_POSTFIX, true, false, false };
@@ -3394,6 +3523,7 @@ ex(Tr *t, u32 e, u32 want_type, u32 want_bits)
         }
         case K_COMPOUND_LITERAL: return ex(t, e + 1, want_type, want_bits);
         case K_INIT_LIST: return put_init(t, e, ctype(t, e), want_bits, false);
+        case K_VA_ARG: return va_arg_value(t, e);
         default: die(t, e, "an unsupported expression");
     }
 }
@@ -3469,6 +3599,36 @@ compare(Tr *t, u32 e, Op o)
     return P_COMPARE;
 }
 
+static bool
+is_f32(Tr *t, u32 e)
+{
+    const CType *c = &t->types[ctype(t, e)];
+    if (c->kind != CT_FLOAT || c->bits > 64) {
+        die(t, e, "`isfinite` or `signbit` of a type other than `float` or `double`");
+    }
+    return c->bits == 32;
+}
+
+static u8
+finite_test(Tr *t, u32 x, bool negate)
+{
+    bool f32 = is_f32(t, x);
+    const char *mask = f32 ? "0x7F800000" : "0x7FF0000000000000";
+    put(&t->out, f32 ? "bitcast(u32, " : "bitcast(u64, ");
+    ex(t, x, 0, 0);
+    putf(&t->out, ") & %s %s %s", mask, negate ? "==" : "!=", mask);
+    return P_COMPARE;
+}
+
+static u8
+sign_test(Tr *t, u32 x, bool negate)
+{
+    put(&t->out, is_f32(t, x) ? "bitcast(i32, " : "bitcast(int, ");
+    ex(t, x, 0, 0);
+    put(&t->out, negate ? ") >= 0" : ") < 0");
+    return P_COMPARE;
+}
+
 static u8
 cond_at(Tr *t, u32 e, bool negate)
 {
@@ -3485,8 +3645,15 @@ cond_at(Tr *t, u32 e, bool negate)
         }
         case K_CALL: {
             u32 f = callee(t, e);
-            if (f != 0 && strcmp(text(t, t->a.names[f]), "__builtin_expect") == 0) {
+            const char *w = f != 0 ? text(t, t->a.names[f]) : "";
+            if (strcmp(w, "__builtin_expect") == 0) {
                 return cond_at(t, t->a.ends[e + 1], negate);
+            }
+            if (strcmp(w, "__builtin_isfinite") == 0) {
+                return finite_test(t, t->a.ends[e + 1], negate);
+            }
+            if (strcmp(w, "__builtin_signbit") == 0) {
+                return sign_test(t, t->a.ends[e + 1], negate);
             }
             break;
         }
@@ -3680,13 +3847,13 @@ declare_local(Tr *t, u32 decl, const char *suffix)
 }
 
 static u32
-declare_temp(Tr *t, const char *base)
+declare_temp(Tr *t, const char *base, const char *suffix)
 {
     char buf[256];
-    snprintf(buf, sizeof buf, "%s_old", base);
+    snprintf(buf, sizeof buf, "%s%s", base, suffix);
     u32 id = intern_text(t, buf);
     for (u32 n = 2; in_scope(t, id); n++) {
-        snprintf(buf, sizeof buf, "%s_old%u", base, n);
+        snprintf(buf, sizeof buf, "%s%s%u", base, suffix, n);
         id = intern_text(t, buf);
     }
 
@@ -3765,13 +3932,6 @@ blank_between(Tr *t, u32 a, u32 b)
         newlines += src[k] == '\n';
     }
     return newlines >= 2;
-}
-
-static bool
-global_var(const Tr *t, u32 d)
-{
-    return t->kinds[d] == K_VAR &&
-           (t->kinds[t->parents[d]] == K_TRANSLATION_UNIT || t->a.details[d] != 0);
 }
 
 static bool
@@ -3971,21 +4131,25 @@ value_used(const Tr *t, u32 e, u32 root, bool used)
 }
 
 static void
-refuse_branch(const Tr *t, u32 e, u32 root)
+refuse_branch(const Tr *t, u32 e, u32 root, const char *what)
 {
+    char msg[128];
     for (u32 at = e; at != root;) {
         u32 p = t->parents[at];
         bool right = at != p + 1;
         if (t->kinds[p] == K_TYPE_TRAIT) {
-            die(t, e, "`++` or `--` inside `sizeof`");
+            snprintf(msg, sizeof msg, "%s inside `sizeof`", what);
+            die(t, e, msg);
         }
         if (t->kinds[p] == K_BINARY && op(t, p) == OP_COMMA) {
-            die(t, e, "`++` or `--` used as a value inside a comma expression");
+            snprintf(msg, sizeof msg, "%s used as a value inside a comma expression", what);
+            die(t, e, msg);
         }
         if ((t->kinds[p] == K_BINARY &&
              (op(t, p) == OP_LAND || op(t, p) == OP_LOR) && right) ||
             (t->kinds[p] == K_CONDITIONAL && right)) {
-            die(t, e, "`++` or `--` used as a value where it may not run");
+            snprintf(msg, sizeof msg, "%s used as a value where it may not run", what);
+            die(t, e, msg);
         }
         at = p;
     }
@@ -4070,21 +4234,57 @@ hoist_overflow(Tr *t, u32 e, u32 root, bool after)
     line(t);
 }
 
+static void
+advance_list(Tr *t, u32 e)
+{
+    put_name(t, va_list_decl(t, e + 1));
+    put(&t->out, " += 1");
+}
+
+static void
+hoist_va_arg(Tr *t, u32 e, u32 root, bool after)
+{
+    refuse_branch(t, e, root, "`va_arg`");
+    if (after) {
+        t->posts = grow(t->posts, &t->posts_cap, t->nposts + 1, sizeof *t->posts);
+        t->posts[t->nposts++] = e;
+        return;
+    }
+
+    u32 name = declare_temp(t, "arg", "");
+    putf(&t->out, "%s := ", text(t, name));
+    Val v = va_arg_value(t, e);
+    line(t);
+    advance_list(t, e);
+    line(t);
+    t->temps = grow(t->temps, &t->temps_cap, t->ntemps + 1, sizeof *t->temps);
+    t->temps[t->ntemps++] = (Temp){ name, v };
+    t->subst[e] = t->ntemps;
+}
+
 static u32
 hoist_increments(Tr *t, u32 root, bool after, bool used)
 {
     u32 posts = t->nposts;
     bool calls = has_call(t, root);
+    u32 lists = 0;
     for (u32 i = root; i < t->a.ends[root]; i++) {
         if (overflow_name(t, i) != NULL) {
             hoist_overflow(t, i, root, after);
+            continue;
+        }
+        if (t->kinds[i] == K_VA_ARG) {
+            if (lists++ > 0) {
+                die(t, i, "two `va_arg`s in one statement");
+            }
+            hoist_va_arg(t, i, root, after);
             continue;
         }
         if (t->kinds[i] != K_UNARY || (op(t, i) != OP_INC && op(t, i) != OP_DEC) ||
             !value_used(t, i, root, used)) {
             continue;
         }
-        refuse_branch(t, i, root);
+        refuse_branch(t, i, root, "`++` or `--`");
         if (has_effects(t, i + 1)) {
             die(t, i, "`++` or `--` used as a value on an operand with side effects");
         }
@@ -4102,7 +4302,7 @@ hoist_increments(Tr *t, u32 root, bool after, bool used)
             continue;
         }
 
-        u32 name = declare_temp(t, last_name(t, i + 1));
+        u32 name = declare_temp(t, last_name(t, i + 1), "_old");
         putf(&t->out, "%s := ", text(t, name));
         Val v = ex(t, i + 1, 0, 0);
         line(t);
@@ -4122,6 +4322,8 @@ finish_posts(Tr *t, u32 posts)
         line(t);
         if (overflow_name(t, t->posts[k]) != NULL) {
             put_overflow_store(t, t->posts[k]);
+        } else if (t->kinds[t->posts[k]] == K_VA_ARG) {
+            advance_list(t, t->posts[k]);
         } else {
             increment(t, t->posts[k]);
         }
@@ -4135,7 +4337,7 @@ needs_hoist(const Tr *t, u32 root)
     for (u32 i = root; i < t->a.ends[root]; i++) {
         if ((t->kinds[i] == K_UNARY && (op(t, i) == OP_INC || op(t, i) == OP_DEC) &&
              value_used(t, i, root, true)) ||
-            overflow_name(t, i) != NULL) {
+            overflow_name(t, i) != NULL || t->kinds[i] == K_VA_ARG) {
             return true;
         }
     }
@@ -4456,6 +4658,11 @@ put_expr_stmt(Tr *t, u32 e)
                 return;
             }
             u32 f = callee(t, e);
+            if (f != 0 && strcmp(text(t, t->a.names[f]), "__builtin_va_start") == 0) {
+                put_name(t, va_list_decl(t, t->a.ends[e + 1]));
+                put(&t->out, " = 0");
+                return;
+            }
             u32 result = f ? t->types[ctype(t, f)].inner : 0;
             if (result != 0 && is_kind(t, result, CT_VOID)) {
                 ex(t, e, 0, 0);
@@ -4750,7 +4957,7 @@ for_stmt(Tr *t, u32 s)
     u32 inc = child(t, s, 3);
     u32 body = child(t, s, 4);
     if (t->kinds[c] != K_NONE && needs_hoist(t, c)) {
-        die(t, c, "`++` or `--` used as a value in a `for` condition");
+        die(t, c, "`++`, `--` or `va_arg` used as a value in a `for` condition");
     }
     bool scoped = t->kinds[init] == K_DECL_STMT;
     u32 mark = t->nscope;
@@ -4988,6 +5195,13 @@ stmt(Tr *t, u32 s)
 {
     switch (t->kinds[s]) {
         case K_NULL_STMT: return;
+        case K_CALL: {
+            u32 f = callee(t, s);
+            if (f != 0 && strcmp(text(t, t->a.names[f]), "__builtin_va_end") == 0) {
+                return;
+            }
+            break;
+        }
         case K_DECL_STMT:
             for (u32 c = s + 1; c < t->a.ends[s]; c = t->a.ends[c]) {
                 if (t->kinds[c] == K_STATIC_ASSERT ||
@@ -5274,7 +5488,10 @@ put_params(Tr *t, u32 fn, bool locals)
         putf(&t->out, ": %s", ty);
         free(ty);
     }
-    if (t->types[ctype(t, fn)].variadic) {
+    if (t->types[ctype(t, fn)].variadic && locals) {
+        t->rest = declare_temp(t, "args", "");
+        putf(&t->out, "%s%s: ..u64", k > 0 ? ", " : "", text(t, t->rest));
+    } else if (t->types[ctype(t, fn)].variadic) {
         put(&t->out, k > 0 ? ", .." : "..");
     }
     put(&t->out, ")");
@@ -5413,10 +5630,11 @@ emit_function(Tr *t, u32 def)
     u32 c = t->canon[def];
     bool exported = t->a.details[c] == 0 ||
                     strcmp(text(t, t->a.details[c]), "static") != 0;
-    if (t->types[ctype(t, def)].variadic) {
-        die(t, def, "a variadic function");
+    if (t->types[ctype(t, def)].variadic && exported) {
+        die(t, def, "an exported variadic function");
     }
     t->fn = def;
+    t->rest = 0;
     t->nscope = 0;
     t->depth = 0;
     t->ntargets = 0;
