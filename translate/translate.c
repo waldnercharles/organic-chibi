@@ -349,7 +349,6 @@ typedef struct
     u32 fn;
     u32 depth;
     u32 labels;
-    bool uses_abort;
     bool uses_clear_cache;
     u32 rest;
     u32 *scope;
@@ -5402,16 +5401,9 @@ put_expr_stmt(Tr *t, u32 e)
             break;
         case K_CONDITIONAL:
             if (is_assert(t, e)) {
-                put(&t->out, "if ");
-                cond_at(t, child(t, e, 0), true);
-                put(&t->out, " {");
-                t->depth++;
-                line(t);
-                put(&t->out, "abort()");
-                t->depth--;
-                line(t);
-                put(&t->out, "}");
-                t->uses_abort = true;
+                put(&t->out, "assert(");
+                cond_at(t, child(t, e, 0), false);
+                put(&t->out, ")");
                 return;
             }
             break;
@@ -6648,9 +6640,6 @@ emit_program(Tr *t)
             (t->marks[i] & MARK_EXTERN)) {
             emit_extern(t, i);
         }
-    }
-    if (t->uses_abort) {
-        put(&t->out, "extern fn abort()\n");
     }
     if (t->uses_clear_cache) {
         put(&t->out, "extern fn __clear_cache(begin: ?[*]u8, end: ?[*]u8)\n");
