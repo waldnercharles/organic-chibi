@@ -9,7 +9,6 @@
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <unistd.h>
 
 #ifndef O_BINARY
@@ -54,12 +53,12 @@ static char *
 read_source(FILE *err, Arena *arena, const char *path, size_t *out_len)
 {
     int fd = open(path, O_RDONLY | O_BINARY);
-    struct stat st;
-    if (fd < 0 || fstat(fd, &st) != 0) {
+    off_t end = fd < 0 ? -1 : lseek(fd, 0, SEEK_END);
+    if (end < 0 || lseek(fd, 0, SEEK_SET) != 0) {
         return cannot_read(err, fd, path, "cannot open");
     }
 
-    size_t len = (size_t)st.st_size;
+    size_t len = (size_t)end;
     if (len > LEXER_MAX_SOURCE) {
         return cannot_read(err, fd, path, "too large");
     }

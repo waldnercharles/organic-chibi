@@ -17,6 +17,7 @@
     X(K_FUNCTION, "FunctionDecl")                                              \
     X(K_PARAM, "ParmVarDecl")                                                  \
     X(K_VAR, "VarDecl")                                                        \
+    X(K_STATIC_ASSERT, "StaticAssertDecl")                                     \
     X(K_COMPOUND, "CompoundStmt")                                              \
     X(K_DECL_STMT, "DeclStmt")                                                 \
     X(K_IF, "IfStmt")                                                          \
@@ -296,6 +297,7 @@ typedef struct
     u32 depth;
     u32 labels;
     bool uses_abort;
+    bool uses_clear_cache;
     u32 *scope;
     u32 nscope;
     u32 scope_cap;
@@ -342,10 +344,10 @@ grow(void *p, u32 *cap, u32 need, size_t size)
 static void
 reserve(Out *o, u64 n)
 {
-    if (o->len + n <= o->cap) {
+    if (o->len + n < o->cap) {
         return;
     }
-    while (o->len + n > o->cap) {
+    while (o->len + n >= o->cap) {
         o->cap = o->cap ? o->cap * 2 : 1 << 16;
     }
     o->text = realloc(o->text, o->cap);
@@ -1685,7 +1687,16 @@ put_type(Tr *t, Out *o, u32 type, u32 bits)
         case CT_POINTER: {
             const CType *in = &t->types[c->inner];
             if (in->kind == CT_FUNCTION) {
-                put(o, "?fn");
+                put(o, bits & NULLABLE ? "?extern fn(" : "extern fn(");
+                for (u32 k = 0; k < in->nparams; k++) {
+                    put(o, k == 0 ? "" : ", ");
+                    put_type(t, o, t->params[in->first + k], 0);
+                }
+                put(o, ")");
+                if (t->types[in->inner].kind != CT_VOID) {
+                    put(o, " -> ");
+                    put_type(t, o, in->inner, 0);
+                }
                 break;
             }
             put(o, bits & NULLABLE ? "?" : "");
@@ -1860,6 +1871,7 @@ bool_to_int(Tr *t, u64 at, u32 type)
 
 static Val ex(Tr *t, u32 e, u32 type, u32 bits);
 static u8 cond(Tr *t, u32 e);
+static u8 cond_at(Tr *t, u32 e, bool negate);
 
 static Val
 operand(Tr *t, u32 e, u8 need)
@@ -1917,10 +1929,14 @@ enum_value(const Tr *t, u32 d)
             continue;
         }
         if (t->a.ends[c] > c + 1) {
-            if (t->kinds[c + 1] != K_CONSTANT) {
+            u32 init = c + 1;
+            while (t->kinds[init] == K_IMPLICIT_CAST) {
+                init = init + 1;
+            }
+            if (t->kinds[init] != K_CONSTANT) {
                 die(t, c, "an enum constant whose value clang didn't compute");
             }
-            v = parse_value(text(t, t->a.details[c + 1]));
+            v = parse_value(text(t, t->a.details[init]));
         }
         if (c == d) {
             return v;
@@ -2057,6 +2073,29 @@ put_int(Tr *t, __int128 v)
     }
 }
 
+static void
+put_float(Tr *t, const char *s)
+{
+    double d = strtod(s, NULL);
+    if (d >= 0x1p128 || d != (double)(unsigned __int128)d) {
+        put(&t->out, s);
+        return;
+    }
+
+    char digits[40];
+    u32 n = 0;
+    unsigned __int128 u = (unsigned __int128)d;
+    do {
+        digits[n++] = (char)('0' + (int)(u % 10));
+        u /= 10;
+    } while (u != 0);
+    while (n > 0) {
+        n--;
+        put_bytes(&t->out, &digits[n], 1);
+    }
+    put(&t->out, ".0");
+}
+
 static Val
 int_type_val(u32 type)
 {
@@ -2105,24 +2144,29 @@ put_constant(Tr *t, u32 e, u32 type)
 }
 
 static void
-put_leaves(Tr *t, u32 e, u32 type)
+put_leaves(Tr *t, u32 e, u32 type, bool typed)
 {
     __int128 v;
     if (constant_value(t, e, &v)) {
+        char *ty = typed ? type_text(t, type, 0) : NULL;
+        putf(&t->out, "%s%s", typed ? ty : "", typed ? "(" : "");
         put_value(t, e, wrap_int(&t->types[type], v));
+        put(&t->out, typed ? ")" : "");
+        free(ty);
         return;
     }
     e = strip(t, e);
+    u32 second = child(t, e, 2);
     put(&t->out, "if ");
     cond(t, child(t, e, 0));
     put(&t->out, " then ");
-    put_leaves(t, child(t, e, 1), type);
+    put_leaves(t, child(t, e, 1), type, typed);
     put(&t->out, " else ");
-    put_leaves(t, child(t, e, 2), type);
+    put_leaves(t, second, type, typed && t->kinds[strip(t, second)] == K_CONDITIONAL);
 }
 
 static Val
-integral_cast(Tr *t, u32 e, bool explicit_cast)
+integral_cast(Tr *t, u32 e, bool explicit_cast, u32 want_type)
 {
     u32 x = e + 1;
     u32 to = ctype(t, e);
@@ -2160,13 +2204,13 @@ integral_cast(Tr *t, u32 e, bool explicit_cast)
     }
     if (constant_leaves(t, x)) {
         if (!explicit_cast) {
-            put_leaves(t, x, to);
-            return (Val){ to, 0, P_LOWEST, true, false, false };
+            put_leaves(t, x, to, want_type != to);
+            return (Val){ to, 0, P_LOWEST, want_type == to, false, false };
         }
         char *ty = type_text(t, to, 0);
         putf(&t->out, "%s(", ty);
         free(ty);
-        put_leaves(t, x, to);
+        put_leaves(t, x, to, false);
         put(&t->out, ")");
         return int_type_val(to);
     }
@@ -2312,9 +2356,20 @@ call(Tr *t, u32 e)
     if (strcmp(w, "__builtin_expect") == 0) {
         return ex(t, first_arg, 0, 0);
     }
-    if (strcmp(w, "__builtin_clzll") == 0 || strcmp(w, "__builtin_ctzll") == 0) {
+    bool clz = strcmp(w, "__builtin_clzll") == 0 || strcmp(w, "__builtin_clz") == 0;
+    bool ctz = strcmp(w, "__builtin_ctzll") == 0 || strcmp(w, "__builtin_ctz") == 0;
+    bool pop = strcmp(w, "__builtin_popcountll") == 0 ||
+               strcmp(w, "__builtin_popcount") == 0;
+    if (clz || ctz || pop) {
         char *ty = type_text(t, ctype(t, e), 0);
-        putf(&t->out, "%s(%s(", ty, w[11] == 'l' ? "leading_zeros" : "trailing_zeros");
+        putf(
+            &t->out,
+            "%s(%s(",
+            ty,
+            clz   ? "leading_zeros"
+            : ctz ? "trailing_zeros"
+                  : "count_ones"
+        );
         ex(t, first_arg, 0, 0);
         put(&t->out, "))");
         free(ty);
@@ -2368,7 +2423,9 @@ call(Tr *t, u32 e)
         return (Val){ t->type_bool, 0, P_POSTFIX, false, false, true };
     }
 
-    putf(&t->out, "%s(", text(t, t->names[f]));
+    bool clear_cache = strcmp(w, "__builtin___clear_cache") == 0;
+    t->uses_clear_cache |= clear_cache;
+    putf(&t->out, "%s(", clear_cache ? "__clear_cache" : text(t, t->names[f]));
     u32 owner = owner_of(t, f);
     u32 k = 0;
     for (u32 a = first_arg; a < t->a.ends[e]; a = t->a.ends[a], k++) {
@@ -2392,7 +2449,7 @@ static bool
 points_to_bytes(const Tr *t, u32 type)
 {
     const CType *p = &t->types[t->types[type].inner];
-    return p->kind == CT_INT && p->bits == 8 && !p->is_signed;
+    return p->kind == CT_VOID || (p->kind == CT_INT && p->bits == 8 && !p->is_signed);
 }
 
 static Val
@@ -2551,12 +2608,18 @@ cast(Tr *t, u32 e, u32 want_type, u32 want_bits)
     switch (c) {
         case CAST_LVALUE:
         case CAST_NOOP:
-        case CAST_FUNCTION_DECAY:
         case CAST_BUILTIN_DECAY: return ex(t, x, want_type, want_bits);
+        case CAST_FUNCTION_DECAY:
+            if (want_type == 0) {
+                die(t, e, "a function's name with nothing to give it a type, as in a comparison"
+                );
+            }
+            return ex(t, x, want_type, want_bits);
         case CAST_NULL:
             put(&t->out, "nil");
             return (Val){ ctype(t, e), NULLABLE, P_POSTFIX, false, true, false };
-        case CAST_INTEGRAL: return integral_cast(t, e, t->kinds[e] == K_CAST);
+        case CAST_INTEGRAL:
+            return integral_cast(t, e, t->kinds[e] == K_CAST, want_type);
         case CAST_INT_TO_BOOL:
         case CAST_POINTER_TO_BOOL: {
             u8 prec = cond(t, e);
@@ -2797,9 +2860,21 @@ binary(Tr *t, u32 e)
 
     u32 type = ctype(t, e);
     u8 prec = binary_prec(o);
+    u64 at = t->out.len;
     Val a = operand(t, l, prec);
+    u64 a_end = t->out.len;
     put(&t->out, binary_text(o, wraps(t, type)));
     Val b = operand(t, r, prec + 1);
+    if ((o == OP_SHL || o == OP_SHR) && a.untyped && !b.untyped) {
+        char *ty = type_text(t, type, 0);
+        Out head = { 0 };
+        putf(&head, "%s(", ty);
+        insert(&t->out, a_end, ")", 1);
+        insert(&t->out, at, head.text, head.len);
+        free(head.text);
+        free(ty);
+        a.untyped = false;
+    }
     return (Val){ type, 0, prec, a.untyped && b.untyped, false, false };
 }
 
@@ -2905,6 +2980,67 @@ subscript(Tr *t, u32 e)
                   false };
 }
 
+static u32
+tested_ref(const Tr *t, u32 e)
+{
+    e = strip(t, e);
+    while (is_cast(t, e) && (op(t, e) == CAST_LVALUE || op(t, e) == CAST_NOOP ||
+                             op(t, e) == CAST_POINTER_TO_BOOL)) {
+        e = strip(t, e + 1);
+    }
+    return t->kinds[e] == K_DECL_REF ? decl_of(t, e) : 0;
+}
+
+static bool
+proves_non_nil(const Tr *t, u32 c, u32 decl, bool holds)
+{
+    c = strip(t, c);
+    if (t->kinds[c] == K_UNARY && op(t, c) == OP_NOT) {
+        return proves_non_nil(t, c + 1, decl, !holds);
+    }
+    if (t->kinds[c] != K_BINARY) {
+        return holds && tested_ref(t, c) == decl;
+    }
+
+    Op o = op(t, c);
+    if (o == (holds ? OP_LAND : OP_LOR)) {
+        return proves_non_nil(t, child(t, c, 0), decl, holds) ||
+               proves_non_nil(t, child(t, c, 1), decl, holds);
+    }
+    if (o != (holds ? OP_NE : OP_EQ)) {
+        return false;
+    }
+    u32 l = child(t, c, 0);
+    u32 r = child(t, c, 1);
+    return (tested_ref(t, l) == decl && is_null(t, r)) ||
+           (tested_ref(t, r) == decl && is_null(t, l));
+}
+
+static bool
+is_string(const Tr *t, u32 e)
+{
+    e = strip(t, e);
+    while (is_cast(t, e)) {
+        e = strip(t, e + 1);
+    }
+    return t->kinds[e] == K_STRING_LITERAL;
+}
+
+static Val
+conditional_value(Tr *t, u32 e, u32 type, u32 bits, bool typed)
+{
+    u32 s = strip(t, e);
+    if (t->kinds[s] == K_IMPLICIT_CAST && op(t, s) == CAST_INTEGRAL) {
+        s = strip(t, s + 1);
+    }
+    if (typed && t->kinds[s] == K_CONDITIONAL && is_kind(t, type, CT_INT) &&
+        constant_leaves(t, s)) {
+        put_leaves(t, s, type, true);
+        return value(type, 0, P_LOWEST);
+    }
+    return value_as(t, e, type, bits);
+}
+
 static Val
 conditional(Tr *t, u32 e, u32 want_type, u32 want_bits)
 {
@@ -2914,15 +3050,57 @@ conditional(Tr *t, u32 e, u32 want_type, u32 want_bits)
     if (pointer && want_type != type) {
         bits = (nullable(t, e) ? NULLABLE : 0) | (many_value(t, e) ? MANY : 0);
     }
+    if (is_kind(t, type, CT_INT) && constant_leaves(t, e)) {
+        put_leaves(t, e, type, want_type != type);
+        return (Val){ type, 0, P_LOWEST, want_type == type, false, false };
+    }
+
+    u32 first = child(t, e, 1);
+    u32 second = child(t, e, 2);
+    bool swap = pointer && want_type != type && is_string(t, first) &&
+                !is_string(t, second);
+    u32 then_arm = swap ? second : first;
+    u32 else_arm = swap ? first : second;
 
     put(&t->out, "if ");
-    cond(t, child(t, e, 0));
+    cond_at(t, child(t, e, 0), swap);
     put(&t->out, " then ");
-    Val a = value_as(t, child(t, e, 1), type, bits);
+    u64 a_at = t->out.len;
+    Val a = conditional_value(t, then_arm, type, bits, want_type != type);
+    u64 a_end = t->out.len;
     put(&t->out, " else ");
-    Val b = value_as(t, child(t, e, 2), type, bits);
+    Val b = conditional_value(t, else_arm, type, bits, want_type != type);
+    __int128 k;
+    bool loose = (a.untyped && !constant_value(t, then_arm, &k)) ||
+                 (b.untyped && !constant_value(t, else_arm, &k));
     if (pointer && want_type != type && (a.bits & NULLABLE) != (b.bits & NULLABLE)) {
-        die(t, e, "a `?:` value mixing pointers that may and can't be nil");
+        bool in_then = (a.bits & NULLABLE) != 0;
+        u32 arm = in_then ? then_arm : else_arm;
+        u32 d = tested_ref(t, arm);
+        if (d == 0 || !proves_non_nil(t, child(t, e, 0), d, arm == first)) {
+            die(t, e, "a `?:` value mixing pointers that may and can't be nil");
+        }
+        if (in_then) {
+            insert(&t->out, a_end, "!!", 2);
+        } else {
+            put(&t->out, "!!");
+        }
+        bits &= ~(u32)NULLABLE;
+        a.bits &= ~(u32)NULLABLE;
+    }
+    if (a.untyped && b.untyped && want_type != type) {
+        char *ty = type_text(t, type, bits);
+        Out head = { 0 };
+        putf(&head, "%s(", ty);
+        insert(&t->out, a_end, ")", 1);
+        insert(&t->out, a_at, head.text, head.len);
+        free(head.text);
+        free(ty);
+        a.untyped = false;
+    }
+    if ((pointer && a.nil != b.nil) || loose) {
+        a.untyped = true;
+        b.untyped = true;
     }
     return (Val){ type,           bits,
                   P_LOWEST,       a.untyped && b.untyped,
@@ -3181,6 +3359,9 @@ ex(Tr *t, u32 e, u32 want_type, u32 want_bits)
             put_int(t, v);
             return (Val){ ctype(t, e), 0, P_POSTFIX, true, false, false };
         }
+        case K_FLOAT_LITERAL:
+            put_float(t, text(t, t->a.details[e]));
+            return (Val){ ctype(t, e), 0, P_POSTFIX, true, false, false };
         case K_BOOL_LITERAL:
             put(&t->out, strcmp(text(t, t->a.details[e]), "true") == 0 ? "true" : "false");
             return (Val){ t->type_bool, 0, P_POSTFIX, false, false, true };
@@ -3217,16 +3398,6 @@ ex(Tr *t, u32 e, u32 want_type, u32 want_bits)
     }
 }
 
-static bool
-is_string(const Tr *t, u32 e)
-{
-    e = strip(t, e);
-    while (is_cast(t, e)) {
-        e = strip(t, e + 1);
-    }
-    return t->kinds[e] == K_STRING_LITERAL;
-}
-
 static Op
 inverse(Op o)
 {
@@ -3241,7 +3412,6 @@ inverse(Op o)
     }
 }
 
-static u8 cond_at(Tr *t, u32 e, bool negate);
 
 static void
 cond_operand(Tr *t, u32 e, u8 need, bool negate)
@@ -3678,9 +3848,20 @@ increment(Tr *t, u32 e)
     Op o = op(t, e);
     u32 x = e + 1;
     u32 type = ctype(t, x);
-    ex(t, x, 0, 0);
+    Val v = ex(t, x, 0, 0);
     if (is_kind(t, type, CT_POINTER)) {
-        put(&t->out, o == OP_INC ? " += 1" : " += -%u64(1)");
+        const char *step = o == OP_INC ? "1" : "-%u64(1)";
+        if (!(v.bits & NULLABLE)) {
+            putf(&t->out, " += %s", step);
+            return;
+        }
+        if (has_effects(t, x)) {
+            die(t, e, "`++` or `--` on a pointer that may be nil, with side effects");
+        }
+        put(&t->out, " = ");
+        u64 at = t->out.len;
+        unwrap(t, at, ex(t, x, 0, 0));
+        putf(&t->out, " + %s", step);
         return;
     }
     bool wrapping = is_unsigned_int(t, type);
@@ -3988,6 +4169,24 @@ put_var_decl(Tr *t, u32 v, u32 init)
 }
 
 static void
+branch_assign(Tr *t, u32 v, u32 value)
+{
+    put(&t->out, " {");
+    t->depth++;
+    u32 mark = t->nscope;
+    line(t);
+    u32 posts = hoist_increments(t, value, true, true);
+    put_name(t, v);
+    put(&t->out, " = ");
+    value_as(t, value, ctype(t, v), t->bits[v]);
+    finish_posts(t, posts);
+    t->nscope = mark;
+    t->depth--;
+    line(t);
+    put(&t->out, "}");
+}
+
+static void
 var_decl(Tr *t, u32 v)
 {
     if (t->a.details[v] != 0) {
@@ -3996,6 +4195,18 @@ var_decl(Tr *t, u32 v)
 
     line(t);
     u32 init = (t->a.flags[v] & AST_HAS_INIT) ? init_of(t, v) : 0;
+    u32 x = init != 0 ? strip(t, init) : 0;
+    if (x != 0 && t->kinds[x] == K_CONDITIONAL && !needs_hoist(t, child(t, x, 0)) &&
+        (needs_hoist(t, child(t, x, 1)) || needs_hoist(t, child(t, x, 2)))) {
+        put_var_decl(t, v, 0);
+        line(t);
+        put(&t->out, "if ");
+        cond(t, child(t, x, 0));
+        branch_assign(t, v, child(t, x, 1));
+        put(&t->out, " else");
+        branch_assign(t, v, child(t, x, 2));
+        return;
+    }
     u32 posts = init != 0 ? hoist_increments(t, init, true, true) : t->nposts;
     put_var_decl(t, v, init);
     finish_posts(t, posts);
@@ -4059,8 +4270,19 @@ compound_assign(Tr *t, u32 e)
     u32 r = child(t, e, 1);
     u32 type = ctype(t, l);
     if (is_kind(t, type, CT_POINTER)) {
-        ex(t, l, 0, 0);
-        put(&t->out, " += ");
+        Val v = ex(t, l, 0, 0);
+        if (v.bits & NULLABLE) {
+            if (has_effects(t, l)) {
+                die(t, e, "pointer arithmetic on a pointer that may be nil, with side effects"
+                );
+            }
+            put(&t->out, " = ");
+            u64 at = t->out.len;
+            unwrap(t, at, ex(t, l, 0, 0));
+            put(&t->out, " + ");
+        } else {
+            put(&t->out, " += ");
+        }
         if (o == OP_SUB_ASSIGN) {
             negated_offset(t, r);
         } else {
@@ -4083,12 +4305,26 @@ compound_assign(Tr *t, u32 e)
     }
 
     u32 lhs_type = ctype_of_string(t, t->a.arg_types[e], e);
-    if (lhs_type != type) {
+    if (lhs_type == type) {
+        ex(t, l, 0, 0);
+        put(&t->out, assign_text(o, wraps(t, type)));
+        operand(t, r, P_LOWEST);
+        return;
+    }
+
+    bool bitwise = o == OP_OR_ASSIGN || o == OP_AND_ASSIGN || o == OP_XOR_ASSIGN;
+    u32 x = strip(t, r);
+    bool widened = is_cast(t, x) && op(t, x) == CAST_INTEGRAL && ctype(t, x + 1) == type;
+    if (!is_kind(t, type, CT_INT) || !bitwise || (!widened && !constant_leaves(t, r))) {
         die(t, e, "a compound assignment that promotes its target");
     }
     ex(t, l, 0, 0);
-    put(&t->out, assign_text(o, wraps(t, type)));
-    operand(t, r, P_LOWEST);
+    put(&t->out, assign_text(o, false));
+    if (widened) {
+        operand(t, x + 1, P_LOWEST);
+    } else {
+        put_leaves(t, r, type, true);
+    }
 }
 
 enum
@@ -4294,6 +4530,27 @@ terminal(Tr *t, u32 s)
 static void
 if_stmt(Tr *t, u32 s)
 {
+    u32 c = strip(t, s + 1);
+    if (!(t->a.flags[s] & AST_HAS_ELSE) && t->kinds[c] == K_BINARY &&
+        op(t, c) == OP_LAND && needs_hoist(t, child(t, c, 1))) {
+        hoist_increments(t, child(t, c, 0), false, true);
+        put(&t->out, "if ");
+        cond(t, child(t, c, 0));
+        put(&t->out, " {");
+        t->depth++;
+        u32 mark = t->nscope;
+        line(t);
+        hoist_increments(t, child(t, c, 1), false, true);
+        put(&t->out, "if ");
+        cond(t, child(t, c, 1));
+        block(t, child(t, s, 1));
+        t->nscope = mark;
+        t->depth--;
+        line(t);
+        put(&t->out, "}");
+        return;
+    }
+
     hoist_increments(t, s + 1, false, true);
     put(&t->out, "if ");
     cond(t, s + 1);
@@ -4460,7 +4717,7 @@ for_countdown(Tr *t, u32 s)
     u32 bound = strip(t, child(t, c, 1));
     __int128 k;
     if (t->kinds[x] != K_DECL_REF || decl_of(t, x) != v ||
-        !constant_value(t, bound, &k) || k < 0) {
+        (constant_value(t, bound, &k) ? k < 0 : needs_hoist(t, bound))) {
         return false;
     }
 
@@ -4527,7 +4784,16 @@ hoisted_while(Tr *t, u32 s)
     u32 c = s + 1;
     u32 body = child(t, s, 1);
     push_target(t, s, false, UINT32_MAX);
-    put(&t->out, "while true {");
+    u32 x = strip(t, c);
+    put(&t->out, "while ");
+    if (t->kinds[x] == K_BINARY && op(t, x) == OP_LAND &&
+        !needs_hoist(t, child(t, x, 0))) {
+        cond(t, child(t, x, 0));
+        c = child(t, x, 1);
+    } else {
+        put(&t->out, "true");
+    }
+    put(&t->out, " {");
     t->depth++;
     u32 mark = t->nscope;
     line(t);
@@ -4603,9 +4869,6 @@ switch_stmt(Tr *t, u32 s)
 {
     u32 value = child(t, s, 0);
     u32 body = child(t, s, 1);
-    if (needs_hoist(t, value)) {
-        die(t, value, "`++` or `--` used as a value in a `switch` value");
-    }
     if (t->kinds[body] != K_COMPOUND) {
         die(t, s, "a switch whose body isn't a block");
     }
@@ -4628,6 +4891,7 @@ switch_stmt(Tr *t, u32 s)
         }
     }
 
+    hoist_increments(t, value, false, true);
     u32 id = t->labels++;
     bool label = total != final;
     if (label) {
@@ -4726,7 +4990,8 @@ stmt(Tr *t, u32 s)
         case K_NULL_STMT: return;
         case K_DECL_STMT:
             for (u32 c = s + 1; c < t->a.ends[s]; c = t->a.ends[c]) {
-                if (t->kinds[c] == K_VAR && global_var(t, c)) {
+                if (t->kinds[c] == K_STATIC_ASSERT ||
+                    (t->kinds[c] == K_VAR && global_var(t, c))) {
                     continue;
                 }
                 if (t->kinds[c] == K_VAR) {
@@ -4820,7 +5085,7 @@ source_text(Tr *t, u32 file)
 }
 
 static void
-mark_type(Tr *t, u32 type)
+mark_type(Tr *t, u32 node, u32 type)
 {
     if (type == 0) {
         return;
@@ -4828,11 +5093,16 @@ mark_type(Tr *t, u32 type)
     CType c = t->types[type];
     switch (c.kind) {
         case CT_POINTER:
-        case CT_ARRAY: mark_type(t, c.inner); break;
+            if (t->types[c.inner].kind == CT_FUNCTION && t->types[c.inner].variadic) {
+                die(t, node, "a pointer to a variadic function");
+            }
+            mark_type(t, node, c.inner);
+            break;
+        case CT_ARRAY: mark_type(t, node, c.inner); break;
         case CT_FUNCTION:
-            mark_type(t, c.inner);
+            mark_type(t, node, c.inner);
             for (u32 k = 0; k < c.nparams; k++) {
-                mark_type(t, t->params[c.first + k]);
+                mark_type(t, node, t->params[c.first + k]);
             }
             break;
         case CT_RECORD:
@@ -4842,7 +5112,7 @@ mark_type(Tr *t, u32 type)
             t->marks[c.decl] |= MARK_EMIT;
             for (u32 f = c.decl + 1; f < t->a.ends[c.decl]; f = t->a.ends[f]) {
                 if (t->kinds[f] == K_FIELD) {
-                    mark_type(t, ctype(t, f));
+                    mark_type(t, f, ctype(t, f));
                 }
             }
             break;
@@ -4906,11 +5176,17 @@ static void
 mark_uses(Tr *t, u32 root, u32 *work, u32 *nwork)
 {
     for (u32 i = root; i < t->a.ends[root]; i++) {
-        if (has_type_text(t, t->a.types[i]) && t->kinds[i] != K_DECL_REF) {
-            mark_type(t, ctype(t, i));
+        if (t->kinds[i] == K_STATIC_ASSERT) {
+            i = t->a.ends[i] - 1;
+            continue;
+        }
+        bool decay = is_cast(t, i) && (op(t, i) == CAST_FUNCTION_DECAY ||
+                                       op(t, i) == CAST_BUILTIN_DECAY);
+        if (has_type_text(t, t->a.types[i]) && t->kinds[i] != K_DECL_REF && !decay) {
+            mark_type(t, i, ctype(t, i));
         }
         if (t->a.arg_types[i] != 0) {
-            mark_type(t, ctype_of_string(t, t->a.arg_types[i], i));
+            mark_type(t, i, ctype_of_string(t, t->a.arg_types[i], i));
         }
         if (t->kinds[i] != K_DECL_REF) {
             continue;
@@ -4944,7 +5220,7 @@ mark_uses(Tr *t, u32 root, u32 *work, u32 *nwork)
             work[(*nwork)++] = def;
         } else {
             t->marks[d] |= MARK_EXTERN;
-            mark_type(t, ctype(t, d));
+            mark_type(t, i, ctype(t, d));
         }
     }
 }
@@ -5244,7 +5520,7 @@ emit_program(Tr *t)
     }
     for (u32 k = 0; k < nwork; k++) {
         u32 def = work[k];
-        mark_type(t, ctype(t, def));
+        mark_type(t, def, ctype(t, def));
         mark_uses(t, def, work, &nwork);
     }
     name_static_locals(t);
@@ -5285,6 +5561,9 @@ emit_program(Tr *t)
     }
     if (t->uses_abort) {
         put(&t->out, "extern fn abort()\n");
+    }
+    if (t->uses_clear_cache) {
+        put(&t->out, "extern fn __clear_cache(begin: ?[*]u8, end: ?[*]u8)\n");
     }
     for (u32 i = 0; i < n; i++) {
         if (t->kinds[i] == K_VAR && t->canon[i] == i &&
