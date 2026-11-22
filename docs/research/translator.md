@@ -116,6 +116,44 @@ Updated 2026-11-22. Item 5 of the self-hosting order ([README.md](README.md)) tr
 27. **Function pointers** become `extern fn(T, …) -> R`, nilable by rule 4. A function's name is written alone where its place gives it a type. Refused: a function's name with nothing to give it a type, as in a comparison, a pointer to a variadic function, and a call through a function pointer.
 28. **Float literals** with an integer value below 2^128 are written with all their digits and `.0`. Others are written as clang's AST spells them.
 
+## Speed of the translated compiler
+
+Measured 2026-11-22 at d8c3f9c, on the cloud's x86-64 with 4 vCPUs. The switch from the C source waits until the translated compiler compiles at least as many M lines/s as the C build (the Compiler row of 2026-11-17 in [../decisions.md](../decisions.md)). Both builds use the flags of `make bench`, `-O3 -flto -falign-functions=64 -march=x86-64-v2 -DNDEBUG`, and the translated build compiles the C that `chibi c` writes for each translation. Wall times on this machine swing by 10% or more from run to run, so each run is pinned to one CPU with `taskset`, and the fastest run counts. Instruction counts come from callgrind, which repeats exactly.
+
+- **The translated compiler takes 9% longer on the corpus, and runs `bench`'s lexer and parser at 0.86 to 0.90 of the C build's M lines/s.** The corpus is the 200 files of experiments/check-bodies (694,816 lines), run through experiments/arm64-backend/bench.c, with the fastest of 41 runs in each of 5 processes per build:
+
+  | Phase | C build | Translated | Ratio |
+  |---|---|---|---|
+  | lex + parse | 88.7 ms | 91.5 ms | 1.03 |
+  | check | 113.1 ms | 127.1 ms | 1.12 |
+  | arm64 | 62.0 ms | 68.6 ms | 1.11 |
+  | all four | 264.9 ms | 288.4 ms | 1.09 |
+
+  In `bench`, on one thread, with the fastest of 15 runs, the lexer runs at 14.1 M lines/s against 15.6 (0.90), and the lexer and parser together at 7.0 against 8.1 (0.86). The two builds give the same results: the same counts of nodes, IR and machine code on the corpus, and the same fingerprint in `bench`.
+- **Where the time goes.** The translated build runs 24% more instructions on the corpus: 2,346 million against 1,888, with checking 32% higher, the arm64 backend 30% and lexing and parsing 14%. Turning one kind of chibi's checks into `__builtin_unreachable()` in the translated C shows what that kind costs:
+
+  | Checks removed | Instructions saved |
+  |---|---|
+  | nil (`!!`) | 234 million |
+  | bounds | 41 million |
+  | overflow | 27 million |
+  | shift | 9 million |
+  | all | 306 million |
+
+  The nil checks follow from rule 4. `check_init` and the backends' setup fill their structs with a literal that leaves the pointer fields out, then assign `malloc`'s results, so those fields are `?[*]T`, and every use writes `!!`. The C of `src/check.c` has 1,287 nil checks and that of `src/arm64.c` 337, where the C build has none. The C's 141 `NOINLINE` and 12 `ALWAYS_INLINE` marks, which the translator drops, cost 35 million more: put back into the translated C, they save 1.5% of its instructions, and with the checks removed as well, the translated build runs 4.8% more instructions than the C build. That rest wasn't studied. Without strict aliasing, the C build runs only 0.7% more instructions, so the alias information that the C backend's byte copies don't give clang explains little of it.
+
+  Wall time, relative to the C build, by the method above:
+
+  | Build | lex + parse | check | arm64 | all four |
+  |---|---|---|---|---|
+  | translated | 1.032 | 1.124 | 1.106 | 1.089 |
+  | with the C's attributes | 1.025 | 1.074 | 1.097 | 1.062 |
+  | without checks | 1.003 | 1.038 | 1.032 | 1.025 |
+  | with the attributes, without checks | 1.003 | 1.015 | 1.013 | 1.020 |
+
+  In `bench`, the attributes matter most for the lexer: without checks it runs at 0.90 to 0.93 of the C build, and with the attributes as well at 1.02 to 1.06. The lexer and parser together reach 1.01. The generic C of `src/simd.h`, which the translation reads, runs the lexer at 0.40 of the C build when compiled as C, but the translation writes its loops as `lookup` and `top_bits`, so the translated lexer doesn't pay for them. The LowIR spike timed writing the corpus as C with both builds and found them within its runs' spread ([experiments/lowir-spike](../../experiments/lowir-spike/README.md), hand-off 2).
+- **What it means for the switch.** Two things stand between the translated build and the C build's speed. chibi has no way to say `noinline` or `always_inline`, which waits on the attribute design (adopt-or-settle 3.8), and the translation loses 3% to 10% without them. Nil and bounds checks stay in every build (the Optionals rows and the Bounds checks row), so with checks on, the nil checks must get cheaper or fewer: for instance, a field set from `malloc` right after the literal that zeroes it could get a type that can't be nil, with one check where it is assigned. Overflow checks wrap in release-fast builds (the Integer overflow row), which would save the 27 million.
+
 ## Not built yet
 
 - Character literals, which wait on the owner's answer (asked 2026-11-21), become numbers meanwhile.
