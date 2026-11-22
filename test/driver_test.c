@@ -19,8 +19,8 @@
 #ifdef CHIBI_TEST_CC
 
 static const char USAGE[] =
-    "usage: chibi build [--release-fast] [-o program] file.chibi... [-- C compiler arguments]\n"
-    "       chibi c [--release-fast] [-o program.c] file.chibi...\n"
+    "usage: chibi build [--release-fast] [--target arch-os] [-o program] file.chibi... [-- C compiler arguments]\n"
+    "       chibi c [--release-fast] [--target arch-os] [-o program.c] file.chibi...\n"
     "       chibi tokens file.chibi\n";
 
 static const char FIB_MAIN[] =
@@ -79,6 +79,16 @@ static const char TARGET_MAIN[] =
     "    }\n"
     "    return i32(x) + 2 + i32(target_os) * 10 + i32(target_arch)\n"
     "}\n";
+
+static const char TARGET_FOLD[] =
+    "const WIDE: u8 = if target_arch == .arm64 then 256 else 1\n"
+    "const HUGE: u8 = if target_os == .windows then 256 else 1\n"
+    "\n"
+    "fn f() -> u8 {\n"
+    "    return WIDE + HUGE\n"
+    "}\n";
+
+static const char *const TARGET_WORDS[] = { "linux", "macos", "windows", "arm64", "x86_64" };
 
 static const char ENTRY[] =
     "export fn main() -> i32 {\n"
@@ -179,6 +189,7 @@ static const BadArgs BAD_ARGS[] = {
     { { "chibi", "build", "-x", "a.chibi" }, "chibi: unknown option -x\n", true },
     { { "chibi", "c", "--", "a.chibi" }, "chibi: unknown option --\n", true },
     { { "chibi", "build", "a.chibi", "-o" }, "chibi: -o needs a file name\n", false },
+    { { "chibi", "c", "a.chibi", "--target" }, "chibi: --target needs a target, such as arm64-linux\n", false },
     { { "chibi", "build", "program" }, "chibi: name the program with -o\n", false },
 };
 
@@ -389,7 +400,66 @@ TEST_CASE(builds_for_target)
     int code = 2 + 10 * (TARGET_OS_HOST - NAME_LINUX) + (TARGET_ARCH_HOST - NAME_ARM64);
     ok = ok && runs_to((char *[]){ program, NULL }, "", code, 0);
 
+    char host[32];
+    snprintf(host, sizeof host, "%s-%s", TARGET_WORDS[TARGET_ARCH_HOST - NAME_LINUX], TARGET_WORDS[TARGET_OS_HOST - NAME_LINUX]);
+    remove(program);
+    ok = ok && drives_to((char *[]){ "chibi", "build", "--target", host, "-o", program, source, NULL }, 0, "", "");
+    ok = ok && runs_to((char *[]){ program, NULL }, "", code, 0);
+
     static const char *const files[] = { "t.chibi", "t" };
+    remove_files(dir, files, sizeof files / sizeof files[0]);
+    REQUIRE(ok);
+    return true;
+}
+
+static bool
+writes_for_target(const char *source, const char *target, const char *want)
+{
+    Drive d = drive((char *[]){ "chibi", "c", "--target", (char *)target, (char *)source, NULL });
+    bool ok = d.status == 0 && d.err_len == 0 && strstr(d.out, want);
+    if (!ok) {
+        fprintf(stderr, "driver test: chibi c --target %s %s\n%s%s", target, source, d.err, d.out);
+    }
+    release(&d);
+    return ok;
+}
+
+TEST_CASE(writes_c_for_target)
+{
+    char dir[] = "/tmp/chibi-d-XXXXXX";
+    REQUIRE(mkdtemp(dir));
+
+    char fold[64], source[64], host[32], want[256];
+    snprintf(fold, sizeof fold, "%s/fold.chibi", dir);
+    snprintf(source, sizeof source, "%s/t.chibi", dir);
+    snprintf(host, sizeof host, "%s-%s", TARGET_WORDS[TARGET_ARCH_HOST - NAME_LINUX], TARGET_WORDS[TARGET_OS_HOST - NAME_LINUX]);
+    bool ok = write_file(dir, "fold.chibi", TARGET_FOLD) && write_file(dir, "t.chibi", TARGET_MAIN);
+
+    ok = ok && drives_to((char *[]){ "chibi", "c", "--target", "x86_64-linux", "-o", "/dev/null", fold, NULL }, 0, "", "");
+    snprintf(want, sizeof want, "%s:1:7: 256 does not fit in `u8`\n", fold);
+    ok = ok && drives_to((char *[]){ "chibi", "c", "--target", "arm64-linux", fold, NULL }, 1, "", want);
+    ok = ok && drives_to((char *[]){ "chibi", "c", "--target", "arm64-macos", fold, NULL }, 1, "", want);
+    snprintf(want, sizeof want, "%s:2:7: 256 does not fit in `u8`\n", fold);
+    ok = ok && drives_to((char *[]){ "chibi", "c", "--target", "x86_64-windows", fold, NULL }, 1, "", want);
+
+    static const char *const unknown[] = { "linux-arm64", "arm64", "arm64-", "-linux", "arm-linux", "x86_64-arm64", "arm64-linux-gnu", "x86-64-linux" };
+    for (u32 k = 0; k < sizeof unknown / sizeof unknown[0]; k++) {
+        snprintf(want, sizeof want, "chibi: unknown target %s; a target is an arch and an OS, such as arm64-linux\n", unknown[k]);
+        ok = ok && drives_to((char *[]){ "chibi", "c", "--target", (char *)unknown[k], fold, NULL }, 1, "", want);
+    }
+
+    ok = ok && writes_for_target(source, "arm64-linux", "\n#ifndef __linux__\n#error \"chibi wrote this C for target_os linux\"\n#endif\n\n#ifndef __aarch64__\n#error \"chibi wrote this C for target_arch arm64\"\n#endif\n");
+    ok = ok && writes_for_target(source, "x86_64-windows", "\n#ifndef _WIN32\n#error \"chibi wrote this C for target_os windows\"\n#endif\n\n#ifndef __x86_64__\n#error \"chibi wrote this C for target_arch x86_64\"\n#endif\n");
+    ok = ok && writes_for_target(source, "arm64-macos", "\n#ifndef __APPLE__\n#error \"chibi wrote this C for target_os macos\"\n#endif\n");
+
+    Drive plain = drive((char *[]){ "chibi", "c", source, NULL });
+    Drive named = drive((char *[]){ "chibi", "c", "--target", host, source, NULL });
+    ok = ok && plain.status == 0 && named.status == 0 && plain.out_len == named.out_len &&
+         memcmp(plain.out, named.out, plain.out_len) == 0;
+    release(&plain);
+    release(&named);
+
+    static const char *const files[] = { "fold.chibi", "t.chibi" };
     remove_files(dir, files, sizeof files / sizeof files[0]);
     REQUIRE(ok);
     return true;
@@ -560,6 +630,7 @@ TEST_SUITE(driver_tests)
     RUN_TEST_CASE(builds_release_fast);
     RUN_TEST_CASE(names_programs);
     RUN_TEST_CASE(builds_for_target);
+    RUN_TEST_CASE(writes_c_for_target);
     RUN_TEST_CASE(links_c);
     RUN_TEST_CASE(reports_compiler_failure);
     RUN_TEST_CASE(reports_errors);

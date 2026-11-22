@@ -15,9 +15,11 @@
 #define O_BINARY 0
 #endif
 
-static const char USAGE[] = "usage: chibi build [--release-fast] [-o program] "
+static const char USAGE[] = "usage: chibi build [--release-fast] "
+                            "[--target arch-os] [-o program] "
                             "file.chibi... [-- C compiler arguments]\n"
-                            "       chibi c [--release-fast] [-o program.c] "
+                            "       chibi c [--release-fast] "
+                            "[--target arch-os] [-o program.c] "
                             "file.chibi...\n"
                             "       chibi tokens file.chibi\n";
 
@@ -29,6 +31,7 @@ typedef struct
     u32 nfiles;
     char **cc_args;
     u32 ncc_args;
+    const char *target;
     bool release_fast;
 } Options;
 
@@ -38,6 +41,7 @@ typedef struct
     Lexer lx;
     ParsedFile *files;
     Checker c;
+    const char *target;
     bool checked;
     bool release_fast;
 } Program;
@@ -118,6 +122,12 @@ parse_options(FILE *err, Options *o, int argc, char **argv, bool executable)
             o->output = argv[++i];
         } else if (strcmp(argv[i], "--release-fast") == 0) {
             o->release_fast = true;
+        } else if (strcmp(argv[i], "--target") == 0) {
+            if (i + 1 == argc) {
+                fputs("chibi: --target needs a target, such as arm64-linux\n", err);
+                return false;
+            }
+            o->target = argv[++i];
         } else if (executable && strcmp(argv[i], "--") == 0) {
             o->cc_args = argv + i + 1;
             o->ncc_args = (u32)(argc - i - 1);
@@ -149,6 +159,18 @@ parse_options(FILE *err, Options *o, int argc, char **argv, bool executable)
     o->named[n - 6] = '\0';
     o->output = o->named;
     return true;
+}
+
+static bool
+set_target(FILE *err, Checker *c, const char *text)
+{
+    const char *dash = strchr(text, '-');
+    if (dash && check_target(c, TARGET_ARCH, text, (u32)(dash - text)) &&
+        check_target(c, TARGET_OS, dash + 1, (u32)strlen(dash + 1))) {
+        return true;
+    }
+    fprintf(err, "chibi: unknown target %s; a target is an arch and an OS, such as arm64-linux\n", text);
+    return false;
 }
 
 static bool
@@ -191,6 +213,9 @@ check_program(FILE *err, Program *p, const char *const *paths, u32 n)
     check_init(&p->c, &p->lx.names);
     p->c.release_fast = p->release_fast;
     p->checked = true;
+    if (p->target && !set_target(err, &p->c, p->target)) {
+        return false;
+    }
     check_package(&p->c, p->files, n);
     if (p->c.ndiags) {
         check_print_diagnostics(err, &p->c);
@@ -300,6 +325,7 @@ compile_program(FILE *out, FILE *err, int argc, char **argv, bool executable)
     p.arena = (Arena){ 0 };
     p.checked = false;
     bool ok = parse_options(err, &o, argc, argv, executable);
+    p.target = o.target;
     p.release_fast = o.release_fast;
     ok = ok && check_program(err, &p, o.files, o.nfiles);
 

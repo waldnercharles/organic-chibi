@@ -8707,6 +8707,19 @@ check_init(Checker *c, const Names *names)
     }
 }
 
+bool
+check_target(Checker *c, u32 k, const char *text, u32 len)
+{
+    for (u32 id = target_names[k]; id < target_names[k + 1]; id++) {
+        Name name = names_get(c->names, id);
+        if (name.len == len && memcmp(name.text, text, len) == 0) {
+            c->target[k] = id;
+            return true;
+        }
+    }
+    return false;
+}
+
 static void
 place_zeroed(Checker *c)
 {

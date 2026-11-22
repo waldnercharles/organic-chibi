@@ -539,6 +539,8 @@ typedef struct
 
 void check_init(Checker *c, const Names *names);
 
+bool check_target(Checker *c, u32 k, const char *text, u32 len);
+
 void check_package(Checker *c, const ParsedFile *files, u32 nfiles);
 
 void check_print_diagnostics(FILE *out, const Checker *c);

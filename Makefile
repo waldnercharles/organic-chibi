@@ -81,9 +81,10 @@ ifneq ($(QEMU),)
 			> build/translated/arm64/$$(basename $$f .c).json || exit 1; \
 	done
 	@build/translate build/translated/arm64 $(foreach f,$(BOOTSTRAP),build/translated/arm64/$(notdir $(f:.c=.json)) $(f))
-	@build/chibi-translated c -o build/translated/arm64/lib.c build/translated/entry.chibi \
+	@build/chibi-translated c --target arm64-linux -o build/translated/arm64/lib.c build/translated/entry.chibi \
 		$$(ls build/translated/arm64/*.chibi | grep -v -x build/translated/arm64/main.chibi)
-	@build/chibi-translated c -o build/translated/arm64/chibi.c build/translated/entry.chibi build/translated/arm64/*.chibi
+	@build/chibi-translated c --target arm64-linux -o build/translated/arm64/chibi.c build/translated/entry.chibi \
+		build/translated/arm64/*.chibi
 	@$(CC) $(ARM64) -w -Dchibi_trap=chibi_trap_translated -Dchibi_context=chibi_context_translated \
 		-c -o build/translated/arm64/lib.o build/translated/arm64/lib.c & lib=$$!; \
 	$(CC) $(ARM64) -w -c -o build/translated/arm64/chibi.o build/translated/arm64/chibi.c && wait $$lib
