@@ -150,7 +150,7 @@ TEST_CASE(emits_doubling_structs)
 enum
 {
     MAX_JOBS = 8,
-    GRID_FUNCTIONS = 312,
+    GRID_FUNCTIONS = 323,
 };
 
 typedef struct
@@ -242,6 +242,8 @@ static const char INTEROP[] =
     "extern fn chibi_cs_call_wide(f: extern fn(w: W, k: int) -> W, k: int) -> int\n"
     "extern fn chibi_cs_call_void(f: extern fn(p: *int), p: *int)\n"
     "extern fn chibi_cs_unused(x: int) -> int\n"
+    "extern fn chibi_cs_swap_hook(h: ?extern fn(x: int) -> int) -> ?extern fn(x: int) -> int\n"
+    "extern fn chibi_cs_fire_hook(x: int) -> int\n"
     "\n"
     "extern chibi_cs_ticks: int\n"
     "extern chibi_cs_origin: P\n"
@@ -388,6 +390,23 @@ static const char INTEROP[] =
     "\n"
     "fn get_twice() -> extern fn(x: int) -> int {\n"
     "    return chibi_cs_twice\n"
+    "}\n"
+    "\n"
+    "fn hooks(n: int) -> int {\n"
+    "    old := chibi_cs_swap_hook(tap)\n"
+    "    a := chibi_cs_fire_hook(n)\n"
+    "    mine := chibi_cs_swap_hook(old)\n"
+    "    b := chibi_cs_fire_hook(n)\n"
+    "    c := 0\n"
+    "    if mine != nil {\n"
+    "        c = chibi_cs_each(mine, 2)\n"
+    "        if mine == get_tap() {\n"
+    "            c += 50\n"
+    "        }\n"
+    "    }\n"
+    "    _ = chibi_cs_swap_hook(bitcast(?extern fn(x: int) -> int, int(1)))\n"
+    "    back := chibi_cs_swap_hook(old)\n"
+    "    return a * 1000000 + b * 10000 + c * 100 + bitcast(int, back)\n"
     "}\n"
     "\n"
     "fn same(x: int) -> int {\n"
@@ -655,6 +674,22 @@ bool
 chibi_cs_same(int64_t (*a)(int64_t), int64_t (*b)(int64_t))
 {
     return a == b;
+}
+
+static STEP *cs_hook;
+
+STEP *
+chibi_cs_swap_hook(STEP *h)
+{
+    STEP *old = cs_hook;
+    cs_hook = h;
+    return old;
+}
+
+int64_t
+chibi_cs_fire_hook(int64_t x)
+{
+    return cs_hook ? cs_hook(x) : -1;
 }
 
 int64_t
@@ -1138,6 +1173,7 @@ calls_back(const Build *b, int64_t x)
     bool ok = gives("each", x, ((I1 *)symbol(b, "i0_each"))(CONTEXT, x), fold_each(x, 3, 1) * 1000 + fold_each(x, 2, 0));
     ok &= gives("hooked", x, ((I1 *)symbol(b, "i0_hooked"))(CONTEXT, x), fold_each(x + 1, 3, 1));
     ok &= gives("same", x, ((I1 *)symbol(b, "i0_same"))(CONTEXT, x), x + 1101);
+    ok &= gives("hooks", x, ((I1 *)symbol(b, "i0_hooks"))(CONTEXT, x % 7), (3 * (x % 7) + 1) * 1000000 - 10000 + 5701);
     ok &= gives("call_seven", x, ((I1 *)symbol(b, "i0_call_seven"))(CONTEXT, x), seven_of(x));
     ok &= gives("call_wide", x, ((I1 *)symbol(b, "i0_call_wide"))(CONTEXT, x), 171 * x - 423);
     ok &= gives("call_void", x, ((I1 *)symbol(b, "i0_call_void"))(CONTEXT, x), x + 2);

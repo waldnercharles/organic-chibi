@@ -285,12 +285,25 @@ pointer_type(Checker *c, u32 elem)
     return id;
 }
 
+static bool
+is_c_fn(const Checker *c, u32 type)
+{
+    return c->types.kinds[type] == TYPE_FN && (c->types.arg1[type] & FN_C_CALL);
+}
+
+static bool
+is_never_nil(const Checker *c, u32 type)
+{
+    u8 k = c->types.kinds[type];
+    return k == TYPE_POINTER || k == TYPE_MANY || is_c_fn(c, type);
+}
+
 static u32
 optional_type(Checker *c, u32 elem)
 {
     u32 id = c->types.optionals[elem];
     if (id == 0) {
-        id = add_type(c, TYPE_OPTIONAL, elem, 0);
+        id = add_type(c, TYPE_OPTIONAL, elem, is_never_nil(c, elem));
         c->types.optionals[elem] = id;
     }
     return id;
@@ -586,13 +599,18 @@ is_optional_pointer(const Checker *c, u32 type)
 }
 
 static bool
+is_nilable(const Checker *c, u32 type)
+{
+    return c->types.kinds[type] == TYPE_OPTIONAL && c->types.arg1[type];
+}
+
+static bool
 is_scalar(const Checker *c, u32 type)
 {
     u8 k = c->types.kinds[type];
     return is_number(c, type) || k == TYPE_BOOL || k == TYPE_ENUM ||
-           k == TYPE_POINTER || k == TYPE_MANY ||
-           (k == TYPE_FN && (c->types.arg1[type] & FN_C_CALL)) ||
-           is_optional_pointer(c, type);
+           k == TYPE_POINTER || k == TYPE_MANY || is_nilable(c, type) ||
+           is_c_fn(c, type);
 }
 
 static bool
@@ -697,7 +715,7 @@ check_type_size(const Checker *c, u32 type)
         case TYPE_POINTER:
         case TYPE_MANY:
         case TYPE_FN: return 8;
-        case TYPE_OPTIONAL: return is_optional_pointer(c, type) ? 8 : 0;
+        case TYPE_OPTIONAL: return is_nilable(c, type) ? 8 : 0;
         case TYPE_SLICE:
         case TYPE_VECTOR: return 16;
         case TYPE_ENUM: return check_type_size(c, (u32)t->arg1[type]);
@@ -803,7 +821,7 @@ is_passed_compound(const Checker *c, u32 type)
     if (!is_storable(c, type)) {
         return false;
     }
-    return is_slice(c, type) || is_optional_pointer(c, type) ||
+    return is_slice(c, type) || is_nilable(c, type) ||
            (is_struct(c, type) && check_struct_regs(c, type));
 }
 
@@ -1691,7 +1709,7 @@ convert_optional(Checker *c, u32 file, u32 token, Operand o, u32 to)
     if (t->kinds[from] == TYPE_OPTIONAL && is_nonnil(o)) {
         return convert(c, file, token, narrowed_value(c, o), to);
     }
-    if (!is_optional_pointer(c, to)) {
+    if (!is_nilable(c, to)) {
         if (from == TYPE_ID_NIL) {
             report(c, file, token, t->kinds[to] == TYPE_OPTIONAL ? DIAG_UNSUPPORTED : DIAG_NIL_MISMATCH, 0, to);
         } else {
@@ -2096,7 +2114,7 @@ keeps_bits(const Checker *c, u32 type)
     u8 k = c->types.kinds[type];
     return k == TYPE_INT || k == TYPE_UINTPTR || k == TYPE_FLOAT ||
            k == TYPE_POINTER || k == TYPE_MANY || k == TYPE_VECTOR ||
-           is_optional_pointer(c, type);
+           is_c_fn(c, type) || is_nilable(c, type);
 }
 
 static bool
@@ -2106,7 +2124,7 @@ refuse_bitcast(Checker *c, u32 file, u32 token, u32 type)
     if (k == TYPE_SLICE) {
         report(c, file, token, DIAG_BITCAST_SLICE, 0, 0);
     } else if (k == TYPE_ARRAY || k == TYPE_STRUCT ||
-               (k == TYPE_OPTIONAL && !is_optional_pointer(c, type))) {
+               (k == TYPE_OPTIONAL && !is_nilable(c, type))) {
         report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
     } else if (!keeps_bits(c, type)) {
         report(c, file, token, DIAG_BITCAST_TYPE, 0, type);
@@ -2180,10 +2198,10 @@ bitcast(Checker *c, u32 file, u32 token, u32 type_token, u32 to, u32 value_token
         } else if (bits & (need - 1)) {
             report(c, file, value_token, DIAG_MISALIGNED, value_of(o), to);
             return poison;
-        } else if (bits == 0 && is_pointer(c, to)) {
+        } else if (bits == 0 && is_never_nil(c, to)) {
             report(c, file, value_token, DIAG_NEVER_NIL, 0, to);
             return poison;
-        } else if (bits == 0 && is_optional_pointer(c, to)) {
+        } else if (bits == 0 && is_nilable(c, to)) {
             return (Operand){ to, EXACT_ZERO };
         }
         if (!c->body.code) {
@@ -2194,7 +2212,7 @@ bitcast(Checker *c, u32 file, u32 token, u32 type_token, u32 to, u32 value_token
     }
 
     u32 v = emit(c, IR_BITCAST, to, operand_ir(c, o), 0);
-    if (is_pointer(c, to) && !is_pointer(c, from) && !is_constant(o)) {
+    if (is_never_nil(c, to) && !is_never_nil(c, from) && !is_constant(o)) {
         v = emit(c, IR_CHECK_NIL, to, v, 0);
     }
     if (need > pointee_align(c, from)) {
@@ -4132,7 +4150,7 @@ unwrap(Checker *c, u32 file, u32 token, Operand o)
         report(c, file, token, DIAG_NOT_VALUE, 0, 0);
         return poison;
     }
-    if (!is_optional_pointer(c, o.type)) {
+    if (!is_nilable(c, o.type)) {
         report(c, file, token, DIAG_NOT_OPTIONAL, o.type, 0);
         return poison;
     }
@@ -4156,7 +4174,7 @@ or_else_left(Checker *c, u32 file, u32 node, u32 token)
         report(c, file, a_token, DIAG_NIL_TYPE, 0, 0);
     } else if (a.type != TYPE_ID_NONE && !is_value_type(a.type)) {
         report(c, file, a_token, DIAG_NOT_VALUE, 0, 0);
-    } else if (a.type != TYPE_ID_NONE && !is_optional_pointer(c, a.type)) {
+    } else if (a.type != TYPE_ID_NONE && !is_nilable(c, a.type)) {
         report(c, file, token, DIAG_NOT_OPTIONAL, a.type, 0);
     } else if (a.type != TYPE_ID_NONE && is_constant(a)) {
         mode = SHORT_PASS;
@@ -4391,7 +4409,7 @@ or_else_target(Checker *c, u32 file, u32 node, u32 token)
         return SHORT_SKIP;
     }
     u32 type = place_type(c, target);
-    if (!is_optional_pointer(c, type)) {
+    if (!is_nilable(c, type)) {
         report(c, file, token, DIAG_NOT_OPTIONAL, type, 0);
         return SHORT_SKIP;
     }
@@ -7343,7 +7361,10 @@ resolve_name(Checker *c, u32 file, u32 node)
             return (Operand){ c->decls.types[decl], c->decls.values[decl] };
         case DECL_FN: {
             u32 to = c->body.code ? expected_at(c, c->sp) : TYPE_ID_NONE;
-            if (c->types.kinds[to] == TYPE_FN && (c->types.arg1[to] & FN_C_CALL)) {
+            if (is_nilable(c, to)) {
+                to = c->types.arg0[to];
+            }
+            if (is_c_fn(c, to)) {
                 return callback(c, file, token, decl, to);
             }
             report(c, file, token, DIAG_FN_VALUE, 0, 0);

@@ -3349,6 +3349,8 @@ static const char CALLBACKS[] =
     "extern fn chibi_c_each(f: extern fn(x: int) -> int, n: int) -> int\n"
     "extern fn chibi_c_same(a: extern fn(x: int) -> int, b: extern fn(x: int) -> int) -> bool\n"
     "extern fn chibi_c_note_sp()\n"
+    "extern fn chibi_c_swap_hook(h: ?extern fn(x: int) -> int) -> ?extern fn(x: int) -> int\n"
+    "extern fn chibi_c_fire_hook(x: int) -> int\n"
     "\n"
     "fn ascending(a: *int, b: *int) -> i32 {\n"
     "    if a.* < b.* {\n"
@@ -3410,6 +3412,23 @@ static const char CALLBACKS[] =
     "\n"
     "fn get_twice() -> extern fn(x: int) -> int {\n"
     "    return chibi_c_twice\n"
+    "}\n"
+    "\n"
+    "fn hooks(n: int) -> int {\n"
+    "    old := chibi_c_swap_hook(tap)\n"
+    "    a := chibi_c_fire_hook(n)\n"
+    "    mine := chibi_c_swap_hook(old)\n"
+    "    b := chibi_c_fire_hook(n)\n"
+    "    c := 0\n"
+    "    if mine != nil {\n"
+    "        c = chibi_c_each(mine, 2)\n"
+    "        if mine == get_tap() {\n"
+    "            c += 50\n"
+    "        }\n"
+    "    }\n"
+    "    _ = chibi_c_swap_hook(bitcast(?extern fn(x: int) -> int, int(1)))\n"
+    "    back := chibi_c_swap_hook(old)\n"
+    "    return a * 1000000 + b * 10000 + c * 100 + bitcast(int, back)\n"
     "}\n"
     "\n"
     "fn seven(a: int, b: i8, c: u16, d: i32, e: u32, f: bool, g: *int) -> int {\n"
@@ -3554,6 +3573,22 @@ chibi_c_same(FN1 *a, FN1 *b)
     return a == b;
 }
 
+static FN1 *c_hook;
+
+FN1 *
+chibi_c_swap_hook(FN1 *h)
+{
+    FN1 *old = c_hook;
+    c_hook = h;
+    return old;
+}
+
+int64_t
+chibi_c_fire_hook(int64_t x)
+{
+    return c_hook ? c_hook(x) : -1;
+}
+
 static bool sp_misaligned;
 
 void
@@ -3666,6 +3701,7 @@ TEST_CASE(callbacks)
         REQUIRE(((I1 *)fn(&p, "each"))(CONTEXT, x % 6) == fold_each(x % 6, 3, 1) * 1000 + fold_each(x % 6, 2, 0));
         REQUIRE(((I1 *)fn(&p, "hooked"))(CONTEXT, x % 5) == fold_each(x % 5 + 1, 3, 1));
         REQUIRE(((I1 *)fn(&p, "same"))(CONTEXT, x) == x + 1101);
+        REQUIRE(((I1 *)fn(&p, "hooks"))(CONTEXT, x % 7) == (3 * (x % 7) + 1) * 1000000 - 10000 + 5701);
         REQUIRE(odd_layouts(&p, x));
 
         int16_t k = (int16_t)(x * -300);
@@ -4705,6 +4741,70 @@ TEST_CASE(struct_ifs)
     return true;
 }
 
+static const char *const OPTIONAL_FN_FUNCTIONS[] = {
+    "ofn_round",  "ofn_unwrap",  "ofn_check",   "ofn_or_else",
+    "ofn_assign", "ofn_compare", "ofn_pass",    "ofn_global",
+    "ofn_narrow", "ofn_choose",  "ofn_pointer",
+};
+
+static const CallCase OPTIONAL_FN_CASES[] = {
+    { "ofn_round", 3, 4, 304, 0 },
+    { "ofn_round", 0, 7, 70, 0 },
+    { "ofn_round", -2, 5, -195, 0 },
+    { "ofn_round", 0, -3, -30, 0 },
+    { "ofn_unwrap", 7, 2, 6, 0 },
+    { "ofn_unwrap", 3, 3, 0, TRAP_NIL },
+    { "ofn_unwrap", -4, 1, -4, 0 },
+    { "ofn_check", 3, 4, 11, 0 },
+    { "ofn_check", 0, 9, 0, TRAP_NIL },
+    { "ofn_check", -2, 5, -11, 0 },
+    { "ofn_or_else", 5, 3, 5, 0 },
+    { "ofn_or_else", 0, 3, 3, 0 },
+    { "ofn_or_else", 0, 0, 77, 0 },
+    { "ofn_or_else", -1, 0, -1, 0 },
+    { "ofn_assign", 7, 2, 70505, 0 },
+    { "ofn_assign", 0, 0, 50512, 0 },
+    { "ofn_assign", -1, 4, -9493, 0 },
+    { "ofn_compare", 2, 2, 1011, 0 },
+    { "ofn_compare", 2, 3, 10, 0 },
+    { "ofn_compare", 0, 0, 101, 0 },
+    { "ofn_compare", 0, 5, 0, 0 },
+    { "ofn_compare", 4, 0, 110, 0 },
+    { "ofn_pass", 5, 2, 5, 0 },
+    { "ofn_pass", 0, -1, -1, 0 },
+    { "ofn_pass", 1, 3, 10, 0 },
+    { "ofn_global", 5, 3, 5, 0 },
+    { "ofn_global", 3, 5, 41, 0 },
+    { "ofn_global", 0, -2, 41, 0 },
+    { "ofn_narrow", 0, 2, 3308, 0 },
+    { "ofn_narrow", 5, 2, 2211, 0 },
+    { "ofn_narrow", -1, -3, 2190, 0 },
+    { "ofn_choose", 5, 2, 3, 0 },
+    { "ofn_choose", 1, 4, 4, 0 },
+    { "ofn_choose", -1, 0, 1000, 0 },
+    { "ofn_pointer", 5, 3, 8, 0 },
+    { "ofn_pointer", -2, 7, 5, 0 },
+};
+
+TEST_CASE(optional_fns)
+{
+    catch_traps();
+    Program p;
+    REQUIRE(build(&p, OPTIONAL_FNS));
+    for (size_t k = 0; k < sizeof OPTIONAL_FN_CASES / sizeof OPTIONAL_FN_CASES[0]; k++) {
+        CallCase t = OPTIONAL_FN_CASES[k];
+        int64_t got = 0;
+        int trap = call_i2((I2 *)fn(&p, t.name), t.a, t.b, &got);
+        if (trap != t.trap || (!trap && got != t.want)) {
+            fprintf(stderr, "arm64 test: %s(%lld, %lld) gave %lld (trap %d)\n", t.name, (long long)t.a, (long long)t.b, (long long)got, trap);
+            REQUIRE(false);
+        }
+    }
+    REQUIRE(agree_on_grid(&p, OPTIONAL_FN_FUNCTIONS, sizeof OPTIONAL_FN_FUNCTIONS / sizeof OPTIONAL_FN_FUNCTIONS[0]));
+    release_program(&p);
+    return true;
+}
+
 typedef int64_t I3(void *, int64_t, int64_t, int64_t);
 
 static int
@@ -5284,6 +5384,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(value_ifs);
     RUN_TEST_CASE(string_tables);
     RUN_TEST_CASE(struct_ifs);
+    RUN_TEST_CASE(optional_fns);
     RUN_TEST_CASE(vectors);
     RUN_TEST_CASE(narrow_parameters);
     RUN_TEST_CASE(constant_division);
