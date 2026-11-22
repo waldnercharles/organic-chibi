@@ -64,10 +64,6 @@ read_source(FILE *err, Arena *arena, const char *path, size_t *out_len)
     }
 
     char *src = arena_alloc(arena, len + LEXER_SOURCE_PADDING, 16);
-    if (!src) {
-        return cannot_read(err, fd, path, "out of memory");
-    }
-
     for (size_t got = 0; got < len;) {
         ssize_t n = read(fd, src + got, len - got);
         if (n <= 0) {
@@ -82,27 +78,18 @@ read_source(FILE *err, Arena *arena, const char *path, size_t *out_len)
     return src;
 }
 
-static bool
-has_tokens(Tokens t)
-{
-    return t.kinds && t.starts && t.ids && t.line_starts;
-}
-
 static int
 dump_tokens(FILE *out, FILE *err, const char *path)
 {
     Arena arena = { 0 };
     size_t len;
     char *src = read_source(err, &arena, path, &len);
-    Tokens tokens = src ? lexer_alloc_tokens(&arena, len) : (Tokens){ 0 };
-    if (src && !has_tokens(tokens)) {
-        fprintf(err, "chibi: %s: out of memory\n", path);
-    }
-    if (!has_tokens(tokens)) {
+    if (!src) {
         arena_free(&arena);
         return 1;
     }
 
+    Tokens tokens = lexer_alloc_tokens(&arena, len);
     Lexer lx;
     lexer_init(&lx, &arena, len);
     int ntok = lexer_tokenize(&lx, src, tokens);
@@ -177,10 +164,6 @@ check_program(FILE *err, Program *p, const char *const *paths, u32 n)
     p->files = arena_alloc(&p->arena, n * sizeof *p->files, alignof(ParsedFile));
     for (u32 i = 0; i < n; i++) {
         Tokens tokens = lexer_alloc_tokens(&p->arena, lens[i]);
-        if (!has_tokens(tokens)) {
-            fprintf(err, "chibi: %s: out of memory\n", paths[i]);
-            return false;
-        }
         int ntokens = lexer_tokenize(&p->lx, srcs[i], tokens);
         if (ntokens == 0) {
             lexer_print_error(err, &p->lx, paths[i], srcs[i]);
@@ -188,10 +171,6 @@ check_program(FILE *err, Program *p, const char *const *paths, u32 n)
         }
 
         Nodes nodes = parser_alloc_nodes(&p->arena, ntokens);
-        if (!nodes.kinds || !nodes.tokens || !nodes.top_ends) {
-            fprintf(err, "chibi: %s: out of memory\n", paths[i]);
-            return false;
-        }
         Parser parser;
         int count = parser_parse(&parser, tokens, ntokens, nodes);
         if (count < 0) {

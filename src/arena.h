@@ -21,9 +21,9 @@ typedef struct
 
 #define ARENA_MAX_ALLOC ((size_t)1 << 62)
 
-void *arena_alloc_slow(Arena *a, size_t n, size_t align);
+RETURNS_NONNULL void *arena_alloc_slow(Arena *a, size_t n, size_t align);
 
-static inline ALWAYS_INLINE void *
+static inline ALWAYS_INLINE RETURNS_NONNULL void *
 arena_alloc(Arena *a, size_t n, size_t align)
 {
     if (UNLIKELY(n >= ARENA_MAX_ALLOC)) {
@@ -31,7 +31,7 @@ arena_alloc(Arena *a, size_t n, size_t align)
     }
 
     uintptr_t t = ((uintptr_t)a->top - n) & ~(uintptr_t)(align - 1);
-    if (UNLIKELY((intptr_t)t < (intptr_t)a->bottom)) {
+    if (UNLIKELY((intptr_t)t <= (intptr_t)a->bottom)) {
         return arena_alloc_slow(a, n, align);
     }
     a->top = (u8 *)t;

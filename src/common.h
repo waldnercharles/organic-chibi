@@ -13,6 +13,7 @@ typedef uint64_t u64;
 #define ALWAYS_INLINE __attribute__((always_inline))
 #define NOINLINE __attribute__((noinline))
 #define NORETURN __attribute__((noreturn))
+#define RETURNS_NONNULL __attribute__((returns_nonnull))
 
 #define LIKELY(x) __builtin_expect(!!(x), 1)
 #define UNLIKELY(x) __builtin_expect(!!(x), 0)

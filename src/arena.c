@@ -1,6 +1,7 @@
 #include "arena.h"
 
 #include <assert.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 #define ARENA_FIRST_CHUNK ((size_t)64 * 1024 - sizeof(ArenaChunk))
@@ -64,12 +65,10 @@ push_chunk(Arena *a, size_t need)
 void *
 arena_alloc_slow(Arena *a, size_t n, size_t align)
 {
-    if (n >= ARENA_MAX_ALLOC || align >= ARENA_MAX_ALLOC) {
-        return NULL;
-    }
-
-    if (!push_chunk(a, n + (align - 1))) {
-        return NULL;
+    if (n >= ARENA_MAX_ALLOC || align >= ARENA_MAX_ALLOC ||
+        !push_chunk(a, n + (align - 1))) {
+        fputs("chibi: out of memory\n", stderr);
+        exit(1);
     }
 
     uintptr_t t = ((uintptr_t)a->top - n) & ~(uintptr_t)(align - 1);
