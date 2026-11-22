@@ -24,6 +24,7 @@ extern const char BIT_COUNTS[];
 extern const char BIT_GRID[];
 extern const char OVERFLOW_TESTS[];
 extern const char OVERFLOW_GRID[];
+extern const char MUL_HIGH[];
 extern const char BITCASTS[];
 extern const char OPTIONALS[];
 extern const char STRINGS[];

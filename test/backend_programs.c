@@ -2691,6 +2691,28 @@ const char OVERFLOW_TESTS[] =
     "    return add_overflows(x, -1)\n"
     "}\n";
 
+const char MUL_HIGH[] =
+    "fn mh_grid(a: int, b: int) -> int {\n"
+    "    v := u64.[\n"
+    "        0, 1, 2, 3, 4294967295, 4294967296, 4294967297, 6148914691236517205,\n"
+    "        9223372036854775807, 9223372036854775808, 9223372036854775809,\n"
+    "        12297829382473034410, 18446744073709551613, 18446744073709551614,\n"
+    "        18446744073709551615, 11400714819323198485,\n"
+    "    ]\n"
+    "    x := v[a & 15]\n"
+    "    y := v[b & 15]\n"
+    "    h := mul_high(x, y)\n"
+    "    k := mul_high(x, 11400714819323198485)\n"
+    "    m := mul_high(3, y)\n"
+    "    c := mul_high(18446744073709551615, 18446744073709551615)\n"
+    "    return bitcast(int, h ^ k *% 3 ^ m *% 5 ^ c)\n"
+    "}\n"
+    "fn mh_hash(a: int, b: int) -> int {\n"
+    "    p := bitcast(u64, a) ^ 0x2D358DCCAA6C78A5\n"
+    "    q := bitcast(u64, b) ^ 0x8BB84B93962EACC9\n"
+    "    return bitcast(int, p *% q ^ mul_high(p, q))\n"
+    "}\n";
+
 const char OVERFLOW_GRID[] =
     "fn ov_int(a: int, b: int) -> int {\n"
     "    v := int.[\n"
@@ -3593,6 +3615,7 @@ const char *const BACKEND_PROGRAMS[] = {
     BIT_GRID,
     OVERFLOW_TESTS,
     OVERFLOW_GRID,
+    MUL_HIGH,
     BITCASTS,
     OPTIONALS,
     STRINGS,

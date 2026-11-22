@@ -3692,6 +3692,40 @@ call_top_bits(Checker *c, u32 file, u32 token, u32 first_arg, u32 nargs)
     return (Operand){ type, REF_VALUE | i };
 }
 
+static NOINLINE Operand
+call_mul_high(Checker *c, u32 file, u32 token, u32 first_arg, u32 nargs)
+{
+    if (nargs != 2) {
+        report(c, file, token, DIAG_ARG_COUNT, 2, nargs);
+        return poison;
+    }
+    Operand a = c->stack[first_arg];
+    Operand b = c->stack[first_arg + 1];
+    if ((a.type != TYPE_ID_U64 && a.type != TYPE_ID_UNTYPED_INT) ||
+        (b.type != TYPE_ID_U64 && b.type != TYPE_ID_UNTYPED_INT)) {
+        u32 x = is_place(a) ? place_type(c, a) : a.type;
+        u32 y = is_place(b) ? place_type(c, b) : b.type;
+        report(c, file, token, DIAG_MUL_HIGH_TYPES, x, y);
+        return poison;
+    }
+
+    a = convert(c, file, c->stack_tokens[first_arg], a, TYPE_ID_U64);
+    b = convert(c, file, c->stack_tokens[first_arg + 1], b, TYPE_ID_U64);
+    if (a.type == TYPE_ID_NONE || b.type == TYPE_ID_NONE) {
+        return poison;
+    }
+    if (!is_constant(a) || !is_constant(b)) {
+        return emit_value(c, IR_MUL_HIGH, TYPE_ID_U64, operand_ir(c, a), operand_ir(c, b));
+    }
+
+    ExactStatus status;
+    u32 product = exact_binary(&c->exacts, EXACT_MUL, value_of(a), value_of(b), EXACT_INT_BITS, &status);
+    assert(status == EXACT_OK);
+    u32 high = exact_binary(&c->exacts, EXACT_SHR, product, exact_int(&c->exacts, 64), EXACT_INT_BITS, &status);
+    assert(status == EXACT_OK);
+    return (Operand){ TYPE_ID_U64, high };
+}
+
 static Operand
 test_overflow(Checker *c, u32 file, u32 token, u32 name, u32 first_arg, u32 nargs)
 {
@@ -3784,6 +3818,8 @@ call_builtin(Checker *c, u32 file, u32 token, Operand callee, u32 first_arg, u32
         case NAME_LOOKUP: return call_lookup(c, file, token, first_arg, nargs);
         case NAME_TOP_BITS:
             return call_top_bits(c, file, token, first_arg, nargs);
+        case NAME_MUL_HIGH:
+            return call_mul_high(c, file, token, first_arg, nargs);
         case NAME_SIZE_OF:
         case NAME_ALIGN_OF:
             return call_size_of(c, file, token, callee.ref, first_arg, nargs);

@@ -4244,6 +4244,65 @@ TEST_CASE(overflow_tests)
     return true;
 }
 
+static const char *const MUL_HIGH_FUNCTIONS[] = { "mh_grid", "mh_hash" };
+
+static u64
+high_half(u64 a, u64 b)
+{
+    return (u64)((unsigned __int128)a * b >> 64);
+}
+
+static int64_t
+mh_grid_want(int64_t a, int64_t b)
+{
+    static const u64 v[16] = {
+        0, 1, 2, 3, 4294967295u, 4294967296u, 4294967297u, 6148914691236517205u,
+        9223372036854775807u, 9223372036854775808u, 9223372036854775809u,
+        12297829382473034410u, 18446744073709551613u, 18446744073709551614u,
+        18446744073709551615u, 11400714819323198485u,
+    };
+    u64 x = v[a & 15];
+    u64 y = v[b & 15];
+    u64 h = high_half(x, y);
+    u64 k = high_half(x, 11400714819323198485u);
+    u64 m = high_half(3, y);
+    u64 c = high_half(UINT64_MAX, UINT64_MAX);
+    return (int64_t)(h ^ k * 3 ^ m * 5 ^ c);
+}
+
+static int64_t
+mh_hash_want(int64_t a, int64_t b)
+{
+    u64 p = (u64)a ^ 0x2D358DCCAA6C78A5u;
+    u64 q = (u64)b ^ 0x8BB84B93962EACC9u;
+    return (int64_t)(p * q ^ high_half(p, q));
+}
+
+TEST_CASE(mul_high_tests)
+{
+    catch_traps();
+    Program p;
+    REQUIRE(build(&p, MUL_HIGH));
+    REQUIRE(agree_on_grid(&p, MUL_HIGH_FUNCTIONS, sizeof MUL_HIGH_FUNCTIONS / sizeof MUL_HIGH_FUNCTIONS[0]));
+
+    I2 *grid = (I2 *)fn(&p, "mh_grid");
+    I2 *hash = (I2 *)fn(&p, "mh_hash");
+    for (int64_t a = -3; a <= 20; a++) {
+        for (int64_t b = -3; b <= 20; b++) {
+            REQUIRE(grid(CONTEXT, a, b) == mh_grid_want(a, b));
+            REQUIRE(hash(CONTEXT, a, b) == mh_hash_want(a, b));
+        }
+    }
+    REQUIRE(hash(CONTEXT, INT64_MIN, INT64_MAX) == mh_hash_want(INT64_MIN, INT64_MAX));
+    REQUIRE(hash(CONTEXT, -1, INT64_MIN) == mh_hash_want(-1, INT64_MIN));
+
+    REQUIRE(count_words(&p, "mh_grid", WORD_UMULH, THREE_REGISTERS) == 3);
+    REQUIRE(count_words(&p, "mh_hash", WORD_UMULH, THREE_REGISTERS) == 1);
+    REQUIRE(count_words(&p, "mh_hash", WORD_MUL_X, THREE_REGISTERS) == 1);
+    release_program(&p);
+    return true;
+}
+
 static const char *const BITCAST_FUNCTIONS[] = {
     "bc_f32",  "bc_f64",     "bc_from",          "bc_ints",    "bc_pointers", "bc_misaligned",
     "bc_many", "bc_strided", "bc_float_pointer", "bc_special",
@@ -5154,6 +5213,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(many_pointers);
     RUN_TEST_CASE(bit_counts);
     RUN_TEST_CASE(overflow_tests);
+    RUN_TEST_CASE(mul_high_tests);
     RUN_TEST_CASE(bitcasts);
     RUN_TEST_CASE(optionals);
     RUN_TEST_CASE(strings);

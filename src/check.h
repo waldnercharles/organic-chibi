@@ -227,6 +227,7 @@ enum
     X(DIAG_SIZE_TOO_LARGE, "the size of `%T` doesn't fit in `int`")                                 \
     X(DIAG_STORE_UNTYPED, "`unaligned_store` needs a typed value, as in `u32(0)`")                  \
     X(DIAG_LOOKUP_TYPES, "`lookup` takes two `u8x16` or two `i8x16`, found `%T` and `%U`")          \
+    X(DIAG_MUL_HIGH_TYPES, "`mul_high` takes two `u64`, found `%T` and `%U`")                       \
     X(DIAG_RETURN_VALUE, "this function returns nothing, so `return` takes no value")               \
     X(DIAG_RETURN_EMPTY, "`return` needs a value of type `%U`")                                     \
     X(DIAG_MISSING_RETURN, "the function can reach its end without returning a value of type `%U`") \
