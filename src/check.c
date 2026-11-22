@@ -3604,7 +3604,7 @@ call_general(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg,
                                : (Operand){ ret, REF_VALUE | i };
 }
 
-static Operand
+static ALWAYS_INLINE Operand
 call_fn(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg, u32 nargs)
 {
     const Decls *d = &c->decls;
@@ -7465,7 +7465,7 @@ resolve_builtin(Checker *c, u32 file, u32 node, u32 token, u32 id)
     return (Operand){ OPERAND_BUILTIN, id };
 }
 
-static Operand
+static ALWAYS_INLINE Operand
 resolve_name(Checker *c, u32 file, u32 node)
 {
     const ParsedFile *f = &c->files[file];
