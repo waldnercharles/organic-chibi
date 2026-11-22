@@ -2246,6 +2246,15 @@ expected_at(const Checker *c, u32 top)
             u32 type = c->body.ret == TYPE_ID_INFERRED ? TYPE_ID_NONE : c->body.ret;
             return depth ? element_of(c, type, depth) : type;
         }
+        if (kind == NODE_VALUE_IF_THEN || kind == NODE_VALUE_IF_ELSE) {
+            u32 then = kind == NODE_VALUE_IF_THEN ? m : m - 2;
+            u32 type = c->stack[then - 1].ref;
+            if (type == TYPE_ID_NONE && kind == NODE_VALUE_IF_ELSE &&
+                is_place(c->stack[m - 1])) {
+                type = place_type(c, c->stack[m - 1]);
+            }
+            return depth ? element_of(c, type, depth) : type;
+        }
         if (m == 0 || (kind != NODE_VALUE && kind != NODE_CALL_ARGS && !literal)) {
             return TYPE_ID_NONE;
         }
@@ -3377,6 +3386,32 @@ note_stack_args(Checker *c, u32 list, u32 nargs, u32 first)
     }
 }
 
+static u32
+enclosing_slot(const Checker *c, u32 file, u32 end, u32 base)
+{
+    u8 next = c->files[file].nodes.kinds[end + 1];
+    if (next == NODE_VALUE_IF_ELSE) {
+        assert(c->stack[base - 1].type == OPERAND_MARKER + NODE_VALUE_IF_THEN);
+        return c->stack[base - 5].ref;
+    }
+    if (next == NODE_VALUE_IF || next == NODE_VALUE_IF_ITEM) {
+        assert(c->stack[base - 1].type == OPERAND_MARKER + NODE_VALUE_IF_ELSE);
+        bool held = c->stack[base - 1].ref != 0 &&
+                    c->stack[base - 2].type == OPERAND_LOCAL;
+        return held ? c->stack[base - 2].ref : NO_SLOT;
+    }
+    return NO_SLOT;
+}
+
+static u32
+result_slot(Checker *c, u32 file, u32 node, u32 base, u32 type)
+{
+    u32 slot = enclosing_slot(c, file, node, base);
+    return slot != NO_SLOT && slot_at(c, slot)->type == type
+             ? slot
+             : add_slot(c, 0, type, node);
+}
+
 static NOINLINE Operand
 call_general(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg, u32 nargs)
 {
@@ -3461,7 +3496,7 @@ call_general(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg,
     c->body.copies = copies > c->body.copies ? copies : c->body.copies;
     u32 slot = 0;
     if (is_struct(c, ret)) {
-        slot = add_slot(c, 0, ret, node);
+        slot = result_slot(c, file, node, first_arg - 2, ret);
         weigh(c, slot);
         code->extra[w++] = slot;
     }
@@ -4947,7 +4982,7 @@ array_literal(Checker *c, u32 file, u32 node, u8 kind)
     u32 type = array_literal_type(c, file, m, base, typed);
 
     bool ok = type != TYPE_ID_NONE;
-    Operand array = { OPERAND_LOCAL, ok ? add_slot(c, 0, type, node) : 0 };
+    Operand array = { OPERAND_LOCAL, ok ? result_slot(c, file, node, base, type) : 0 };
     u32 elem = c->types.arg0[type];
     for (u32 k = 0; type && k < n; k++) {
         Operand x = convert(c, file, c->stack_tokens[m + 1 + k], c->stack[m + 1 + k], elem);
@@ -5506,7 +5541,7 @@ struct_literal(Checker *c, u32 file, u32 node, u8 kind)
 
     u32 decl = c->types.arg0[type];
     u32 count = c->decls.member_counts[decl];
-    u32 slot = ok ? add_slot(c, 0, type, node) : 0;
+    u32 slot = ok ? result_slot(c, file, node, base, type) : 0;
     bool zeroed = false;
     if (ok && items < count) {
         emit(c, IR_ZERO, type, place_address(c, (Operand){ OPERAND_LOCAL, slot }), 0);
@@ -5945,11 +5980,10 @@ closing_node(const u8 *kinds, u32 node, u8 start, u8 end, u8 item)
 }
 
 static u32
-result_type(Checker *c, u32 file, u32 node, u32 own, u8 start, u8 end_kind, u8 item)
+result_type(Checker *c, u32 file, u32 end, u32 own, u8 item)
 {
     const u8 *kinds = c->files[file].nodes.kinds;
-    u32 i = closing_node(kinds, node, start, end_kind, item);
-    if (kinds[i] == item) {
+    if (kinds[end] == item) {
         u32 m = c->sp - own;
         while (c->stack[--m].type < OPERAND_MARKER) {
         }
@@ -5959,14 +5993,14 @@ result_type(Checker *c, u32 file, u32 node, u32 own, u8 start, u8 end_kind, u8 i
         return call || literal ? expected_type(c, own) : TYPE_ID_NONE;
     }
 
-    u8 next = kinds[i + 1];
+    u8 next = kinds[end + 1];
     bool direct = c->sp > own &&
                   c->stack[c->sp - own - 1].type == OPERAND_MARKER + NODE_VALUE;
     if (next == NODE_RETURN_VALUE) {
         return c->body.ret == TYPE_ID_INFERRED ? TYPE_ID_NONE : c->body.ret;
     }
     if (next == NODE_BREAK_VALUE) {
-        const Loop *to = lookup_label(c, file, c->files[file].nodes.tokens[i + 1]);
+        const Loop *to = lookup_label(c, file, c->files[file].nodes.tokens[end + 1]);
         return to && to->value && !to->peer ? to->type : TYPE_ID_NONE;
     }
     if (next == NODE_CASE) {
@@ -5974,7 +6008,8 @@ result_type(Checker *c, u32 file, u32 node, u32 own, u8 start, u8 end_kind, u8 i
         const Loop *to = s->value ? &c->loops[s->loop] : NULL;
         return to && !to->peer ? to->type : TYPE_ID_NONE;
     }
-    if (direct && (next == NODE_VAR_TYPE_INIT || next == NODE_ASSIGN)) {
+    if (direct && (next == NODE_VAR_TYPE_INIT || next == NODE_ASSIGN ||
+                   next == NODE_NAMED_ARG)) {
         return expected_type(c, own);
     }
     if (next == NODE_VALUE_IF_ELSE || next == NODE_VALUE_IF ||
@@ -5992,9 +6027,11 @@ open_labeled_block(Checker *c, u32 file, u32 node)
 {
     Operand label = c->stack[c->sp - 1];
     bool value = label.type == OPERAND_MARKER + NODE_VALUE_LABEL_START;
-    u32 expected = value
-                     ? result_type(c, file, node, 1, NODE_VALUE_LABEL_START, NODE_LABELED_VALUE, NODE_LABELED_ITEM)
-                     : TYPE_ID_NONE;
+    u32 expected = TYPE_ID_NONE;
+    if (value) {
+        u32 end = closing_node(c->files[file].nodes.kinds, node, NODE_VALUE_LABEL_START, NODE_LABELED_VALUE, NODE_LABELED_ITEM);
+        expected = result_type(c, file, end, 1, NODE_LABELED_ITEM);
+    }
     Loop target = {
         .loop = emit(c, IR_BLOCK, 0, 0, 0),
         .next = NO_SLOT,
@@ -6105,7 +6142,8 @@ begin_switch(Checker *c, u32 file, u32 node, u8 kind, u32 token)
         .value = value,
     };
     if (value) {
-        u32 expected = result_type(c, file, node, 0, NODE_VALUE_SWITCH_START, NODE_VALUE_SWITCH, NODE_SWITCH_ITEM);
+        u32 end = closing_node(c->files[file].nodes.kinds, node, NODE_VALUE_SWITCH_START, NODE_VALUE_SWITCH, NODE_SWITCH_ITEM);
+        u32 expected = result_type(c, file, end, 0, NODE_SWITCH_ITEM);
         s.loop = c->nloops;
         push_loop(
             c,
@@ -6824,7 +6862,8 @@ value_if_then(Checker *c, u32 file, u32 node, u32 token)
 {
     u32 cond_token = c->stack_tokens[c->sp - 1];
     Operand cond = c->stack[c->sp - 1];
-    u32 expected = result_type(c, file, node, 1, NODE_VALUE_IF_THEN, NODE_VALUE_IF, NODE_VALUE_IF_ITEM);
+    u32 end = closing_node(c->files[file].nodes.kinds, node, NODE_VALUE_IF_THEN, NODE_VALUE_IF, NODE_VALUE_IF_ITEM);
+    u32 expected = result_type(c, file, end, 1, NODE_VALUE_IF_ITEM);
     u32 mark = c->nfacts;
     u32 pending = 0;
     u32 mode = SHORT_FOLD;
@@ -6840,8 +6879,10 @@ value_if_then(Checker *c, u32 file, u32 node, u32 token)
         pending = c->body.narrows ? narrow_then(c, cond) : 0;
         mode = emit(c, IR_IF, expected, value_of(cond), 0);
     }
+    u32 shared = enclosing_slot(c, file, end, c->sp - 1);
 
     pop(c);
+    push(c, cond_token, OPERAND_STMT, shared);
     push(c, cond_token, OPERAND_STMT, mark);
     push(c, cond_token, OPERAND_STMT, pending);
     push(c, cond_token, OPERAND_STMT, expected);
@@ -6853,6 +6894,9 @@ value_if_branch(Checker *c, u32 file, u32 token, Operand v)
 {
     if (v.type == TYPE_ID_NONE) {
         return poison;
+    }
+    if (is_place(v) && c->body.code && is_aggregate(c, place_type(c, v))) {
+        return v;
     }
     if (is_place(v)) {
         report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
@@ -6869,8 +6913,30 @@ value_if_branch(Checker *c, u32 file, u32 token, Operand v)
     return v;
 }
 
+static NOINLINE Operand
+hold_value_if(Checker *c, u32 file, u32 node, u32 token, Operand a, u32 expected, u32 mode, u32 shared)
+{
+    u32 type = expected != TYPE_ID_NONE ? expected : place_type(c, a);
+    a = convert(c, file, token, a, type);
+    c->body.code->types[c->body.first + mode] = 0;
+    if (a.type == TYPE_ID_NONE) {
+        return poison;
+    }
+
+    Operand held = a;
+    if (shared != NO_SLOT && slot_at(c, shared)->type == type) {
+        held = (Operand){ OPERAND_LOCAL, shared };
+    } else if (a.type != OPERAND_LOCAL || slot_at(c, a.ref)->name != 0) {
+        held = (Operand){ OPERAND_LOCAL, add_slot(c, 0, type, node) };
+    }
+    if (a.type != OPERAND_LOCAL || a.ref != held.ref) {
+        copy_place(c, held, a);
+    }
+    return held;
+}
+
 static NOINLINE void
-value_if_else(Checker *c, u32 file, u32 token)
+value_if_else(Checker *c, u32 file, u32 node, u32 token)
 {
     u32 a_token = c->stack_tokens[c->sp - 1];
     Operand a = value_if_branch(c, file, a_token, pop(c));
@@ -6878,16 +6944,20 @@ value_if_else(Checker *c, u32 file, u32 token)
     u32 expected = c->stack[c->sp - 2].ref;
     u32 pending = c->stack[c->sp - 3].ref;
     u32 mark = c->stack[c->sp - 4].ref;
+    u32 shared = c->stack[c->sp - 5].ref;
     u32 at = 0;
     if (mode == SHORT_SKIP && c->body.code) {
         emit(c, IR_IF, 0, ir_const(c, TYPE_ID_BOOL, 0), 0);
     } else if (mode == SHORT_PASS && c->body.code) {
-        if (!is_constant(a)) {
+        if (!is_constant(a) && !is_place(a)) {
             emit(c, IR_DROP, 0, value_of(a), 0);
         }
         emit(c, IR_END, 0, 0, 0);
     } else if (mode < SHORT_TESTED) {
-        if (expected != TYPE_ID_NONE) {
+        if (is_place(a)) {
+            a = hold_value_if(c, file, node, a_token, a, expected, mode, shared);
+            at = emit(c, IR_ELSE, 0, 0, 0);
+        } else if (expected != TYPE_ID_NONE) {
             a = convert(c, file, a_token, a, expected);
             at = emit(c, IR_ELSE, expected, a.type == TYPE_ID_NONE ? 0 : operand_ir(c, a), 0);
         } else if (!is_constant(a)) {
@@ -6952,6 +7022,7 @@ value_if(Checker *c, u32 file)
     u32 expected = pop(c).ref;
     pop(c);
     u32 mark = pop(c).ref;
+    pop(c);
     if (c->nfacts != mark) {
         undo_facts(c, mark);
     }
@@ -6961,7 +7032,7 @@ value_if(Checker *c, u32 file)
     }
     if (mode == SHORT_SKIP || mode == SHORT_PASS) {
         if (mode == SHORT_SKIP && c->body.code) {
-            if (!is_constant(b)) {
+            if (!is_constant(b) && !is_place(b)) {
                 emit(c, IR_DROP, 0, value_of(b), 0);
             }
             emit(c, IR_END, 0, 0, 0);
@@ -6971,6 +7042,20 @@ value_if(Checker *c, u32 file)
         return expected == TYPE_ID_NONE || v.type == TYPE_ID_NONE
                  ? v
                  : convert(c, file, v_token, v, expected);
+    }
+
+    if (is_place(a)) {
+        Operand x = convert(c, file, b_token, b, place_type(c, a));
+        if (x.type != TYPE_ID_NONE && (x.type != OPERAND_LOCAL || x.ref != a.ref)) {
+            copy_place(c, a, x);
+        }
+        emit(c, IR_END, 0, 0, 0);
+        return x.type == TYPE_ID_NONE ? poison : a;
+    }
+    if (is_place(b) && a.type != TYPE_ID_NONE) {
+        report(c, file, b_token, DIAG_MISMATCH, place_type(c, b), expected != TYPE_ID_NONE ? expected : a.type);
+        emit(c, IR_END, 0, 0, 0);
+        return poison;
     }
 
     u32 type = expected;
@@ -7130,7 +7215,7 @@ body_marker(Checker *c, u32 file, u32 node, u8 kind, u32 token)
             }
             value_if_then(c, file, node, token);
             return;
-        case NODE_VALUE_IF_ELSE: value_if_else(c, file, token); return;
+        case NODE_VALUE_IF_ELSE: value_if_else(c, file, node, token); return;
         default: break;
     }
     push(c, token, OPERAND_MARKER + kind, c->nscratch);
@@ -7320,7 +7405,7 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
             } else if (kind == NODE_VALUE_IF_THEN) {
                 value_if_then(c, file, i, token);
             } else if (kind == NODE_VALUE_IF_ELSE) {
-                value_if_else(c, file, token);
+                value_if_else(c, file, i, token);
             } else if (kind == NODE_VALUE_LABEL_START) {
                 report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
                 i = closing_node(kinds, i, kind, NODE_LABELED_VALUE, NODE_LABELED_ITEM);

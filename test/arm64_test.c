@@ -4641,6 +4641,70 @@ TEST_CASE(string_tables)
     return true;
 }
 
+static const char *const STRUCT_IF_FUNCTIONS[] = {
+    "sif_pick", "sif_literal", "sif_alias", "sif_nested", "sif_field", "sif_big",
+    "sif_named", "sif_array", "sif_const", "sif_arg", "sif_return", "sif_loop",
+    "sif_chain", "sif_order", "sif_rows",
+};
+
+static const CallCase STRUCT_IF_CASES[] = {
+    { "sif_pick", 3, 5, 3005, 0 },
+    { "sif_pick", 7, -2, -1993, 0 },
+    { "sif_literal", 7, -2, 8074, 0 },
+    { "sif_literal", 3, 5, 3082, 0 },
+    { "sif_alias", 3, 5, 3005, 0 },
+    { "sif_alias", -2, -3, 2003, 0 },
+    { "sif_nested", -1, 4, 999, 0 },
+    { "sif_nested", 0, -2, 1998, 0 },
+    { "sif_nested", 3, 5, 3008, 0 },
+    { "sif_field", 7, -2, 74, 0 },
+    { "sif_field", 3, 5, 53, 0 },
+    { "sif_big", 3, 5, 54353, 0 },
+    { "sif_big", 6, 1, 11676, 0 },
+    { "sif_named", 7, -2, 683, 0 },
+    { "sif_named", -1, 4, 94, 0 },
+    { "sif_array", 3, 5, 351, 0 },
+    { "sif_array", 7, -2, -128, 0 },
+    { "sif_const", 7, -2, 4328, 0 },
+    { "sif_const", -1, 4, 4320, 0 },
+    { "sif_arg", 7, -2, 23, 0 },
+    { "sif_arg", 3, 5, 12, 0 },
+    { "sif_return", 7, -2, 700, 0 },
+    { "sif_return", 3, 5, 5, 0 },
+    { "sif_loop", 3, 5, 910, 0 },
+    { "sif_loop", -1, 4, -292, 0 },
+    { "sif_chain", 7, -2, 698, 0 },
+    { "sif_chain", 3, 5, 301, 0 },
+    { "sif_chain", 1, 8, 801, 0 },
+    { "sif_chain", -1, 4, -96, 0 },
+    { "sif_chain", -3, 2, 707, 0 },
+    { "sif_chain", 0, -2, -101, 0 },
+    { "sif_order", 7, -2, 7078, 0 },
+    { "sif_order", 3, 5, 3056, 0 },
+    { "sif_rows", 7, -2, 681, 0 },
+    { "sif_rows", 5, 5, 789, 0 },
+    { "sif_rows", 3, 5, 532, 0 },
+};
+
+TEST_CASE(struct_ifs)
+{
+    catch_traps();
+    Program p;
+    REQUIRE(build(&p, STRUCT_IFS));
+    for (size_t k = 0; k < sizeof STRUCT_IF_CASES / sizeof STRUCT_IF_CASES[0]; k++) {
+        CallCase t = STRUCT_IF_CASES[k];
+        int64_t got = 0;
+        int trap = call_i2((I2 *)fn(&p, t.name), t.a, t.b, &got);
+        if (trap != t.trap || (!trap && got != t.want)) {
+            fprintf(stderr, "arm64 test: %s(%lld, %lld) gave %lld (trap %d)\n", t.name, (long long)t.a, (long long)t.b, (long long)got, trap);
+            REQUIRE(false);
+        }
+    }
+    REQUIRE(agree_on_grid(&p, STRUCT_IF_FUNCTIONS, sizeof STRUCT_IF_FUNCTIONS / sizeof STRUCT_IF_FUNCTIONS[0]));
+    release_program(&p);
+    return true;
+}
+
 typedef int64_t I3(void *, int64_t, int64_t, int64_t);
 
 static int
@@ -5219,6 +5283,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(strings);
     RUN_TEST_CASE(value_ifs);
     RUN_TEST_CASE(string_tables);
+    RUN_TEST_CASE(struct_ifs);
     RUN_TEST_CASE(vectors);
     RUN_TEST_CASE(narrow_parameters);
     RUN_TEST_CASE(constant_division);
