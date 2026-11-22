@@ -273,6 +273,125 @@ TEST_CASE(writes_target_guards)
     return true;
 }
 
+static const char LAYOUT_WALK[] =
+    "struct B { x: u8, y: u32 }\n"
+    "struct C { z: u16 }\n"
+    "struct D { w: u64, next: ?*D }\n"
+    "struct E { v: i8, back: ?*A }\n"
+    "struct F { u: u32 }\n"
+    "struct G { t: u8 }\n"
+    "struct H { s: u64, r: u8 }\n"
+    "struct Q { p: i16 }\n"
+    "struct R { o: u16, n: u64 }\n"
+    "struct S { m: u8 }\n"
+    "struct Unseen { q: u32 }\n"
+    "struct A {\n"
+    "    b: B,\n"
+    "    cs: [3]C,\n"
+    "    d: ?*D,\n"
+    "    e: [*]E,\n"
+    "    f: extern fn(g: *G) -> F,\n"
+    "    s: []S,\n"
+    "}\n"
+    "\n"
+    "extern fn take(h: *H) -> int\n"
+    "extern shared: R\n"
+    "\n"
+    "fn back(q: *Q) -> int {\n"
+    "    return int(q.p)\n"
+    "}\n"
+    "\n"
+    "fn local(u: *Unseen) -> int {\n"
+    "    return int(u.q)\n"
+    "}\n"
+    "\n"
+    "fn get_back() -> extern fn(q: *Q) -> int {\n"
+    "    return back\n"
+    "}\n"
+    "\n"
+    "export fn give(a: *A) -> int {\n"
+    "    return int(a.b.x)\n"
+    "}\n";
+
+static const char LAYOUT_WALK_C[] =
+    "#include <stddef.h>\n"
+    "\n"
+    "_Static_assert(sizeof(B) == 8 && _Alignof(B) == 4, \"B\");\n"
+    "_Static_assert(offsetof(B, x) == 0, \"B.x\");\n"
+    "_Static_assert(offsetof(B, y) == 4, \"B.y\");\n"
+    "\n"
+    "_Static_assert(sizeof(C) == 2 && _Alignof(C) == 2, \"C\");\n"
+    "_Static_assert(offsetof(C, z) == 0, \"C.z\");\n"
+    "\n"
+    "_Static_assert(sizeof(D) == 16 && _Alignof(D) == 8, \"D\");\n"
+    "_Static_assert(offsetof(D, w) == 0, \"D.w\");\n"
+    "_Static_assert(offsetof(D, next) == 8, \"D.next\");\n"
+    "\n"
+    "_Static_assert(sizeof(E) == 16 && _Alignof(E) == 8, \"E\");\n"
+    "_Static_assert(offsetof(E, v) == 0, \"E.v\");\n"
+    "_Static_assert(offsetof(E, back) == 8, \"E.back\");\n"
+    "\n"
+    "_Static_assert(sizeof(F) == 4 && _Alignof(F) == 4, \"F\");\n"
+    "_Static_assert(offsetof(F, u) == 0, \"F.u\");\n"
+    "\n"
+    "_Static_assert(sizeof(G) == 1 && _Alignof(G) == 1, \"G\");\n"
+    "_Static_assert(offsetof(G, t) == 0, \"G.t\");\n"
+    "\n"
+    "_Static_assert(sizeof(H) == 16 && _Alignof(H) == 8, \"H\");\n"
+    "_Static_assert(offsetof(H, s) == 0, \"H.s\");\n"
+    "_Static_assert(offsetof(H, r) == 8, \"H.r\");\n"
+    "\n"
+    "_Static_assert(sizeof(Q) == 2 && _Alignof(Q) == 2, \"Q\");\n"
+    "_Static_assert(offsetof(Q, p) == 0, \"Q.p\");\n"
+    "\n"
+    "_Static_assert(sizeof(R) == 16 && _Alignof(R) == 8, \"R\");\n"
+    "_Static_assert(offsetof(R, o) == 0, \"R.o\");\n"
+    "_Static_assert(offsetof(R, n) == 8, \"R.n\");\n"
+    "\n"
+    "_Static_assert(sizeof(S) == 1 && _Alignof(S) == 1, \"S\");\n"
+    "_Static_assert(offsetof(S, m) == 0, \"S.m\");\n"
+    "\n"
+    "_Static_assert(sizeof(A) == 56 && _Alignof(A) == 8, \"A\");\n"
+    "_Static_assert(offsetof(A, b) == 0, \"A.b\");\n"
+    "_Static_assert(offsetof(A, cs) == 8, \"A.cs\");\n"
+    "_Static_assert(offsetof(A, d) == 16, \"A.d\");\n"
+    "_Static_assert(offsetof(A, e) == 24, \"A.e\");\n"
+    "_Static_assert(offsetof(A, f) == 32, \"A.f\");\n"
+    "_Static_assert(offsetof(A, s) == 40, \"A.s\");\n";
+
+static char *
+layouts_of(const char *text)
+{
+    char *got = NULL;
+    size_t len = 0;
+    FILE *out = open_memstream(&got, &len);
+    assert(out);
+    Package p;
+    bool ok = check_source(&p, text);
+    if (ok) {
+        c_source_layouts(out, &p.c);
+    }
+    release(&p);
+    fclose(out);
+    if (!ok) {
+        free(got);
+        return NULL;
+    }
+    return got;
+}
+
+TEST_CASE(writes_layouts)
+{
+    char *got = layouts_of(LAYOUT_WALK);
+    bool ok = got && strcmp(got, LAYOUT_WALK_C) == 0;
+    if (!ok) {
+        fprintf(stderr, "c_source test: layouts\n%s", got ? got : "the program failed to check\n");
+    }
+    free(got);
+    REQUIRE(ok);
+    return true;
+}
+
 #ifdef CHIBI_TEST_CC
 
 #if defined(__APPLE__) && defined(__aarch64__)
@@ -1787,6 +1906,74 @@ TEST_CASE(refuses_other_targets)
     return true;
 }
 
+static const char LAYOUT_HEADER[] =
+    "typedef struct { uint16_t z; } C;\n"
+    "typedef struct D { uint64_t w; struct D *next; } D;\n"
+    "typedef struct E { int8_t v; struct A *back; } E;\n"
+    "typedef struct { uint32_t u; } F;\n"
+    "typedef struct { uint8_t t; } G;\n"
+    "typedef struct { uint64_t s; uint8_t r; } H;\n"
+    "typedef struct { int16_t p; } Q;\n"
+    "typedef struct { uint16_t o; uint64_t n; } R;\n"
+    "typedef struct { uint8_t m; } S;\n"
+    "typedef struct A { B b; C cs[3]; D *d; E *e; F (*f)(G *); struct { S *items; uint64_t count; } s; } A;\n";
+
+TEST_CASE(layouts_catch_drift)
+{
+    static const struct
+    {
+        const char *b;
+        bool refused;
+    } cases[] = {
+        { "typedef struct { uint8_t x; uint32_t y; } B;\n", false },
+        { "typedef struct { uint8_t x; uint16_t y; } B;\n", true },
+    };
+
+    char dir[] = "/tmp/chibi-c-XXXXXX";
+    REQUIRE(mkdtemp(dir));
+    char header[64], source[64], log[64], command[320];
+    snprintf(header, sizeof header, "%s/t.h", dir);
+    snprintf(source, sizeof source, "%s/t.c", dir);
+    snprintf(log, sizeof log, "%s/t.log", dir);
+    snprintf(command, sizeof command, CHIBI_TEST_CC TARGET " -std=c11 -Wall -Wextra -Werror -fsyntax-only -include '%s' '%s' 2> '%s'", header, source, log);
+
+    char *text = layouts_of(LAYOUT_WALK);
+    bool ok = text != NULL;
+    FILE *out = fopen(source, "w");
+    assert(out);
+    fputs(ok ? text : "", out);
+    fclose(out);
+    free(text);
+
+    for (size_t k = 0; ok && k < sizeof cases / sizeof cases[0]; k++) {
+        FILE *h = fopen(header, "w");
+        assert(h);
+        fputs("#include <stdint.h>\n\n", h);
+        fputs(cases[k].b, h);
+        fputs(LAYOUT_HEADER, h);
+        fclose(h);
+        bool refused = system(command) != 0;
+
+        char said[4096] = "";
+        FILE *in = fopen(log, "r");
+        assert(in);
+        size_t n = fread(said, 1, sizeof said - 1, in);
+        said[n] = 0;
+        fclose(in);
+
+        ok = refused == cases[k].refused && (!refused || strstr(said, "B.y"));
+        if (!ok) {
+            fprintf(stderr, "c_source test: layouts against %s gave\n%s", cases[k].b, said);
+        }
+    }
+    unlink(header);
+    unlink(source);
+    unlink(log);
+    rmdir(dir);
+    REQUIRE(ok);
+    return true;
+}
+
 #endif
 
 TEST_SUITE(c_source_tests)
@@ -1795,11 +1982,13 @@ TEST_SUITE(c_source_tests)
     RUN_TEST_CASE(emits_doubling_structs);
     RUN_TEST_CASE(writes_inline_marks);
     RUN_TEST_CASE(writes_target_guards);
+    RUN_TEST_CASE(writes_layouts);
 #ifdef CHIBI_TEST_CC
     RUN_TEST_CASE(agrees_with_reference);
     RUN_TEST_CASE(works_with_c);
     RUN_TEST_CASE(runs_vectors);
     RUN_TEST_CASE(maps_lines);
     RUN_TEST_CASE(refuses_other_targets);
+    RUN_TEST_CASE(layouts_catch_drift);
 #endif
 }

@@ -1617,3 +1617,104 @@ c_source_runtime(FILE *out)
         out
     );
 }
+
+static u32
+push_type(u32 *stack, u32 depth, u8 *seen, u32 type)
+{
+    if (seen[type]) {
+        return depth;
+    }
+    seen[type] = 1;
+    stack[depth] = type;
+    return depth + 1;
+}
+
+void
+c_source_layouts(FILE *out, const Checker *c)
+{
+    const Decls *d = &c->decls;
+    const Types *t = &c->types;
+    const Ir *ir = &c->ir;
+
+    u8 *seen = calloc(t->count, 1);
+    u8 *reached = calloc(d->count, 1);
+    u32 *stack = malloc((size_t)t->count * sizeof *stack);
+
+    u32 depth = 0;
+    for (u32 decl = 1; decl < d->count; decl++) {
+        bool external = d->bodies[decl] == NO_BODY &&
+                        (d->kinds[decl] == DECL_FN || d->kinds[decl] == DECL_VAR);
+        if (external) {
+            depth = push_type(stack, depth, seen, d->types[decl]);
+        }
+    }
+    for (u32 k = 0; k < ir->ncallbacks; k++) {
+        depth = push_type(stack, depth, seen, d->types[ir->callbacks[k]]);
+    }
+    while (depth) {
+        u32 type = stack[--depth];
+        u8 kind = t->kinds[type];
+        if (kind == TYPE_POINTER || kind == TYPE_OPTIONAL ||
+            kind == TYPE_MANY || kind == TYPE_SLICE || kind == TYPE_ARRAY) {
+            depth = push_type(stack, depth, seen, t->arg0[type]);
+        } else if (kind == TYPE_FN) {
+            const u32 *params = c->lists + t->arg0[type];
+            for (u32 p = 0; p < params[0]; p++) {
+                depth = push_type(stack, depth, seen, params[1 + p]);
+            }
+            depth = push_type(stack, depth, seen, (u32)t->arg1[type]);
+        } else if (kind == TYPE_STRUCT) {
+            u32 decl = t->arg0[type];
+            reached[decl] = 1;
+            u32 end = d->members[decl] + d->member_counts[decl];
+            for (u32 i = d->members[decl]; i < end; i++) {
+                depth = push_type(stack, depth, seen, c->members[i].type);
+            }
+        }
+    }
+
+    fputs("#include <stddef.h>\n", out);
+    for (u32 decl = 1; decl < d->count; decl++) {
+        if (!reached[decl]) {
+            continue;
+        }
+        Name n = names_get(c->names, d->names[decl]);
+        int len = (int)n.len;
+        fprintf(
+            out,
+            "\n_Static_assert(sizeof(%.*s) == %llu && _Alignof(%.*s) == %u, "
+            "\"%.*s\");\n",
+            len,
+            n.text,
+            (unsigned long long)check_type_size(c, d->types[decl]),
+            len,
+            n.text,
+            check_type_align(c, d->types[decl]),
+            len,
+            n.text
+        );
+
+        u32 end = d->members[decl] + d->member_counts[decl];
+        for (u32 i = d->members[decl]; i < end; i++) {
+            Name f = names_get(c->names, c->members[i].name);
+            fprintf(
+                out,
+                "_Static_assert(offsetof(%.*s, %.*s) == %llu, "
+                "\"%.*s.%.*s\");\n",
+                len,
+                n.text,
+                (int)f.len,
+                f.text,
+                (unsigned long long)check_member_offset(c, decl, i),
+                len,
+                n.text,
+                (int)f.len,
+                f.text
+            );
+        }
+    }
+
+    free(stack);
+    free(reached);
+    free(seen);
+}

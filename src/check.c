@@ -5019,6 +5019,12 @@ field_layout(const Checker *c, u32 decl, u32 member)
     return c->decls.values[decl] + 2 + 2 * (member - c->decls.members[decl]);
 }
 
+u64
+check_member_offset(const Checker *c, u32 decl, u32 member)
+{
+    return check_field_offset(c, field_layout(c, decl, member));
+}
+
 static Operand
 struct_field(Checker *c, u32 file, u32 token, Operand o, bool place)
 {

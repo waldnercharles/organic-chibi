@@ -20,7 +20,7 @@
 
 static const char USAGE[] =
     "usage: chibi build [--release-fast] [--target arch-os] [-o program] file.chibi... [-- C compiler arguments]\n"
-    "       chibi c [--release-fast] [--target arch-os] [-o program.c] file.chibi...\n"
+    "       chibi c [--release-fast] [--target arch-os] [--layouts] [-o program.c] file.chibi...\n"
     "       chibi tokens file.chibi\n";
 
 static const char FIB_MAIN[] =
@@ -66,6 +66,20 @@ static const char TWICE_C[] =
     "{\n"
     "    return 2 * x;\n"
     "}\n";
+
+static const char PAIR[] =
+    "struct Pair { a: u8, b: u32 }\n"
+    "\n"
+    "export fn first(p: *Pair) -> u8 {\n"
+    "    return p.a\n"
+    "}\n";
+
+static const char PAIR_LAYOUTS[] =
+    "#include <stddef.h>\n"
+    "\n"
+    "_Static_assert(sizeof(Pair) == 8 && _Alignof(Pair) == 4, \"Pair\");\n"
+    "_Static_assert(offsetof(Pair, a) == 0, \"Pair.a\");\n"
+    "_Static_assert(offsetof(Pair, b) == 4, \"Pair.b\");\n";
 
 static const char TARGET_MAIN[] =
     "extern fn tg_gone(x: int) -> int\n"
@@ -188,6 +202,7 @@ static const BadArgs BAD_ARGS[] = {
     { { "chibi", "tokens", "a.chibi", "b.chibi" }, "", true },
     { { "chibi", "build", "-x", "a.chibi" }, "chibi: unknown option -x\n", true },
     { { "chibi", "c", "--", "a.chibi" }, "chibi: unknown option --\n", true },
+    { { "chibi", "build", "--layouts", "a.chibi" }, "chibi: unknown option --layouts\n", true },
     { { "chibi", "build", "a.chibi", "-o" }, "chibi: -o needs a file name\n", false },
     { { "chibi", "c", "a.chibi", "--target" }, "chibi: --target needs a target, such as arm64-linux\n", false },
     { { "chibi", "build", "program" }, "chibi: name the program with -o\n", false },
@@ -574,11 +589,13 @@ TEST_CASE(writes_c)
     char dir[] = "/tmp/chibi-d-XXXXXX";
     REQUIRE(mkdtemp(dir));
 
-    char a[64], b[64], c[64];
+    char a[64], b[64], c[64], pair[64];
     snprintf(a, sizeof a, "%s/a.chibi", dir);
     snprintf(b, sizeof b, "%s/b.chibi", dir);
     snprintf(c, sizeof c, "%s/p.c", dir);
-    bool ok = write_file(dir, "a.chibi", FIB_MAIN) && write_file(dir, "b.chibi", FIB);
+    snprintf(pair, sizeof pair, "%s/pair.chibi", dir);
+    bool ok = write_file(dir, "a.chibi", FIB_MAIN) && write_file(dir, "b.chibi", FIB) &&
+              write_file(dir, "pair.chibi", PAIR);
 
     Drive d = drive((char *[]){ "chibi", "c", a, b, NULL });
     const char *runtime = strstr(d.out, "\nchibi_trap(int kind)\n");
@@ -614,8 +631,9 @@ TEST_CASE(writes_c)
         fclose(t);
     }
     ok = ok && m > 0 && drives_to((char *[]){ "chibi", "tokens", "test/hello.chibi", NULL }, 0, want, "");
+    ok = ok && drives_to((char *[]){ "chibi", "c", "--layouts", pair, NULL }, 0, PAIR_LAYOUTS, "");
 
-    static const char *const files[] = { "a.chibi", "b.chibi", "p.c" };
+    static const char *const files[] = { "a.chibi", "b.chibi", "p.c", "pair.chibi" };
     remove_files(dir, files, sizeof files / sizeof files[0]);
     REQUIRE(ok);
     return true;

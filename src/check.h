@@ -555,6 +555,8 @@ u32 check_type_align(const Checker *c, u32 type);
 
 u64 check_field_offset(const Checker *c, u32 field);
 
+u64 check_member_offset(const Checker *c, u32 decl, u32 member);
+
 enum
 {
     REGS_COUNT = 7,

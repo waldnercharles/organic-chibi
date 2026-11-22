@@ -66,6 +66,9 @@ translated:
 	@build/chibi-translated c -o build/translated/host/lib.c build/translated/entry.chibi \
 		$$(ls build/translated/host/*.chibi | grep -v -x build/translated/host/main.chibi)
 	@build/chibi-translated c -o build/translated/host/chibi.c build/translated/entry.chibi build/translated/host/*.chibi
+	@build/chibi-translated c --layouts -o build/translated/host/layouts.c build/translated/entry.chibi \
+		$$(ls build/translated/host/*.chibi | grep -v -x build/translated/host/main.chibi)
+	@$(CC) $(WARN) $(CPU) -fsyntax-only $(foreach h,$(wildcard src/*.h),-include $(h)) build/translated/host/layouts.c
 	@$(CC) $(SAFE) -w -Dchibi_trap=chibi_trap_translated -Dchibi_context=chibi_context_translated \
 		-c -o build/translated/host/lib.o build/translated/host/lib.c & lib=$$!; \
 	$(CC) $(SAFE) -w -c -o build/translated/host/chibi.o build/translated/host/chibi.c && wait $$lib
@@ -85,6 +88,10 @@ ifneq ($(QEMU),)
 		$$(ls build/translated/arm64/*.chibi | grep -v -x build/translated/arm64/main.chibi)
 	@build/chibi-translated c --target arm64-linux -o build/translated/arm64/chibi.c build/translated/entry.chibi \
 		build/translated/arm64/*.chibi
+	@build/chibi-translated c --target arm64-linux --layouts -o build/translated/arm64/layouts.c \
+		build/translated/entry.chibi $$(ls build/translated/arm64/*.chibi | grep -v -x build/translated/arm64/main.chibi)
+	@$(CC) $(WARN) --target=aarch64-linux-gnu -fsyntax-only $(foreach h,$(wildcard src/*.h),-include $(h)) \
+		build/translated/arm64/layouts.c
 	@$(CC) $(ARM64) -w -Dchibi_trap=chibi_trap_translated -Dchibi_context=chibi_context_translated \
 		-c -o build/translated/arm64/lib.o build/translated/arm64/lib.c & lib=$$!; \
 	$(CC) $(ARM64) -w -c -o build/translated/arm64/chibi.o build/translated/arm64/chibi.c && wait $$lib

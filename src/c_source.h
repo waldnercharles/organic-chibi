@@ -7,5 +7,6 @@ void c_source_prelude(FILE *out);
 const char *c_source_unsupported(const Checker *c);
 const char *c_source_package(FILE *out, const Checker *c, const char *prefix);
 void c_source_runtime(FILE *out);
+void c_source_layouts(FILE *out, const Checker *c);
 
 #endif

@@ -19,8 +19,8 @@ static const char USAGE[] = "usage: chibi build [--release-fast] "
                             "[--target arch-os] [-o program] "
                             "file.chibi... [-- C compiler arguments]\n"
                             "       chibi c [--release-fast] "
-                            "[--target arch-os] [-o program.c] "
-                            "file.chibi...\n"
+                            "[--target arch-os] [--layouts] "
+                            "[-o program.c] file.chibi...\n"
                             "       chibi tokens file.chibi\n";
 
 typedef struct
@@ -33,6 +33,7 @@ typedef struct
     u32 ncc_args;
     const char *target;
     bool release_fast;
+    bool layouts;
 } Options;
 
 typedef struct
@@ -122,6 +123,8 @@ parse_options(FILE *err, Options *o, int argc, char **argv, bool executable)
             o->output = argv[++i];
         } else if (strcmp(argv[i], "--release-fast") == 0) {
             o->release_fast = true;
+        } else if (!executable && strcmp(argv[i], "--layouts") == 0) {
+            o->layouts = true;
         } else if (strcmp(argv[i], "--target") == 0) {
             if (i + 1 == argc) {
                 fputs("chibi: --target needs a target, such as arm64-linux\n", err);
@@ -301,17 +304,21 @@ build_program(FILE *err, const Checker *c, const Options *o)
 }
 
 static bool
-write_c(FILE *out, FILE *err, const Checker *c, const char *path)
+write_c(FILE *out, FILE *err, const Checker *c, const Options *o)
 {
-    FILE *f = path ? fopen(path, "w") : out;
+    FILE *f = o->output ? fopen(o->output, "w") : out;
     if (!f) {
-        fprintf(err, "chibi: %s: cannot create\n", path);
+        fprintf(err, "chibi: %s: cannot create\n", o->output);
         return false;
     }
 
-    put_program(f, c);
-    if (path && fclose(f) != 0) {
-        fprintf(err, "chibi: %s: cannot write\n", path);
+    if (o->layouts) {
+        c_source_layouts(f, c);
+    } else {
+        put_program(f, c);
+    }
+    if (o->output && fclose(f) != 0) {
+        fprintf(err, "chibi: %s: cannot write\n", o->output);
         return false;
     }
     return true;
@@ -335,8 +342,8 @@ compile_program(FILE *out, FILE *err, int argc, char **argv, bool executable)
         ok = false;
     }
     ok = ok && (!executable || has_main(err, &p));
-    ok = ok && (executable ? build_program(err, &p.c, &o)
-                           : write_c(out, err, &p.c, o.output));
+    ok = ok &&
+         (executable ? build_program(err, &p.c, &o) : write_c(out, err, &p.c, &o));
 
     if (p.checked) {
         check_free(&p.c);
