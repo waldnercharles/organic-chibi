@@ -4805,6 +4805,87 @@ TEST_CASE(optional_fns)
     return true;
 }
 
+static const char *const REST_ARG_FUNCTIONS[] = {
+    "rst_none",    "rst_one",    "rst_many",  "rst_stack", "rst_index", "rst_order",
+    "rst_structs", "rst_nested", "rst_widen", "rst_loop",  "rst_copy",  "rst_slices",
+    "rst_floats",  "rst_strings", "rst_alias", "rst_arrays", "rst_calls",
+};
+
+static const CallCase REST_ARG_CASES[] = {
+    { "rst_none", 2, 5, 20, 0 },
+    { "rst_none", 0, -3, 0, 0 },
+    { "rst_none", 1, 300, 10, 0 },
+    { "rst_one", 2, 5, 7, 0 },
+    { "rst_one", 0, -3, -3, 0 },
+    { "rst_one", 1, 300, 301, 0 },
+    { "rst_many", 2, 5, 19, 0 },
+    { "rst_many", 0, -3, -7, 0 },
+    { "rst_many", 1, 300, 899, 0 },
+    { "rst_stack", 2, 5, 40, 0 },
+    { "rst_stack", 0, -3, 36, 0 },
+    { "rst_stack", 1, 300, 38, 0 },
+    { "rst_index", 2, 5, 5, 0 },
+    { "rst_index", 0, -3, 10, 0 },
+    { "rst_index", 1, 300, 20, 0 },
+    { "rst_index", 3, 0, 0, TRAP_BOUNDS },
+    { "rst_index", -1, 0, 0, TRAP_BOUNDS },
+    { "rst_order", 2, 5, 122308, 0 },
+    { "rst_order", 0, -3, 120306, 0 },
+    { "rst_order", 1, 300, 121307, 0 },
+    { "rst_structs", 2, 5, 215273, 0 },
+    { "rst_structs", 0, -3, 7173, 0 },
+    { "rst_structs", 1, 300, 413213, 0 },
+    { "rst_nested", 2, 5, 312, 0 },
+    { "rst_nested", 0, -3, 300, 0 },
+    { "rst_nested", 1, 300, 605, 0 },
+    { "rst_widen", 2, 5, 2005007009, 0 },
+    { "rst_widen", 0, -3, 13007009, 0 },
+    { "rst_widen", 1, 300, 1012007009, 0 },
+    { "rst_loop", 2, 5, 24, 0 },
+    { "rst_loop", 0, -3, -6, 0 },
+    { "rst_loop", 1, 300, 906, 0 },
+    { "rst_copy", 2, 5, 7100, 0 },
+    { "rst_copy", 0, -3, -2900, 0 },
+    { "rst_copy", 1, 300, 301100, 0 },
+    { "rst_slices", 2, 5, 230, 0 },
+    { "rst_slices", 0, -3, 30, 0 },
+    { "rst_slices", 1, 300, 140, 0 },
+    { "rst_floats", 2, 5, 93, 0 },
+    { "rst_floats", 0, -3, 1093, 0 },
+    { "rst_floats", 1, 300, 380, 0 },
+    { "rst_strings", 2, 5, 65098125, 0 },
+    { "rst_strings", 0, -3, 65098118, 0 },
+    { "rst_strings", 1, 300, 65098420, 0 },
+    { "rst_alias", 2, 5, 77211071, 0 },
+    { "rst_alias", 0, -3, 77011051, 0 },
+    { "rst_alias", 1, 300, 77111061, 0 },
+    { "rst_arrays", 2, 5, 123425, 0 },
+    { "rst_arrays", 0, -3, 123405, 0 },
+    { "rst_arrays", 1, 300, 123414, 0 },
+    { "rst_calls", 2, 5, 223411, 0 },
+    { "rst_calls", 0, -3, 25611, 0 },
+    { "rst_calls", 1, 300, 123411, 0 },
+};
+
+TEST_CASE(rest_args)
+{
+    catch_traps();
+    Program p;
+    REQUIRE(build(&p, REST_ARGS));
+    for (size_t k = 0; k < sizeof REST_ARG_CASES / sizeof REST_ARG_CASES[0]; k++) {
+        CallCase t = REST_ARG_CASES[k];
+        int64_t got = 0;
+        int trap = call_i2((I2 *)fn(&p, t.name), t.a, t.b, &got);
+        if (trap != t.trap || (!trap && got != t.want)) {
+            fprintf(stderr, "arm64 test: %s(%lld, %lld) gave %lld (trap %d)\n", t.name, (long long)t.a, (long long)t.b, (long long)got, trap);
+            REQUIRE(false);
+        }
+    }
+    REQUIRE(agree_on_grid(&p, REST_ARG_FUNCTIONS, sizeof REST_ARG_FUNCTIONS / sizeof REST_ARG_FUNCTIONS[0]));
+    release_program(&p);
+    return true;
+}
+
 typedef int64_t I3(void *, int64_t, int64_t, int64_t);
 
 static int
@@ -5385,6 +5466,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(string_tables);
     RUN_TEST_CASE(struct_ifs);
     RUN_TEST_CASE(optional_fns);
+    RUN_TEST_CASE(rest_args);
     RUN_TEST_CASE(vectors);
     RUN_TEST_CASE(narrow_parameters);
     RUN_TEST_CASE(constant_division);

@@ -122,6 +122,7 @@ enum
 {
     FN_C_CALL = 1ull << 32,
     FN_VARIADIC = 1ull << 33,
+    FN_REST = 1ull << 34,
 };
 
 enum
@@ -151,6 +152,7 @@ enum
     X(DIAG_NOT_C_GLOBAL, "C has no `%U`, so an `extern` global can't hold it")                      \
     X(DIAG_C_FN_TYPE, "C can't call a chibi `%U`; write `extern %U`")                               \
     X(DIAG_NOT_VARIADIC, "C's `..` takes numbers, `bool`, enums and pointers, not `%U`")            \
+    X(DIAG_REST_DEFAULT, "a function with a `..` parameter can't have defaults")                    \
     X(DIAG_TOO_LARGE, "an integer constant must fit in 512 bits")                                   \
     X(DIAG_FLOAT_TOO_LARGE, "a float constant must fit in 4,095 bits as an exact fraction")          \
     X(DIAG_SURROGATE, "`\\uD800` to `\\uDFFF` must come in pairs, as in `\\uD83D\\uDE00`")          \

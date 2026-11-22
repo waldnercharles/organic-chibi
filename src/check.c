@@ -21,6 +21,7 @@ enum
     OPERAND_MEMBER = 0xFFFFFE00u,
     OPERAND_RETURN,
     OPERAND_VARIADIC,
+    OPERAND_REST,
     OPERAND_BACKING,
     OPERAND_LOCAL,
     OPERAND_ADDRESS,
@@ -2291,7 +2292,11 @@ expected_at(const Checker *c, u32 top)
             u32 fn = c->decls.types[below.ref];
             const u32 *params = c->lists + c->types.arg0[fn];
             u32 index = top - m - 1;
-            type = index < params[0] ? params[1 + index] : TYPE_ID_NONE;
+            if ((c->types.arg1[fn] & FN_REST) && index + 1 >= params[0]) {
+                type = c->types.arg0[params[params[0]]];
+            } else {
+                type = index < params[0] ? params[1 + index] : TYPE_ID_NONE;
+            }
         }
         return depth ? element_of(c, type, depth) : type;
     }
@@ -3430,6 +3435,32 @@ result_slot(Checker *c, u32 file, u32 node, u32 base, u32 type)
              : add_slot(c, 0, type, node);
 }
 
+static bool
+fill_array(Checker *c, u32 file, u32 first, u32 n, u32 slot, u32 elem)
+{
+    bool ok = true;
+    Operand array = { OPERAND_LOCAL, slot };
+    for (u32 k = 0; k < n; k++) {
+        Operand x = convert(c, file, c->stack_tokens[first + k], c->stack[first + k], elem);
+        if (x.type == TYPE_ID_NONE) {
+            ok = false;
+            continue;
+        }
+
+        u32 index = ir_const(c, TYPE_ID_I64, k);
+        u32 block = c->nunread && is_place(x) && is_aggregate(c, elem)
+                      ? early_block(c, first + k, x)
+                      : NO_SLOT;
+        if (block != NO_SLOT) {
+            fill_block(c, block, slot, IR_INDEX, index, elem, x);
+            continue;
+        }
+        u32 address = emit(c, IR_INDEX, pointer_type(c, elem), place_address(c, array), index);
+        store_at(c, elem, address, x);
+    }
+    return ok;
+}
+
 static NOINLINE Operand
 call_general(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg, u32 nargs)
 {
@@ -3551,6 +3582,26 @@ call_fn(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg, u32 
 
     u32 list = c->types.arg0[fn];
     u32 n = c->lists[list];
+    if (c->types.arg1[fn] & FN_REST) {
+        u32 type = c->lists[list + n];
+        if (nargs < n - 1) {
+            report(c, file, token, DIAG_ARG_COUNT_VARIADIC, n - 1, nargs);
+            return poison;
+        }
+        if (!is_passed(c, type)) {
+            report_unpassed(c, file, token, type);
+            return poison;
+        }
+
+        u32 rest = first_arg + n - 1;
+        u32 elem = c->types.arg0[type];
+        u32 slot = add_slot(c, 0, intern_type(c, TYPE_ARRAY, elem, nargs - n + 1), node);
+        if (!fill_array(c, file, rest, nargs - n + 1, slot, elem)) {
+            return poison;
+        }
+        c->stack[rest] = (Operand){ OPERAND_LOCAL, slot };
+        nargs = n;
+    }
     u32 defaults = 0;
     while (defaults < n &&
            c->members[d->members[decl] + n - 1 - defaults].value < MEMBER_NONE) {
@@ -5001,24 +5052,8 @@ array_literal(Checker *c, u32 file, u32 node, u8 kind)
 
     bool ok = type != TYPE_ID_NONE;
     Operand array = { OPERAND_LOCAL, ok ? result_slot(c, file, node, base, type) : 0 };
-    u32 elem = c->types.arg0[type];
-    for (u32 k = 0; type && k < n; k++) {
-        Operand x = convert(c, file, c->stack_tokens[m + 1 + k], c->stack[m + 1 + k], elem);
-        if (x.type == TYPE_ID_NONE) {
-            ok = false;
-            continue;
-        }
-
-        u32 index = ir_const(c, TYPE_ID_I64, k);
-        u32 block = c->nunread && is_place(x) && is_aggregate(c, elem)
-                      ? early_block(c, m + 1 + k, x)
-                      : NO_SLOT;
-        if (block != NO_SLOT) {
-            fill_block(c, block, array.ref, IR_INDEX, index, elem, x);
-            continue;
-        }
-        u32 address = emit(c, IR_INDEX, pointer_type(c, elem), place_address(c, array), index);
-        store_at(c, elem, address, x);
+    if (ok) {
+        ok = fill_array(c, file, m + 1, n, array.ref, c->types.arg0[type]);
     }
 
     c->sp = base;
@@ -7637,7 +7672,8 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                 push_type(c, token, t ? optional_type(c, t) : TYPE_ID_NONE);
                 break;
             }
-            case NODE_SLICE_TYPE: {
+            case NODE_SLICE_TYPE:
+            case NODE_REST_TYPE: {
                 u32 t = type_operand(c, file, child_token(tokens, begin, i), pop(c));
                 push_type(c, token, t ? slice_type(c, t) : TYPE_ID_NONE);
                 break;
@@ -7713,6 +7749,9 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
             case NODE_PARAM_TYPE: {
                 u32 t = type_operand(c, file, child_token(tokens, begin, i), pop(c));
                 push_member(c, file, i, t, MEMBER_NONE);
+                if (kinds[i - 1] == NODE_REST_TYPE) {
+                    push(c, token, OPERAND_REST, 0);
+                }
                 break;
             }
             case NODE_ENUM_MEMBER:
@@ -7945,6 +7984,7 @@ finish_signature(Checker *c, u32 decl)
     }
     bool variadic = end > m + 1 && c->stack[end - 1].type == OPERAND_VARIADIC;
     end -= variadic;
+    bool rest = end > m + 1 && c->stack[end - 1].type == OPERAND_REST;
 
     c->sp = end;
     u32 first = collect_members(c, file, m + 1, DIAG_DUPLICATE_PARAM);
@@ -7958,9 +7998,13 @@ finish_signature(Checker *c, u32 decl)
         if (external || exported) {
             refuse_non_c(c, file, c->files[file].nodes.tokens[p.node], p.type, not_c);
         }
+        if (rest && p.value < MEMBER_NONE) {
+            report(c, file, c->files[file].nodes.tokens[p.node], DIAG_REST_DEFAULT, 0, 0);
+        }
     }
 
-    u64 flags = (external ? FN_C_CALL : 0) | (variadic ? FN_VARIADIC : 0);
+    u64 flags = (external ? FN_C_CALL : 0) | (variadic ? FN_VARIADIC : 0) |
+                (rest ? FN_REST : 0);
     c->decls.types[decl] = fn_type(c, list, ret | flags);
     c->decls.flags[decl] |= general ? DECL_GENERAL_CALL : 0;
     c->decls.members[decl] = first;
@@ -8625,8 +8669,10 @@ print_type(FILE *out, const Checker *c, u32 type)
             const u32 *list = c->lists + t->arg0[type];
             fputs(t->arg1[type] & FN_C_CALL ? "extern fn(" : "fn(", out);
             for (u32 i = 1; i <= list[0]; i++) {
+                bool rest = i == list[0] && (t->arg1[type] & FN_REST);
                 fputs(i > 1 ? ", " : "", out);
-                print_type(out, c, list[i]);
+                fputs(rest ? ".." : "", out);
+                print_type(out, c, rest ? t->arg0[list[i]] : list[i]);
             }
             bool variadic = t->arg1[type] & FN_VARIADIC;
             fputs(variadic ? list[0] ? ", ..) -> " : "..) -> " : ") -> ", out);
@@ -8891,11 +8937,13 @@ print_members(FILE *out, const Checker *c, u32 decl, const char *open, const cha
     fputs(count ? open : "", out);
     for (u32 i = 0; i < count; i++) {
         Member m = c->members[d->members[decl] + i];
+        bool rest = d->kinds[decl] == DECL_FN && i == count - 1 &&
+                    (c->types.arg1[d->types[decl]] & FN_REST);
         fputs(i ? ", " : "", out);
         print_name(out, c, m.name);
         if (d->kinds[decl] != DECL_ENUM && (d->kinds[decl] != DECL_UNION || m.type)) {
-            fputs(": ", out);
-            print_type(out, c, m.type);
+            fputs(rest ? ": .." : ": ", out);
+            print_type(out, c, rest ? c->types.arg0[m.type] : m.type);
         }
         print_value(out, c, m.type, m.value);
     }

@@ -292,6 +292,8 @@ static const Case DECLARATIONS[] = {
       "extern fn labs(x: int) -> int\npub extern fn quit() -> void\nfn f(x: int) -> int\n" },
     { "extern fn printf(fmt: *u8, ..) -> i32\nextern fn any(..)\n",
       "extern fn printf(fmt: *u8, ..) -> i32\nextern fn any(..) -> void\n" },
+    { "fn f(a: i32, xs: ..u64) -> int => 0\nfn g(xs: ..[2]u8) {\n}\n",
+      "fn f(a: i32, xs: ..u64) -> int\nfn g(xs: ..[2]u8) -> (inferred)\n" },
     { "fn g(cb: fn(int, x: f32) -> u8, h: fn(), k: u8 = 9) => 0\n",
       "fn g(cb: fn(int, f32) -> u8, h: fn() -> void, k: u8 = 9) -> int\n" },
     { "struct S { f: fn(*int, []u8) -> ?int, g: fn(*int, []u8) -> ?int }\n",
@@ -2147,9 +2149,133 @@ static const Case ERRORS[] = {
         "fn on(sig: i32) -> void\n"
         "fn f(x: int) -> int\n",
     },
+    {
+        "extern fn take(cb: extern fn(i32))\n"
+        "extern fn h(n: i32, xs: ..u8)\n"
+        "export fn e(xs: ..i32) {\n"
+        "}\n"
+        "fn d(a: i32 = 1, xs: ..i32) {\n"
+        "}\n"
+        "fn f(a: i32, b: i32, xs: ..i32) -> i32 {\n"
+        "    return a\n"
+        "}\n"
+        "fn g(p: *i32) {\n"
+        "    _ = f(1)\n"
+        "    _ = f(1, 2, true)\n"
+        "    _ = f(1, 2, 3, 4.5)\n"
+        "    _ = f(1, 2, 3, int(4))\n"
+        "    _ = f(1, 2, p)\n"
+        "    _ = f(1, 2, .[3])\n"
+        "    take(f)\n"
+        "}\n",
+        "a:2:21: C has no `[]u8`, so an `extern fn` can't pass or return it\n"
+        "a:3:13: C has no `[]i32`, so an `export fn` can't pass or return it\n"
+        "a:5:6: a function with a `..` parameter can't have defaults\n"
+        "a:11:9: wrong number of arguments: expected at least 2, found 1\n"
+        "a:12:17: `bool` and `i32` don't mix without a conversion\n"
+        "a:13:20: 4.5 does not fit in `i32`\n"
+        "a:14:20: `int` and `i32` don't mix without a conversion\n"
+        "a:15:17: `*i32` and `i32` don't mix without a conversion\n"
+        "a:16:18: `i32` is not an array, so an array literal can't build it\n"
+        "a:17:10: `fn(i32, i32, ..i32) -> i32` and `extern fn(i32) -> void` don't mix without a conversion\n"
+        "extern fn take(cb: extern fn(i32) -> void) -> void\n"
+        "extern fn h(n: i32, xs: ..u8) -> void\n"
+        "export fn e(xs: ..i32) -> void\n"
+        "fn d(a: i32 = 1, xs: ..i32) -> (inferred)\n"
+        "fn f(a: i32, b: i32, xs: ..i32) -> i32\n"
+        "fn g(p: *i32) -> void\n",
+    },
+    {
+        "fn o(xs: ..?int) -> int {\n"
+        "    return 0\n"
+        "}\n"
+        "fn u(xs: ..Nope) -> int {\n"
+        "    return 0\n"
+        "}\n"
+        "export fn g() -> int {\n"
+        "    return o(1) + u(1) + u()\n"
+        "}\n",
+        "a:1:6: the checker doesn't support this yet\n"
+        "a:4:12: unknown name `Nope`\n"
+        "a:8:12: the checker doesn't support this yet\n"
+        "fn o(xs: ..?int) -> int\n"
+        "fn u(xs: ..?) -> int\n"
+        "export fn g() -> int\n",
+    },
+    {
+        "fn f(xs: []int) -> int => 0\n"
+        "fn g(xs: ..int) -> int => 0\n"
+        "export fn h() {\n"
+        "    _ = f(.[1, true], 2)\n"
+        "    x: u8 = g(1, true)\n"
+        "}\n",
+        "a:4:16: `bool` and `int` don't mix without a conversion\n"
+        "a:5:18: `bool` and `int` don't mix without a conversion\n"
+        "fn f(xs: []int) -> int\n"
+        "fn g(xs: ..int) -> int\n"
+        "export fn h() -> void\n",
+    },
 };
 
 static const Case BODIES[] = {
+    {
+        "struct P { x: int, y: i32 }\n"
+        "fn sum(base: int, xs: ..int) -> int {\n"
+        "    return base + xs.len\n"
+        "}\n"
+        "fn first(xs: ..P) -> int {\n"
+        "    return xs[0].x\n"
+        "}\n"
+        "fn f(a: int, b: u8) -> int {\n"
+        "    return sum(a) + sum(1, a, b) + first(.{ a, 2 })\n"
+        "}\n",
+        "fn sum(base: int, xs: ..int) -> int\n"
+        "    slots: base: int, xs: []int, xs.len: int\n"
+        "    %0 = load int base\n"
+        "    %1 = load int xs.len\n"
+        "    %2 = add int %0, %1\n"
+        "    ret int %2\n"
+        "fn first(xs: ..P) -> int\n"
+        "    slots: xs: []P, xs.len: int\n"
+        "    %0 = load []P xs\n"
+        "    %1 = load int xs.len\n"
+        "    %2 = index-len *P %0, %1, 0\n"
+        "    %3 = field *int %2, .x\n"
+        "    %4 = load-at int %3\n"
+        "    ret int %4\n"
+        "fn f(a: int, b: u8) -> int\n"
+        "    slots: a: int, b: u8, $2: [0]int, $3: [2]int, $4: P, $5: [1]P\n"
+        "    %0 = load int a\n"
+        "    %1 = addr *[0]int $2\n"
+        "    %2 = call int sum(%0, %1, 0)\n"
+        "    %3 = load int a\n"
+        "    %4 = load u8 b\n"
+        "    %5 = addr *[2]int $3\n"
+        "    %6 = index *int %5, 0\n"
+        "    store-at int %6, %3\n"
+        "    %8 = convert int %4\n"
+        "    %9 = addr *[2]int $3\n"
+        "    %10 = index *int %9, 1\n"
+        "    store-at int %10, %8\n"
+        "    %12 = addr *[2]int $3\n"
+        "    %13 = call int sum(1, %12, 2)\n"
+        "    %14 = add int %2, %13\n"
+        "    %15 = load int a\n"
+        "    %16 = addr *P $4\n"
+        "    %17 = field *int %16, .x\n"
+        "    store-at int %17, %15\n"
+        "    %19 = addr *P $4\n"
+        "    %20 = field *i32 %19, .y\n"
+        "    store-at i32 %20, 2\n"
+        "    %22 = addr *[1]P $5\n"
+        "    %23 = index *P %22, 0\n"
+        "    %24 = addr *P $4\n"
+        "    copy P %23, %24\n"
+        "    %26 = addr *[1]P $5\n"
+        "    %27 = call int first(%26, 1)\n"
+        "    %28 = add int %14, %27\n"
+        "    ret int %28\n",
+    },
     { "extern fn printf(fmt: *u8, ..) -> i32\n"
       "fn f(p: *u8, a: i8, b: f32, c: bool) -> i32 {\n"
       "    return printf(p, a, b, c, 1, 3000000000, 18446744073709551615, -1, 2.5, b * 2.0)\n"

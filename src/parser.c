@@ -1101,6 +1101,18 @@ parse_params(Parser *p, bool variadic)
         }
 
         TokenKind next = p->tokens.kinds[p->pos + 1];
+        if (next == TK_COLON && p->tokens.kinds[p->pos + 2] == TK_RANGE) {
+            int name = p->pos;
+            int dots = p->pos + 2;
+            p->pos += 3;
+            parse_type(p);
+            emit(p, NODE_REST_TYPE, dots);
+            emit(p, NODE_PARAM_TYPE, name);
+            if (p->tokens.kinds[p->pos] != TK_RPAREN) {
+                fail(p, "`..` must be the last parameter");
+            }
+            return;
+        }
         if (next == TK_DASSIGN || next == TK_COLON) {
             parse_binding(p, param_nodes);
         } else {

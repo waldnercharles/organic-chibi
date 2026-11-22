@@ -32,6 +32,7 @@ extern const char VALUE_IFS[];
 extern const char STRING_TABLES[];
 extern const char STRUCT_IFS[];
 extern const char OPTIONAL_FNS[];
+extern const char REST_ARGS[];
 
 extern const char *const BACKEND_PROGRAMS[];
 extern const u32 NBACKEND_PROGRAMS;
