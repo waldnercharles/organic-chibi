@@ -55,7 +55,8 @@
     X(K_PREDEFINED, "PredefinedExpr")                                          \
     X(K_VA_ARG, "VAArgExpr")                                                   \
     X(K_NOINLINE, "NoInlineAttr")                                              \
-    X(K_ALWAYS_INLINE, "AlwaysInlineAttr")
+    X(K_ALWAYS_INLINE, "AlwaysInlineAttr")                                     \
+    X(K_RETURNS_NONNULL, "ReturnsNonNullAttr")
 
 typedef enum
 {
@@ -2159,7 +2160,8 @@ scan_node(Tr *t, u32 i, u32 fn)
         }
         case K_RETURN:
             if (t->a.ends[i] > i + 1 && fn != 0) {
-                flow_init(t, (Site){ t->canon[fn], 0 }, i + 1, false);
+                bool nonnull = t->marks[t->canon[fn]] & MARK_DEMANDED;
+                flow_init(t, (Site){ t->canon[fn], 0 }, i + 1, nonnull);
             }
             break;
         case K_IMPLICIT_CAST:
@@ -2373,6 +2375,9 @@ analyze(Tr *t)
             fn_end = t->a.ends[i];
             if (project_file(t, t->a.files[i])) {
                 demand_params(t, i);
+            }
+            if (child_of_kind(t, i, K_RETURNS_NONNULL) != 0) {
+                t->marks[t->canon[i]] |= MARK_DEMANDED;
             }
         }
         if (!project_file(t, t->a.files[i])) {
