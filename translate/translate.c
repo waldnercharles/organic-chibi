@@ -262,6 +262,13 @@ typedef struct
 
 typedef struct
 {
+    u32 name;
+    Out out;
+    bool main;
+} Group;
+
+typedef struct
+{
     Ast a;
     u32 nstrings;
     u8 *kind_of;
@@ -296,7 +303,12 @@ typedef struct
     u32 nflows;
     u32 flows_cap;
 
-    u32 main_file;
+    u8 *main_files;
+    u32 *alias;
+    u32 *file_groups;
+    Group groups[256];
+    u32 ngroups;
+    u32 group;
     u32 fn;
     u32 depth;
     u32 labels;
@@ -441,9 +453,15 @@ op(const Tr *t, u32 i)
 }
 
 static u32
+id_slot(const Tr *t, u64 id)
+{
+    return (u32)((id * 0x9e3779b97f4a7c15ULL) >> 32) & t->map_mask;
+}
+
+static u32
 node_of(const Tr *t, u64 id)
 {
-    for (u32 i = (u32)(id >> 4) & t->map_mask;; i = (i + 1) & t->map_mask) {
+    for (u32 i = id_slot(t, id);; i = (i + 1) & t->map_mask) {
         if (t->map_ids[i] == id) {
             return t->map_nodes[i];
         }
@@ -469,7 +487,7 @@ map_ids(Tr *t)
         if (id == 0) {
             continue;
         }
-        u32 s = (u32)(id >> 4) & t->map_mask;
+        u32 s = id_slot(t, id);
         while (t->map_ids[s] != 0 && t->map_ids[s] != id) {
             s = (s + 1) & t->map_mask;
         }
@@ -987,6 +1005,106 @@ setup_kinds(Tr *t)
     }
 }
 
+static bool
+links_by_name(const Tr *t, u32 d)
+{
+    u32 storage = t->a.details[d];
+    return (t->kinds[d] == K_FUNCTION || t->kinds[d] == K_VAR) &&
+           (storage == 0 || strcmp(text(t, storage), "static") != 0);
+}
+
+static u64
+link_hash(const Tr *t, u32 d, bool by_name)
+{
+    u64 h = by_name ? 0 : (u64)t->a.files[d] << 32 | t->a.offsets[d];
+    h = (h ^ t->a.names[d]) * 0x9e3779b97f4a7c15ULL;
+    return (h ^ t->kinds[d]) * 0x9e3779b97f4a7c15ULL;
+}
+
+static void
+link_decl(Tr *t, u32 *table, u32 mask, u32 d, bool by_name)
+{
+    for (u32 s = (u32)(link_hash(t, d, by_name) >> 32) & mask;; s = (s + 1) & mask) {
+        u32 e = table[s];
+        if (e == 0) {
+            table[s] = d + 1;
+            return;
+        }
+        e--;
+        if (t->kinds[e] == t->kinds[d] && t->a.names[e] == t->a.names[d] &&
+            (by_name || (t->a.files[e] == t->a.files[d] &&
+                         t->a.offsets[e] == t->a.offsets[d]))) {
+            t->alias[d] = e;
+            return;
+        }
+    }
+}
+
+static bool
+linkable(u8 k)
+{
+    return k == K_FUNCTION || k == K_VAR || k == K_RECORD || k == K_FIELD ||
+           k == K_ENUM || k == K_ENUM_CONSTANT || k == K_TYPEDEF;
+}
+
+static void
+link_units(Tr *t)
+{
+    u32 n = t->a.count;
+    t->alias = malloc(n * sizeof *t->alias);
+    for (u32 i = 0; i < n; i++) {
+        t->alias[i] = i;
+    }
+
+    u32 count = 0;
+    for (u32 root = 0; root < n; root = t->a.ends[root]) {
+        for (u32 c = root + 1; c < t->a.ends[root]; c = t->a.ends[c]) {
+            count += linkable(t->kinds[c]);
+            if (t->kinds[c] == K_RECORD || t->kinds[c] == K_ENUM) {
+                count += t->a.ends[c] - c - 1;
+            }
+        }
+    }
+    u32 size = 1024;
+    while (size < count * 2) {
+        size *= 2;
+    }
+    u32 *by_place = calloc(size, sizeof *by_place);
+    u32 *by_name = calloc(size, sizeof *by_name);
+
+    for (u32 root = 0; root < n; root = t->a.ends[root]) {
+        for (u32 c = root + 1; c < t->a.ends[root]; c = t->a.ends[c]) {
+            if (!linkable(t->kinds[c])) {
+                continue;
+            }
+            bool name = links_by_name(t, c);
+            link_decl(t, name ? by_name : by_place, size - 1, c, name);
+            if (t->kinds[c] != K_RECORD && t->kinds[c] != K_ENUM) {
+                continue;
+            }
+            for (u32 m = c + 1; m < t->a.ends[c]; m = t->a.ends[m]) {
+                if (t->kinds[m] == K_FIELD || t->kinds[m] == K_ENUM_CONSTANT) {
+                    link_decl(t, by_place, size - 1, m, false);
+                }
+            }
+        }
+    }
+    free(by_place);
+    free(by_name);
+
+    for (u32 i = 0; i < n; i++) {
+        u64 id = t->a.ids[i];
+        if (t->alias[i] == i || id == 0) {
+            continue;
+        }
+        u32 s = id_slot(t, id);
+        while (t->map_ids[s] != id) {
+            s = (s + 1) & t->map_mask;
+        }
+        t->map_nodes[s] = t->alias[i];
+    }
+}
+
 static void
 setup_decls(Tr *t)
 {
@@ -1006,7 +1124,7 @@ setup_decls(Tr *t)
             t->parents[c] = i;
         }
         t->names[i] = t->a.names[i];
-        t->canon[i] = i;
+        t->canon[i] = t->alias[i];
         u8 k = t->kinds[i];
         if ((k == K_FUNCTION || k == K_VAR) && t->a.refs[i] != 0) {
             u32 prev = node_of(t, t->a.refs[i]);
@@ -1015,7 +1133,7 @@ setup_decls(Tr *t)
             }
             t->canon[i] = t->canon[prev];
         }
-        if (k == K_FUNCTION && function_body(t, i) != 0) {
+        if (k == K_FUNCTION && function_body(t, i) != 0 && t->defs[t->canon[i]] == 0) {
             t->defs[t->canon[i]] = i;
         }
     }
@@ -1037,6 +1155,9 @@ setup_decls(Tr *t)
 
     for (u32 i = 0; i < n; i++) {
         u32 name = t->a.names[i];
+        if (t->alias[i] != i) {
+            continue;
+        }
         if (t->kinds[i] == K_RECORD && name != 0) {
             if (t->records[name] == 0 || (t->a.flags[i] & AST_COMPLETE)) {
                 t->records[name] = i;
@@ -1654,6 +1775,10 @@ analyze(Tr *t)
             fn = 0;
         }
         if (t->kinds[i] == K_FUNCTION && function_body(t, i) != 0) {
+            if (t->defs[t->canon[i]] != i) {
+                i = t->a.ends[i] - 1;
+                continue;
+            }
             fn = i;
             fn_end = t->a.ends[i];
             if (project_file(t, t->a.files[i])) {
@@ -5672,24 +5797,66 @@ emit_function(Tr *t, u32 def)
 }
 
 static bool
-top_name_taken(const Tr *t, u32 name)
+top_level(const Tr *t, u32 i)
 {
-    for (u32 i = 0; i < t->a.count; i++) {
-        u8 k = t->kinds[i];
-        if ((t->marks[i] & (MARK_EMIT | MARK_EXTERN)) && t->names[i] == name &&
-            (k == K_FUNCTION || k == K_VAR || k == K_RECORD || k == K_ENUM_CONSTANT)) {
-            return true;
+    u8 k = t->kinds[i];
+    return (t->marks[i] & (MARK_EMIT | MARK_EXTERN)) &&
+           (k == K_FUNCTION || k == K_VAR || k == K_RECORD || k == K_ENUM_CONSTANT);
+}
+
+static bool
+static_local(const Tr *t, u32 v)
+{
+    return t->kinds[v] == K_VAR && (t->marks[v] & MARK_EMIT) &&
+           t->kinds[t->parents[v]] == K_DECL_STMT;
+}
+
+static u32 *
+top_names(Tr *t, u32 extra, u32 *mask)
+{
+    u32 size = 1024;
+    while (size < (t->a.strings.count + extra) * 2) {
+        size *= 2;
+    }
+    *mask = size - 1;
+    return calloc(size, sizeof(u32) * 2);
+}
+
+static u32
+claim_name(const Tr *t, u32 *table, u32 mask, u32 d)
+{
+    u32 name = t->names[d];
+    for (u32 s = (u32)((name * 0x9e3779b97f4a7c15ULL) >> 32) & mask;;
+         s = (s + 1) & mask) {
+        if (table[2 * s + 1] == 0) {
+            table[2 * s] = name;
+            table[2 * s + 1] = d + 1;
+            return d;
+        }
+        if (table[2 * s] == name) {
+            return table[2 * s + 1] - 1;
         }
     }
-    return false;
 }
 
 static void
 name_static_locals(Tr *t)
 {
-    for (u32 v = 0; v < t->a.count; v++) {
-        if (t->kinds[v] != K_VAR || !(t->marks[v] & MARK_EMIT) ||
-            t->kinds[t->parents[v]] != K_DECL_STMT) {
+    u32 n = t->a.count;
+    u32 locals = 0;
+    for (u32 v = 0; v < n; v++) {
+        locals += static_local(t, v);
+    }
+    u32 mask;
+    u32 *table = top_names(t, locals, &mask);
+    for (u32 i = 0; i < n; i++) {
+        if (top_level(t, i) && !static_local(t, i)) {
+            claim_name(t, table, mask, i);
+        }
+    }
+
+    for (u32 v = 0; v < n; v++) {
+        if (!static_local(t, v)) {
             continue;
         }
         u32 fn = t->parents[v];
@@ -5701,13 +5868,13 @@ name_static_locals(Tr *t)
         const char *base = text(t, t->a.names[v]);
         char buf[256];
         snprintf(buf, sizeof buf, "%s_%s", f, base);
-        u32 id = intern_text(t, buf);
-        for (u32 k = 2; top_name_taken(t, id); k++) {
+        t->names[v] = intern_text(t, buf);
+        for (u32 k = 2; claim_name(t, table, mask, v) != v; k++) {
             snprintf(buf, sizeof buf, "%s_%s%u", f, base, k);
-            id = intern_text(t, buf);
+            t->names[v] = intern_text(t, buf);
         }
-        t->names[v] = id;
     }
+    free(table);
 }
 
 static void
@@ -5727,6 +5894,118 @@ name_functions(Tr *t)
     }
 }
 
+static u32
+group_of_file(Tr *t, u32 file)
+{
+    if (!project_file(t, file)) {
+        return 0;
+    }
+    if (t->file_groups[file] != 0) {
+        return t->file_groups[file];
+    }
+
+    const char *path = text(t, file);
+    const char *base = strrchr(path, '/');
+    base = base ? base + 1 : path;
+    const char *dot = strrchr(base, '.');
+    u32 name = strings_intern(&t->a.strings, base, dot ? (u32)(dot - base) : (u32)strlen(base));
+    u32 g = 1;
+    while (g < t->ngroups && t->groups[g].name != name) {
+        g++;
+    }
+    if (g == t->ngroups) {
+        if (name == t->groups[0].name || t->ngroups == 256) {
+            fprintf(stderr, "translate: %s: no chibi file can hold it\n", path);
+            exit(1);
+        }
+        t->groups[t->ngroups++] = (Group){ .name = name };
+    }
+    t->file_groups[file] = g;
+    return g;
+}
+
+static u32
+group_of(Tr *t, u32 d)
+{
+    u32 home = d;
+    if (t->kinds[d] == K_FUNCTION) {
+        home = t->defs[t->canon[d]] ? t->defs[t->canon[d]] : d;
+    } else if (t->kinds[d] == K_VAR && t->kinds[t->parents[d]] == K_DECL_STMT) {
+        while (t->kinds[home] != K_FUNCTION) {
+            home = t->parents[home];
+        }
+    }
+    return group_of_file(t, t->a.files[home]);
+}
+
+static void
+switch_group(Tr *t, u32 g)
+{
+    t->groups[t->group].out = t->out;
+    t->out = t->groups[g].out;
+    t->group = g;
+}
+
+static bool
+internal(const Tr *t, u32 d)
+{
+    u32 storage = t->a.details[d];
+    return (t->kinds[d] == K_FUNCTION || t->kinds[d] == K_VAR) &&
+           storage != 0 && strcmp(text(t, storage), "static") == 0;
+}
+
+static void
+name_clashes(Tr *t)
+{
+    u32 n = t->a.count;
+    u32 mask;
+    u32 *table = top_names(t, 0, &mask);
+    u8 *clash = calloc(n, 1);
+    for (u32 i = 0; i < n; i++) {
+        if (!top_level(t, i)) {
+            continue;
+        }
+        u32 first = claim_name(t, table, mask, i);
+        if (first != i) {
+            clash[first] = 1;
+            clash[i] = 1;
+        }
+    }
+    free(table);
+
+    for (u32 i = 0; i < n; i++) {
+        if (!clash[i]) {
+            continue;
+        }
+        if (!internal(t, i)) {
+            if (t->kinds[i] == K_FUNCTION || t->kinds[i] == K_VAR) {
+                continue;
+            }
+            die(t, i, "a name that another file of the program also declares");
+        }
+        char buf[256];
+        snprintf(
+            buf,
+            sizeof buf,
+            "%s_%s",
+            text(t, t->groups[group_of(t, i)].name),
+            text(t, t->names[i])
+        );
+        t->names[i] = intern_text(t, buf);
+    }
+    free(clash);
+
+    table = top_names(t, 0, &mask);
+    for (u32 i = 0; i < n; i++) {
+        u32 first = top_level(t, i) ? claim_name(t, table, mask, i) : i;
+        if (first != i) {
+            die(t, internal(t, i) ? i : first, "a renamed declaration whose new name is taken"
+            );
+        }
+    }
+    free(table);
+}
+
 static void
 emit_program(Tr *t)
 {
@@ -5736,7 +6015,7 @@ emit_program(Tr *t)
     t->subst = calloc(n, sizeof *t->subst);
     for (u32 i = 0; i < n; i++) {
         if (t->kinds[i] == K_FUNCTION && function_body(t, i) != 0 &&
-            t->a.files[i] == t->main_file) {
+            t->main_files[t->a.files[i]] && t->defs[t->canon[i]] == i) {
             t->marks[t->canon[i]] |= MARK_EMIT;
             work[nwork++] = i;
         }
@@ -5748,34 +6027,36 @@ emit_program(Tr *t)
     }
     name_static_locals(t);
     name_functions(t);
+    name_clashes(t);
 
-    Out body = t->out;
-    t->out = (Out){ 0 };
     for (u32 i = 0; i < n; i++) {
-        if (t->kinds[i] == K_ENUM) {
+        if (t->kinds[i] == K_ENUM && t->alias[i] == i) {
+            switch_group(t, group_of(t, i));
             emit_enum_constants(t, i);
         }
     }
     for (u32 i = 0; i < n; i++) {
         if (t->kinds[i] == K_RECORD && (t->marks[i] & MARK_EMIT)) {
+            switch_group(t, group_of(t, i));
             emit_record(t, i);
         }
     }
     for (u32 i = 0; i < n; i++) {
         if (t->kinds[i] == K_VAR && t->canon[i] == i &&
             (t->marks[i] & MARK_EMIT) && !is_extern_var(t, i)) {
+            switch_group(t, group_of(t, i));
             emit_global(t, i);
         }
     }
     for (u32 i = 0; i < n; i++) {
         if (t->kinds[i] == K_FUNCTION && t->defs[t->canon[i]] == i &&
             (t->marks[t->canon[i]] & MARK_EMIT)) {
+            switch_group(t, group_of(t, i));
             emit_function(t, i);
         }
     }
-    Out decls = t->out;
-    t->out = body;
 
+    switch_group(t, 0);
     for (u32 i = 0; i < n; i++) {
         if (t->kinds[i] == K_FUNCTION && t->canon[i] == i &&
             (t->marks[i] & MARK_EXTERN)) {
@@ -5794,39 +6075,69 @@ emit_program(Tr *t)
             emit_extern_global(t, i);
         }
     }
-    put_bytes(&t->out, decls.text, decls.len);
-    free(decls.text);
+    t->groups[0].out = t->out;
     free(work);
+}
+
+static bool
+write_group(const Tr *t, const char *dir, const Group *g)
+{
+    char path[4096];
+    snprintf(path, sizeof path, "%s/%s.chibi", dir, text(t, g->name));
+    const char *start = g->out.text;
+    u64 len = g->out.len;
+    while (len != 0 && *start == '\n') {
+        start++;
+        len--;
+    }
+    FILE *f = fopen(path, "wb");
+    if (f == NULL || fwrite(start, 1, len, f) != len || fclose(f) != 0) {
+        fprintf(stderr, "translate: %s: cannot write\n", path);
+        return false;
+    }
+    return true;
 }
 
 int
 main(int argc, char **argv)
 {
-    if (argc != 4) {
-        fprintf(stderr, "usage: translate AST.json MAIN.c OUT.chibi\n");
+    if (argc < 4 || argc % 2 != 0) {
+        fprintf(stderr, "usage: translate OUTDIR AST.json FILE.c [AST.json FILE.c]...\n");
         return 2;
     }
 
     static Tr t;
-    if (!ast_load(&t.a, argv[1], stderr)) {
-        return 1;
+    for (int k = 2; k < argc; k += 2) {
+        if (!ast_load(&t.a, argv[k], stderr)) {
+            return 1;
+        }
     }
     setup_kinds(&t);
     map_ids(&t);
+    link_units(&t);
     setup_decls(&t);
-    t.main_file = strings_find(&t.a.strings, argv[2], (u32)strlen(argv[2]));
-    if (t.main_file == STRINGS_MISSING) {
-        fprintf(stderr, "translate: %s isn't a file in the AST\n", argv[2]);
-        return 1;
+
+    t.main_files = calloc(t.nstrings, 1);
+    t.file_groups = calloc(t.nstrings, sizeof *t.file_groups);
+    t.groups[0] = (Group){ .name = intern_text(&t, "extern") };
+    t.ngroups = 1;
+    for (int k = 3; k < argc; k += 2) {
+        u32 file = strings_find(&t.a.strings, argv[k], (u32)strlen(argv[k]));
+        if (file == STRINGS_MISSING || file >= t.nstrings) {
+            fprintf(stderr, "translate: %s isn't a file in the ASTs\n", argv[k]);
+            return 1;
+        }
+        t.main_files[file] = 1;
+        t.groups[group_of_file(&t, file)].main = true;
     }
     analyze(&t);
     emit_program(&t);
 
-    FILE *f = fopen(argv[3], "wb");
-    if (f == NULL || fwrite(t.out.text, 1, t.out.len, f) != t.out.len ||
-        fclose(f) != 0) {
-        fprintf(stderr, "translate: %s: cannot write\n", argv[3]);
-        return 1;
+    for (u32 g = 0; g < t.ngroups; g++) {
+        if ((g == 0 || t.groups[g].main || t.groups[g].out.len != 0) &&
+            !write_group(&t, argv[1], &t.groups[g])) {
+            return 1;
+        }
     }
     return 0;
 }

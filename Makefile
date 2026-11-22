@@ -53,47 +53,46 @@ ifneq ($(QEMU),)
 endif
 
 translated:
-	@mkdir -p build/translated/arm64
+	@mkdir -p build/translated/host build/translated/arm64
+	@rm -f build/translated/host/*.chibi build/translated/arm64/*.chibi
 	@$(CC) $(WARN) -g -O2 -o build/translate translate/*.c
 	@$(CC) $(WARN) -g -O1 -o build/chibi-translated src/main.c $(SRC)
 	@: > build/translated/entry.chibi
 	@for f in $(BOOTSTRAP); do \
-		n=$$(basename $$f .c); \
-		$(CC) -std=c23 $(HOST) -DCHIBI_SIMD_GENERIC -Xclang -ast-dump=json -fsyntax-only $$f > build/translated/$$n.json && \
-		build/translate build/translated/$$n.json $$f build/translated/$$n.chibi && \
-		build/chibi-translated c -o build/translated/$$n.c build/translated/entry.chibi build/translated/$$n.chibi && \
-		$(CC) $(SAFE) -w -Dchibi_trap=chibi_trap_$$n -Dchibi_context=chibi_context_$$n \
-			-c -o build/translated/$$n.o build/translated/$$n.c || exit 1; \
+		$(CC) -std=c23 $(HOST) -DCHIBI_SIMD_GENERIC -Xclang -ast-dump=json -fsyntax-only $$f \
+			> build/translated/host/$$(basename $$f .c).json || exit 1; \
 	done
-	@$(CC) $(SAFE) -DCHIBI_TEST_CC='"$(CC)"' -o build/test-translated $(TRANSLATED_SRC) \
-		$(TRANSLATED:src/%.c=build/translated/%.o)
+	@build/translate build/translated/host $(foreach f,$(BOOTSTRAP),build/translated/host/$(notdir $(f:.c=.json)) $(f))
+	@build/chibi-translated c -o build/translated/host/lib.c build/translated/entry.chibi \
+		$$(ls build/translated/host/*.chibi | grep -v -x build/translated/host/main.chibi)
+	@build/chibi-translated c -o build/translated/host/chibi.c build/translated/entry.chibi build/translated/host/*.chibi
+	@$(CC) $(SAFE) -w -Dchibi_trap=chibi_trap_translated -Dchibi_context=chibi_context_translated \
+		-c -o build/translated/host/lib.o build/translated/host/lib.c & lib=$$!; \
+	$(CC) $(SAFE) -w -c -o build/translated/host/chibi.o build/translated/host/chibi.c && wait $$lib
+	@$(CC) $(SAFE) -DCHIBI_TEST_CC='"$(CC)"' -o build/test-translated $(TRANSLATED_SRC) build/translated/host/lib.o
 	@build/test-translated
-	@$(CC) $(SAFE) -o build/chibi-bootstrap $(BOOTSTRAP:src/%.c=build/translated/%.o) $(filter vendor/%, $(SRC))
-	@for f in $(BOOTSTRAP); do \
-		n=$$(basename $$f .c); \
-		build/chibi-bootstrap c -o build/translated/$$n.2.c build/translated/entry.chibi build/translated/$$n.chibi && \
-		cmp build/translated/$$n.c build/translated/$$n.2.c || exit 1; \
-	done
+	@$(CC) $(SAFE) -o build/chibi-bootstrap build/translated/host/chibi.o $(filter vendor/%, $(SRC))
+	@build/chibi-bootstrap c -o build/translated/host/chibi.2.c build/translated/entry.chibi build/translated/host/*.chibi
+	@cmp build/translated/host/chibi.c build/translated/host/chibi.2.c
 	@echo "bootstrap: passed (x86_64)"
 ifneq ($(QEMU),)
 	@for f in $(BOOTSTRAP); do \
-		n=$$(basename $$f .c); \
-		$(CC) -std=c23 --target=aarch64-linux-gnu -DCHIBI_SIMD_GENERIC -Xclang -ast-dump=json -fsyntax-only $$f > build/translated/arm64/$$n.json && \
-		build/translate build/translated/arm64/$$n.json $$f build/translated/arm64/$$n.chibi && \
-		build/chibi-translated c -o build/translated/arm64/$$n.c build/translated/entry.chibi build/translated/arm64/$$n.chibi && \
-		$(CC) $(ARM64) -w -Dchibi_trap=chibi_trap_$$n -Dchibi_context=chibi_context_$$n \
-			-c -o build/translated/arm64/$$n.o build/translated/arm64/$$n.c || exit 1; \
+		$(CC) -std=c23 --target=aarch64-linux-gnu -DCHIBI_SIMD_GENERIC -Xclang -ast-dump=json -fsyntax-only $$f \
+			> build/translated/arm64/$$(basename $$f .c).json || exit 1; \
 	done
-	@$(CC) $(ARM64) -o build/test-translated-arm64 $(TRANSLATED_SRC) \
-		$(TRANSLATED:src/%.c=build/translated/arm64/%.o)
+	@build/translate build/translated/arm64 $(foreach f,$(BOOTSTRAP),build/translated/arm64/$(notdir $(f:.c=.json)) $(f))
+	@build/chibi-translated c -o build/translated/arm64/lib.c build/translated/entry.chibi \
+		$$(ls build/translated/arm64/*.chibi | grep -v -x build/translated/arm64/main.chibi)
+	@build/chibi-translated c -o build/translated/arm64/chibi.c build/translated/entry.chibi build/translated/arm64/*.chibi
+	@$(CC) $(ARM64) -w -Dchibi_trap=chibi_trap_translated -Dchibi_context=chibi_context_translated \
+		-c -o build/translated/arm64/lib.o build/translated/arm64/lib.c & lib=$$!; \
+	$(CC) $(ARM64) -w -c -o build/translated/arm64/chibi.o build/translated/arm64/chibi.c && wait $$lib
+	@$(CC) $(ARM64) -o build/test-translated-arm64 $(TRANSLATED_SRC) build/translated/arm64/lib.o
 	@QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU) build/test-translated-arm64
-	@$(CC) $(ARM64) -o build/chibi-bootstrap-arm64 $(BOOTSTRAP:src/%.c=build/translated/arm64/%.o) $(filter vendor/%, $(SRC))
-	@for f in $(BOOTSTRAP); do \
-		n=$$(basename $$f .c); \
-		QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU) build/chibi-bootstrap-arm64 c -o build/translated/arm64/$$n.2.c \
-			build/translated/entry.chibi build/translated/arm64/$$n.chibi && \
-		cmp build/translated/arm64/$$n.c build/translated/arm64/$$n.2.c || exit 1; \
-	done
+	@$(CC) $(ARM64) -o build/chibi-bootstrap-arm64 build/translated/arm64/chibi.o $(filter vendor/%, $(SRC))
+	@QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU) build/chibi-bootstrap-arm64 c -o build/translated/arm64/chibi.2.c \
+		build/translated/entry.chibi build/translated/arm64/*.chibi
+	@cmp build/translated/arm64/chibi.c build/translated/arm64/chibi.2.c
 	@echo "bootstrap: passed (arm64)"
 endif
 

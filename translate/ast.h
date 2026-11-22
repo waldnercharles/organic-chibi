@@ -58,6 +58,7 @@ typedef struct
     u32 *result_types;
     u64 *refs;
     u32 *flags;
+    u32 units;
     Strings strings;
 } Ast;
 

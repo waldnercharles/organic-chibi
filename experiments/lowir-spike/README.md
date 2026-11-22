@@ -67,13 +67,13 @@ make test CPPGM=/tmp/cppgm    # CHIBI_LOWIR_LEVEL=0..3, CHIBI_DIFFERENTIAL, CHIB
 The compiler through LowIR, after `make translated` in the repository's root:
 
 ```bash
-cd build/translated
-for f in arena str names exact parser lexer check arm64 driver c_source main; do
-    ../lowir-spike/chibi-lowir lowir -c -O2 -o $f.lowir.o entry.chibi $f.chibi
-done
-../lowir-spike/chibi-lowir runtime > runtime.c
-cc -O2 -o chibi-lowir-built *.lowir.o runtime.c ../../vendor/xxhash/xxhash.c -lm
+cd build/translated/host
+../../lowir-spike/chibi-lowir lowir -c -O2 -o chibi.lowir.o ../entry.chibi *.chibi
+../../lowir-spike/chibi-lowir runtime > runtime.c
+cc -O2 -o chibi-lowir-built chibi.lowir.o runtime.c ../../../vendor/xxhash/xxhash.c -lm
 ```
+
+Since step 3t.12, `make translated` writes the compiler as one program, in a chibi file for each C file and header in `build/translated/host`, so these commands build it in one run; they haven't been run in that form.
 
 `CHIBI_LOWIR_CRASHES=dir` compiles each random program in a child process, saves the ones that crash the compiler into `dir`, and counts wrong results instead of stopping at the first.
 

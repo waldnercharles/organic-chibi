@@ -1,5 +1,6 @@
 #include "ast.h"
 
+#include <assert.h>
 #include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +29,7 @@ typedef struct
     Ast *ast;
     u32 last_file;
     u32 last_line;
+    u64 tag;
     FILE *err;
 } Reader;
 
@@ -212,7 +214,8 @@ read_id(Reader *r)
         u32 digit = c >= 'a' ? (u32)(c - 'a' + 10) : (u32)(c - '0');
         id = id << 4 | digit;
     }
-    return id;
+    assert(id >> 56 == 0);
+    return id | r->tag;
 }
 
 static u32
@@ -630,10 +633,14 @@ ast_load(Ast *ast, const char *path, FILE *err)
     close(fd);
     text[size] = 0;
 
-    *ast = (Ast){ 0 };
-    strings_intern(&ast->strings, "", 0);
-    Reader r = { .p = text, .base = text, .ast = ast, .err = err };
+    if (ast->units == 0) {
+        *ast = (Ast){ 0 };
+        strings_intern(&ast->strings, "", 0);
+    }
+    assert(ast->units < 256);
+    Reader r = { .p = text, .base = text, .ast = ast, .tag = (u64)ast->units << 56, .err = err };
     parse_node(&r, 0);
+    ast->units++;
     skip_ws(&r);
     if (*r.p != 0) {
         fail(&r, "text after the translation unit");
