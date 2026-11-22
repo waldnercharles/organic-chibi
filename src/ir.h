@@ -77,7 +77,8 @@
     X(IR_REPEAT, "repeat")                                                     \
     X(IR_NOP, "nop")                                                           \
     X(IR_SWITCH, "switch")                                                     \
-    X(IR_CASE, "case")
+    X(IR_CASE, "case")                                                         \
+    X(IR_ASSERT, "assert")
 // clang-format on
 
 #define CHIBI_IR_KIND(name, text) name,
@@ -101,6 +102,7 @@ typedef enum
     TRAP_BOUNDS,
     TRAP_ALIGN,
     TRAP_NIL,
+    TRAP_ASSERT,
     NTRAPS,
 } TrapKind;
 

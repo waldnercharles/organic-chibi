@@ -607,6 +607,45 @@ static const Case ERRORS[] = {
       "a:16:22: unknown name `missing`\n"
       "struct S { a: int }\n"
       "fn f(x: u64, y: u32, i: int, e: f32, q: S) -> void\n" },
+    { "struct S { a: int }\n"
+      "const K := assert(true)\n"
+      "fn g() {}\n"
+      "fn f(x: int, b: bool, q: S) {\n"
+      "    assert()\n"
+      "    assert(b, b)\n"
+      "    assert(x)\n"
+      "    assert(q)\n"
+      "    assert(int)\n"
+      "    h := assert\n"
+      "    assert(missing)\n"
+      "    assert(1)\n"
+      "    a := assert(b)\n"
+      "    assert(g())\n"
+      "    assert(assert)\n"
+      "    assert(b and x)\n"
+      "    _ = assert(b)\n"
+      "    assert(assert(b))\n"
+      "    assert(b)\n"
+      "}\n",
+      "a:2:12: expected a constant\n"
+      "a:5:5: wrong number of arguments: expected 1, found 0\n"
+      "a:6:5: wrong number of arguments: expected 1, found 2\n"
+      "a:7:12: expected `bool`, found `int`\n"
+      "a:8:12: expected `bool`, found `S`\n"
+      "a:9:12: expected a value\n"
+      "a:10:10: `assert` is a function, so it can't be used here\n"
+      "a:11:12: unknown name `missing`\n"
+      "a:12:12: expected `bool`, found `untyped integer`\n"
+      "a:13:10: expected a value\n"
+      "a:14:12: expected a value\n"
+      "a:15:12: `assert` is a function, so it can't be used here\n"
+      "a:16:18: expected `bool`, found `int`\n"
+      "a:17:9: expected a value\n"
+      "a:18:12: expected a value\n"
+      "struct S { a: int }\n"
+      "const K = ?\n"
+      "fn g() -> void\n"
+      "fn f(x: int, b: bool, q: S) -> void\n" },
     { "struct Hook { f: extern fn(x: int) -> int, n: int }\n"
       "extern fn each(f: extern fn(x: int) -> int)\n"
       "extern fn sum(n: int, ..) -> int\n"
@@ -7597,6 +7636,208 @@ TEST_CASE(release_fast)
     return true;
 }
 
+static const char ASSERT_PROGRAM[] =
+    "fn count(p: *int) -> int {\n"
+    "    p.* += 1\n"
+    "    return p.*\n"
+    "}\n"
+    "\n"
+    "fn check(x: int, ok: bool) -> int {\n"
+    "    n := 0\n"
+    "    assert(x > 0)\n"
+    "    assert(ok)\n"
+    "    assert(count(&n) > 0 and x < 100)\n"
+    "    assert(true)\n"
+    "    return n * 1000 + x\n"
+    "}\n"
+    "\n"
+    "fn never(x: int) -> int {\n"
+    "    if x == 7 {\n"
+    "        assert(false)\n"
+    "    }\n"
+    "    return x\n"
+    "}\n";
+
+static const char ASSERT_IR[] =
+    "fn count(p: *int) -> int\n"
+    "    slots: p: *int, $1: *int\n"
+    "    %0 = load *int p\n"
+    "    store *int $1, %0\n"
+    "    %2 = load *int $1\n"
+    "    %3 = load-at int %2\n"
+    "    %4 = add int %3, 1\n"
+    "    %5 = load *int $1\n"
+    "    store-at int %5, %4\n"
+    "    %7 = load *int p\n"
+    "    %8 = load-at int %7\n"
+    "    ret int %8\n"
+    "fn check(x: int, ok: bool) -> int\n"
+    "    slots: x: int, ok: bool, n: int\n"
+    "    store int n, 0\n"
+    "    %1 = load int x\n"
+    "    %2 = gt int %1, 0\n"
+    "    assert %2\n"
+    "    %4 = load bool ok\n"
+    "    assert %4\n"
+    "    %6 = addr *int n\n"
+    "    %7 = call int count(%6)\n"
+    "    %8 = gt int %7, 0\n"
+    "    if @9 bool %8\n"
+    "        %10 = load int x\n"
+    "        %11 = lt int %10, 100\n"
+    "    else bool %11\n"
+    "    %13 = end bool false\n"
+    "    assert %13\n"
+    "    %15 = load int n\n"
+    "    %16 = mul int %15, 1000\n"
+    "    %17 = load int x\n"
+    "    %18 = add int %16, %17\n"
+    "    ret int %18\n"
+    "fn never(x: int) -> int\n"
+    "    slots: x: int\n"
+    "    %0 = load int x\n"
+    "    %1 = eq int %0, 7\n"
+    "    if @2 %1\n"
+    "        assert false\n"
+    "    end\n"
+    "    %5 = load int x\n"
+    "    ret int %5\n";
+
+static const char ASSERT_RELEASE_FAST_IR[] =
+    "fn count(p: *int) -> int\n"
+    "    slots: p: *int, $1: *int\n"
+    "    %0 = load *int p\n"
+    "    store *int $1, %0\n"
+    "    %2 = load *int $1\n"
+    "    %3 = load-at int %2\n"
+    "    %4 = add-wrap int %3, 1\n"
+    "    %5 = load *int $1\n"
+    "    store-at int %5, %4\n"
+    "    %7 = load *int p\n"
+    "    %8 = load-at int %7\n"
+    "    ret int %8\n"
+    "fn check(x: int, ok: bool) -> int\n"
+    "    slots: x: int, ok: bool, n: int\n"
+    "    store int n, 0\n"
+    "    if @1 false\n"
+    "        %2 = load int x\n"
+    "        %3 = gt int %2, 0\n"
+    "        drop %3\n"
+    "    end\n"
+    "    if @6 false\n"
+    "        %7 = load bool ok\n"
+    "        drop %7\n"
+    "    end\n"
+    "    if @10 false\n"
+    "        %11 = addr *int n\n"
+    "        %12 = call int count(%11)\n"
+    "        %13 = gt int %12, 0\n"
+    "        if @14 bool %13\n"
+    "            %15 = load int x\n"
+    "            %16 = lt int %15, 100\n"
+    "        else bool %16\n"
+    "        %18 = end bool false\n"
+    "        drop %18\n"
+    "    end\n"
+    "    %21 = load int n\n"
+    "    %22 = mul-wrap int %21, 1000\n"
+    "    %23 = load int x\n"
+    "    %24 = add-wrap int %22, %23\n"
+    "    ret int %24\n"
+    "fn never(x: int) -> int\n"
+    "    slots: x: int\n"
+    "    %0 = load int x\n"
+    "    %1 = eq int %0, 7\n"
+    "    if @2 %1\n"
+    "    end\n"
+    "    %4 = load int x\n"
+    "    ret int %4\n";
+
+static const VectorRun ASSERT_RUNS[] = {
+    { "check", { 5, 1 }, 1005, 0 },
+    { "check", { 0, 1 }, 0, TRAP_ASSERT },
+    { "check", { 5, 0 }, 0, TRAP_ASSERT },
+    { "check", { 100, 1 }, 0, TRAP_ASSERT },
+    { "never", { 7 }, 0, TRAP_ASSERT },
+    { "never", { 3 }, 3, 0 },
+};
+
+static const VectorRun ASSERT_RELEASE_FAST_RUNS[] = {
+    { "check", { 5, 1 }, 5, 0 },
+    { "check", { 0, 0 }, 0, 0 },
+    { "check", { 100, 1 }, 100, 0 },
+    { "never", { 7 }, 7, 0 },
+};
+
+static const char ASSERT_ERRORS[] =
+    "fn f(x: int, b: bool) {\n"
+    "    assert(b, b)\n"
+    "    assert(x)\n"
+    "    assert(b and x)\n"
+    "    assert(assert(b))\n"
+    "    assert(missing)\n"
+    "    assert(b)\n"
+    "}\n";
+
+static const char ASSERT_ERRORS_IR[] =
+    "a:2:5: wrong number of arguments: expected 1, found 2\n"
+    "a:3:12: expected `bool`, found `int`\n"
+    "a:4:18: expected `bool`, found `int`\n"
+    "a:5:12: expected a value\n"
+    "a:6:12: unknown name `missing`\n"
+    "fn f(x: int, b: bool) -> void\n"
+    "    slots: x: int, b: bool\n"
+    "    if @0 false\n"
+    "        %1 = load bool b\n"
+    "        %2 = load bool b\n"
+    "    end\n"
+    "    if @4 false\n"
+    "        %5 = load int x\n"
+    "    end\n"
+    "    if @7 false\n"
+    "        %8 = load bool b\n"
+    "        if @9 bool %8\n"
+    "            %10 = load int x\n"
+    "        else bool false\n"
+    "        %12 = end bool false\n"
+    "        drop %12\n"
+    "    end\n"
+    "    if @15 false\n"
+    "        if @16 false\n"
+    "            %17 = load bool b\n"
+    "            drop %17\n"
+    "        end\n"
+    "    end\n"
+    "    if @21 false\n"
+    "        %22 = load bool b\n"
+    "        drop %22\n"
+    "    end\n"
+    "    ret void\n";
+
+static bool
+dumps_ir(const char *text, bool release_fast, const char *want)
+{
+    const char *texts[] = { text };
+    char *got = check_files(texts, 1, 1, true, release_fast);
+    bool same = strcmp(got, want) == 0;
+    if (!same) {
+        fprintf(stderr, "IR\n  got:\n%s  want:\n%s", got, want);
+    }
+    free(got);
+    return same;
+}
+
+TEST_CASE(asserts)
+{
+    REQUIRE(dumps_ir(ASSERT_PROGRAM, false, ASSERT_IR));
+    REQUIRE(dumps_ir(ASSERT_PROGRAM, true, ASSERT_RELEASE_FAST_IR));
+    REQUIRE(dumps_ir(ASSERT_ERRORS, true, ASSERT_ERRORS_IR));
+    REQUIRE(runs_to(ASSERT_PROGRAM, ASSERT_RUNS, sizeof ASSERT_RUNS / sizeof ASSERT_RUNS[0], false));
+    size_t n = sizeof ASSERT_RELEASE_FAST_RUNS / sizeof ASSERT_RELEASE_FAST_RUNS[0];
+    REQUIRE(runs_to(ASSERT_PROGRAM, ASSERT_RELEASE_FAST_RUNS, n, true));
+    return true;
+}
+
 static u32
 token_line(const ParsedFile *f, u32 token)
 {
@@ -7742,6 +7983,7 @@ TEST_SUITE(check_tests)
     RUN_TEST_CASE(doubling_structs);
     RUN_TEST_CASE(vectors);
     RUN_TEST_CASE(release_fast);
+    RUN_TEST_CASE(asserts);
     RUN_TEST_CASE(positions);
     RUN_TEST_CASE(statement_positions);
 }

@@ -4931,8 +4931,54 @@ TEST_CASE(inline_marks)
     return true;
 }
 
+enum
+{
+    WORD_STR_X_SP = 0xF90003E0u,
+    Q_FIELDS = 0x003FFC1Fu,
+};
+
+static const char *const ASSERT_FUNCTIONS[] = {
+    "as_range",
+    "as_effects",
+    "as_flag",
+    "as_const",
+};
+
+static const CallCase ASSERT_CASES[] = {
+    { "as_range", 2, 5, 25, 0 },
+    { "as_range", 5, 2, 0, TRAP_ASSERT },
+    { "as_range", 5, -1, 49, 0 },
+    { "as_range", INT64_MIN, 0, 0, TRAP_ASSERT },
+    { "as_effects", 1, 2, 203, 0 },
+    { "as_effects", 13, 0, 0, TRAP_ASSERT },
+    { "as_flag", 4, 5, 0, TRAP_ASSERT },
+    { "as_flag", 4, 6, -2, 0 },
+    { "as_const", 12, 12, 0, TRAP_ASSERT },
+    { "as_const", 12, 11, 7, 0 },
+};
+
+TEST_CASE(asserts)
+{
+    catch_traps();
+    Program p;
+    REQUIRE(build(&p, ASSERTS));
+    for (size_t k = 0; k < sizeof ASSERT_CASES / sizeof ASSERT_CASES[0]; k++) {
+        CallCase t = ASSERT_CASES[k];
+        int64_t got = 0;
+        int trap = call_i2((I2 *)fn(&p, t.name), t.a, t.b, &got);
+        if (trap != t.trap || (!trap && got != t.want)) {
+            fprintf(stderr, "arm64 test: %s(%lld, %lld) gave %lld (trap %d)\n", t.name, (long long)t.a, (long long)t.b, (long long)got, trap);
+            REQUIRE(false);
+        }
+    }
+    REQUIRE(agree_on_grid(&p, ASSERT_FUNCTIONS, sizeof ASSERT_FUNCTIONS / sizeof ASSERT_FUNCTIONS[0]));
+    REQUIRE(count_words(&p, "as_range", WORD_STR_X_SP, Q_FIELDS) == 0);
+    release_program(&p);
+    return true;
+}
+
 static const char *const RELEASE_FAST_FUNCTIONS[] = {
-    "rf_wrap", "rf_shift", "rf_convert", "rf_enum", "rf_div", "rf_float",
+    "rf_wrap", "rf_shift", "rf_convert", "rf_enum", "rf_div", "rf_float", "rf_assert",
 };
 
 static const CallCase RELEASE_FAST_CASES[] = {
@@ -4948,6 +4994,7 @@ static const CallCase RELEASE_FAST_CASES[] = {
     { "rf_div", INT64_MIN, -1, 0, TRAP_OVERFLOW },
     { "rf_float", -1, 7, -93, 0 },
     { "rf_float", 13, 12, 0, TRAP_RANGE },
+    { "rf_assert", 5, 3, 2, 0 },
 };
 
 TEST_CASE(release_fast)
@@ -5243,7 +5290,6 @@ enum
     WORD_LDR_Q_SP = 0x3DC003E0u,
     WORD_STR_Q_X8 = 0x3D800100u,
     WORD_LDR_Q_X8 = 0x3DC00100u,
-    Q_FIELDS = 0x003FFC1Fu,
     WORD_DUP_16B = 0x4E010C00u,
     WORD_DUP_4S_X16 = 0x4E040E00u,
     WORD_MOVI_16B_32 = 0x4F01E400u,
@@ -5280,7 +5326,6 @@ enum
     WORD_ORR_LSL_4 = 0x2A001000u,
     WORD_ORR_LSL_2 = 0x2A000800u,
     WORD_ORR_LSL_1 = 0x2A000400u,
-    WORD_STR_X_SP = 0xF90003E0u,
     Q_OFFSET = 0x003FFC00u,
     WORD_MOV_V0_V29 = 0x4EBD1FA0u,
     WORD_MOV_V1_V29 = 0x4EBD1FA1u,
@@ -5552,6 +5597,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(optional_fns);
     RUN_TEST_CASE(rest_args);
     RUN_TEST_CASE(inline_marks);
+    RUN_TEST_CASE(asserts);
     RUN_TEST_CASE(release_fast);
     RUN_TEST_CASE(vectors);
     RUN_TEST_CASE(narrow_parameters);

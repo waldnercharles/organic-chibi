@@ -166,7 +166,8 @@ enum
     OTHER(NAME_LOOKUP, "lookup")                                               \
     OTHER(NAME_TOP_BITS, "top_bits")                                           \
     OTHER(NAME_SIZE_OF, "size_of")                                             \
-    OTHER(NAME_ALIGN_OF, "align_of")
+    OTHER(NAME_ALIGN_OF, "align_of")                                           \
+    OTHER(NAME_ASSERT, "assert")
 // clang-format on
 
 #define CHIBI_BUILTIN_NAME_ID(name, text) name,

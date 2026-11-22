@@ -4017,6 +4017,39 @@ const char INLINE_MARKS[] =
     "    return inl_fact(a & 7) + inl_mix(a, b)\n"
     "}\n";
 
+const char ASSERTS[] =
+    "fn as_bump(p: *int) -> int {\n"
+    "    p.* += 1\n"
+    "    return p.*\n"
+    "}\n"
+    "\n"
+    "fn as_range(a: int, b: int) -> int {\n"
+    "    assert(a >= -3)\n"
+    "    assert(a < b or b < 0)\n"
+    "    return a * 10 + b\n"
+    "}\n"
+    "\n"
+    "fn as_effects(a: int, b: int) -> int {\n"
+    "    n := 0\n"
+    "    assert(as_bump(&n) == 1)\n"
+    "    assert(a != 13 and as_bump(&n) == 2)\n"
+    "    return n * 100 + a + b\n"
+    "}\n"
+    "\n"
+    "fn as_flag(a: int, b: int) -> int {\n"
+    "    ok := a + b != 9\n"
+    "    assert(ok)\n"
+    "    return a - b\n"
+    "}\n"
+    "\n"
+    "fn as_const(a: int, b: int) -> int {\n"
+    "    assert(true)\n"
+    "    if a == 12 and b == 12 {\n"
+    "        assert(false)\n"
+    "    }\n"
+    "    return a ^ b\n"
+    "}\n";
+
 const char RELEASE_FAST_GRID[] =
     "enum RfLevel: u16 { low = 1, big = 300 }\n"
     "enum RfSign: i8 { minus = -1, plus = 1 }\n"
@@ -4053,6 +4086,18 @@ const char RELEASE_FAST_GRID[] =
     "\n"
     "fn rf_float(a: int, b: int) -> int {\n"
     "    return int(i8(f64(a) * 100.5)) + b\n"
+    "}\n"
+    "\n"
+    "fn rf_count(p: *int) -> int {\n"
+    "    p.* += 1\n"
+    "    return p.*\n"
+    "}\n"
+    "\n"
+    "fn rf_assert(a: int, b: int) -> int {\n"
+    "    n := 0\n"
+    "    assert(rf_count(&n) > 100)\n"
+    "    assert(a == b)\n"
+    "    return n * 10 + a - b\n"
     "}\n";
 
 const char *const BACKEND_PROGRAMS[] = {
@@ -4087,6 +4132,7 @@ const char *const BACKEND_PROGRAMS[] = {
     OPTIONAL_FNS,
     REST_ARGS,
     INLINE_MARKS,
+    ASSERTS,
 };
 
 const u32 NBACKEND_PROGRAMS = sizeof BACKEND_PROGRAMS / sizeof BACKEND_PROGRAMS[0];

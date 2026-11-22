@@ -178,7 +178,7 @@ TEST_CASE(writes_inline_marks)
 enum
 {
     MAX_JOBS = 8,
-    GRID_FUNCTIONS = 344,
+    GRID_FUNCTIONS = 348,
 };
 
 typedef struct

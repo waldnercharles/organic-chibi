@@ -727,6 +727,11 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                     fail = TRAP_NIL;
                 }
                 break;
+            case IR_ASSERT:
+                if (OPERAND(a) == 0) {
+                    fail = TRAP_ASSERT;
+                }
+                break;
             case IR_CALL: {
                 const u32 *list = ir->extra + fn->first_extra + b;
                 const IrFunc *callee = &c->ir.funcs[c->decls.funcs[a] - 1];

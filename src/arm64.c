@@ -2067,6 +2067,14 @@ check_nil(Emit *e, u32 i, u32 type, u32 a)
     mov(e, SF, result(e, i, e->info[type]), ra);
 }
 
+static NOINLINE void
+check_assert(Emit *e, u32 a)
+{
+    u32 ra = fetch(e, a, X16);
+    trap_if_zero(e, ra, 0, TRAP_ASSERT);
+    release(e, a);
+}
+
 static void
 add_offset(Emit *e, u32 d, u32 n, u64 offset)
 {
@@ -3962,6 +3970,7 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                     call(e, i, type, a, b, n, kind == IR_CALL ? FIRST_INT_ARG : 0);
                     break;
                 case IR_DROP: release(e, a); break;
+                case IR_ASSERT: check_assert(e, a); break;
                 case IR_RET:
                     if (e->info[type] & INFO_PAIR) {
                         return_pair(e, a, b);
@@ -4120,11 +4129,15 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
     }
     put(e, OP_RET);
 
+    static_assert(NTRAPS <= 32, "every trap kind needs a bit in `kinds`");
+    u32 kinds = 0;
     for (u32 k = 1; k < NTRAPS; k++) {
-        if (e->traps[k]) {
-            patch(e, e->traps[k], here(e));
-            put(e, OP_BRK | k << 5);
-        }
+        kinds |= (u32)(e->traps[k] != 0) << k;
+    }
+    for (; kinds; kinds &= kinds - 1) {
+        u32 k = (u32)__builtin_ctz(kinds);
+        patch(e, e->traps[k], here(e));
+        put(e, OP_BRK | k << 5);
     }
 
     if (frame >= FRAME_LIMIT) {

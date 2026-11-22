@@ -122,6 +122,7 @@ static const char RELEASE_FAST_MAIN[] =
     "    put_number(rf_convert(a, b))\n"
     "    put_number(rf_enum(a, b))\n"
     "    put_number(rf_div(a, b))\n"
+    "    put_number(rf_assert(a, b))\n"
     "    put_number(rf_float(a, b))\n"
     "    return argc\n"
     "}\n";
@@ -318,16 +319,19 @@ TEST_CASE(builds_release_fast)
     char dir[] = "/tmp/chibi-d-XXXXXX";
     REQUIRE(mkdtemp(dir));
     setenv("CC", CHIBI_TEST_CC, 1);
-    char a[64], b[64], program[64];
+    char a[64], b[64], program[64], checked[64];
     snprintf(a, sizeof a, "%s/main.chibi", dir);
     snprintf(b, sizeof b, "%s/rf.chibi", dir);
     snprintf(program, sizeof program, "%s/rf", dir);
+    snprintf(checked, sizeof checked, "%s/rd", dir);
     bool ok = write_file(dir, "main.chibi", RELEASE_FAST_MAIN) && write_file(dir, "rf.chibi", RELEASE_FAST_GRID);
     ok = ok && drives_to((char *[]){ "chibi", "build", "--release-fast", a, b, "-o", program, "--", "-fsanitize=undefined", "-fno-sanitize-recover=all", NULL }, 0, "", "");
-    ok = ok && runs_to((char *[]){ program, "-1", "7", NULL }, "15372286730238842187\n33554174\n4294967301\n327958\n0\n18446744073709551523\n", 3, 0);
+    ok = ok && runs_to((char *[]){ program, "-1", "7", NULL }, "15372286730238842187\n33554174\n4294967301\n327958\n0\n18446744073709551608\n18446744073709551523\n", 3, 0);
     ok = ok && runs_to((char *[]){ program, "5", "0", NULL }, "15372286728091293015\n15\n10\n30\ntrap: division by zero\n", 0, SIGABRT);
-    ok = ok && runs_to((char *[]){ program, "-3", "-3", NULL }, "9223372034707292239\n11529215046068445190\n247\n328674\n1\ntrap: value out of range\n", 0, SIGABRT);
-    static const char *const files[] = { "main.chibi", "rf.chibi", "rf" };
+    ok = ok && runs_to((char *[]){ program, "-3", "-3", NULL }, "9223372034707292239\n11529215046068445190\n247\n328674\n1\n0\ntrap: value out of range\n", 0, SIGABRT);
+    ok = ok && drives_to((char *[]){ "chibi", "build", a, b, "-o", checked, "--", "-fsanitize=undefined", "-fno-sanitize-recover=all", NULL }, 0, "", "");
+    ok = ok && runs_to((char *[]){ checked, "1", "1", NULL }, "3074457347765742287\n4\n3\n10\n1\ntrap: assertion failed\n", 0, SIGABRT);
+    static const char *const files[] = { "main.chibi", "rf.chibi", "rf", "rd" };
     remove_files(dir, files, sizeof files / sizeof files[0]);
     REQUIRE(ok);
     return true;
