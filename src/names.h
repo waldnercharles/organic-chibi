@@ -48,11 +48,18 @@ u32 names_insert(Names *t, u32 slot, const char *s, u32 len, u64 k0, u64 k1, u64
 void names_move_home(Names *t, u32 i, u32 home);
 
 static inline u64
+folded_multiply(u64 a, u64 b)
+{
+    __uint128_t m = (__uint128_t)a * b;
+    return (u64)m ^ (u64)(m >> 64);
+}
+
+static inline u64
 names_hash_short(u64 k0, u64 k1)
 {
-    __uint128_t m = (__uint128_t)(k0 ^ 0x2d358dccaa6c78a5ULL) *
-                    (k1 ^ 0x8bb84b93962eacc9ULL);
-    return (u64)m ^ (u64)(m >> 64);
+    u64 a = k0 ^ 0x2d358dccaa6c78a5ULL;
+    u64 b = k1 ^ 0x8bb84b93962eacc9ULL;
+    return folded_multiply(a, b);
 }
 
 static inline u64

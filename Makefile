@@ -25,7 +25,7 @@ SRC       := $(filter-out src/main.c, $(wildcard src/*.c vendor/*/*.c))
 TEST_SRC  := test/*.c test/random/*.c $(SRC)
 BENCH_SRC := bench/*.c test/random/*.c $(SRC)
 
-TRANSLATED     := src/arena.c src/str.c src/names.c src/exact.c src/parser.c
+TRANSLATED     := src/arena.c src/str.c src/names.c src/exact.c src/parser.c src/lexer.c
 TRANSLATED_SRC := test/*.c test/random/*.c $(filter-out $(TRANSLATED), $(SRC))
 
 run:
@@ -57,7 +57,7 @@ translated:
 	@: > build/translated/entry.chibi
 	@for f in $(TRANSLATED); do \
 		n=$$(basename $$f .c); \
-		$(CC) -std=c23 $(HOST) -Xclang -ast-dump=json -fsyntax-only $$f > build/translated/$$n.json && \
+		$(CC) -std=c23 $(HOST) -DCHIBI_SIMD_GENERIC -Xclang -ast-dump=json -fsyntax-only $$f > build/translated/$$n.json && \
 		build/translate build/translated/$$n.json $$f build/translated/$$n.chibi && \
 		build/chibi-translated c -o build/translated/$$n.c build/translated/entry.chibi build/translated/$$n.chibi && \
 		$(CC) $(SAFE) -w -Dchibi_trap=chibi_trap_$$n -Dchibi_context=chibi_context_$$n \

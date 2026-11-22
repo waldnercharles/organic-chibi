@@ -2282,12 +2282,21 @@ small_lanes(Tr *t, u32 e)
 }
 
 static const char *
-simd_builtin(const Tr *t, u32 f)
+chibi_builtin(const Tr *t, u32 f)
 {
     const char *w = text(t, t->a.names[f]);
-    return strcmp(w, "simd_lookup16") == 0 ? "lookup"
-         : strcmp(w, "simd_mask16") == 0   ? "top_bits"
-                                           : NULL;
+    return strcmp(w, "simd_lookup16") == 0   ? "lookup"
+         : strcmp(w, "simd_mask16") == 0     ? "top_bits"
+         : strcmp(w, "folded_multiply") == 0 ? "mul_high"
+                                             : NULL;
+}
+
+static bool
+reads_variable(const Tr *t, u32 e)
+{
+    e = strip(t, e);
+    return is_cast(t, e) && op(t, e) == CAST_LVALUE &&
+           t->kinds[strip(t, e + 1)] == K_DECL_REF;
 }
 
 static Val
@@ -2311,8 +2320,8 @@ call(Tr *t, u32 e)
         free(ty);
         return value(ctype(t, e), 0, P_POSTFIX);
     }
-    const char *simd = simd_builtin(t, f);
-    if (simd != NULL && strcmp(simd, "lookup") == 0) {
+    const char *builtin = chibi_builtin(t, f);
+    if (builtin != NULL && strcmp(builtin, "lookup") == 0) {
         u32 index = t->a.ends[first_arg];
         put(&t->out, "lookup(");
         ex(t, first_arg, 0, 0);
@@ -2326,13 +2335,28 @@ call(Tr *t, u32 e)
         put(&t->out, ")");
         return value(ctype(t, e), 0, P_POSTFIX);
     }
-    if (simd != NULL) {
+    if (builtin != NULL && strcmp(builtin, "top_bits") == 0) {
         char *ty = type_text(t, ctype(t, e), 0);
         putf(&t->out, "%s(top_bits(", ty);
         ex(t, first_arg, 0, 0);
         put(&t->out, "))");
         free(ty);
         return value(ctype(t, e), 0, P_POSTFIX);
+    }
+    if (builtin != NULL && strcmp(builtin, "mul_high") == 0) {
+        u32 second = t->a.ends[first_arg];
+        if (!reads_variable(t, first_arg) || !reads_variable(t, second)) {
+            die(t, e, "`folded_multiply` of something other than two variables");
+        }
+        ex(t, first_arg, 0, 0);
+        put(&t->out, " *% ");
+        ex(t, second, 0, 0);
+        put(&t->out, " ^ mul_high(");
+        ex(t, first_arg, 0, 0);
+        put(&t->out, ", ");
+        ex(t, second, 0, 0);
+        put(&t->out, ")");
+        return value(ctype(t, e), 0, P_ADD);
     }
     const char *overflow = overflow_name(t, e);
     if (overflow != NULL) {
@@ -3419,6 +3443,7 @@ static const char *const reserved_names[] = {
     "trailing_zeros",
     "leading_zeros",
     "count_ones",
+    "mul_high",
     "add_overflows",
     "sub_overflows",
     "mul_overflows",
@@ -4907,7 +4932,7 @@ mark_uses(Tr *t, u32 root, u32 *work, u32 *nwork)
             continue;
         }
         if (t->kinds[d] != K_FUNCTION || builtin_function(t, d) ||
-            simd_builtin(t, d) != NULL || replaced_call(t, i) ||
+            chibi_builtin(t, d) != NULL || replaced_call(t, i) ||
             (t->marks[d] & (MARK_EMIT | MARK_EXTERN))) {
             continue;
         }
