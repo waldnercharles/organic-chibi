@@ -1513,6 +1513,30 @@ parse_pub(Parser *p)
     emit(p, NODE_PUB, at);
 }
 
+static NOINLINE void
+parse_attribute(Parser *p)
+{
+    int at = p->pos;
+    u32 name = p->tokens.kinds[at + 1] == TK_IDENT ? p->tokens.ids[at + 1] : 0;
+    if (name != NAME_INLINE && name != NAME_NOINLINE) {
+        p->pos++;
+        fail(p, "expected `@inline` or `@noinline`");
+        return;
+    }
+
+    int fn = at + 2;
+    fn += p->tokens.kinds[fn] == TK_PUB;
+    fn += p->tokens.kinds[fn] == TK_EXPORT;
+    if (p->tokens.kinds[fn] != TK_FN || p->tokens.kinds[fn + 1] != TK_IDENT) {
+        fail(p, "`@inline` and `@noinline` must come before a function with a body");
+        return;
+    }
+
+    p->pos += 2;
+    parse_statement(p);
+    emit(p, name == NAME_INLINE ? NODE_INLINE : NODE_NOINLINE, at);
+}
+
 static bool
 starts_labeled(TokenKind kind)
 {
@@ -1551,6 +1575,7 @@ parse_statement(Parser *p)
         case TK_PUB: parse_pub(p); return;
         case TK_EXPORT: parse_export(p); return;
         case TK_EXTERN: parse_extern(p); return;
+        case TK_AT: parse_attribute(p); return;
         case TK_FN:
             if (p->tokens.kinds[p->pos + 1] == TK_IDENT) {
                 parse_function(p, true);

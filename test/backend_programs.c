@@ -3994,6 +3994,29 @@ const char REST_ARGS[] =
     "\n"
     "fn rst_last(xs: ..int) => xs[xs.len - 1]\n";
 
+const char INLINE_MARKS[] =
+    "@inline fn inl_twice(x: int) -> int => x * 2\n"
+    "\n"
+    "@noinline fn inl_step(a: int, b: int) -> int {\n"
+    "    return inl_twice(a) + b\n"
+    "}\n"
+    "\n"
+    "@inline pub fn inl_mix(a: int, b: int) -> int {\n"
+    "    return inl_step(b, a) * 10 + inl_twice(b)\n"
+    "}\n"
+    "\n"
+    "@inline fn inl_fact(n: int) -> int {\n"
+    "    if n <= 1 {\n"
+    "        return 1\n"
+    "    }\n"
+    "    return n * inl_fact(n - 1)\n"
+    "}\n"
+    "\n"
+    "@noinline\n"
+    "fn inl_calls(a: int, b: int) -> int {\n"
+    "    return inl_fact(a & 7) + inl_mix(a, b)\n"
+    "}\n";
+
 const char *const BACKEND_PROGRAMS[] = {
     ARITHMETIC,
     CONTROL,
@@ -4025,6 +4048,7 @@ const char *const BACKEND_PROGRAMS[] = {
     STRUCT_IFS,
     OPTIONAL_FNS,
     REST_ARGS,
+    INLINE_MARKS,
 };
 
 const u32 NBACKEND_PROGRAMS = sizeof BACKEND_PROGRAMS / sizeof BACKEND_PROGRAMS[0];

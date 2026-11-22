@@ -128,6 +128,34 @@ TEST_CASE(emits_doubling_structs)
     return true;
 }
 
+TEST_CASE(writes_inline_marks)
+{
+    char *text = NULL;
+    size_t len = 0;
+    FILE *out = open_memstream(&text, &len);
+    assert(out);
+    Package p;
+    bool ok = check_source(&p, INLINE_MARKS) && c_source_package(out, &p.c, "m_") == NULL;
+    release(&p);
+    fclose(out);
+
+    static const char *const want[] = {
+        "\nCHIBI_FN __attribute__((always_inline)) int64_t m_inl_twice(void *ctx, int64_t s0);\n",
+        "\nCHIBI_FN __attribute__((noinline)) int64_t m_inl_step(void *ctx, int64_t s0, int64_t s1);\n",
+        "\nCHIBI_FN __attribute__((always_inline)) int64_t m_inl_mix(void *ctx, int64_t s0, int64_t s1)\n{",
+        "\nCHIBI_FN __attribute__((noinline)) int64_t m_inl_calls(void *ctx, int64_t s0, int64_t s1)\n{",
+    };
+    for (size_t k = 0; ok && k < sizeof want / sizeof want[0]; k++) {
+        if (!strstr(text, want[k])) {
+            fprintf(stderr, "c_source test: missing %s", want[k]);
+            ok = false;
+        }
+    }
+    free(text);
+    REQUIRE(ok);
+    return true;
+}
+
 #ifdef CHIBI_TEST_CC
 
 #if defined(__APPLE__) && defined(__aarch64__)
@@ -150,7 +178,7 @@ TEST_CASE(emits_doubling_structs)
 enum
 {
     MAX_JOBS = 8,
-    GRID_FUNCTIONS = 341,
+    GRID_FUNCTIONS = 344,
 };
 
 typedef struct
@@ -1609,6 +1637,7 @@ TEST_SUITE(c_source_tests)
 {
     RUN_TEST_CASE(reports_unsupported);
     RUN_TEST_CASE(emits_doubling_structs);
+    RUN_TEST_CASE(writes_inline_marks);
 #ifdef CHIBI_TEST_CC
     RUN_TEST_CASE(agrees_with_reference);
     RUN_TEST_CASE(works_with_c);

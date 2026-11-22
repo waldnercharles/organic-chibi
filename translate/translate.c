@@ -53,7 +53,9 @@
     X(K_COMPOUND_LITERAL, "CompoundLiteralExpr")                               \
     X(K_IMPLICIT_VALUE_INIT, "ImplicitValueInitExpr")                          \
     X(K_PREDEFINED, "PredefinedExpr")                                          \
-    X(K_VA_ARG, "VAArgExpr")
+    X(K_VA_ARG, "VAArgExpr")                                                   \
+    X(K_NOINLINE, "NoInlineAttr")                                              \
+    X(K_ALWAYS_INLINE, "AlwaysInlineAttr")
 
 typedef enum
 {
@@ -5640,7 +5642,10 @@ emit_function(Tr *t, u32 def)
     t->ntargets = 0;
     mark_assigned_params(t, def);
 
-    putf(&t->out, "\n%sfn %s", exported ? "export " : "", text(t, t->names[c]));
+    const char *mark = child_of_kind(t, def, K_ALWAYS_INLINE) ? "@inline "
+                     : child_of_kind(t, def, K_NOINLINE)      ? "@noinline "
+                                                              : "";
+    putf(&t->out, "\n%s%sfn %s", mark, exported ? "export " : "", text(t, t->names[c]));
     put_params(t, def, true);
     if (is_kind(t, t->types[ctype(t, def)].inner, CT_VOID) && calls_later(t, def)) {
         put(&t->out, " -> void");

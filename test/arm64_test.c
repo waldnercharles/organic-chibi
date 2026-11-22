@@ -4889,6 +4889,46 @@ TEST_CASE(rest_args)
     return true;
 }
 
+static const char *const INLINE_MARK_FUNCTIONS[] = {
+    "inl_step",
+    "inl_mix",
+    "inl_calls",
+};
+
+static const CallCase INLINE_MARK_CASES[] = {
+    { "inl_step", 2, 5, 9, 0 },
+    { "inl_step", 0, -3, -3, 0 },
+    { "inl_step", 1, 300, 302, 0 },
+    { "inl_step", 4611686018427387904, 0, 0, TRAP_OVERFLOW },
+    { "inl_mix", 2, 5, 130, 0 },
+    { "inl_mix", 0, -3, -66, 0 },
+    { "inl_mix", 1, 300, 6610, 0 },
+    { "inl_calls", 2, 5, 132, 0 },
+    { "inl_calls", 0, -3, -65, 0 },
+    { "inl_calls", 1, 300, 6611, 0 },
+    { "inl_calls", 7, 1, 5132, 0 },
+    { "inl_calls", -1, 0, 5030, 0 },
+};
+
+TEST_CASE(inline_marks)
+{
+    catch_traps();
+    Program p;
+    REQUIRE(build(&p, INLINE_MARKS));
+    for (size_t k = 0; k < sizeof INLINE_MARK_CASES / sizeof INLINE_MARK_CASES[0]; k++) {
+        CallCase t = INLINE_MARK_CASES[k];
+        int64_t got = 0;
+        int trap = call_i2((I2 *)fn(&p, t.name), t.a, t.b, &got);
+        if (trap != t.trap || (!trap && got != t.want)) {
+            fprintf(stderr, "arm64 test: %s(%lld, %lld) gave %lld (trap %d)\n", t.name, (long long)t.a, (long long)t.b, (long long)got, trap);
+            REQUIRE(false);
+        }
+    }
+    REQUIRE(agree_on_grid(&p, INLINE_MARK_FUNCTIONS, sizeof INLINE_MARK_FUNCTIONS / sizeof INLINE_MARK_FUNCTIONS[0]));
+    release_program(&p);
+    return true;
+}
+
 typedef int64_t I3(void *, int64_t, int64_t, int64_t);
 
 static int
@@ -5470,6 +5510,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(struct_ifs);
     RUN_TEST_CASE(optional_fns);
     RUN_TEST_CASE(rest_args);
+    RUN_TEST_CASE(inline_marks);
     RUN_TEST_CASE(vectors);
     RUN_TEST_CASE(narrow_parameters);
     RUN_TEST_CASE(constant_division);

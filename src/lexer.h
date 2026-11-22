@@ -149,6 +149,8 @@ enum
     TYPE(NAME_U64X2, "u64x2")                                                  \
     TYPE(NAME_I64X2, "i64x2")                                                  \
     OTHER(NAME_TAIL, "tail")                                                   \
+    OTHER(NAME_INLINE, "inline")                                               \
+    OTHER(NAME_NOINLINE, "noinline")                                           \
     OTHER(NAME_DISCARD, "_")                                                   \
     OTHER(NAME_LEN, "len")                                                     \
     OTHER(NAME_PTR, "ptr")                                                     \

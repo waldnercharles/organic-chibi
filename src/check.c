@@ -2828,11 +2828,11 @@ lay_out_struct(Checker *c, u32 decl)
     u32 layout = reserve_list(c, 1 + 2 * (end - first));
     u64 size = 0;
     u32 align = 1;
-    u8 flags = DECL_STORED;
+    u16 flags = DECL_STORED;
     for (u32 i = first; i < end; i++) {
         Member m = c->members[i];
         if (!has_layout(c, m.type)) {
-            flags &= (u8)~DECL_STORED;
+            flags &= (u16)~DECL_STORED;
         }
         flags |= sets_default(c, m) ? DECL_DEFAULTS : 0;
         flags |= m.value == MEMBER_NONE && !has_zero(c, m.type) ? DECL_NO_ZERO : 0;
@@ -8414,13 +8414,16 @@ declare(Checker *c)
         for (u32 s = 0; s < file->top_count; s++) {
             u32 end = file->nodes.top_ends[s];
             u32 root = end - 1;
-            u8 flags = 0;
+            u16 flags = 0;
             bool external = false;
             while (kinds[root] == NODE_PUB || kinds[root] == NODE_EXPORT ||
-                   kinds[root] == NODE_EXTERN) {
-                flags |= kinds[root] == NODE_PUB    ? DECL_PUB
-                       : kinds[root] == NODE_EXPORT ? DECL_EXPORT
-                                                    : 0;
+                   kinds[root] == NODE_EXTERN || kinds[root] == NODE_INLINE ||
+                   kinds[root] == NODE_NOINLINE) {
+                flags |= kinds[root] == NODE_PUB      ? DECL_PUB
+                       : kinds[root] == NODE_EXPORT   ? DECL_EXPORT
+                       : kinds[root] == NODE_INLINE   ? DECL_INLINE
+                       : kinds[root] == NODE_NOINLINE ? DECL_NOINLINE
+                                                      : 0;
                 external |= kinds[root] == NODE_EXTERN;
                 root--;
             }
@@ -8956,6 +8959,12 @@ static void
 print_decl(FILE *out, const Checker *c, u32 decl)
 {
     const Decls *d = &c->decls;
+    fputs(
+        d->flags[decl] & DECL_INLINE     ? "@inline "
+        : d->flags[decl] & DECL_NOINLINE ? "@noinline "
+                                         : "",
+        out
+    );
     fputs(d->flags[decl] & DECL_PUB ? "pub " : "", out);
     fputs(d->flags[decl] & DECL_EXPORT ? "export " : "", out);
     u32 type = d->types[decl];

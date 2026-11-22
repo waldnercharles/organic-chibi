@@ -111,6 +111,8 @@ enum
     DECL_DEFAULTS = 32,
     DECL_NO_ZERO = 64,
     DECL_ZEROED = 128,
+    DECL_INLINE = 256,
+    DECL_NOINLINE = 512,
 };
 
 enum
@@ -398,7 +400,7 @@ typedef struct
 {
     u32 *names;
     u8 *kinds;
-    u8 *flags;
+    u16 *flags;
     u8 *phases;
     u8 *busy;
     u32 *files;

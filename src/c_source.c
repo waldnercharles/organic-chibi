@@ -675,7 +675,13 @@ static void
 put_signature(Source *s, const IrFunc *fn)
 {
     const Checker *c = s->c;
-    fputs("CHIBI_FN ", s->out);
+    u16 flags = c->decls.flags[fn->decl];
+    fputs(
+        flags & DECL_INLINE     ? "CHIBI_FN __attribute__((always_inline)) "
+        : flags & DECL_NOINLINE ? "CHIBI_FN __attribute__((noinline)) "
+                                : "CHIBI_FN ",
+        s->out
+    );
     put_result(s, (u32)c->types.arg1[c->decls.types[fn->decl]]);
     putc(' ', s->out);
     put_name(s, fn->decl);
