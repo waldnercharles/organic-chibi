@@ -189,7 +189,8 @@ enum
 {
     PATH_DEPTH = 8,
     MAX_PATHS = 256,
-    SCAN_LIMIT = 64,
+    SCAN_LIMIT = 128,
+    NARROW_MAX = 8,
 };
 
 enum
@@ -320,6 +321,7 @@ typedef struct
     u32 *bits;
     u32 *names;
     u8 *marks;
+    u8 *narrowed;
 
     u64 *map_ids;
     u32 *map_nodes;
@@ -1163,6 +1165,7 @@ setup_decls(Tr *t)
     t->bits = calloc(n, sizeof *t->bits);
     t->names = malloc(n * sizeof *t->names);
     t->marks = calloc(n, 1);
+    t->narrowed = calloc(n, 1);
     t->memo = calloc(t->nstrings, sizeof *t->memo);
     t->typedefs = calloc(t->nstrings, sizeof *t->typedefs);
     t->records = calloc(t->nstrings, sizeof *t->records);
@@ -1627,12 +1630,24 @@ zeroed_paths(Tr *t, u32 type)
     }
 }
 
+static bool
+all_zero(const Tr *t, u32 list)
+{
+    for (u32 k = list + 1; k < t->a.ends[list]; k = t->a.ends[k]) {
+        if (t->kinds[strip(t, k)] != K_IMPLICIT_VALUE_INIT && !is_null(t, k)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static void
 zeroed_literal(Tr *t, u32 list)
 {
     u32 decl = t->types[ctype(t, list)].decl;
     u32 end = t->a.ends[decl];
     u32 field = decl + 1;
+    bool empty = all_zero(t, list);
     for (u32 k = list + 1; k < t->a.ends[list]; k = t->a.ends[k]) {
         while (field < end && t->kinds[field] != K_FIELD) {
             field = t->a.ends[field];
@@ -1642,7 +1657,7 @@ zeroed_literal(Tr *t, u32 list)
         }
         u32 l = literal_of(t, k);
         t->zeroing.fields[t->zeroing.len++] = field;
-        if (t->kinds[strip(t, k)] == K_IMPLICIT_VALUE_INIT) {
+        if (empty || t->kinds[strip(t, k)] == K_IMPLICIT_VALUE_INIT) {
             zeroed_paths(t, ctype(t, field));
         } else if (t->kinds[l] == K_INIT_LIST && is_kind(t, ctype(t, l), CT_RECORD)) {
             zeroed_literal(t, l);
@@ -1994,11 +2009,12 @@ zero_literal(Tr *t, u32 list)
 
     u32 decl = t->types[ctype(t, list)].decl;
     u32 field = decl + 1;
+    bool empty = all_zero(t, list);
     for (u32 k = list + 1; k < t->a.ends[list]; k = t->a.ends[k]) {
         while (t->kinds[field] != K_FIELD) {
             field = t->a.ends[field];
         }
-        if (t->kinds[strip(t, k)] == K_IMPLICIT_VALUE_INIT) {
+        if (empty || t->kinds[strip(t, k)] == K_IMPLICIT_VALUE_INIT) {
             if (prefix.len == PATH_DEPTH) {
                 zero_type(t, (Site){ field, 0 }, ctype(t, field));
             } else {
@@ -2021,6 +2037,7 @@ flow_fields(Tr *t, u32 list)
     if (strcmp(text(t, t->a.details[c.decl]), "struct") != 0) {
         die(t, list, "an initializer for a union");
     }
+    bool empty = all_zero(t, list);
     bool zeroes = false;
     u32 field = c.decl + 1;
     for (u32 k = list + 1; k < t->a.ends[list]; k = t->a.ends[k]) {
@@ -2030,7 +2047,7 @@ flow_fields(Tr *t, u32 list)
         if (field >= t->a.ends[c.decl]) {
             die(t, list, "an initializer with more values than fields");
         }
-        if (t->kinds[strip(t, k)] == K_IMPLICIT_VALUE_INIT) {
+        if (empty || t->kinds[strip(t, k)] == K_IMPLICIT_VALUE_INIT) {
             zeroes = true;
         } else {
             flow_init(t, (Site){ field, 0 }, k, false);
@@ -2197,13 +2214,26 @@ scan_node(Tr *t, u32 i, u32 fn)
 }
 
 static bool
+flows_nil(Tr *t, u32 e)
+{
+    u32 s = strip(t, e);
+    while (is_cast(t, s) && (op(t, s) == CAST_BIT || op(t, s) == CAST_NOOP)) {
+        s = strip(t, s + 1);
+    }
+    if (is_cast(t, s) && op(t, s) == CAST_LVALUE && t->narrowed[strip(t, s + 1)]) {
+        return false;
+    }
+    return nullable(t, e);
+}
+
+static bool
 apply_flow(Tr *t, Flow f)
 {
     bool changed = false;
     bool demanded = f.call && f.to.level == 0 && (t->marks[f.to.decl] & MARK_DEMANDED);
     bool tolerant = f.to.level != 0 || (t->marks[f.to.decl] & MARK_TOLERANT);
     if (!demanded && (tolerant || allocation(t, f.from) == ALLOC_NONE) &&
-        nullable(t, f.from)) {
+        flows_nil(t, f.from)) {
         changed |= set_site(t, f.to, NULLABLE);
     }
     if (many_value(t, f.from)) {
@@ -2351,6 +2381,144 @@ demand_params(Tr *t, u32 fn)
     }
 }
 
+static u32
+read_local(Tr *t, u32 e)
+{
+    e = strip(t, e);
+    if (!is_cast(t, e) || op(t, e) != CAST_LVALUE || !is_pointer(t, e)) {
+        return 0;
+    }
+    e = strip(t, e + 1);
+    if (t->kinds[e] != K_DECL_REF) {
+        return 0;
+    }
+    u32 d = decl_of(t, e);
+    bool local = local_var(t, d) && (t->a.flags[d] & AST_HAS_INIT);
+    return local || t->kinds[d] == K_PARAM ? d : 0;
+}
+
+static u32
+not_nil_when(Tr *t, u32 e, bool when, u32 *out, u32 n)
+{
+    e = strip(t, e);
+    if (t->kinds[e] == K_UNARY && op(t, e) == OP_NOT) {
+        return not_nil_when(t, e + 1, !when, out, n);
+    }
+    if (is_cast(t, e) && op(t, e) == CAST_POINTER_TO_BOOL) {
+        e = strip(t, e + 1);
+    }
+
+    u32 x = 0;
+    if (t->kinds[e] == K_BINARY) {
+        Op o = op(t, e);
+        if ((o == OP_LAND && when) || (o == OP_LOR && !when)) {
+            n = not_nil_when(t, child(t, e, 0), when, out, n);
+            return not_nil_when(t, child(t, e, 1), when, out, n);
+        }
+        if ((o == OP_EQ || o == OP_NE) && (o == OP_NE) == when) {
+            u32 l = child(t, e, 0);
+            u32 r = child(t, e, 1);
+            x = is_null(t, r) ? l : is_null(t, l) ? r : 0;
+        }
+    } else if (when) {
+        x = e;
+    }
+    u32 d = x != 0 ? read_local(t, x) : 0;
+    if (d != 0 && n < NARROW_MAX) {
+        out[n++] = d;
+    }
+    return n;
+}
+
+static bool
+written(Tr *t, u32 fn, u32 d)
+{
+    for (u32 i = fn; i < t->a.ends[fn]; i++) {
+        u32 target = write_target(t, i);
+        if (target != 0 && t->kinds[target] == K_DECL_REF && decl_of(t, target) == d) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void
+mark_narrowed(Tr *t, u32 fn, u32 from, u32 end, const u32 *vars, u32 n)
+{
+    for (u32 k = 0; k < n; k++) {
+        if (written(t, fn, vars[k])) {
+            continue;
+        }
+        for (u32 i = from; i < end; i++) {
+            if (t->kinds[i] == K_DECL_REF && decl_of(t, i) == vars[k]) {
+                t->narrowed[i] = 1;
+            }
+        }
+    }
+}
+
+static bool
+terminal(Tr *t, u32 s)
+{
+    switch (t->kinds[s]) {
+        case K_BREAK:
+        case K_CONTINUE:
+        case K_RETURN: return true;
+        case K_COMPOUND: {
+            u32 last = 0;
+            for (u32 c = s + 1; c < t->a.ends[s]; c = t->a.ends[c]) {
+                last = c;
+            }
+            return last != 0 && terminal(t, last);
+        }
+        case K_IF:
+            return (t->a.flags[s] & AST_HAS_ELSE) &&
+                   terminal(t, child(t, s, 1)) && terminal(t, child(t, s, 2));
+        default: return false;
+    }
+}
+
+static u32
+narrowing_end(Tr *t, u32 s)
+{
+    u32 block = t->parents[s];
+    u32 end = t->a.ends[s];
+    if (t->kinds[block] != K_COMPOUND) {
+        return end;
+    }
+    while (end < t->a.ends[block] && t->kinds[end] != K_CASE &&
+           t->kinds[end] != K_DEFAULT) {
+        end++;
+    }
+    return end;
+}
+
+static void
+narrow_reads(Tr *t, u32 fn)
+{
+    u32 vars[NARROW_MAX];
+    for (u32 i = fn; i < t->a.ends[fn]; i++) {
+        if (t->kinds[i] == K_IF) {
+            u32 then = child(t, i, 1);
+            u32 n = not_nil_when(t, i + 1, true, vars, 0);
+            mark_narrowed(t, fn, then, t->a.ends[then], vars, n);
+
+            n = not_nil_when(t, i + 1, false, vars, 0);
+            if (t->a.flags[i] & AST_HAS_ELSE) {
+                u32 other = child(t, i, 2);
+                mark_narrowed(t, fn, other, t->a.ends[other], vars, n);
+            } else if (terminal(t, then)) {
+                mark_narrowed(t, fn, t->a.ends[i], narrowing_end(t, i), vars, n);
+            }
+        } else if (t->kinds[i] == K_BINARY &&
+                   (op(t, i) == OP_LAND || op(t, i) == OP_LOR)) {
+            u32 right = child(t, i, 1);
+            u32 n = not_nil_when(t, child(t, i, 0), op(t, i) == OP_LAND, vars, 0);
+            mark_narrowed(t, fn, right, t->a.ends[right], vars, n);
+        }
+    }
+}
+
 static void
 analyze(Tr *t)
 {
@@ -2386,6 +2554,7 @@ analyze(Tr *t)
             fn_end = t->a.ends[i];
             if (project_file(t, t->a.files[i])) {
                 demand_params(t, i);
+                narrow_reads(t, i);
             }
             if (child_of_kind(t, i, K_RETURNS_NONNULL) != 0) {
                 t->marks[t->canon[i]] |= MARK_DEMANDED;
@@ -5470,27 +5639,6 @@ expr_stmt(Tr *t, u32 e)
     u32 posts = hoist_increments(t, e, true, false);
     put_expr_stmt(t, e);
     finish_posts(t, posts);
-}
-
-static bool
-terminal(Tr *t, u32 s)
-{
-    switch (t->kinds[s]) {
-        case K_BREAK:
-        case K_CONTINUE:
-        case K_RETURN: return true;
-        case K_COMPOUND: {
-            u32 last = 0;
-            for (u32 c = s + 1; c < t->a.ends[s]; c = t->a.ends[c]) {
-                last = c;
-            }
-            return last != 0 && terminal(t, last);
-        }
-        case K_IF:
-            return (t->a.flags[s] & AST_HAS_ELSE) &&
-                   terminal(t, child(t, s, 1)) && terminal(t, child(t, s, 2));
-        default: return false;
-    }
 }
 
 static void
