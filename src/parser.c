@@ -114,6 +114,19 @@ static void parse_block(Parser *p);
 static void parse_switch(Parser *p, bool value);
 
 static ALWAYS_INLINE void
+mark_item(Parser *p)
+{
+    u8 *last = &p->out.kinds[p->count - 1];
+    if (*last == NODE_LABELED_VALUE) {
+        *last = NODE_LABELED_ITEM;
+    } else if (*last == NODE_VALUE_SWITCH) {
+        *last = NODE_SWITCH_ITEM;
+    } else if (*last == NODE_VALUE_IF) {
+        *last = NODE_VALUE_IF_ITEM;
+    }
+}
+
+static ALWAYS_INLINE void
 parse_items(Parser *p, TokenKind close)
 {
     while (p->tokens.kinds[p->pos] != close) {
@@ -128,14 +141,7 @@ parse_items(Parser *p, TokenKind close)
             emit(p, NODE_NAMED_ARG, at);
         } else {
             parse_binary(p, PREC_OR);
-            u8 *last = &p->out.kinds[p->count - 1];
-            if (*last == NODE_LABELED_VALUE) {
-                *last = NODE_LABELED_ITEM;
-            } else if (*last == NODE_VALUE_SWITCH) {
-                *last = NODE_SWITCH_ITEM;
-            } else if (*last == NODE_VALUE_IF) {
-                *last = NODE_VALUE_IF_ITEM;
-            }
+            mark_item(p);
         }
 
         if (p->tokens.kinds[p->pos] != TK_COMMA) {
@@ -626,7 +632,7 @@ expect_value_type(Parser *p, int bang)
     TokenKind kind = p->tokens.kinds[p->pos];
     bool type = kind == TK_IDENT || kind == TK_STAR || kind == TK_QUESTION ||
                 kind == TK_OR_ELSE || kind == TK_LBRACK || kind == TK_FN ||
-                kind == TK_EXTERN;
+                kind == TK_EXTERN || kind == TK_LPAREN;
     if (type && (p->brackets > 0 || !starts_line(p))) {
         return true;
     }
@@ -634,6 +640,29 @@ expect_value_type(Parser *p, int bang)
     p->pos = bang;
     fail(p, "expected a type after `!`, such as `void`");
     return false;
+}
+
+static NOINLINE void
+parse_tuple_type(Parser *p)
+{
+    int open = p->pos++;
+    emit(p, NODE_TUPLE_START, open);
+    p->brackets++;
+    while (p->tokens.kinds[p->pos] != TK_RPAREN) {
+        parse_type(p);
+        if (p->tokens.kinds[p->pos] != TK_COMMA) {
+            break;
+        }
+        p->pos++;
+    }
+    p->brackets--;
+
+    if (p->tokens.kinds[p->pos] != TK_RPAREN) {
+        fail(p, "expected `,` or `)`");
+        return;
+    }
+    p->pos++;
+    emit(p, NODE_TUPLE_TYPE, open);
 }
 
 static void
@@ -664,7 +693,7 @@ parse_composite_type(Parser *p)
 
     bool optional = kind == TK_QUESTION || kind == TK_OR_ELSE;
     if (kind != TK_STAR && kind != TK_LBRACK && kind != TK_FN &&
-        kind != TK_EXTERN && kind != TK_NOT && !optional) {
+        kind != TK_EXTERN && kind != TK_NOT && kind != TK_LPAREN && !optional) {
         fail(p, "expected a type");
         return;
     }
@@ -679,6 +708,8 @@ parse_composite_type(Parser *p)
 
     if (kind == TK_FN) {
         parse_fn_type(p);
+    } else if (kind == TK_LPAREN) {
+        parse_tuple_type(p);
     } else if (kind == TK_EXTERN) {
         p->pos++;
         parse_fn_type(p);
@@ -779,14 +810,95 @@ parse_binding(Parser *p, BindingNodes nodes)
     emit(p, nodes.typed, name);
 }
 
+static NOINLINE void
+parse_values(Parser *p, int op, NodeKind kind)
+{
+    const u8 *kinds = p->tokens.kinds;
+    int marker = p->count;
+    emit(p, NODE_DESTRUCTURE_VALUE, op);
+    parse_binary(p, PREC_OR);
+    if (kinds[p->pos] == TK_COMMA) {
+        p->out.kinds[marker] = NODE_DESTRUCTURE_VALUES;
+        while (kinds[p->pos] == TK_COMMA) {
+            p->pos++;
+            parse_binary(p, PREC_OR);
+        }
+    }
+    emit(p, kind, op);
+}
+
+static NOINLINE void
+parse_targets(Parser *p, int first, int at)
+{
+    const u8 *kinds = p->tokens.kinds;
+    for (int i = p->count; i > first; i--) {
+        p->out.kinds[i] = p->out.kinds[i - 1];
+        p->out.tokens[i] = p->out.tokens[i - 1];
+    }
+    p->out.kinds[first] = NODE_TARGETS_START;
+    p->out.tokens[first] = (u32)p->pos;
+    p->count++;
+
+    int unnamed = -1;
+    for (;;) {
+        u8 root = p->out.kinds[p->count - 1];
+        int token = (int)p->out.tokens[p->count - 1];
+        if (root != NODE_NAME && root != NODE_FIELD && root != NODE_DEREF &&
+            (root < NODE_INDEX || root > NODE_INDEX4)) {
+            p->pos = at;
+            fail(p, "expected a name, a field, an element or `p.*`");
+            return;
+        }
+        if (unnamed < 0 && (root != NODE_NAME || token != at)) {
+            unnamed = at;
+        }
+        emit(p, NODE_ASSIGN_TARGET, token);
+        if (kinds[p->pos] != TK_COMMA) {
+            break;
+        }
+        p->pos++;
+        at = p->pos;
+        parse_binary(p, PREC_OR);
+    }
+
+    int op = p->pos;
+    if (kinds[op] == TK_DASSIGN && unnamed >= 0) {
+        p->pos = unnamed;
+        fail(p, "expected a name");
+        return;
+    }
+    if (kinds[op] != TK_DASSIGN && kinds[op] != TK_EQ) {
+        fail(p, "expected `:=` or `=`");
+        return;
+    }
+
+    bool declare = kinds[op] == TK_DASSIGN;
+    if (declare) {
+        int n = first + 1;
+        for (int i = first + 1; i < p->count; i += 2) {
+            p->out.kinds[n] = NODE_TARGET;
+            p->out.tokens[n] = p->out.tokens[i];
+            n++;
+        }
+        p->count = n;
+    }
+    p->pos++;
+    parse_values(p, op, declare ? NODE_DESTRUCTURE_INIT : NODE_DESTRUCTURE_ASSIGN);
+}
+
 static void
 parse_simple(Parser *p)
 {
     int at = p->pos;
+    int first = p->count;
     parse_binary(p, PREC_OR);
 
     NodeKind assign = assign_nodes[p->tokens.kinds[p->pos]];
     if (assign == NODE_NONE) {
+        if (p->tokens.kinds[p->pos] == TK_COMMA && !p->in_arm) {
+            parse_targets(p, first, at);
+            return;
+        }
         emit(p, NODE_EXPR_STMT, at);
         return;
     }
@@ -801,6 +913,27 @@ parse_simple(Parser *p)
     }
 }
 
+static NOINLINE void
+parse_return_list(Parser *p, int first)
+{
+    int comma = p->pos;
+    for (int i = p->count; i > first; i--) {
+        p->out.kinds[i] = p->out.kinds[i - 1];
+        p->out.tokens[i] = p->out.tokens[i - 1];
+    }
+    p->out.kinds[first] = NODE_ANON_LITERAL_START;
+    p->out.tokens[first] = (u32)comma;
+    p->count++;
+    mark_item(p);
+
+    while (p->tokens.kinds[p->pos] == TK_COMMA) {
+        p->pos++;
+        parse_binary(p, PREC_OR);
+        mark_item(p);
+    }
+    emit(p, NODE_ANON_LITERAL, comma);
+}
+
 static void
 parse_return(Parser *p)
 {
@@ -811,7 +944,11 @@ parse_return(Parser *p)
     }
 
     emit(p, NODE_RETURN_START, at);
+    int first = p->count;
     parse_binary(p, PREC_OR);
+    if (p->tokens.kinds[p->pos] == TK_COMMA && !p->in_arm) {
+        parse_return_list(p, first);
+    }
     emit(p, NODE_RETURN_VALUE, at);
 }
 
@@ -1748,7 +1885,7 @@ parser_dump(FILE *out, Arena *scratch, const char *src, Tokens tokens, Nodes nod
 
             int i = item;
             NodeKind kind = nodes.kinds[i];
-            if (kind == NODE_EXPR_STMT) {
+            if (kind == NODE_EXPR_STMT || kind == NODE_ASSIGN_TARGET) {
                 todo[ntodo++] = i - 1;
                 continue;
             }

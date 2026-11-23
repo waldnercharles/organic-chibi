@@ -427,6 +427,23 @@ static const char LAYOUT_WALK_C[] =
     "_Static_assert(offsetof(A, f) == 32, \"A.f\");\n"
     "_Static_assert(offsetof(A, s) == 40, \"A.s\");\n";
 
+static const char LAYOUT_TUPLE[] =
+    "struct S { x: int, y: i16 }\n"
+    "struct Holder { t: (u8, S), n: int, next: ?*(Holder, int) }\n"
+    "extern fn take(h: *Holder) -> int\n";
+
+static const char LAYOUT_TUPLE_C[] =
+    "#include <stddef.h>\n"
+    "\n"
+    "_Static_assert(sizeof(S) == 16 && _Alignof(S) == 8, \"S\");\n"
+    "_Static_assert(offsetof(S, x) == 0, \"S.x\");\n"
+    "_Static_assert(offsetof(S, y) == 8, \"S.y\");\n"
+    "\n"
+    "_Static_assert(sizeof(Holder) == 40 && _Alignof(Holder) == 8, \"Holder\");\n"
+    "_Static_assert(offsetof(Holder, t) == 0, \"Holder.t\");\n"
+    "_Static_assert(offsetof(Holder, n) == 24, \"Holder.n\");\n"
+    "_Static_assert(offsetof(Holder, next) == 32, \"Holder.next\");\n";
+
 static char *
 layouts_of(const char *text)
 {
@@ -456,7 +473,14 @@ TEST_CASE(writes_layouts)
         fprintf(stderr, "c_source test: layouts\n%s", got ? got : "the program failed to check\n");
     }
     free(got);
-    REQUIRE(ok);
+
+    got = layouts_of(LAYOUT_TUPLE);
+    bool tuples = got && strcmp(got, LAYOUT_TUPLE_C) == 0;
+    if (!tuples) {
+        fprintf(stderr, "c_source test: layouts with tuples\n%s", got ? got : "the program failed to check\n");
+    }
+    free(got);
+    REQUIRE(ok && tuples);
     return true;
 }
 
@@ -482,7 +506,7 @@ TEST_CASE(writes_layouts)
 enum
 {
     MAX_JOBS = 8,
-    GRID_FUNCTIONS = 379,
+    GRID_FUNCTIONS = 391,
 };
 
 typedef struct

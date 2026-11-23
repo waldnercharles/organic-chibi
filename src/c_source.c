@@ -457,6 +457,10 @@ put_slot(Source *s, u32 slot, bool object)
 static void
 put_name(Source *s, u32 decl)
 {
+    if (s->c->decls.flags[decl] & DECL_TUPLE) {
+        fprintf(s->out, "chibi_%stuple_%u", s->prefix, decl);
+        return;
+    }
     Name n = names_get(s->c->names, s->c->decls.names[decl]);
     fprintf(s->out, "%s%.*s", s->prefix, (int)n.len, n.text);
 }
@@ -1834,7 +1838,7 @@ c_source_layouts(FILE *out, const Checker *c)
 
     fputs("#include <stddef.h>\n", out);
     for (u32 decl = 1; decl < d->count; decl++) {
-        if (!reached[decl]) {
+        if (!reached[decl] || (d->flags[decl] & DECL_TUPLE)) {
             continue;
         }
         Name n = names_get(c->names, d->names[decl]);

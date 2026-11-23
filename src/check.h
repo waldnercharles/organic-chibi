@@ -123,6 +123,7 @@ enum
     DECL_ZEROED = 128,
     DECL_INLINE = 256,
     DECL_NOINLINE = 512,
+    DECL_TUPLE = 1024,
 };
 
 enum
@@ -254,10 +255,14 @@ enum
     X(DIAG_STRUCT_LITERAL_TYPE, "the type of this literal isn't known here; write it, as in `Point.{ 1, 2 }`") \
     X(DIAG_NOT_STRUCT, "`%U` is not a struct, so a struct literal can't build it")                  \
     X(DIAG_FIELD_COUNT, "wrong number of fields: expected %c, found %C")                            \
+    X(DIAG_TUPLE_SIZE, "a tuple needs two or more types")                                           \
+    X(DIAG_NOT_TUPLE, "`%T` is not a tuple, so it can't fill several names")                        \
+    X(DIAG_VALUE_COUNT, "wrong number of values: expected %c, found %C")                            \
     X(DIAG_MIXED_FIELDS, "name every field of this literal, or none")                               \
     X(DIAG_FIELD_TWICE, "`%n` is already set at %l")                                                \
     X(DIAG_MISSING_FIELD, "`%n` has no zero value, so this literal needs a value for it")          \
     X(DIAG_NO_ZERO_FIELD, "`%U` has no zero value because of its field `%n`, so this needs a value") \
+    X(DIAG_NO_ZERO_ELEMENT, "`%U` has no zero value because of its `%T`, so this needs a value")    \
     X(DIAG_UNUSED, "this value is not used; discard it with `_ = ...`")                             \
     X(DIAG_DISCARD, "`_` can only discard a value, as in `_ = f()`")                                \
     X(DIAG_NOT_CALLABLE, "expected a function or a type")                                           \
@@ -453,6 +458,7 @@ typedef struct
     u32 *bodies;
     u32 *funcs;
     u32 count;
+    u32 cap;
 } Decls;
 
 typedef struct
@@ -551,6 +557,9 @@ typedef struct
     u32 *member_slots;
     u32 member_mask;
     u32 member_count;
+    u32 *tuple_map;
+    u32 tuple_mask;
+    u32 tuple_count;
     u32 zeroed;
     u32 zeroed_align;
 } Checker;

@@ -93,6 +93,8 @@
     NODE(NODE_VAR_INIT, 1, ":=")                                               \
     NODE(NODE_VAR_TYPE, 1, ":")                                                \
     NODE(NODE_VAR_TYPE_INIT, 3, ":")                                           \
+    NODE(NODE_TARGET, 0, NULL)                                                 \
+    NODE(NODE_ASSIGN_TARGET, 1, NULL)                                          \
     NODE(NODE_UNDEFINED, 0, NULL)                                              \
     NODE(NODE_PARAM, 0, NULL)                                                  \
     NODE(NODE_PARAM_INIT, 1, ":=")                                             \
@@ -162,6 +164,9 @@
     LIST(NODE_SWITCH, NODE_SWITCH_START, 0, "switch")                          \
     LIST(NODE_VALUE_SWITCH, NODE_VALUE_SWITCH_START, 0, "switch")              \
     LIST(NODE_SWITCH_ITEM, NODE_VALUE_SWITCH_START, 0, "switch")               \
+    LIST(NODE_TUPLE_TYPE, NODE_TUPLE_START, 0, "tuple")                        \
+    LIST(NODE_DESTRUCTURE_INIT, NODE_TARGETS_START, 0, ":=")                   \
+    LIST(NODE_DESTRUCTURE_ASSIGN, NODE_TARGETS_START, 0, "=")                  \
     MARKER(NODE_CALL_ARGS)                                                     \
     MARKER(NODE_AND_LEFT)                                                      \
     MARKER(NODE_OR_LEFT)                                                       \
@@ -193,7 +198,11 @@
     MARKER(NODE_SWITCH_START)                                                  \
     MARKER(NODE_VALUE_SWITCH_START)                                            \
     MARKER(NODE_VALUE)                                                         \
-    MARKER(NODE_RETURN_START)
+    MARKER(NODE_RETURN_START)                                                  \
+    MARKER(NODE_TUPLE_START)                                                   \
+    MARKER(NODE_TARGETS_START)                                                 \
+    MARKER(NODE_DESTRUCTURE_VALUE)                                             \
+    MARKER(NODE_DESTRUCTURE_VALUES)
 // clang-format on
 
 #define CHIBI_NODE_NAME(name, ...) name,

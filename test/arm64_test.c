@@ -5977,6 +5977,63 @@ TEST_CASE(string_views)
     return true;
 }
 
+static const char *const TUPLE_FUNCTIONS[] = {
+    "tp_div", "tp_swap", "tp_mixed", "tp_globals", "tp_early", "tp_held", "tp_node", "tp_list", "tp_optional", "tp_span", "tp_late", "tp_elems",
+};
+
+static const CallCase TUPLE_CASES[] = {
+    { "tp_div", 47, 5, 9002, 0 },
+    { "tp_div", -13, 4, -3001, 0 },
+    { "tp_div", 7, 0, 0, TRAP_DIVIDE },
+    { "tp_div", INT64_MIN, -1, 0, TRAP_OVERFLOW },
+    { "tp_swap", 3, 4, 70431, 0 },
+    { "tp_swap", -2, 9, 70881, 0 },
+    { "tp_mixed", 300, 7, 7088, 0 },
+    { "tp_mixed", -1, -3, -2490, 0 },
+    { "tp_globals", 1, 2, 102985, 0 },
+    { "tp_globals", 6, -3, 597752, 0 },
+    { "tp_early", 5, 8, 523, 0 },
+    { "tp_early", -3, 0, -293, 0 },
+    { "tp_held", 2, 31, 15035, 0 },
+    { "tp_held", 0, -1, 15011, 0 },
+    { "tp_held", 3, 0, 0, TRAP_BOUNDS },
+    { "tp_held", -1, 0, 0, TRAP_BOUNDS },
+    { "tp_node", 7, 9, 712, 0 },
+    { "tp_node", -4, 2, -395, 0 },
+    { "tp_list", 3, 9, 90309, 0 },
+    { "tp_list", 12, -2, 121198, 0 },
+    { "tp_optional", 6, 11, 1106, 0 },
+    { "tp_optional", 2, 5, -2, 0 },
+    { "tp_optional", INT64_MIN, 0, 0, TRAP_OVERFLOW },
+    { "tp_span", 0, 2, 1432, 0 },
+    { "tp_span", 1, -3, 13625, 0 },
+    { "tp_late", 7, 3, 907035, 0 },
+    { "tp_late", -5, -6, 894945, 0 },
+    { "tp_late", 1, 40000, 0, TRAP_RANGE },
+    { "tp_elems", 1, 2, 351210352112, 0 },
+    { "tp_elems", 3, 3, 531210253113, 0 },
+    { "tp_elems", -1, 4, 531240253084, 0 },
+};
+
+TEST_CASE(tuples)
+{
+    catch_traps();
+    Program p;
+    REQUIRE(build(&p, TUPLES));
+    for (size_t k = 0; k < sizeof TUPLE_CASES / sizeof TUPLE_CASES[0]; k++) {
+        CallCase t = TUPLE_CASES[k];
+        int64_t got = 0;
+        int trap = call_i2((I2 *)fn(&p, t.name), t.a, t.b, &got);
+        if (trap != t.trap || (!trap && got != t.want)) {
+            fprintf(stderr, "arm64 test: %s(%lld, %lld) gave %lld (trap %d)\n", t.name, (long long)t.a, (long long)t.b, (long long)got, trap);
+            REQUIRE(false);
+        }
+    }
+    REQUIRE(agree_on_grid(&p, TUPLE_FUNCTIONS, sizeof TUPLE_FUNCTIONS / sizeof TUPLE_FUNCTIONS[0]));
+    release_program(&p);
+    return true;
+}
+
 TEST_SUITE(arm64_tests)
 {
     RUN_TEST_CASE(hidden_context);
@@ -6005,6 +6062,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(vectors);
     RUN_TEST_CASE(int128);
     RUN_TEST_CASE(string_views);
+    RUN_TEST_CASE(tuples);
     RUN_TEST_CASE(narrow_parameters);
     RUN_TEST_CASE(constant_division);
     RUN_TEST_CASE(differential);
