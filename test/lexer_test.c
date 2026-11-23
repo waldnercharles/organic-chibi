@@ -154,6 +154,11 @@ matches_reference(const char *label, const char *src, size_t len, Lexer *lx, Ref
     "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrst" \
     "uvwxyz"
 
+#define NAMES_8 "a;a;a;a;a;a;a;a;"
+#define NAMES_64 NAMES_8 NAMES_8 NAMES_8 NAMES_8 NAMES_8 NAMES_8 NAMES_8 NAMES_8
+#define NAMES_512                                                              \
+    NAMES_64 NAMES_64 NAMES_64 NAMES_64 NAMES_64 NAMES_64 NAMES_64 NAMES_64
+
 // clang-format off
 static const char *EDGE_CASES[] = {
     "",
@@ -195,6 +200,7 @@ static const char *EDGE_CASES[] = {
     "?\?== ??? ???? ?\?\?= ?= ?=? ?== ?!! !?? ?. ?: ?* ?[ ?T ??T !!!= ?\?!= !!?",
     LONG_TEXT "+x 9 \"s\" a " LONG_TEXT,
     LONG_TEXT LONG_TEXT "+x 9 \"s\" a " LONG_TEXT LONG_TEXT,
+    NAMES_512 NAMES_512 NAMES_512 NAMES_512 NAMES_512,
     "\"abcdefghijklmnop\\\"qrstuvwxyz\" x",
     "// comment with \"quote\" and \\ backslash\ny",
     "\"str // not a comment\" z // real \"comment\"\nw",

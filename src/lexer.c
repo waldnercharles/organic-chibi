@@ -1153,7 +1153,8 @@ lexer_tokenize(Lexer *lx, const char *src, Tokens out)
     Tokens t = out; // PERF: Forces `out` into a register
 
     // + 1 because the loop writes the next slot before it knows the token's kind.
-    u32 name_tokens[BLOCKS_PER_FLUSH * MAX_NAMES_PER_BLOCK + 1];
+    u32 names_buffer[BLOCKS_PER_FLUSH * MAX_NAMES_PER_BLOCK + 1];
+    u32 *name_tokens = names_buffer;
     int nnames = 0;
     int ntok = 0;
     Carry carry = { .line_break = 1 };
@@ -1216,11 +1217,11 @@ lexer_tokenize(Lexer *lx, const char *src, Tokens out)
                 continue;
             }
 
+            name_tokens[nnames] = (u32)ntok;
+            nnames += kind == TK_IDENT;
             t.kinds[ntok] = (u8)kind;
             t.starts[ntok] = at;
             t.ids[ntok] = (u32)__builtin_ctzll(name_last >> pos) + 1;
-            name_tokens[nnames] = (u32)ntok;
-            nnames += kind == TK_IDENT;
             ntok++;
         }
 

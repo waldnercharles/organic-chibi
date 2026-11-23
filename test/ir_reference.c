@@ -414,7 +414,7 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
     const u32 *offsets = r->offsets + fn->first_slot;
     for (u32 p = 0; p < fn->nparams; p++) {
         u32 type = ir->slots[fn->first_slot + p].type;
-        if (is_aggregate(c, type) || is_vector(c, type) || check_is_int128(type)) {
+        if (is_aggregate(c, type) || check_is_int128(type)) {
             memcpy(frame + offsets[p], (const void *)(uintptr_t)args[p], check_type_size(c, type));
         } else {
             memcpy(frame + offsets[p], &args[p], sizeof *args);
@@ -462,7 +462,7 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
         u32 b = ir->bs[g];
         Ty t = ty(c, type);
         u64 x = 0, y = 0;
-        if (is_vector(c, type) && kind != IR_CALL) {
+        if (is_vector(c, type)) {
             u64 w[2] = { 0, 0 }, z[2] = { 0, 0 }, out[2] = { 0, 0 };
             int fail = 0;
             switch (kind) {
@@ -487,10 +487,6 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                     WIDE(a, w);
                     fail = lanewise(c, kind, type, w, w, 0, out);
                     break;
-                case IR_RET:
-                    WIDE(a, result);
-                    trap = 0;
-                    goto done;
                 case IR_IF:
                     if (!OPERAND(a)) {
                         u32 to = r->elses[g] != NONE ? r->elses[g] : r->ends[g];
@@ -1000,7 +996,7 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                 u64(*lanes)[2] = calloc(list[0] + 1, sizeof *lanes);
                 for (u32 k = 0; k < list[0]; k++) {
                     u32 param = ir->slots[callee->first_slot + k].type;
-                    if (is_vector(c, param) || check_is_int128(param)) {
+                    if (check_is_int128(param)) {
                         WIDE(list[1 + k], lanes[k]);
                         call_args[k] = (u64)(uintptr_t)lanes[k];
                     } else {

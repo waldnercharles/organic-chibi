@@ -5330,6 +5330,22 @@ is_assert(Tr *t, u32 e)
 }
 
 static void
+put_assert(Tr *t, u32 e)
+{
+    e = strip(t, e);
+    if (t->kinds[e] == K_BINARY && op(t, e) == OP_LAND &&
+        !is_string(t, child(t, e, 1))) {
+        put_assert(t, child(t, e, 0));
+        line(t);
+        put_assert(t, child(t, e, 1));
+        return;
+    }
+    put(&t->out, "assert(");
+    cond_at(t, e, false);
+    put(&t->out, ")");
+}
+
+static void
 assign(Tr *t, u32 lhs, u32 rhs)
 {
     u32 r = strip_noop(t, rhs);
@@ -5581,9 +5597,7 @@ put_expr_stmt(Tr *t, u32 e)
             break;
         case K_CONDITIONAL:
             if (is_assert(t, e)) {
-                put(&t->out, "assert(");
-                cond_at(t, child(t, e, 0), false);
-                put(&t->out, ")");
+                put_assert(t, child(t, e, 0));
                 return;
             }
             break;

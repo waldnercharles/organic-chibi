@@ -232,7 +232,7 @@ static const char *const ir_texts[NIR_KINDS] = { CHIBI_IR(IR_TEXT) };
 
 static const Operand poison = { TYPE_ID_NONE, 0 };
 
-static void *
+static NOINLINE void *
 resize(void *p, size_t count, size_t size)
 {
     return realloc(p, count * size);
@@ -1032,19 +1032,26 @@ ir_const_128(Checker *c, u32 type, u64 low, u64 high)
 }
 
 static u32
-ir_const(Checker *c, u32 type, u64 bits)
+ir_const_64(Checker *c, u32 type, u64 bits)
 {
+    assert(!check_is_int128(type));
     IrCode *code = c->body.code;
     if (code->nconsts == code->consts_cap) {
         code->consts_cap *= 2;
         code->consts = resize(code->consts, code->consts_cap, sizeof *code->consts);
     }
+    code->consts[code->nconsts] = (IrConst){ bits, type };
+    return IR_CONST | (code->nconsts++ - c->body.first_const);
+}
+
+static u32
+ir_const(Checker *c, u32 type, u64 bits)
+{
     if (check_is_int128(type)) {
         assert((int64_t)bits >= 0);
         return ir_const_128(c, type, bits, 0);
     }
-    code->consts[code->nconsts] = (IrConst){ bits, type };
-    return IR_CONST | (code->nconsts++ - c->body.first_const);
+    return ir_const_64(c, type, bits);
 }
 
 static u64
@@ -1070,7 +1077,7 @@ operand_ir(Checker *c, Operand o)
         u32 v = value_of(o);
         return ir_const_128(c, o.type, exact_bits(&c->exacts, v), exact_bits_high(&c->exacts, v));
     }
-    return ir_const(c, o.type, constant_bits(c, o));
+    return ir_const_64(c, o.type, constant_bits(c, o));
 }
 
 static Operand
