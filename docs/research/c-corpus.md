@@ -494,7 +494,7 @@ The runtime cost of these conventions is zero. `p->pos++` as a separate statemen
 | Pointer and integer conversions | 25 | `bitcast`, as above |
 | `NULL` | 68 lines | optional pointers `?*T` and `nil`, decided on 2026-11-10 and built in step 3e.1 |
 | `assert` | 98 | a call to a translated function, or nothing when `NDEBUG` is defined |
-| Attributes | `noinline` 106, `always_inline` 12, `unused` 10 | `noinline` and `always_inline` become `@noinline` and `@inline` (steps 3k.10 and 3t.11, built while the owner decides the attribute design, 3.8); `unused` is dropped |
+| Attributes | `noinline` 106, `always_inline` 12, `unused` 10 | `noinline` and `always_inline` become `@noinline` and `@inline` (steps 3k.10 and 3t.11; the owner chose them on 2026-11-23); `unused` is dropped |
 | `static` locals | 12 | moved to package globals |
 | Assignment or compound assignment used as a value, comma operator | 10, 6, 4 | hoisted |
 | `do while` | 4 | `while true` that breaks at the end |
