@@ -2448,21 +2448,11 @@ put_type(Tr *t, Out *o, u32 type, u32 bits)
             break;
         }
         case CT_ARRAY:
+        case CT_VECTOR:
             putf(o, "[%llu]", (unsigned long long)c->count);
             put_type(t, o, c->inner, bits);
             break;
         case CT_RECORD: put(o, text(t, t->names[c->decl])); break;
-        case CT_VECTOR: {
-            const CType *lane = &t->types[c->inner];
-            putf(
-                o,
-                "%c%ux%llu",
-                lane->is_signed ? 'i' : 'u',
-                lane->bits,
-                (unsigned long long)c->count
-            );
-            break;
-        }
         default: put(o, "?"); break;
     }
 }
@@ -3654,6 +3644,23 @@ pointer_difference(Tr *t, u32 e, u32 l, u32 r)
     return value(ctype(t, e), 0, bytes ? P_ADD : P_MUL);
 }
 
+static const char *
+lane_compare(Tr *t, u32 e)
+{
+    if (t->kinds[e] != K_BINARY || !is_kind(t, ctype(t, e), CT_VECTOR)) {
+        return NULL;
+    }
+    switch (op(t, e)) {
+        case OP_EQ: return "eq";
+        case OP_NE: return "ne";
+        case OP_LT: return "lt";
+        case OP_GT: return "gt";
+        case OP_LE: return "le";
+        case OP_GE: return "ge";
+        default: return NULL;
+    }
+}
+
 static Val
 binary(Tr *t, u32 e)
 {
@@ -3662,6 +3669,16 @@ binary(Tr *t, u32 e)
     u32 r = child(t, e, 1);
     if (o == OP_ASSIGN || o == OP_COMMA) {
         die(t, e, "an assignment or comma inside an expression");
+    }
+    const char *lanes = lane_compare(t, e);
+    if (lanes != NULL) {
+        use_package(t, PACKAGE_SIMD);
+        putf(&t->out, "simd.%s(", lanes);
+        ex(t, l, 0, 0);
+        put(&t->out, ", ");
+        ex(t, r, 0, 0);
+        put(&t->out, ")");
+        return value(ctype(t, l), 0, P_POSTFIX);
     }
     if (is_condition(t, e)) {
         u8 prec = cond(t, e);
@@ -4079,8 +4096,8 @@ put_lanes(Tr *t, u32 list, u32 type, bool constant)
     CType c = t->types[type];
     u32 item = list + 1;
 
-    char *ty = type_text(t, type, 0);
-    putf(&t->out, "%s.{ ", ty);
+    char *ty = type_text(t, c.inner, 0);
+    putf(&t->out, "%s.[", ty);
     free(ty);
     for (u64 k = 0; k < c.count; k++) {
         put(&t->out, k == 0 ? "" : ", ");
@@ -4091,7 +4108,7 @@ put_lanes(Tr *t, u32 list, u32 type, bool constant)
             put(&t->out, "0");
         }
     }
-    put(&t->out, " }");
+    put(&t->out, "]");
 }
 
 static Val
@@ -4524,14 +4541,6 @@ static const char *const reserved_names[] = {
     "f64",
     "uintptr",
     "error",
-    "u8x16",
-    "i8x16",
-    "u16x8",
-    "i16x8",
-    "u32x4",
-    "i32x4",
-    "u64x2",
-    "i64x2",
     "_",
 };
 
@@ -6190,7 +6199,7 @@ packages_used(Tr *t, u32 fn)
         const char *builtin = f != 0 ? chibi_builtin(t, f) : NULL;
         if (bit_count_name(w) != NULL || overflow_name(t, i) != NULL) {
             used |= 1u << PACKAGE_BITS;
-        } else if (builtin != NULL) {
+        } else if (builtin != NULL || lane_compare(t, i) != NULL) {
             used |= 1u << PACKAGE_SIMD;
         } else if (strcmp(w, "memcpy") == 0 || t->kinds[i] == K_TYPE_TRAIT ||
                    (t->kinds[i] == K_BINARY && op(t, i) == OP_SUB &&

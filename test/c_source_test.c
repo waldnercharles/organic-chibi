@@ -275,16 +275,16 @@ TEST_CASE(writes_assumptions)
 
 static const char INT128_FORMS[] = "import \"std/bits\"\n"
                                    "\n"
-                                   "fn to_wide(v: u64x2) -> u128 {\n"
+                                   "fn to_wide(v: [2]u64) -> u128 {\n"
                                    "    return bitcast(u128, v)\n"
                                    "}\n"
                                    "\n"
-                                   "fn to_lanes(x: u128) -> u64x2 {\n"
-                                   "    return bitcast(u64x2, x)\n"
+                                   "fn to_lanes(x: u128) -> [2]u64 {\n"
+                                   "    return bitcast([2]u64, x)\n"
                                    "}\n"
                                    "\n"
-                                   "fn signed_lanes(x: i128) -> i64x2 {\n"
-                                   "    return bitcast(i64x2, x)\n"
+                                   "fn signed_lanes(x: i128) -> [2]i64 {\n"
+                                   "    return bitcast([2]i64, x)\n"
                                    "}\n"
                                    "\n"
                                    "fn product(a: i128, b: i128) -> i128 {\n"
@@ -310,8 +310,8 @@ TEST_CASE(writes_128_bit_forms)
     release(&p);
     fclose(out);
 
-    ok = ok && count_text(text, " = (chibi_u128)v0;") == 1 && count_text(text, " = (chibi_u64x2)v0;") == 1 &&
-         count_text(text, " = (chibi_i64x2)v0;") == 1 && count_text(text, "__builtin_memcpy") == 0;
+    ok = ok && count_text(text, " = (chibi_u128)v1;") == 1 && count_text(text, " = (chibi_u64x2)v0;") == 1 &&
+         count_text(text, " = (chibi_i64x2)v0;") == 1 && count_text(text, "__builtin_memcpy") == 5;
     ok = ok && count_text(text, "__builtin_mul_overflow(x, y, &p)") == 2 &&
          count_text(text, "__builtin_mul_overflow(v") == 1;
     free(text);
@@ -1589,9 +1589,9 @@ static const char VECTOR_MASK[] =
     "import \"std/simd\"\n"
     "\n"
     "fn mask(a: u8, k: int) -> int {\n"
-    "    v: u8x16 = a\n"
-    "    w := u8x16.{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 }\n"
-    "    return int(simd.top_bits(w +% v > 15)) + k\n"
+    "    v: [16]u8 = a\n"
+    "    w := u8.[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]\n"
+    "    return int(simd.top_bits(simd.gt(w +% v, 15))) + k\n"
     "}\n";
 
 static const VectorRun VECTOR_MASK_RESULTS[] = {
@@ -1604,8 +1604,8 @@ static const char VECTOR_PICK[] =
     "import \"std/simd\"\n"
     "\n"
     "fn pick(a: u8, k: int) -> int {\n"
-    "    v: u8x16 = a\n"
-    "    w := u8x16.{ 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25 }\n"
+    "    v: [16]u8 = a\n"
+    "    w := u8.[10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]\n"
     "    r := simd.lookup(w, v)\n"
     "    return int(r[k])\n"
     "}\n";
@@ -1832,7 +1832,7 @@ static const char LINES_A[] =
     "fn inner(a: int) => a * 3\n"
     "\n"
     "fn lanes(a: int, b: int) -> int {\n"
-    "    v: i64x2 = a; return v[1] * b\n"
+    "    v: [2]i64 = a; return v[1] * b\n"
     "}\n"
     "\n"
     "fn flat(a: int, b: int) -> int {\n"

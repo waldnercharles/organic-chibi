@@ -4292,7 +4292,7 @@ const char INT128_GRID[] =
     "    z := y & (BIG | 0xFF)\n"
     "    n := -%z\n"
     "    s := -i128(a)\n"
-    "    v := bitcast(u64x2, n)\n"
+    "    v := bitcast([2]u64, n)\n"
     "    w := bitcast(u128, v)\n"
     "    return mix(w) ^ int(s) ^ mix(y)\n"
     "}\n"

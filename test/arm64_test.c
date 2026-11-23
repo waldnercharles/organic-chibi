@@ -5252,21 +5252,24 @@ vector_grid_agrees(Program *p, const GridFunction *g)
 static const char VECTOR_SHAPES[] =
     "import \"std/mem\"\n"
     "import \"std/simd\"\n"
+    "fn bytes_mask(p: [*]u8) -> int {\n"
+    "    return simd.top_bits(mem.unaligned_load([16]u8, p))\n"
+    "}\n"
     "fn mask(a: u8) -> u8 {\n"
-    "    v: u8x16 = a\n"
-    "    m := (v | 0x20) -% 97 <= 25\n"
+    "    v: [16]u8 = a\n"
+    "    m := simd.le((v | 0x20) -% 97, 25)\n"
     "    return m[3]\n"
     "}\n"
     "fn shifted(a: u8, b: i8) -> int {\n"
-    "    x: u8x16 = a\n"
-    "    y: i8x16 = b\n"
+    "    x: [16]u8 = a\n"
+    "    y: [16]i8 = b\n"
     "    s := (x << 2) >> 3\n"
     "    t := y >> 1\n"
     "    return int(s[0]) * 1000 + int(t[0])\n"
     "}\n"
     "fn constants(a: u16, b: u32) -> int {\n"
-    "    x: u16x8 = a\n"
-    "    y: u32x4 = b\n"
+    "    x: [8]u16 = a\n"
+    "    y: [4]u32 = b\n"
     "    p := x +% 5\n"
     "    q := y ^ 200\n"
     "    r := y +% 0x12345\n"
@@ -5275,14 +5278,14 @@ static const char VECTOR_SHAPES[] =
     "    return int(p[1]) + int(q[2]) * 10 + int(r[3]) * 100 + int(z[0]) + int(o[1]) * 1000\n"
     "}\n"
     "fn product(a: int, k: int) -> int {\n"
-    "    x: i64x2 = a\n"
+    "    x: [2]i64 = a\n"
     "    y := x *% x\n"
     "    return y[k]\n"
     "}\n"
     "fn odd_home(a: int, b: u8) -> int {\n"
     "    n := a * 3\n"
     "    r := n + p: {\n"
-    "        v: u8x16 = b\n"
+    "        v: [16]u8 = b\n"
     "        w := (v ^ 1) +% (v | 2)\n"
     "        break p int(w[0])\n"
     "    }\n"
@@ -5291,13 +5294,13 @@ static const char VECTOR_SHAPES[] =
     "fn far(a: u8) -> int {\n"
     "    big: [70000]u8\n"
     "    big[69999] = a\n"
-    "    v: u8x16 = a\n"
+    "    v: [16]u8 = a\n"
     "    w := (v ^ 1) +% (v | 2)\n"
     "    return int(w[3]) + int(big[69999])\n"
     "}\n"
     "fn mixed_slots(a: u8) -> int {\n"
     "    s := u8.[1, 2, 3]\n"
-    "    v: u8x16 = a\n"
+    "    v: [16]u8 = a\n"
     "    t := i16.[4, 5]\n"
     "    w := v +% s[2]\n"
     "    return int(w[1]) + int(t[1])\n"
@@ -5305,80 +5308,77 @@ static const char VECTOR_SHAPES[] =
     "fn odd_slot(a: u8, k: int) -> int {\n"
     "    n := int(a)\n"
     "    p := &n\n"
-    "    v: u8x16 = a\n"
+    "    v: [16]u8 = a\n"
     "    w := v +% u8(p.*)\n"
     "    return int(w[k])\n"
     "}\n"
     "fn bump(x: u8) -> u8 {\n"
-    "    t: u8x16 = x\n"
+    "    t: [16]u8 = x\n"
     "    u := (t ^ 255) +% 1\n"
     "    return u[0]\n"
     "}\n"
     "fn across(a: u8) -> int {\n"
-    "    v: u8x16 = a\n"
+    "    v: [16]u8 = a\n"
     "    w := v +% bump(a)\n"
     "    return int(w[0])\n"
     "}\n"
     "fn accumulate(n: int) -> int {\n"
-    "    acc: u32x4\n"
-    "    step := u32x4.{ 1, 2, 3, 4 }\n"
+    "    acc: [4]u32\n"
+    "    step := u32.[1, 2, 3, 4]\n"
     "    for k in 0..n {\n"
     "        acc = acc +% step *% u32(k)\n"
     "    }\n"
     "    return int(acc[0]) + int(acc[3]) * 1000\n"
     "}\n"
     "fn dropped(a: u8) -> int {\n"
-    "    v: u8x16 = a\n"
+    "    v: [16]u8 = a\n"
     "    _ = v +% 1\n"
     "    w := v ^ 3\n"
     "    return int(w[0])\n"
     "}\n"
     "fn tree(x: u8, y: u8) -> int {\n"
-    "    a: u8x16 = x\n"
-    "    b: u8x16 = y\n"
+    "    a: [16]u8 = x\n"
+    "    b: [16]u8 = y\n"
     "    c := a +% 1\n"
     "    d := b -% 1\n"
     "    r := ((a | b) ^ (c & d)) +% ((a ^ c) | (b & d))\n"
     "    return int(r[7])\n"
     "}\n"
     "fn slot_numbers(a: u8, b: u8, c: u8, d: u8) -> int {\n"
-    "    v: u8x16 = a +% 1\n"
-    "    w: u8x16\n"
+    "    v: [16]u8 = a +% 1\n"
+    "    w: [16]u8\n"
     "    x := v ^ w\n"
     "    return int(x[0])\n"
     "}\n"
     "fn address_numbers(a: u8, b: u8, c: u8, d: u8) -> int {\n"
-    "    v: u8x16 = a\n"
+    "    v: [16]u8 = a\n"
     "    s: [3]u8\n"
     "    w := v +% s[2]\n"
     "    return int(w[0])\n"
     "}\n"
     "fn spilled(a: int, b: u8) -> int {\n"
-    "    v: u8x16 = b\n"
+    "    v: [16]u8 = b\n"
     "    w := v +% u8(a * 2 + (a * 3 + (a * 5 + (a * 7 + (a * 11 + (a * 13 + (a * 17 + (a * 19 + a * 23))))))))\n"
     "    return int(w[8]) * 1000 + int(w[12])\n"
     "}\n"
-    "fn bytes_mask(p: [*]u8) -> int {\n"
-    "    return simd.top_bits(mem.unaligned_load(u8x16, p))\n"
-    "}\n"
     "fn halves_mask(p: [*]u8) -> int {\n"
-    "    return simd.top_bits(mem.unaligned_load(i16x8, p))\n"
+    "    return simd.top_bits(mem.unaligned_load([8]i16, p))\n"
     "}\n"
     "fn words_mask(p: [*]u8) -> int {\n"
-    "    return simd.top_bits(mem.unaligned_load(u32x4, p) > 0x80000000)\n"
+    "    return simd.top_bits(simd.gt(mem.unaligned_load([4]u32, p), 0x80000000))\n"
     "}\n"
     "fn longs_mask(p: [*]u8) -> int {\n"
-    "    return simd.top_bits(mem.unaligned_load(i64x2, p))\n"
+    "    return simd.top_bits(mem.unaligned_load([2]i64, p))\n"
     "}\n"
     "fn lookup_store(p: [*]u8, q: [*]u8) {\n"
-    "    t := mem.unaligned_load(u8x16, p)\n"
-    "    mem.unaligned_store(q + 1, simd.lookup(t, mem.unaligned_load(u8x16, q)))\n"
+    "    t := mem.unaligned_load([16]u8, p)\n"
+    "    mem.unaligned_store(q + 1, simd.lookup(t, mem.unaligned_load([16]u8, q)))\n"
     "}\n"
     "fn copy16(p: [*]u8, q: [*]u8) {\n"
-    "    mem.unaligned_store(q, mem.unaligned_load(u8x16, p))\n"
+    "    mem.unaligned_store(q, mem.unaligned_load([16]u8, p))\n"
     "}\n"
     "fn fill(q: [*]u8, a: u8) {\n"
-    "    v: u8x16 = a\n"
+    "    v: [16]u8 = a\n"
     "    mem.unaligned_store(q, v)\n"
     "    mem.unaligned_store(q + 16, v)\n"
     "    mem.unaligned_store(q + 32, v)\n"
@@ -5388,13 +5388,21 @@ static const char VECTOR_SHAPES[] =
     "    mem.unaligned_store(q + 96, v)\n"
     "    mem.unaligned_store(q + 112, v)\n"
     "    mem.unaligned_store(q + 128, v)\n"
+    "}\n"
+    "fn one_row(a: u8, k: int) -> u8 {\n"
+    "    v: [16]u8 = a\n"
+    "    m := [16]u8.[v +% 1]\n"
+    "    return m[0][k]\n"
     "}\n";
 
 typedef int64_t VMASK(void *, const uint8_t *);
 typedef void VLOOK(void *, const uint8_t *, uint8_t *);
 typedef void VFILL(void *, uint8_t *, int64_t);
 
-typedef uint8_t V16 __attribute__((vector_size(16)));
+typedef struct
+{
+    uint8_t a[16];
+} V16;
 typedef V16 VADD(void *, V16, V16);
 typedef int64_t VSPREAD(void *, V16, double, V16, V16, V16, V16, V16, V16, V16, V16, int64_t, V16);
 typedef int64_t VMIX(
@@ -5469,22 +5477,7 @@ enum
     WORD_ORR_LSL_4 = 0x2A001000u,
     WORD_ORR_LSL_2 = 0x2A000800u,
     WORD_ORR_LSL_1 = 0x2A000400u,
-    Q_OFFSET = 0x003FFC00u,
-    WORD_MOV_V0_V29 = 0x4EBD1FA0u,
-    WORD_MOV_V1_V29 = 0x4EBD1FA1u,
-    WORD_MOV_V29_V0 = 0x4EA01C1Du,
-    WORD_LDR_Q30_X16 = 0x3DC0021Eu,
-    WORD_ADD_X16_X29_48 = 0x9100C3B0u,
-    WORD_STR_Q30_SP_0 = 0x3D8003FEu,
-    WORD_STR_Q30_SP_16 = 0x3D8007FEu,
-    WORD_STR_Q29_SP_32 = 0x3D800BFDu,
-    WORD_STR_Q29_SP_0 = 0x3D8003FDu,
-    WORD_MOV_X2_X1 = 0xAA0103E2u,
-    WORD_MOV_X1_X0 = 0xAA0003E1u,
-    WORD_STR_Q29_SP_16 = 0x3D8007FDu,
-    WORD_B = 0x14000000u,
     B_OFFSET = 0x03FFFFFFu,
-    WORD_FMOV_D = 0x1E604000u,
 };
 
 static bool
@@ -5497,7 +5490,7 @@ vector_calls_agree(void)
     V16 v[10];
     for (int k = 0; k < 10; k++) {
         for (int lane = 0; lane < 16; lane++) {
-            v[k][lane] = (uint8_t)(lane * 3 + k * 17);
+            v[k].a[lane] = (uint8_t)(lane * 3 + k * 17);
         }
     }
 
@@ -5505,25 +5498,25 @@ vector_calls_agree(void)
     V16 sum = ((VADD *)fn(&p, "vadd"))(CONTEXT, v[0], v[1]);
     V16 rsum = ((VRSUM *)fn(&p, "rsum"))(CONTEXT, v[2], 4);
     for (int lane = 0; lane < 16; lane++) {
-        ok &= sum[lane] == (uint8_t)(v[0][lane] + v[1][lane]);
-        ok &= rsum[lane] == (uint8_t)(5 * v[2][lane] + 10);
+        ok &= sum.a[lane] == (uint8_t)(v[0].a[lane] + v[1].a[lane]);
+        ok &= rsum.a[lane] == (uint8_t)(5 * v[2].a[lane] + 10);
     }
 
     VSPREAD *spread = (VSPREAD *)fn(&p, "spread");
     for (int64_t n = 0; n < 16; n += 5) {
         uint8_t want = 0;
         for (int k = 0; k < 10; k++) {
-            want += (uint8_t)((k + 1) * v[k][n]);
+            want += (uint8_t)((k + 1) * v[k].a[n]);
         }
         ok &= spread(CONTEXT, v[0], 77.0, v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], n, v[9]) ==
               want + 77;
     }
 
-    int64_t want = v[8][1] * 100000 - 300000000;
+    int64_t want = v[8].a[1] * 100000 - 300000000;
     uint8_t s0 = 0;
     for (int k = 0; k < 8; k++) {
         want += (k + 1) * (k * 11 + 12);
-        s0 += (uint8_t)((k + 1) * v[k][0]);
+        s0 += (uint8_t)((k + 1) * v[k].a[0]);
     }
     want += s0 * 100;
     VMIX *mix = (VMIX *)fn(&p, "mix");
@@ -5551,30 +5544,12 @@ vector_calls_agree(void)
     ok &= mixed == want;
 
     ok &= ((VLEAF *)fn(&p, "leaf"))(CONTEXT, v[3], 1.25, v[5], 2.5) ==
-          5.0 + v[3][0] + v[5][1];
+          5.0 + v[3].a[0] + v[5].a[1];
     ok &= ((VPAIR *)fn(&p, "with_pair"))(CONTEXT, (CPair){ 4, -9 }, v[6], v[7]) ==
-          4000 - 90 + (uint8_t)(v[6][3] + v[7][3]);
+          4000 - 90 + (uint8_t)(v[6].a[3] + v[7].a[3]);
     ok &= ((VEIGHT *)fn(&p, "eight_floats"))(CONTEXT, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.5, v[4]) ==
-          208 + v[4][5] * 1000;
+          208 + v[4].a[5] * 1000;
 
-    ok &= count_words(&p, "vadd", WORD_STR_Q_SP, Q_OFFSET) == 1;
-    ok &= count_words(&p, "vadd", WORD_STR_Q_SP | 1, Q_OFFSET) == 1;
-    ok &= count_words(&p, "vadd", WORD_MOV_V0_V29, 0) == 1;
-    ok &= count_words(&p, "vadd", WORD_B, B_OFFSET) == 0;
-    ok &= count_words(&p, "call_add", WORD_LDR_Q_SP, Q_OFFSET) == 1;
-    ok &= count_words(&p, "call_add", WORD_MOV_V1_V29, 0) == 1;
-    ok &= count_words(&p, "call_add", WORD_MOV_V29_V0, 0) == 1;
-    ok &= count_words(&p, "spread", WORD_LDR_Q30_X16, 0) == 3;
-    ok &= count_words(&p, "call_spread", WORD_STR_Q30_SP_0, 0) == 1;
-    ok &= count_words(&p, "call_spread", WORD_STR_Q30_SP_16, 0) == 1;
-    ok &= count_words(&p, "call_spread", WORD_STR_Q29_SP_32, 0) == 1;
-    ok &= count_words(&p, "mix", WORD_ADD_X16_X29_48, 0) == 1;
-    ok &= count_words(&p, "call_mix", WORD_STR_Q29_SP_16, 0) == 1;
-    ok &= count_words(&p, "leaf", WORD_FMOV_D, REGISTER_FIELDS) == 0;
-    ok &= count_words(&p, "call_eight", WORD_STR_Q29_SP_0, 0) == 1;
-    ok &= count_words(&p, "ignore", WORD_STR_Q_SP, Q_FIELDS) == 0;
-    ok &= count_words(&p, "call_slice", WORD_MOV_X2_X1, 0) == 1;
-    ok &= count_words(&p, "call_slice", WORD_MOV_X1_X0, 0) == 1;
     release_program(&p);
     return ok;
 }
@@ -5714,6 +5689,11 @@ TEST_CASE(vectors)
     ((VFILL *)fn(&p, "fill"))(CONTEXT, bytes + 1, 9);
     REQUIRE(bytes[0] == 0 && bytes[1] == 9 && bytes[144] == 9 && bytes[145] == 247);
     REQUIRE(count_words(&p, "fill", WORD_STR_X_SP, Q_FIELDS) == 0);
+
+    REQUIRE(((I2 *)fn(&p, "one_row"))(CONTEXT, 5, 3) == 6);
+    REQUIRE(((I2 *)fn(&p, "one_row"))(CONTEXT, 255, 15) == 0);
+    REQUIRE(count_words(&p, "one_row", WORD_STR_Q_SP, Q_FIELDS) == 1);
+    REQUIRE(count_words(&p, "one_row", WORD_LDR_Q_SP, Q_FIELDS) == 1);
     release_program(&p);
     return true;
 }
@@ -5788,9 +5768,9 @@ static const char INT128_SHAPES[] =
     "}\n"
     "\n"
     "fn vector_pick(a: int, b: int) -> int {\n"
-    "    v: u8x16 = u8(a & 255)\n"
+    "    v: [16]u8 = u8(a & 255)\n"
     "    v[15] = 7\n"
-    "    w: u8x16 = u8(b & 255)\n"
+    "    w: [16]u8 = u8(b & 255)\n"
     "    p := if a < b then v +% w else v -% w\n"
     "    return int(p[3]) + int(p[15]) * 1000\n"
     "}\n"
@@ -5838,8 +5818,8 @@ static const char INT128_SHAPES[] =
     "}\n"
     "\n"
     "fn lanes_switch(a: int, b: int) -> int {\n"
-    "    v: u32x4 = u32(a & 0xFFFF)\n"
-    "    w: u32x4 = u32(b & 0xFFFF)\n"
+    "    v: [4]u32 = u32(a & 0xFFFF)\n"
+    "    w: [4]u32 = u32(b & 0xFFFF)\n"
     "    p := switch b & 3 {\n"
     "        0 => v +% w\n"
     "        1 => v -% w\n"

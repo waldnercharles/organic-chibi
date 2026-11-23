@@ -353,6 +353,8 @@ typedef struct
     u32 products;
     u32 fused;
     u8 fused_cond;
+    u32 framed;
+    u32 framed_offset;
     u32 tested;
     const char *error;
     const u64 *adapters;
@@ -3556,6 +3558,15 @@ pin_locals(Emit *e)
     e->free_callee_float = CALLEE_FLOAT & ~e->saved_float;
 }
 
+static u32
+frame_align(const Checker *c, u32 type)
+{
+    bool lanes = c->types.kinds[type] == TYPE_ARRAY &&
+                 c->types.kinds[c->types.arg0[type]] == TYPE_INT &&
+                 check_type_size(c, type) == 16;
+    return lanes ? 16 : check_type_align(c, type);
+}
+
 static void
 lay_out_frame(Emit *e)
 {
@@ -3600,7 +3611,7 @@ lay_out_frame(Emit *e)
         for (u32 s = 0; s < fn->nslots; s++) {
             u32 type = slots[s].type;
             if (!(e->info[type] & INFO_MEMORY) || !slots[s].weight ||
-                check_type_align(e->c, type) != align) {
+                frame_align(e->c, type) != align) {
                 continue;
             }
             offset = (offset + align - 1) & ~(align - 1);
@@ -3786,12 +3797,29 @@ return_struct(Emit *e, u32 type, u32 a)
 }
 
 static bool
-reads_lanes_next(const Emit *e, u32 v)
+frames_lanes(const Emit *e, u32 v)
 {
     if (v + 1 >= e->fn->count) {
         return false;
     }
     u32 at = e->fn->first + v + 1;
+    u8 kind = e->ir->kinds[at];
+    return (kind == IR_LOAD_AT || kind == IR_STORE_AT) && e->ir->as[at] == v &&
+           is_vector(e->info[e->ir->types[at]]);
+}
+
+static bool
+reads_lanes_next(const Emit *e, u32 v)
+{
+    u32 at = e->fn->first + v + 1;
+    u32 end = e->fn->first + e->fn->count;
+    while (at < end && (e->ir->kinds[at] == IR_ADDR || e->ir->kinds[at] == IR_FIELD ||
+                        e->ir->kinds[at] == IR_INDEX)) {
+        at++;
+    }
+    if (at >= end) {
+        return false;
+    }
     if (e->ir->kinds[at] == IR_CALL) {
         const u32 *args = e->ir->extra + e->fn->first_extra + e->ir->bs[at];
         for (u32 k = 1; k <= args[0]; k++) {
@@ -4334,6 +4362,11 @@ lanes(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b, const Native *n)
             memory(e, OP_LDR_Q, 4, V29, e->slot_offsets[a], X8);
             break;
         case IR_LOAD_AT: {
+            if (a == e->framed) {
+                memory(e, OP_LDR_Q, 4, V29, e->framed_offset, X8);
+                e->framed = NO_VALUE;
+                break;
+            }
             u32 p = fetch(e, a, X16);
             release(e, a);
             put(e, OP_LDR_Q | p << 5 | V29);
@@ -4364,6 +4397,11 @@ lanes(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b, const Native *n)
         }
         case IR_STORE_AT: {
             u32 r = fetch_lanes(e, b, V30);
+            if (a == e->framed) {
+                memory(e, OP_STR_Q, 4, r, e->framed_offset, X8);
+                e->framed = NO_VALUE;
+                return;
+            }
             u32 p = fetch(e, a, X16);
             put(e, OP_STR_Q | p << 5 | r);
             release(e, a);
@@ -4603,6 +4641,7 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
     e->free_int = INT_POOL;
     e->free_float = FLOAT_POOL;
     e->fused = NO_VALUE;
+    e->framed = NO_VALUE;
     e->tested = NO_VALUE;
     e->divisions = 0;
     e->products = 0;
@@ -4697,6 +4736,11 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                     if (a < 32 ? e->by_ref >> a & 1
                                : a < fn->nparams && slots[a].type != slot_type(e, a)) {
                         param_address(e, i, a, e->info[type]);
+                        break;
+                    }
+                    if (frames_lanes(e, i)) {
+                        e->framed = i;
+                        e->framed_offset = e->slot_offsets[a];
                         break;
                     }
                     sp_address(e, result(e, i, e->info[type]), e->slot_offsets[a]);

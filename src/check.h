@@ -203,7 +203,7 @@ enum
     X(DIAG_MISMATCH, "`%T` and `%U` don't mix without a conversion")                                \
     X(DIAG_BITCAST_UNTYPED, "`bitcast` needs a typed value, as in `u64(1)`")                        \
     X(DIAG_BITCAST_SLICE, "`bitcast` can't change a slice, because its length would need rescaling") \
-    X(DIAG_BITCAST_TYPE, "`bitcast` changes numbers, pointers and vectors, not `%U`")                \
+    X(DIAG_BITCAST_TYPE, "`bitcast` changes numbers, pointers and 16-byte arrays of integers, not `%U`") \
     X(DIAG_BITCAST_SIZE, "`%T` and `%U` differ in size, so `bitcast` can't change one into the other") \
     X(DIAG_MISALIGNED, "address %v isn't aligned for `%U`")                                         \
     X(DIAG_DIVIDE_BY_ZERO, "division by zero")                                                      \
@@ -217,6 +217,7 @@ enum
     X(DIAG_NOT_BOOL, "expected `bool`, found `%T`")                                                 \
     X(DIAG_BAD_OPERATOR, "`%T` doesn't support `%t`")                                               \
     X(DIAG_WRAPPING_ONLY, "`%T` supports only the wrapping `+%%`, `-%%` and `*%%` so far")          \
+    X(DIAG_LANE_COMPARE, "`%U` doesn't compare lane by lane with `%t`; use `%b`")                   \
     X(DIAG_NOT_ASSIGNABLE, "only a variable, a field, an element or `p.*` can be assigned to")      \
     X(DIAG_ASSIGN_PARAM, "`%n` is a parameter, so it can't be assigned")                            \
     X(DIAG_ASSIGN_LOOP_VARIABLE, "`%n` is a loop variable, so it can't be assigned")                \
@@ -251,7 +252,6 @@ enum
     X(DIAG_STRUCT_LITERAL_TYPE, "the type of this literal isn't known here; write it, as in `Point.{ 1, 2 }`") \
     X(DIAG_NOT_STRUCT, "`%U` is not a struct, so a struct literal can't build it")                  \
     X(DIAG_FIELD_COUNT, "wrong number of fields: expected %c, found %C")                            \
-    X(DIAG_LANE_COUNT, "`%U` needs one value for each lane, found %c")                              \
     X(DIAG_MIXED_FIELDS, "name every field of this literal, or none")                               \
     X(DIAG_FIELD_TWICE, "`%n` is already set at %l")                                                \
     X(DIAG_MISSING_FIELD, "`%n` has no zero value, so this literal needs a value for it")          \
@@ -262,14 +262,14 @@ enum
     X(DIAG_ARG_COUNT, "wrong number of arguments: expected %c, found %C")                           \
     X(DIAG_ARG_COUNT_VARIADIC, "wrong number of arguments: expected at least %c, found %C")         \
     X(DIAG_BUILTIN_INT, "`%b` takes an integer, found `%U`")                                        \
-    X(DIAG_BUILTIN_VECTOR, "`%b` takes a vector, found `%U`")                                       \
+    X(DIAG_BUILTIN_VECTOR, "`%b` takes a 16-byte array of integers, found `%U`")                    \
     X(DIAG_BUILTIN_MANY, "`%b` takes a `[*]` pointer, found `%U`")                                  \
-    X(DIAG_UNALIGNED_TYPE, "`%b` reads and writes numbers and vectors, found `%U`")                 \
-    X(DIAG_LOAD_TYPE, "`mem.unaligned_load` takes a type first, as in `mem.unaligned_load(u8x16, p)`") \
+    X(DIAG_UNALIGNED_TYPE, "`%b` reads and writes numbers and 16-byte arrays of integers, found `%U`") \
+    X(DIAG_LOAD_TYPE, "`mem.unaligned_load` takes a type first, as in `mem.unaligned_load([16]u8, p)`") \
     X(DIAG_SIZE_TYPE, "`%b` takes a type, as in `%b(u32)`")                                         \
     X(DIAG_SIZE_TOO_LARGE, "the size of `%T` doesn't fit in `int`")                                 \
     X(DIAG_STORE_UNTYPED, "`mem.unaligned_store` needs a typed value, as in `u32(0)`")              \
-    X(DIAG_LOOKUP_TYPES, "`simd.lookup` takes two `u8x16` or two `i8x16`, found `%T` and `%U`")     \
+    X(DIAG_LOOKUP_TYPES, "`simd.lookup` takes two `[16]u8` or two `[16]i8`, found `%T` and `%U`")   \
     X(DIAG_RETURN_VALUE, "this function returns nothing, so `return` takes no value")               \
     X(DIAG_RETURN_EMPTY, "`return` needs a value of type `%U`")                                     \
     X(DIAG_MISSING_RETURN, "the function can reach its end without returning a value of type `%U`") \
