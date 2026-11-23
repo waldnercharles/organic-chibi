@@ -289,11 +289,22 @@ typedef struct
     char *text;
 } Source;
 
+enum
+{
+    PACKAGE_BITS,
+    PACKAGE_MEM,
+    PACKAGE_SIMD,
+    NPACKAGES,
+};
+
+static const char *const package_names[NPACKAGES] = { "bits", "mem", "simd" };
+
 typedef struct
 {
     u32 name;
     Out out;
     bool main;
+    u8 packages;
 } Group;
 
 typedef struct
@@ -350,6 +361,7 @@ typedef struct
     u32 depth;
     u32 labels;
     bool uses_clear_cache;
+    u8 fn_packages;
     u32 rest;
     u32 *scope;
     u32 nscope;
@@ -3061,6 +3073,27 @@ chibi_builtin(const Tr *t, u32 f)
                                              : NULL;
 }
 
+static const char *
+bit_count_name(const char *w)
+{
+    if (strcmp(w, "__builtin_clzll") == 0 || strcmp(w, "__builtin_clz") == 0) {
+        return "leading_zeros";
+    }
+    if (strcmp(w, "__builtin_ctzll") == 0 || strcmp(w, "__builtin_ctz") == 0) {
+        return "trailing_zeros";
+    }
+    if (strcmp(w, "__builtin_popcountll") == 0 || strcmp(w, "__builtin_popcount") == 0) {
+        return "count_ones";
+    }
+    return NULL;
+}
+
+static void
+use_package(Tr *t, u32 package)
+{
+    t->groups[t->group].packages |= (u8)(1u << package);
+}
+
 static bool
 reads_variable(const Tr *t, u32 e)
 {
@@ -3136,20 +3169,11 @@ call(Tr *t, u32 e)
     if (strcmp(w, "__builtin_expect") == 0) {
         return ex(t, first_arg, 0, 0);
     }
-    bool clz = strcmp(w, "__builtin_clzll") == 0 || strcmp(w, "__builtin_clz") == 0;
-    bool ctz = strcmp(w, "__builtin_ctzll") == 0 || strcmp(w, "__builtin_ctz") == 0;
-    bool pop = strcmp(w, "__builtin_popcountll") == 0 ||
-               strcmp(w, "__builtin_popcount") == 0;
-    if (clz || ctz || pop) {
+    const char *count = bit_count_name(w);
+    if (count != NULL) {
         char *ty = type_text(t, ctype(t, e), 0);
-        putf(
-            &t->out,
-            "%s(%s(",
-            ty,
-            clz   ? "leading_zeros"
-            : ctz ? "trailing_zeros"
-                  : "count_ones"
-        );
+        use_package(t, PACKAGE_BITS);
+        putf(&t->out, "%s(bits.%s(", ty, count);
         ex(t, first_arg, 0, 0);
         put(&t->out, "))");
         free(ty);
@@ -3158,7 +3182,8 @@ call(Tr *t, u32 e)
     const char *builtin = chibi_builtin(t, f);
     if (builtin != NULL && strcmp(builtin, "lookup") == 0) {
         u32 index = t->a.ends[first_arg];
-        put(&t->out, "lookup(");
+        use_package(t, PACKAGE_SIMD);
+        put(&t->out, "simd.lookup(");
         ex(t, first_arg, 0, 0);
         put(&t->out, ", ");
         if (small_lanes(t, index)) {
@@ -3172,7 +3197,8 @@ call(Tr *t, u32 e)
     }
     if (builtin != NULL && strcmp(builtin, "top_bits") == 0) {
         char *ty = type_text(t, ctype(t, e), 0);
-        putf(&t->out, "%s(top_bits(", ty);
+        use_package(t, PACKAGE_SIMD);
+        putf(&t->out, "%s(simd.top_bits(", ty);
         ex(t, first_arg, 0, 0);
         put(&t->out, "))");
         free(ty);
@@ -3186,7 +3212,8 @@ call(Tr *t, u32 e)
         ex(t, first_arg, 0, 0);
         put(&t->out, " *% ");
         ex(t, second, 0, 0);
-        put(&t->out, " ^ mul_high(");
+        use_package(t, PACKAGE_BITS);
+        put(&t->out, " ^ bits.mul_high(");
         ex(t, first_arg, 0, 0);
         put(&t->out, ", ");
         ex(t, second, 0, 0);
@@ -3195,7 +3222,8 @@ call(Tr *t, u32 e)
     }
     const char *overflow = overflow_name(t, e);
     if (overflow != NULL) {
-        putf(&t->out, "%s_overflows(", overflow);
+        use_package(t, PACKAGE_BITS);
+        putf(&t->out, "bits.%s_overflows(", overflow);
         ex(t, first_arg, 0, 0);
         put(&t->out, ", ");
         ex(t, t->a.ends[first_arg], 0, 0);
@@ -3617,7 +3645,8 @@ pointer_difference(Tr *t, u32 e, u32 l, u32 r)
     put(&t->out, ")");
     if (!bytes) {
         char *ty = type_text(t, pointee, 0);
-        putf(&t->out, ") / size_of(%s)", ty);
+        use_package(t, PACKAGE_MEM);
+        putf(&t->out, ") / mem.size_of(%s)", ty);
         free(ty);
     }
     return value(ctype(t, e), 0, bytes ? P_ADD : P_MUL);
@@ -4239,7 +4268,8 @@ ex(Tr *t, u32 e, u32 want_type, u32 want_bits)
                                 : ctype(t, child(t, e, 0));
             const char *w = text(t, t->a.names[e]);
             char *ty = type_text(t, type, 0);
-            putf(&t->out, "%s(%s)", strcmp(w, "sizeof") == 0 ? "size_of" : "align_of", ty);
+            use_package(t, PACKAGE_MEM);
+            putf(&t->out, "mem.%s(%s)", strcmp(w, "sizeof") == 0 ? "size_of" : "align_of", ty);
             free(ty);
             return (Val){ ctype(t, e), 0, P_POSTFIX, true, false, false };
         }
@@ -4499,19 +4529,6 @@ static const char *const reserved_names[] = {
     "u64x2",
     "i64x2",
     "_",
-    "trailing_zeros",
-    "leading_zeros",
-    "count_ones",
-    "mul_high",
-    "add_overflows",
-    "sub_overflows",
-    "mul_overflows",
-    "unaligned_load",
-    "unaligned_store",
-    "lookup",
-    "top_bits",
-    "size_of",
-    "align_of",
 };
 
 static bool
@@ -4542,6 +4559,17 @@ intern_text(Tr *t, const char *s)
     return strings_intern(&t->a.strings, s, (u32)strlen(s));
 }
 
+static bool
+shadows_package(const Tr *t, const char *s)
+{
+    for (u32 k = 0; k < NPACKAGES; k++) {
+        if ((t->fn_packages >> k & 1) && strcmp(s, package_names[k]) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static u32
 declare_local(Tr *t, u32 decl, const char *suffix)
 {
@@ -4552,9 +4580,9 @@ declare_local(Tr *t, u32 decl, const char *suffix)
         sizeof buf,
         "%s%s",
         base,
-        suffix[0]        ? suffix
-        : reserved(base) ? "_"
-                         : ""
+        suffix[0]                                    ? suffix
+        : reserved(base) || shadows_package(t, base) ? "_"
+                                                     : ""
     );
     u32 id = intern_text(t, buf);
     for (u32 n = 2; in_scope(t, id); n++) {
@@ -5340,14 +5368,15 @@ put_memory_access(Tr *t, u32 call, u8 access, u32 var)
 {
     u32 to = t->a.ends[call + 1];
     u32 from = t->a.ends[to];
+    use_package(t, PACKAGE_MEM);
     if (access == ACCESS_LOAD) {
         ex(t, var, 0, 0);
         char *ty = type_text(t, ctype(t, var), 0);
-        putf(&t->out, " = unaligned_load(%s, ", ty);
+        putf(&t->out, " = mem.unaligned_load(%s, ", ty);
         free(ty);
         many_pointer(t, void_operand(t, from));
     } else {
-        put(&t->out, "unaligned_store(");
+        put(&t->out, "mem.unaligned_store(");
         many_pointer(t, void_operand(t, to));
         put(&t->out, ", ");
         ex(t, var, 0, 0);
@@ -6147,6 +6176,28 @@ mark_uses(Tr *t, u32 root, u32 *work, u32 *nwork)
     }
 }
 
+static u8
+packages_used(Tr *t, u32 fn)
+{
+    u8 used = 0;
+    for (u32 i = fn; i < t->a.ends[fn]; i++) {
+        u32 f = t->kinds[i] == K_CALL ? callee(t, i) : 0;
+        const char *w = f != 0 ? text(t, t->a.names[f]) : "";
+        const char *builtin = f != 0 ? chibi_builtin(t, f) : NULL;
+        if (bit_count_name(w) != NULL || overflow_name(t, i) != NULL ||
+            (builtin != NULL && strcmp(builtin, "mul_high") == 0)) {
+            used |= 1u << PACKAGE_BITS;
+        } else if (builtin != NULL) {
+            used |= 1u << PACKAGE_SIMD;
+        } else if (strcmp(w, "memcpy") == 0 || t->kinds[i] == K_TYPE_TRAIT ||
+                   (t->kinds[i] == K_BINARY && op(t, i) == OP_SUB &&
+                    is_pointer(t, child(t, i, 0)))) {
+            used |= 1u << PACKAGE_MEM;
+        }
+    }
+    return used;
+}
+
 static void
 mark_assigned_params(Tr *t, u32 fn)
 {
@@ -6343,6 +6394,7 @@ emit_function(Tr *t, u32 def)
     t->nscope = 0;
     t->depth = 0;
     t->ntargets = 0;
+    t->fn_packages = packages_used(t, def);
     mark_assigned_params(t, def);
 
     const char *mark = child_of_kind(t, def, K_ALWAYS_INLINE) ? "@inline "
@@ -6665,8 +6717,22 @@ write_group(const Tr *t, const char *dir, const Group *g)
         start++;
         len--;
     }
+
+    char imports[128];
+    u32 n = 0;
+    for (u32 k = 0; k < NPACKAGES; k++) {
+        if (g->packages >> k & 1) {
+            const char *name = package_names[k];
+            n += (u32)snprintf(imports + n, sizeof imports - n, "import \"std/%s\"\n", name);
+        }
+    }
+    if (n != 0) {
+        imports[n++] = '\n';
+    }
+
     FILE *f = fopen(path, "wb");
-    if (f == NULL || fwrite(start, 1, len, f) != len || fclose(f) != 0) {
+    if (f == NULL || fwrite(imports, 1, n, f) != n ||
+        fwrite(start, 1, len, f) != len || fclose(f) != 0) {
         fprintf(stderr, "translate: %s: cannot write\n", path);
         return false;
     }

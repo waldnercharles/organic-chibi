@@ -1497,10 +1497,12 @@ TEST_CASE(works_with_c)
 typedef int64_t I4(void *, int64_t, int64_t, int64_t, int64_t);
 
 static const char VECTOR_MASK[] =
+    "import \"std/simd\"\n"
+    "\n"
     "fn mask(a: u8, k: int) -> int {\n"
     "    v: u8x16 = a\n"
     "    w := u8x16.{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 }\n"
-    "    return int(top_bits(w +% v > 15)) + k\n"
+    "    return int(simd.top_bits(w +% v > 15)) + k\n"
     "}\n";
 
 static const VectorRun VECTOR_MASK_RESULTS[] = {
@@ -1510,10 +1512,12 @@ static const VectorRun VECTOR_MASK_RESULTS[] = {
 };
 
 static const char VECTOR_PICK[] =
+    "import \"std/simd\"\n"
+    "\n"
     "fn pick(a: u8, k: int) -> int {\n"
     "    v: u8x16 = a\n"
     "    w := u8x16.{ 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25 }\n"
-    "    r := lookup(w, v)\n"
+    "    r := simd.lookup(w, v)\n"
     "    return int(r[k])\n"
     "}\n";
 

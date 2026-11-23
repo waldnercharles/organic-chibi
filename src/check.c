@@ -27,6 +27,7 @@ enum
     OPERAND_ADDRESS,
     OPERAND_FN,
     OPERAND_BUILTIN,
+    OPERAND_PACKAGE,
     OPERAND_STMT,
     OPERAND_RANGE,
     OPERAND_DISCARD,
@@ -5101,6 +5102,8 @@ member_access(Checker *c, u32 file, u32 token, Operand o, bool place)
         } else {
             report(c, file, token, DIAG_NO_MEMBER, c->files[file].tokens.ids[token], t);
         }
+    } else if (o.type == OPERAND_PACKAGE) {
+        return (Operand){ OPERAND_BUILTIN, o.ref };
     } else if (o.type != TYPE_ID_NONE) {
         report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
     }
@@ -7456,6 +7459,28 @@ global_place(Checker *c, u32 file, u32 node, u32 decl)
 
 static const u32 target_names[NTARGETS + 1] = { NAME_LINUX, NAME_ARM64, NAME_X86_64 + 1 };
 
+enum
+{
+    NPACKAGES = NAME_SIMD + 1 - NAME_BITS,
+};
+
+static const u32 package_members[NPACKAGES + 1] = {
+    NAME_TRAILING_ZEROS,
+    NAME_UNALIGNED_LOAD,
+    NAME_LOOKUP,
+    NAME_ASSERT,
+};
+
+static u32
+builtin_package(u32 id)
+{
+    u32 k = 0;
+    while (id >= package_members[k + 1]) {
+        k++;
+    }
+    return k;
+}
+
 static u32
 target_type(Checker *c, u32 k)
 {
@@ -7489,6 +7514,33 @@ target_type(Checker *c, u32 k)
     return type;
 }
 
+static Operand
+package_member(Checker *c, u32 file, u32 node, u32 package)
+{
+    const ParsedFile *f = &c->files[file];
+    if (f->nodes.kinds[node + 1] != NODE_FIELD) {
+        report(c, file, f->nodes.tokens[node], DIAG_PACKAGE_VALUE, 0, 0);
+        return poison;
+    }
+
+    u32 token = f->nodes.tokens[node + 1];
+    u32 id = f->tokens.ids[token];
+    u32 first = package_members[package];
+    if (id - first >= package_members[package + 1] - first) {
+        if (id - NAME_TRAILING_ZEROS < NAME_ASSERT - NAME_TRAILING_ZEROS) {
+            report(c, file, token, DIAG_IN_PACKAGE, NAME_BITS + builtin_package(id), 0);
+        } else {
+            report(c, file, token, DIAG_NO_PACKAGE_MEMBER, NAME_BITS + package, 0);
+        }
+        return poison;
+    }
+    if (f->nodes.kinds[node + 2] != NODE_CALL_ARGS) {
+        report(c, file, token, DIAG_FN_VALUE, 0, 0);
+        return poison;
+    }
+    return (Operand){ OPERAND_PACKAGE, id };
+}
+
 static NOINLINE Operand
 resolve_builtin(Checker *c, u32 file, u32 node, u32 token, u32 id)
 {
@@ -7501,7 +7553,15 @@ resolve_builtin(Checker *c, u32 file, u32 node, u32 token, u32 id)
     if (k - NTARGETS < NTARGETS) {
         return (Operand){ TYPE_ID_TYPE, target_type(c, k - NTARGETS) };
     }
-    if (id - NAME_TRAILING_ZEROS > NAME_ASSERT - NAME_TRAILING_ZEROS) {
+    u32 package = id - NAME_BITS;
+    if (package < NPACKAGES && c->imports[file * NPACKAGES + package]) {
+        return package_member(c, file, node, package);
+    }
+    if (id - NAME_TRAILING_ZEROS < NAME_ASSERT - NAME_TRAILING_ZEROS) {
+        report(c, file, token, DIAG_IN_PACKAGE, NAME_BITS + builtin_package(id), 0);
+        return poison;
+    }
+    if (id != NAME_ASSERT) {
         report(c, file, token, DIAG_UNKNOWN_NAME, 0, 0);
         return poison;
     }
@@ -7509,7 +7569,7 @@ resolve_builtin(Checker *c, u32 file, u32 node, u32 token, u32 id)
         report(c, file, token, DIAG_FN_VALUE, 0, 0);
         return poison;
     }
-    if (id == NAME_ASSERT && c->release_fast && c->body.code) {
+    if (c->release_fast && c->body.code) {
         emit(c, IR_IF, 0, ir_const(c, TYPE_ID_BOOL, 0), 0);
     }
     return (Operand){ OPERAND_BUILTIN, id };
@@ -8572,6 +8632,29 @@ check_body(Checker *c, u32 decl)
     d->phases[decl] = PHASE_CHECKED;
 }
 
+static NOINLINE void
+declare_import(Checker *c, u32 file, u32 token)
+{
+    const ParsedFile *f = &c->files[file];
+    u32 start = f->tokens.starts[token];
+    u32 len = lexer_token_length(f->src, TK_STRING, start);
+    const char *path = f->src + start;
+    bool in_std = len > 6 && memcmp(path, "\"std/", 5) == 0;
+    for (u32 k = 0; in_std && k < NPACKAGES; k++) {
+        Name name = names_get(c->names, NAME_BITS + k);
+        if (len == name.len + 6 && memcmp(path + 5, name.text, name.len) == 0) {
+            u32 *import = &c->imports[file * NPACKAGES + k];
+            if (*import) {
+                report(c, file, token, DIAG_IMPORT_TWICE, 0, *import);
+            } else {
+                *import = token;
+            }
+            return;
+        }
+    }
+    report(c, file, token, in_std ? DIAG_UNKNOWN_PACKAGE : DIAG_UNSUPPORTED, 0, 0);
+}
+
 static void
 declare(Checker *c)
 {
@@ -8606,7 +8689,9 @@ declare(Checker *c)
                 continue;
             }
             if (kind == DECL_NONE) {
-                if (kinds[root] != NODE_PACKAGE && kinds[root] != NODE_IMPORT_DECL) {
+                if (kinds[root] == NODE_IMPORT_DECL) {
+                    declare_import(c, f, tokens[root]);
+                } else if (kinds[root] != NODE_PACKAGE) {
                     report(c, f, tokens[first], file->entry ? DIAG_UNSUPPORTED : DIAG_CODE_OUTSIDE_ENTRY, 0, 0);
                 }
                 first = end;
@@ -8645,6 +8730,13 @@ declare(Checker *c)
                 c->package_names[name] = id;
             }
             first = end;
+        }
+    }
+
+    for (u32 i = 0; i < c->nfiles * NPACKAGES; i++) {
+        u32 decl = c->package_names[NAME_BITS + i % NPACKAGES];
+        if (c->imports[i] && decl) {
+            report(c, i / NPACKAGES, c->imports[i], DIAG_IMPORT_CLASH, NAME_BITS + i % NPACKAGES, decl);
         }
     }
 }
@@ -8769,6 +8861,7 @@ check_package(Checker *c, const ParsedFile *files, u32 nfiles)
     d->funcs = calloc(cap, sizeof *d->funcs);
     d->count = 1;
 
+    c->imports = calloc((size_t)nfiles * NPACKAGES, sizeof *c->imports);
     declare(c);
     if (c->types.cap < 2 * d->count) {
         reserve_types(c, 2 * d->count);
@@ -9091,6 +9184,11 @@ check_print_diagnostics(FILE *out, const Checker *c)
             switch (*++p) {
                 case 't': print_token(out, c, f, d.token); break;
                 case 'n': print_name(out, c, d.arg); break;
+                case 'b':
+                    print_name(out, c, NAME_BITS + builtin_package(d.arg));
+                    fputc('.', out);
+                    print_name(out, c, d.arg);
+                    break;
                 case 'd': {
                     const ParsedFile *g = &c->files[c->decls.files[d.arg2]];
                     fprintf(out, "%s:", g->path);
@@ -9587,6 +9685,7 @@ check_free(Checker *c)
 
     exacts_free(&c->exacts);
     free(c->package_names);
+    free(c->imports);
     free(c->bound);
     free(c->bindings);
     free(c->scope);

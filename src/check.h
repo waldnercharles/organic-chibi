@@ -172,6 +172,12 @@ enum
     X(DIAG_NOT_CONSTANT, "expected a constant")                                                     \
     X(DIAG_NOT_INTEGER, "expected an integer type")                                                 \
     X(DIAG_FN_VALUE, "`%t` is a function, so it can't be used here")                                \
+    X(DIAG_PACKAGE_VALUE, "`%t` is a package, so it can't be used here")                            \
+    X(DIAG_IN_PACKAGE, "`%t` is in the package `%n`; write `%n.%t` after `import \"std/%n\"`")      \
+    X(DIAG_NO_PACKAGE_MEMBER, "the package `%n` has no member `%t`")                                \
+    X(DIAG_UNKNOWN_PACKAGE, "no built-in package has the path %t")                                  \
+    X(DIAG_IMPORT_TWICE, "this package is already imported at %l")                                  \
+    X(DIAG_IMPORT_CLASH, "`%n` is already declared at %d")                                          \
     X(DIAG_NOT_C, "C has no `%U`, so an `extern fn` can't pass or return it")                       \
     X(DIAG_NOT_C_EXPORT, "C has no `%U`, so an `export fn` can't pass or return it")                \
     X(DIAG_NOT_C_GLOBAL, "C has no `%U`, so an `extern` global can't hold it")                      \
@@ -245,16 +251,16 @@ enum
     X(DIAG_NOT_CALLABLE, "expected a function or a type")                                           \
     X(DIAG_ARG_COUNT, "wrong number of arguments: expected %c, found %C")                           \
     X(DIAG_ARG_COUNT_VARIADIC, "wrong number of arguments: expected at least %c, found %C")         \
-    X(DIAG_BUILTIN_INT, "`%n` takes an integer, found `%U`")                                        \
-    X(DIAG_BUILTIN_VECTOR, "`%n` takes a vector, found `%U`")                                       \
-    X(DIAG_BUILTIN_MANY, "`%n` takes a `[*]` pointer, found `%U`")                                  \
-    X(DIAG_UNALIGNED_TYPE, "`%n` reads and writes numbers and vectors, found `%U`")                 \
-    X(DIAG_LOAD_TYPE, "`unaligned_load` takes a type first, as in `unaligned_load(u8x16, p)`")      \
-    X(DIAG_SIZE_TYPE, "`%n` takes a type, as in `%n(u32)`")                                         \
+    X(DIAG_BUILTIN_INT, "`%b` takes an integer, found `%U`")                                        \
+    X(DIAG_BUILTIN_VECTOR, "`%b` takes a vector, found `%U`")                                       \
+    X(DIAG_BUILTIN_MANY, "`%b` takes a `[*]` pointer, found `%U`")                                  \
+    X(DIAG_UNALIGNED_TYPE, "`%b` reads and writes numbers and vectors, found `%U`")                 \
+    X(DIAG_LOAD_TYPE, "`mem.unaligned_load` takes a type first, as in `mem.unaligned_load(u8x16, p)`") \
+    X(DIAG_SIZE_TYPE, "`%b` takes a type, as in `%b(u32)`")                                         \
     X(DIAG_SIZE_TOO_LARGE, "the size of `%T` doesn't fit in `int`")                                 \
-    X(DIAG_STORE_UNTYPED, "`unaligned_store` needs a typed value, as in `u32(0)`")                  \
-    X(DIAG_LOOKUP_TYPES, "`lookup` takes two `u8x16` or two `i8x16`, found `%T` and `%U`")          \
-    X(DIAG_MUL_HIGH_TYPES, "`mul_high` takes two `u64`, found `%T` and `%U`")                       \
+    X(DIAG_STORE_UNTYPED, "`mem.unaligned_store` needs a typed value, as in `u32(0)`")              \
+    X(DIAG_LOOKUP_TYPES, "`simd.lookup` takes two `u8x16` or two `i8x16`, found `%T` and `%U`")     \
+    X(DIAG_MUL_HIGH_TYPES, "`bits.mul_high` takes two `u64`, found `%T` and `%U`")                  \
     X(DIAG_RETURN_VALUE, "this function returns nothing, so `return` takes no value")               \
     X(DIAG_RETURN_EMPTY, "`return` needs a value of type `%U`")                                     \
     X(DIAG_MISSING_RETURN, "the function can reach its end without returning a value of type `%U`") \
@@ -465,6 +471,7 @@ typedef struct
     Decls decls;
     Types types;
     u32 *package_names;
+    u32 *imports;
     u32 *bound;
     Member *members;
     u32 nmembers;

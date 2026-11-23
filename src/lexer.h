@@ -163,10 +163,10 @@ enum
     OTHER(NAME_MUL_OVERFLOWS, "mul_overflows")                                 \
     OTHER(NAME_UNALIGNED_LOAD, "unaligned_load")                               \
     OTHER(NAME_UNALIGNED_STORE, "unaligned_store")                             \
-    OTHER(NAME_LOOKUP, "lookup")                                               \
-    OTHER(NAME_TOP_BITS, "top_bits")                                           \
     OTHER(NAME_SIZE_OF, "size_of")                                             \
     OTHER(NAME_ALIGN_OF, "align_of")                                           \
+    OTHER(NAME_LOOKUP, "lookup")                                               \
+    OTHER(NAME_TOP_BITS, "top_bits")                                           \
     OTHER(NAME_ASSERT, "assert")                                               \
     OTHER(NAME_TARGET_OS, "target_os")                                         \
     OTHER(NAME_TARGET_ARCH, "target_arch")                                     \
@@ -176,7 +176,10 @@ enum
     OTHER(NAME_MACOS, "macos")                                                 \
     OTHER(NAME_WINDOWS, "windows")                                             \
     OTHER(NAME_ARM64, "arm64")                                                 \
-    OTHER(NAME_X86_64, "x86_64")
+    OTHER(NAME_X86_64, "x86_64")                                               \
+    OTHER(NAME_BITS, "bits")                                                   \
+    OTHER(NAME_MEM, "mem")                                                     \
+    OTHER(NAME_SIMD, "simd")
 // clang-format on
 
 #define CHIBI_BUILTIN_NAME_ID(name, text) name,
