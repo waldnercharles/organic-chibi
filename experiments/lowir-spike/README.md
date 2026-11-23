@@ -80,8 +80,8 @@ Since step 3t.12, `make translated` writes the compiler as one program, in a chi
 ## How the translator works
 
 - **One LowIR function per chibi function**, with the context as the first parameter, and one LowIR slot per chibi slot, as MYC's GM backend does. LowIR's slot promotion turns slots into SSA values; the translator makes no phis.
-- **A parameter that is never stored or addressed has no slot**: loads read the parameter itself. A struct parameter arrives as an object and is copied into its slot with `copyobj`.
-- **Types:** integers map to LowIR's integer types (`u64` is `i64`, since operations carry the signedness), `bool` to `i1`, pointers and `[*]T` to `ptr`. A struct is a record type with C's layout, built with `cppgm_lowir_record`, so LowIR passes it as C does; a slice is a record of a pointer and an `i64`. An array is a record of one repeated element.
+- **A parameter that is never stored or addressed has no slot**: loads read the parameter itself. A struct or array parameter arrives as an object and is copied into its slot with `copyobj`.
+- **Types:** integers map to LowIR's integer types (`u64` is `i64`, since operations carry the signedness), `bool` to `i1`, pointers and `[*]T` to `ptr`. A struct is a record type with C's layout, built with `cppgm_lowir_record`, so LowIR passes it as C does; a slice is a record of a pointer and an `i64`. An array is a record of one repeated element, so it passes as C passes a struct that holds it (step 3k.21).
 - **Control flow:** each `block`, `loop`, `if`, `else` and `switch` arm becomes a LowIR block. A value an `if` or `block` carries goes through a slot. An `if` on a constant becomes a jump.
 - **Switches:** a range of 16 values or more becomes a subtraction and an unsigned compare; smaller ranges become cases of one LowIR `switch`.
 - **Checks** branch, marked unlikely, to one block per kind of trap in each function, which calls `chibi_trap`, declared cold and noreturn. A checked `+` or `-` is followed by the sign test cppgm's own C front end uses for `__builtin_add_overflow`, a checked 64-bit `*` by a 128-bit multiply, and a narrower `*` by a 64-bit multiply and a range compare. With a constant operand, a checked `+`, `-` or `*` is one compare against a precomputed bound.
@@ -96,6 +96,7 @@ Since step 3t.12, `make translated` writes the compiler as one program, in a chi
 |---|---|---|
 | The C backend's grid: 371 functions of two `int`s on 288 argument pairs, against the reference interpreter (229 at hand-off 1), less the two programs with 128-bit integers, `MUL_HIGH` and `INT128_GRID`, which the test skips | agrees | agrees |
 | The C backend's interop test: calls into C, variadic calls, callbacks, exports, `main`, C globals | agrees | agrees |
+| The C backend's array program (step 3k.21): 15 functions of two `int`s on 288 argument pairs, against the reference interpreter; once by hand, 16 calls from C, built with clang and GCC, into its functions that take and give arrays | agrees | agrees |
 | The C backend's vector programs: 168 calls with hand-computed results, and a grid of 8 functions, one per lane type, on 5,120 argument sets each (hand-off 2, main) | agrees | agrees |
 | 15,000 random programs from `test/random` (seeds 1111, 2222, 3333), 4 entry points × 6 calls each | agrees | `-O2`: 4 crashes, 2 wrong results; main: none |
 | 15,000 more (seeds 4444, 5555, 6666) | agrees | `-O2`: 11 crashes, 1 wrong result; main: 7 crashes |

@@ -220,7 +220,7 @@ boundary_type(Lower *l, u32 type)
     if (type == TYPE_ID_VOID) {
         return CPPGM_TYPE_VOID;
     }
-    if (kind == TYPE_STRUCT) {
+    if (kind == TYPE_STRUCT || kind == TYPE_ARRAY) {
         return record_of(l, type);
     }
     if (kind == TYPE_SLICE) {
@@ -853,7 +853,7 @@ load_at(Lower *l, u32 i, u32 type, u32 a)
 {
     u8 kind = l->c->types.kinds[type];
     LowirValue p = operand(l, a);
-    if (kind == TYPE_STRUCT) {
+    if (kind == TYPE_STRUCT || kind == TYPE_ARRAY) {
         l->values[i] = p;
     } else if (kind == TYPE_SLICE) {
         l->values[i] = load(l, CPPGM_TYPE_PTR, p);
@@ -1417,7 +1417,7 @@ call_op(Lower *l, u32 i, u8 kind, u32 type, u32 decl, const u32 *list)
     for (u32 p = 0; p < params[0]; p++, o++) {
         u32 t = params[1 + p];
         u8 k = c->types.kinds[t];
-        if (k == TYPE_STRUCT) {
+        if (k == TYPE_STRUCT || k == TYPE_ARRAY) {
             LowirValue address = operand(l, list[o]);
             l->args[nargs++] = load(l, record_of(l, t), address);
         } else if (k == TYPE_SLICE) {
@@ -1437,7 +1437,7 @@ call_op(Lower *l, u32 i, u8 kind, u32 type, u32 decl, const u32 *list)
     LowirValue r = call(l, symbol(callee), result, first, nargs);
 
     u8 rk = c->types.kinds[type];
-    if (rk == TYPE_STRUCT) {
+    if (rk == TYPE_STRUCT || rk == TYPE_ARRAY) {
         LowirValue to = slot_address(l, list[n + 1]);
         copy_object(l, r, to, check_type_size(c, type), check_type_align(c, type));
     } else if (rk == TYPE_SLICE) {
@@ -1457,7 +1457,7 @@ return_op(Lower *l, u32 type, u32 a, u32 b)
     u8 kind = c->types.kinds[type];
     if (type == TYPE_ID_VOID) {
         effect(l, CPPGM_OP_RETURN, 0, CPPGM_TYPE_VOID, nothing(), nothing(), nothing());
-    } else if (kind == TYPE_STRUCT) {
+    } else if (kind == TYPE_STRUCT || kind == TYPE_ARRAY) {
         LowirValue address = operand(l, a);
         LowirValue v = load(l, record_of(l, type), address);
         effect(l, CPPGM_OP_RETURN, 0, record_of(l, type), v, nothing(), nothing());
@@ -2113,7 +2113,7 @@ place_slots(Lower *l)
         u32 t = slots[k].type;
         u8 kind = c->types.kinds[t];
         l->slots[k] = NONE;
-        if (k < fn->nparams && kind == TYPE_STRUCT) {
+        if (k < fn->nparams && (kind == TYPE_STRUCT || kind == TYPE_ARRAY)) {
             l->slots[k] = new_slot(l, record_of(l, t));
             LowirValue p = slot_address(l, k);
             copy_object(l, temp(1 + k), p, check_type_size(c, t), check_type_align(c, t));

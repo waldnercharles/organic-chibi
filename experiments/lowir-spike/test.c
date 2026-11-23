@@ -296,6 +296,27 @@ TEST_CASE(lowir_works_with_c)
     return true;
 }
 
+TEST_CASE(lowir_passes_arrays)
+{
+    Build b;
+    REQUIRE(open_objects(&b));
+    bool ok = add_object(&b, 0, ARRAY_ARGS, 'g') && link_objects(&b);
+
+    u32 tested = 0;
+    if (ok) {
+        Package p;
+        ok = check_source(&p, ARRAY_ARGS) && agree_on_grid(&b, &p, 0, &tested);
+        release(&p);
+    }
+    if (ok && tested != 15) {
+        fprintf(stderr, "lowir test: %u array functions take two ints, expected 15\n", tested);
+        ok = false;
+    }
+    close_objects(&b, ok);
+    REQUIRE(ok);
+    return true;
+}
+
 TEST_CASE(lowir_runs_vectors)
 {
     const char *const programs[] = { VECTOR_RUNS, VECTOR_GRID, VECTOR_BODY,
@@ -346,6 +367,7 @@ main(void)
 
     RUN_TEST_CASE(lowir_agrees_with_reference);
     RUN_TEST_CASE(lowir_works_with_c);
+    RUN_TEST_CASE(lowir_passes_arrays);
     RUN_TEST_CASE(lowir_runs_vectors);
 
     printf("lowir test at -O%u: %s\n", lowir_level, pu_test_failed() ? "FAILED" : "passed");
