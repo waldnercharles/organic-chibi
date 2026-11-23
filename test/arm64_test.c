@@ -5005,7 +5005,7 @@ TEST_CASE(targets)
 }
 
 static const char *const RELEASE_FAST_FUNCTIONS[] = {
-    "rf_wrap", "rf_shift", "rf_convert", "rf_enum", "rf_div", "rf_float", "rf_assert",
+    "rf_wrap", "rf_shift", "rf_convert", "rf_enum", "rf_div", "rf_float", "rf_assert", "rf_range",
 };
 
 static const CallCase RELEASE_FAST_CASES[] = {
@@ -5021,7 +5021,10 @@ static const CallCase RELEASE_FAST_CASES[] = {
     { "rf_div", INT64_MIN, -1, 0, TRAP_OVERFLOW },
     { "rf_float", -1, 7, -93, 0 },
     { "rf_float", 13, 12, 0, TRAP_RANGE },
-    { "rf_assert", 5, 3, 2, 0 },
+    { "rf_assert", 5, 3, 12, 0 },
+    { "rf_checked", 5, 3, 8, 0 },
+    { "rf_range", 5, 3, 53, 0 },
+    { "rf_range", 13, -3, 127, 0 },
 };
 
 TEST_CASE(release_fast)
@@ -5040,6 +5043,7 @@ TEST_CASE(release_fast)
         }
     }
     REQUIRE(agree_on_grid(&p, RELEASE_FAST_FUNCTIONS, sizeof RELEASE_FAST_FUNCTIONS / sizeof RELEASE_FAST_FUNCTIONS[0]));
+    REQUIRE(count_words(&p, "rf_range", WORD_STR_X_SP, Q_FIELDS) == 0);
     release_program(&p);
     return true;
 }

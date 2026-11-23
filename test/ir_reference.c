@@ -728,6 +728,7 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                 }
                 break;
             case IR_ASSERT:
+            case IR_ASSUME:
                 if (OPERAND(a) == 0) {
                     fail = TRAP_ASSERT;
                 }

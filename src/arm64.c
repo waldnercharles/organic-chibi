@@ -3971,6 +3971,7 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                     break;
                 case IR_DROP: release(e, a); break;
                 case IR_ASSERT: check_assert(e, a); break;
+                case IR_ASSUME: release(e, a); break;
                 case IR_RET:
                     if (e->info[type] & INFO_PAIR) {
                         return_pair(e, a, b);

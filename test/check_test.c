@@ -7801,39 +7801,34 @@ static const char ASSERT_RELEASE_FAST_IR[] =
     "fn check(x: int, ok: bool) -> int\n"
     "    slots: x: int, ok: bool, n: int\n"
     "    store int n, 0\n"
-    "    if @1 false\n"
-    "        %2 = load int x\n"
-    "        %3 = gt int %2, 0\n"
-    "        drop %3\n"
-    "    end\n"
-    "    if @6 false\n"
-    "        %7 = load bool ok\n"
-    "        drop %7\n"
-    "    end\n"
-    "    if @10 false\n"
-    "        %11 = addr *int n\n"
-    "        %12 = call int count(%11)\n"
-    "        %13 = gt int %12, 0\n"
-    "        if @14 bool %13\n"
-    "            %15 = load int x\n"
-    "            %16 = lt int %15, 100\n"
-    "        else bool %16\n"
-    "        %18 = end bool false\n"
-    "        drop %18\n"
-    "    end\n"
-    "    %21 = load int n\n"
-    "    %22 = mul-wrap int %21, 1000\n"
-    "    %23 = load int x\n"
-    "    %24 = add-wrap int %22, %23\n"
-    "    ret int %24\n"
+    "    %1 = load int x\n"
+    "    %2 = gt int %1, 0\n"
+    "    assume %2\n"
+    "    %4 = load bool ok\n"
+    "    assume %4\n"
+    "    %6 = addr *int n\n"
+    "    %7 = call int count(%6)\n"
+    "    %8 = gt int %7, 0\n"
+    "    if @9 bool %8\n"
+    "        %10 = load int x\n"
+    "        %11 = lt int %10, 100\n"
+    "    else bool %11\n"
+    "    %13 = end bool false\n"
+    "    assume %13\n"
+    "    %15 = load int n\n"
+    "    %16 = mul-wrap int %15, 1000\n"
+    "    %17 = load int x\n"
+    "    %18 = add-wrap int %16, %17\n"
+    "    ret int %18\n"
     "fn never(x: int) -> int\n"
     "    slots: x: int\n"
     "    %0 = load int x\n"
     "    %1 = eq int %0, 7\n"
     "    if @2 %1\n"
+    "        assume false\n"
     "    end\n"
-    "    %4 = load int x\n"
-    "    ret int %4\n";
+    "    %5 = load int x\n"
+    "    ret int %5\n";
 
 static const VectorRun ASSERT_RUNS[] = {
     { "check", { 5, 1 }, 1005, 0 },
@@ -7845,10 +7840,11 @@ static const VectorRun ASSERT_RUNS[] = {
 };
 
 static const VectorRun ASSERT_RELEASE_FAST_RUNS[] = {
-    { "check", { 5, 1 }, 5, 0 },
-    { "check", { 0, 0 }, 0, 0 },
-    { "check", { 100, 1 }, 100, 0 },
-    { "never", { 7 }, 7, 0 },
+    { "check", { 5, 1 }, 1005, 0 },
+    { "check", { 99, 1 }, 1099, 0 },
+    { "check", { 0, 1 }, 0, TRAP_ASSERT },
+    { "never", { 7 }, 0, TRAP_ASSERT },
+    { "never", { 3 }, 3, 0 },
 };
 
 static const char ASSERT_ERRORS[] =
@@ -7869,31 +7865,19 @@ static const char ASSERT_ERRORS_IR[] =
     "a:6:12: unknown name `missing`\n"
     "fn f(x: int, b: bool) -> void\n"
     "    slots: x: int, b: bool\n"
-    "    if @0 false\n"
-    "        %1 = load bool b\n"
-    "        %2 = load bool b\n"
-    "    end\n"
-    "    if @4 false\n"
+    "    %0 = load bool b\n"
+    "    %1 = load bool b\n"
+    "    %2 = load int x\n"
+    "    %3 = load bool b\n"
+    "    if @4 bool %3\n"
     "        %5 = load int x\n"
-    "    end\n"
-    "    if @7 false\n"
-    "        %8 = load bool b\n"
-    "        if @9 bool %8\n"
-    "            %10 = load int x\n"
-    "        else bool false\n"
-    "        %12 = end bool false\n"
-    "        drop %12\n"
-    "    end\n"
-    "    if @15 false\n"
-    "        if @16 false\n"
-    "            %17 = load bool b\n"
-    "            drop %17\n"
-    "        end\n"
-    "    end\n"
-    "    if @21 false\n"
-    "        %22 = load bool b\n"
-    "        drop %22\n"
-    "    end\n"
+    "    else bool false\n"
+    "    %7 = end bool false\n"
+    "    assume %7\n"
+    "    %9 = load bool b\n"
+    "    assume %9\n"
+    "    %11 = load bool b\n"
+    "    assume %11\n"
     "    ret void\n";
 
 static bool

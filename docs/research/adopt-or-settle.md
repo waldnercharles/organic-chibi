@@ -547,6 +547,8 @@ Old Chibi paid the cost from the other side. When its analysis couldn't prove th
 
 ### 2.9 Safety model and build modes (rank 9)
 
+**Partly superseded (2026-11-23).** The owner chose that a release-fast build assumes an `assert`'s condition, as Zig's release-fast builds do, where the recommendation below removes the assert; step 3k.16 built it. See [../decisions.md](../decisions.md), the assert row of 2026-11-23.
+
 **What it is.** This is about which mistakes are checked at run time, in which builds, and what a failed check does. Zig calls a mistake that it can detect at run time "safety-checked Illegal Behavior". It panics in Debug and ReleaseSafe builds. In ReleaseFast and ReleaseSmall there are no checks, and "anything can happen" ([Illegal Behavior](https://ziglang.org/documentation/0.15.2/#Illegal-Behavior), [Build Mode](https://ziglang.org/documentation/0.15.2/#Build-Mode)).
 
 **Who has it.**

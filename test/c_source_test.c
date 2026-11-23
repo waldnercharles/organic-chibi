@@ -33,7 +33,7 @@ static const char *const UNSUPPORTED[][2] = {
 };
 
 static bool
-check_files(Package *p, const char *const *texts, const char *const *paths, u32 n, const u32 *target)
+check_files(Package *p, const char *const *texts, const char *const *paths, u32 n, const u32 *target, bool release_fast)
 {
     *p = (Package){ 0 };
     size_t total = 0;
@@ -63,6 +63,7 @@ check_files(Package *p, const char *const *texts, const char *const *paths, u32 
     }
 
     check_init(&p->c, &p->lx.names);
+    p->c.release_fast = release_fast;
     if (target) {
         memcpy(p->c.target, target, sizeof p->c.target);
     }
@@ -77,7 +78,7 @@ check_files(Package *p, const char *const *texts, const char *const *paths, u32 
 static bool
 check_source(Package *p, const char *text)
 {
-    return check_files(p, &text, (const char *const[]){ "a" }, 1, NULL);
+    return check_files(p, &text, (const char *const[]){ "a" }, 1, NULL, false);
 }
 
 static void
@@ -230,7 +231,7 @@ target_source(const char *text, const u32 *target)
     FILE *out = open_memstream(&got, &len);
     assert(out);
     Package p;
-    bool ok = check_files(&p, &text, (const char *const[]){ "a" }, 1, target) &&
+    bool ok = check_files(&p, &text, (const char *const[]){ "a" }, 1, target, false) &&
               c_source_package(out, &p.c, "t_") == NULL;
     release(&p);
     fclose(out);
@@ -249,6 +250,27 @@ count_text(const char *text, const char *part)
         n++;
     }
     return n;
+}
+
+TEST_CASE(writes_assumptions)
+{
+    char *text = NULL;
+    size_t len = 0;
+    FILE *out = open_memstream(&text, &len);
+    assert(out);
+    const char *source = RELEASE_FAST_GRID;
+    Package p;
+    bool ok = check_files(&p, &source, (const char *const[]){ "a" }, 1, NULL, true) &&
+              c_source_package(out, &p.c, "r_") == NULL;
+    release(&p);
+    fclose(out);
+
+    char trap[32];
+    snprintf(trap, sizeof trap, "chibi_trap(%d)", TRAP_ASSERT);
+    ok = ok && count_text(text, ") __builtin_unreachable();\n") == 5 && count_text(text, trap) == 0;
+    free(text);
+    REQUIRE(ok);
+    return true;
 }
 
 TEST_CASE(writes_target_guards)
@@ -1835,7 +1857,7 @@ TEST_CASE(maps_lines)
         b.outs[0]
     );
     Package p;
-    bool ok = check_files(&p, LINE_TEXTS, LINE_PATHS, 2, NULL) &&
+    bool ok = check_files(&p, LINE_TEXTS, LINE_PATHS, 2, NULL, false) &&
               c_source_package(b.outs[0], &p.c, "l0_") == NULL;
     release(&p);
     ok = finish_build(&b, "") && ok;
@@ -1985,6 +2007,7 @@ TEST_SUITE(c_source_tests)
     RUN_TEST_CASE(reports_unsupported);
     RUN_TEST_CASE(emits_doubling_structs);
     RUN_TEST_CASE(writes_inline_marks);
+    RUN_TEST_CASE(writes_assumptions);
     RUN_TEST_CASE(writes_target_guards);
     RUN_TEST_CASE(writes_layouts);
 #ifdef CHIBI_TEST_CC

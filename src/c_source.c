@@ -1383,6 +1383,9 @@ put_instruction(Source *s, u32 i)
         case IR_SWITCH: put_switch(s, i, type, a, extra(s, b)); break;
         case IR_CASE: put_line(s, "goto %L;", s->ends[i]); break;
         case IR_ASSERT: put_line(s, "if (!%o) %T;", a, TRAP_ASSERT); break;
+        case IR_ASSUME:
+            put_line(s, "if (!%o) __builtin_unreachable();", a);
+            break;
         case IR_SECOND:
         case IR_DROP:
         case IR_BLOCK:

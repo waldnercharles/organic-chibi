@@ -78,7 +78,8 @@
     X(IR_NOP, "nop")                                                           \
     X(IR_SWITCH, "switch")                                                     \
     X(IR_CASE, "case")                                                         \
-    X(IR_ASSERT, "assert")
+    X(IR_ASSERT, "assert")                                                     \
+    X(IR_ASSUME, "assume")
 // clang-format on
 
 #define CHIBI_IR_KIND(name, text) name,

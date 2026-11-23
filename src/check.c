@@ -3943,26 +3943,11 @@ call_size_of(Checker *c, u32 file, u32 token, u32 name, u32 first_arg, u32 nargs
     return (Operand){ TYPE_ID_UNTYPED_INT, exact_int(&c->exacts, (int64_t)n) };
 }
 
-static void
-close_assert(Checker *c)
-{
-    if (!c->release_fast || !c->body.code) {
-        return;
-    }
-    IrCode *code = c->body.code;
-    if (code->kinds[code->count - 1] == IR_IF) {
-        code->count--;
-    } else {
-        emit(c, IR_END, 0, 0, 0);
-    }
-}
-
 static NOINLINE Operand
 call_assert(Checker *c, u32 file, u32 token, u32 first_arg, u32 nargs)
 {
     if (nargs != 1) {
         report(c, file, token, DIAG_ARG_COUNT, 1, nargs);
-        close_assert(c);
         return poison;
     }
     Operand a = c->stack[first_arg];
@@ -3970,7 +3955,6 @@ call_assert(Checker *c, u32 file, u32 token, u32 first_arg, u32 nargs)
     u32 type = is_place(a) ? place_type(c, a) : a.type;
     if (type != TYPE_ID_BOOL) {
         report(c, file, a_token, is_value_type(type) ? DIAG_NOT_BOOL : DIAG_NOT_VALUE, type, 0);
-        close_assert(c);
         return poison;
     }
     if (!c->body.code) {
@@ -3979,15 +3963,11 @@ call_assert(Checker *c, u32 file, u32 token, u32 first_arg, u32 nargs)
     }
 
     a = convert(c, file, a_token, a, TYPE_ID_BOOL);
-    if (c->release_fast) {
-        if (!is_constant(a)) {
-            emit(c, IR_DROP, 0, value_of(a), 0);
-        }
-        close_assert(c);
-    } else if (!is_constant(a)) {
-        emit(c, IR_ASSERT, 0, value_of(a), 0);
+    u8 kind = c->release_fast ? IR_ASSUME : IR_ASSERT;
+    if (!is_constant(a)) {
+        emit(c, kind, 0, value_of(a), 0);
     } else if (exact_sign(&c->exacts, value_of(a)) == 0) {
-        emit(c, IR_ASSERT, 0, ir_const(c, TYPE_ID_BOOL, 0), 0);
+        emit(c, kind, 0, ir_const(c, TYPE_ID_BOOL, 0), 0);
     }
     return (Operand){ TYPE_ID_VOID, 0 };
 }
@@ -4048,14 +4028,6 @@ call_builtin(Checker *c, u32 file, u32 token, Operand callee, u32 first_arg, u32
     return (Operand){ TYPE_ID_I64, exact_int(&c->exacts, n) };
 }
 
-static NOINLINE void
-close_poisoned_call(Checker *c, Operand callee)
-{
-    if (callee.type == OPERAND_BUILTIN && callee.ref == NAME_ASSERT) {
-        close_assert(c);
-    }
-}
-
 static void
 call(Checker *c, u32 file, u32 node)
 {
@@ -4070,18 +4042,16 @@ call(Checker *c, u32 file, u32 node)
     }
 
     Operand r = poison;
-    if (callee.type == TYPE_ID_TYPE) {
+    if (LIKELY(callee.type == OPERAND_FN)) {
+        r = call_fn(c, file, node, callee_token, callee.ref, m + 1, nargs);
+    } else if (callee.type == TYPE_ID_TYPE) {
         if (nargs == 1) {
             r = cast(c, file, c->stack_tokens[m + 1], c->stack[m + 1], callee.ref);
         } else {
             report(c, file, callee_token, DIAG_ARG_COUNT, 1, nargs);
         }
-    } else if (callee.type == OPERAND_FN) {
-        r = call_fn(c, file, node, callee_token, callee.ref, m + 1, nargs);
     } else if (callee.type != TYPE_ID_NONE) {
         r = call_builtin(c, file, callee_token, callee, m + 1, nargs);
-    } else {
-        close_poisoned_call(c, c->stack[m - 1]);
     }
 
     c->sp = m - 1;
@@ -7569,9 +7539,6 @@ resolve_builtin(Checker *c, u32 file, u32 node, u32 token, u32 id)
         report(c, file, token, DIAG_FN_VALUE, 0, 0);
         return poison;
     }
-    if (c->release_fast && c->body.code) {
-        emit(c, IR_IF, 0, ir_const(c, TYPE_ID_BOOL, 0), 0);
-    }
     return (Operand){ OPERAND_BUILTIN, id };
 }
 
@@ -9529,6 +9496,7 @@ print_function(FILE *out, const Checker *c, const IrFunc *fn)
             }
             case IR_DROP:
             case IR_ASSERT:
+            case IR_ASSUME:
                 fputc(' ', out);
                 print_operand(out, c, fn, a);
                 break;

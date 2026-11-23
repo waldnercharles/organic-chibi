@@ -4139,9 +4139,20 @@ const char RELEASE_FAST_GRID[] =
     "\n"
     "fn rf_assert(a: int, b: int) -> int {\n"
     "    n := 0\n"
-    "    assert(rf_count(&n) > 100)\n"
-    "    assert(a == b)\n"
+    "    assert(rf_count(&n) == 1)\n"
+    "    assert(b < 100)\n"
     "    return n * 10 + a - b\n"
+    "}\n"
+    "\n"
+    "fn rf_checked(a: int, b: int) -> int {\n"
+    "    assert(a + b != 2)\n"
+    "    return a + b\n"
+    "}\n"
+    "\n"
+    "fn rf_range(a: int, b: int) -> int {\n"
+    "    assert(a < 100)\n"
+    "    assert(a < b or b < 100)\n"
+    "    return a * 10 + b\n"
     "}\n";
 
 const char *const BACKEND_PROGRAMS[] = {
