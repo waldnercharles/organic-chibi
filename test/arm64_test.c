@@ -4334,9 +4334,7 @@ TEST_CASE(mul_high_tests)
     REQUIRE(hash(CONTEXT, INT64_MIN, INT64_MAX) == mh_hash_want(INT64_MIN, INT64_MAX));
     REQUIRE(hash(CONTEXT, -1, INT64_MIN) == mh_hash_want(-1, INT64_MIN));
 
-    REQUIRE(count_words(&p, "mh_grid", WORD_UMULH, THREE_REGISTERS) == 3);
     REQUIRE(count_words(&p, "mh_hash", WORD_UMULH, THREE_REGISTERS) == 1);
-    REQUIRE(count_words(&p, "mh_hash", WORD_MUL_X, THREE_REGISTERS) == 1);
     release_program(&p);
     return true;
 }

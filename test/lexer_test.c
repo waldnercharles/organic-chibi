@@ -356,6 +356,42 @@ TEST_CASE(builtin_names)
     return true;
 }
 
+TEST_CASE(name_hashes)
+{
+    const char *text = "x Name_2 abcdefghijklmnop abcdefghijklmnopxy "
+                       "a_name_longer_than_sixteen_bytes";
+    size_t len = strlen(text);
+    char *src = calloc(len + LEXER_SOURCE_PADDING, 1);
+    memcpy(src, text, len);
+
+    Arena arena = { 0 };
+    Lexer lx;
+    lexer_init(&lx, &arena, len);
+    Tokens t = tokens_new(len);
+    int n = lexer_tokenize(&lx, src, t);
+
+    bool same = n == 6 && lx.names.count == NFIXED_NAMES + 6;
+    for (u32 id = 1; same && id < lx.names.count; id++) {
+        Name name = names_get(&lx.names, id);
+        u8 buf[16] = { 0 };
+        memcpy(buf, name.text, name.len < 16 ? name.len : 16);
+
+        u64 k0, k1;
+        memcpy(&k0, buf, 8);
+        memcpy(&k1, buf + 8, 8);
+
+        const NameSlot *slot = &lx.names.slots[name.slot];
+        same = slot->id == id &&
+               slot->hash == names_hash(name.text, name.len, k0, k1);
+    }
+
+    tokens_free(t);
+    arena_free(&arena);
+    free(src);
+    REQUIRE(same);
+    return true;
+}
+
 #define PIECE_MAX_LEN 64
 #define KEYWORD_PIECE(name, text) text,
 
@@ -523,6 +559,7 @@ TEST_SUITE(lexer_tests)
     RUN_TEST_CASE(edge_cases);
     RUN_TEST_CASE(number_errors);
     RUN_TEST_CASE(builtin_names);
+    RUN_TEST_CASE(name_hashes);
     RUN_TEST_CASE(random_programs);
     RUN_TEST_CASE(golden_output);
 }

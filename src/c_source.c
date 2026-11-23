@@ -1349,9 +1349,6 @@ put_instruction(Source *s, u32 i)
             put_line(s, "v%u = (%t)((%c)%o %c (%c)%o);", i, type, w, a, operators[kind], w, b);
             break;
         }
-        case IR_MUL_HIGH:
-            put_line(s, "v%u = (uint64_t)(((unsigned __int128)%o * %o) >> 64);", i, a, b);
-            break;
         case IR_SHL:
         case IR_SHR: put_shift(s, i, kind, type, a, b); break;
         case IR_AND:

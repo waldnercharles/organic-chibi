@@ -820,7 +820,6 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
             case IR_ADD_WRAP: v = canon(x + y, t); break;
             case IR_SUB_WRAP: v = canon(x - y, t); break;
             case IR_MUL_WRAP: v = canon(x * y, t); break;
-            case IR_MUL_HIGH: v = (u64)((unsigned __int128)x * y >> 64); break;
             case IR_DIV:
             case IR_REM: {
                 if (t.fl) {

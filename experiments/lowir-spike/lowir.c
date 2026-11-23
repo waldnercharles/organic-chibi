@@ -1516,16 +1516,6 @@ bitcast_op(Lower *l, u32 i, u32 type, u32 a)
     }
 }
 
-static LowirValue
-mul_high(Lower *l, LowirValue x, LowirValue y)
-{
-    LowirValue wx = convert(l, CPPGM_CONVERT_Z_EXT, CPPGM_TYPE_I128, CPPGM_TYPE_I64, x);
-    LowirValue wy = convert(l, CPPGM_CONVERT_Z_EXT, CPPGM_TYPE_I128, CPPGM_TYPE_I64, y);
-    LowirValue m = binary(l, CPPGM_BINARY_MUL, CPPGM_TYPE_I128, wx, wy);
-    LowirValue high = binary(l, CPPGM_BINARY_U_SHR, CPPGM_TYPE_I128, m, integer(l, 64));
-    return convert(l, CPPGM_CONVERT_TRUNC, CPPGM_TYPE_I64, CPPGM_TYPE_I128, high);
-}
-
 static const u8 lane_adds[4] = {
     CPPGM_VECTOR_PADDB,
     CPPGM_VECTOR_PADDW,
@@ -1868,12 +1858,6 @@ lower_instruction(Lower *l, u32 i)
             l->values[i] = c->types.kinds[type] == TYPE_VECTOR
                              ? vector_arithmetic(l, kind, type, x, y)
                              : binary(l, binary_ops[kind], scalar_type(c, type), x, y);
-            break;
-        }
-        case IR_MUL_HIGH: {
-            LowirValue x = operand(l, a);
-            LowirValue y = operand(l, b);
-            l->values[i] = mul_high(l, x, y);
             break;
         }
         case IR_SHL:

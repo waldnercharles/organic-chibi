@@ -2698,8 +2698,6 @@ const char OVERFLOW_TESTS[] =
     "}\n";
 
 const char MUL_HIGH[] =
-    "import \"std/bits\"\n"
-    "\n"
     "fn mh_grid(a: int, b: int) -> int {\n"
     "    v := u64.[\n"
     "        0, 1, 2, 3, 4294967295, 4294967296, 4294967297, 6148914691236517205,\n"
@@ -2709,16 +2707,17 @@ const char MUL_HIGH[] =
     "    ]\n"
     "    x := v[a & 15]\n"
     "    y := v[b & 15]\n"
-    "    h := bits.mul_high(x, y)\n"
-    "    k := bits.mul_high(x, 11400714819323198485)\n"
-    "    m := bits.mul_high(3, y)\n"
-    "    c := bits.mul_high(18446744073709551615, 18446744073709551615)\n"
+    "    h := u64(u128(x) * u128(y) >> 64)\n"
+    "    k := u64(u128(x) * 11400714819323198485 >> 64)\n"
+    "    m := u64(3 * u128(y) >> 64)\n"
+    "    c := u64(u128(18446744073709551615) * 18446744073709551615 >> 64)\n"
     "    return bitcast(int, h ^ k *% 3 ^ m *% 5 ^ c)\n"
     "}\n"
     "fn mh_hash(a: int, b: int) -> int {\n"
     "    p := bitcast(u64, a) ^ 0x2D358DCCAA6C78A5\n"
     "    q := bitcast(u64, b) ^ 0x8BB84B93962EACC9\n"
-    "    return bitcast(int, p *% q ^ bits.mul_high(p, q))\n"
+    "    m := u128(p) *% u128(q)\n"
+    "    return bitcast(int, u64(m & 0xFFFF_FFFF_FFFF_FFFF) ^ u64(m >> 64 & 0xFFFF_FFFF_FFFF_FFFF))\n"
     "}\n";
 
 const char OVERFLOW_GRID[] =

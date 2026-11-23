@@ -1177,9 +1177,7 @@ multiply(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
     u32 d = result(e, i, t);
     u32 sf = width(t);
     bool s = is_signed(t);
-    if (kind == IR_MUL_HIGH) {
-        put(e, OP_UMULH | rb << 16 | ra << 5 | d);
-    } else if (kind == IR_MUL_WRAP || is_small(t)) {
+    if (kind == IR_MUL_WRAP || is_small(t)) {
         put(e, OP_MUL | sf | rb << 16 | ra << 5 | d);
         if (kind == IR_MUL_WRAP) {
             normalize(e, t, d, d);
@@ -4750,8 +4748,7 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                 case IR_ADD_WRAP:
                 case IR_SUB_WRAP: add_sub(e, i, kind, type, a, b); break;
                 case IR_MUL:
-                case IR_MUL_WRAP:
-                case IR_MUL_HIGH: multiply(e, i, kind, type, a, b); break;
+                case IR_MUL_WRAP: multiply(e, i, kind, type, a, b); break;
                 case IR_DIV:
                 case IR_REM: divide(e, i, kind, type, a, b); break;
                 case IR_AND:

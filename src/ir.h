@@ -25,7 +25,6 @@
     X(IR_ADD_WRAP, "add-wrap")                                                 \
     X(IR_SUB_WRAP, "sub-wrap")                                                 \
     X(IR_MUL_WRAP, "mul-wrap")                                                 \
-    X(IR_MUL_HIGH, "mul-high")                                                 \
     X(IR_SHL, "shl")                                                           \
     X(IR_SHR, "shr")                                                           \
     X(IR_AND, "and")                                                           \

@@ -3067,10 +3067,9 @@ static const char *
 chibi_builtin(const Tr *t, u32 f)
 {
     const char *w = text(t, t->a.names[f]);
-    return strcmp(w, "simd_lookup16") == 0   ? "lookup"
-         : strcmp(w, "simd_mask16") == 0     ? "top_bits"
-         : strcmp(w, "folded_multiply") == 0 ? "mul_high"
-                                             : NULL;
+    return strcmp(w, "simd_lookup16") == 0 ? "lookup"
+         : strcmp(w, "simd_mask16") == 0   ? "top_bits"
+                                           : NULL;
 }
 
 static const char *
@@ -3092,14 +3091,6 @@ static void
 use_package(Tr *t, u32 package)
 {
     t->groups[t->group].packages |= (u8)(1u << package);
-}
-
-static bool
-reads_variable(const Tr *t, u32 e)
-{
-    e = strip(t, e);
-    return is_cast(t, e) && op(t, e) == CAST_LVALUE &&
-           t->kinds[strip(t, e + 1)] == K_DECL_REF;
 }
 
 static bool
@@ -3203,22 +3194,6 @@ call(Tr *t, u32 e)
         put(&t->out, "))");
         free(ty);
         return value(ctype(t, e), 0, P_POSTFIX);
-    }
-    if (builtin != NULL && strcmp(builtin, "mul_high") == 0) {
-        u32 second = t->a.ends[first_arg];
-        if (!reads_variable(t, first_arg) || !reads_variable(t, second)) {
-            die(t, e, "`folded_multiply` of something other than two variables");
-        }
-        ex(t, first_arg, 0, 0);
-        put(&t->out, " *% ");
-        ex(t, second, 0, 0);
-        use_package(t, PACKAGE_BITS);
-        put(&t->out, " ^ bits.mul_high(");
-        ex(t, first_arg, 0, 0);
-        put(&t->out, ", ");
-        ex(t, second, 0, 0);
-        put(&t->out, ")");
-        return value(ctype(t, e), 0, P_ADD);
     }
     const char *overflow = overflow_name(t, e);
     if (overflow != NULL) {
@@ -6186,8 +6161,7 @@ packages_used(Tr *t, u32 fn)
         u32 f = t->kinds[i] == K_CALL ? callee(t, i) : 0;
         const char *w = f != 0 ? text(t, t->a.names[f]) : "";
         const char *builtin = f != 0 ? chibi_builtin(t, f) : NULL;
-        if (bit_count_name(w) != NULL || overflow_name(t, i) != NULL ||
-            (builtin != NULL && strcmp(builtin, "mul_high") == 0)) {
+        if (bit_count_name(w) != NULL || overflow_name(t, i) != NULL) {
             used |= 1u << PACKAGE_BITS;
         } else if (builtin != NULL) {
             used |= 1u << PACKAGE_SIMD;
