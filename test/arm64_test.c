@@ -6149,6 +6149,72 @@ TEST_CASE(named_results)
     return true;
 }
 
+static const char *const DEFER_FUNCTIONS[] = {
+    "df_order", "df_loops", "df_label", "df_value", "df_results", "df_pinned", "df_globals", "df_nested",
+    "df_slices", "df_opt", "df_arms", "df_calls", "df_vec", "df_assert", "df_unread",
+};
+
+static const CallCase DEFER_CASES[] = {
+    { "df_order", 7, 2, 321009, 0 },
+    { "df_order", 3, 1, 5421007, 0 },
+    { "df_order", -4, 0, 5420992, 0 },
+    { "df_order", INT64_MIN, 0, 0, TRAP_OVERFLOW },
+    { "df_loops", 1, 7, 5803, 0 },
+    { "df_loops", 0, 5, 1802, 0 },
+    { "df_loops", 9, 6, 17906, 0 },
+    { "df_label", 6, 1, 277081, 0 },
+    { "df_label", 15, 3, 418569, 0 },
+    { "df_label", 2, 0, 801497, 0 },
+    { "df_value", 4, 5, 4104, 0 },
+    { "df_value", 4, 1, 10105, 0 },
+    { "df_value", INT64_MAX, 0, 0, TRAP_OVERFLOW },
+    { "df_results", 9, 2, 1003, 0 },
+    { "df_results", 2, 9, 209, 0 },
+    { "df_results", INT64_MAX, 0, 0, TRAP_OVERFLOW },
+    { "df_pinned", 3, 4, 304, 0 },
+    { "df_globals", 6, 1, 651, 0 },
+    { "df_nested", 0, 3, 51449, 0 },
+    { "df_nested", 1, 2, 532449, 0 },
+    { "df_nested", 2, 1, 549, 0 },
+    { "df_nested", 3, 0, 59, 0 },
+    { "df_slices", 1, 50, 507, 0 },
+    { "df_slices", 5, 50, 27, 0 },
+    { "df_slices", 2, -7, -64, 0 },
+    { "df_opt", 4, 3, 10, 0 },
+    { "df_opt", 4, 2, 3, 0 },
+    { "df_arms", 0, 1, 125, 0 },
+    { "df_arms", 1, 1, 135, 0 },
+    { "df_arms", 1, 0, 1435, 0 },
+    { "df_arms", 2, 0, 75, 0 },
+    { "df_calls", 4, 5, 17, 0 },
+    { "df_calls", INT64_MAX, 0, 0, TRAP_OVERFLOW },
+    { "df_vec", 200, 100, 800, 0 },
+    { "df_vec", -1, -1, 1530, 0 },
+    { "df_assert", 2, 2, 4, 0 },
+    { "df_assert", 1, 2, 0, TRAP_ASSERT },
+    { "df_unread", 4, 1, 9044, 0 },
+    { "df_unread", INT64_MAX, 0, 0, TRAP_OVERFLOW },
+};
+
+TEST_CASE(defers)
+{
+    catch_traps();
+    Program p;
+    REQUIRE(build(&p, DEFERS));
+    for (size_t k = 0; k < sizeof DEFER_CASES / sizeof DEFER_CASES[0]; k++) {
+        CallCase t = DEFER_CASES[k];
+        int64_t got = 0;
+        int trap = call_i2((I2 *)fn(&p, t.name), t.a, t.b, &got);
+        if (trap != t.trap || (!trap && got != t.want)) {
+            fprintf(stderr, "arm64 test: %s(%lld, %lld) gave %lld (trap %d)\n", t.name, (long long)t.a, (long long)t.b, (long long)got, trap);
+            REQUIRE(false);
+        }
+    }
+    REQUIRE(agree_on_grid(&p, DEFER_FUNCTIONS, sizeof DEFER_FUNCTIONS / sizeof DEFER_FUNCTIONS[0]));
+    release_program(&p);
+    return true;
+}
+
 TEST_CASE(top_level_code)
 {
     Program p;
@@ -6204,6 +6270,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(string_views);
     RUN_TEST_CASE(tuples);
     RUN_TEST_CASE(named_results);
+    RUN_TEST_CASE(defers);
     RUN_TEST_CASE(narrow_parameters);
     RUN_TEST_CASE(constant_division);
     RUN_TEST_CASE(differential);

@@ -122,9 +122,10 @@ static const char TOP_MAIN[] =
     "words :=\n"
     "    0\n"
     "skip_program()\n"
+    "defer _ = puts(\"end\")\n"
     "for a in os.args {\n"
+    "    defer words += 1\n"
     "    _ = puts(a)\n"
-    "    words += 1\n"
     "}\n"
     "if words == 0 {\n"
     "    return\n"
@@ -424,9 +425,9 @@ TEST_CASE(builds_top_level_code)
     release(&d);
 
     ok = ok && drives_to((char *[]){ "chibi", "build", "-o", program, a, b, NULL }, 0, "", "");
-    ok = ok && runs_to((char *[]){ program, NULL }, "", 0, 0);
-    ok = ok && runs_to((char *[]){ program, "ab", "cde", NULL }, "ab\ncde\n", 23, 0);
-    ok = ok && runs_to((char *[]){ program, "x", NULL }, "x\n", 11, 0);
+    ok = ok && runs_to((char *[]){ program, NULL }, "end\n", 0, 0);
+    ok = ok && runs_to((char *[]){ program, "ab", "cde", NULL }, "ab\ncde\nend\n", 23, 0);
+    ok = ok && runs_to((char *[]){ program, "x", NULL }, "x\nend\n", 11, 0);
 
     static const char *const files[] = { "top.chibi", "library.chibi", "assign.chibi", "top" };
     remove_files(dir, files, sizeof files / sizeof files[0]);

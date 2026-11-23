@@ -170,6 +170,9 @@ typedef struct
     u32 loop_labels[MAX_LABELS];
     u32 block_labels[MAX_LABELS];
     u32 nblock_labels;
+    u32 loops_outside;
+    u32 blocks_outside;
+    bool in_defer;
     Label values[MAX_LABELS];
     u32 nvalues;
     Enum enums[MAX_ENUMS];
@@ -1848,7 +1851,7 @@ switch_statement(Gen *g, int depth)
             emit(g, ", _");
         }
         emit(g, " => ");
-        if (chance(g, 25)) {
+        if (!g->in_defer && chance(g, 25)) {
             return_value(g, 2);
         } else {
             emit(g, "{");
@@ -3335,8 +3338,40 @@ table_statement(Gen *g, int depth)
 }
 
 static void
+defer_statement(Gen *g, int depth)
+{
+    u32 loops = g->loops_outside;
+    u32 blocks = g->blocks_outside;
+    bool in_defer = g->in_defer;
+    g->loops_outside = g->loops;
+    g->blocks_outside = g->nblock_labels;
+    g->in_defer = true;
+
+    line(g);
+    u8 t = random_type(g, false);
+    Var *v = chance(g, 50) ? pick_var(g, t, true) : NULL;
+    if (v) {
+        emit(g, "defer %s", v->name);
+        assignment(g, v->type);
+    } else {
+        emit(g, "defer {");
+        block(g, depth - 1, 1 + random_below(g->rng, 3));
+        line(g);
+        emit(g, "}");
+    }
+
+    g->loops_outside = loops;
+    g->blocks_outside = blocks;
+    g->in_defer = in_defer;
+}
+
+static void
 statement(Gen *g, int depth)
 {
+    if (depth > 0 && chance(g, 5)) {
+        defer_statement(g, depth);
+        return;
+    }
     if (g->nrecords && chance(g, 12)) {
         record_statement(g, depth);
         return;
@@ -3477,7 +3512,9 @@ statement(Gen *g, int depth)
         }
         return;
     }
-    if (pick < 19 && (g->loops > 0 || g->nblock_labels > 0)) {
+    u32 loops = g->loops - g->loops_outside;
+    u32 blocks = g->nblock_labels - g->blocks_outside;
+    if (pick < 19 && (loops > 0 || blocks > 0)) {
         line(g);
         emit(g, "if ");
         expr(g, T_BOOL, 2);
@@ -3486,14 +3523,14 @@ statement(Gen *g, int depth)
         line(g);
         bool is_break = chance(g, 60);
         u32 labeled = 0;
-        for (u32 k = 0; k < g->loops; k++) {
+        for (u32 k = g->loops_outside; k < g->loops; k++) {
             labeled += g->loop_labels[k] != 0;
         }
-        if (g->nblock_labels > 0 && (g->loops == 0 || chance(g, 25))) {
-            emit(g, "break d%u", g->block_labels[random_below(g->rng, (int)g->nblock_labels)]);
+        if (blocks > 0 && (loops == 0 || chance(g, 25))) {
+            emit(g, "break d%u", g->block_labels[g->blocks_outside + (u32)random_below(g->rng, (int)blocks)]);
         } else if (labeled > 0 && chance(g, 50)) {
             u32 pick_label = (u32)random_below(g->rng, (int)labeled);
-            for (u32 k = 0; k < g->loops; k++) {
+            for (u32 k = g->loops_outside; k < g->loops; k++) {
                 if (g->loop_labels[k] && pick_label-- == 0) {
                     emit(g, "%s l%u", is_break ? "break" : "continue", g->loop_labels[k]);
                     break;
@@ -3518,7 +3555,7 @@ statement(Gen *g, int depth)
         emit(g, "}");
         return;
     }
-    if (pick < 20) {
+    if (pick < 20 && !g->in_defer) {
         line(g);
         emit(g, "if ");
         expr(g, T_BOOL, 2);

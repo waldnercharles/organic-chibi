@@ -58,7 +58,7 @@ Since the code is `main`'s body, the recommendation is that each means what it m
 
 Exit codes and `main`'s full signature belong with question 2: if `fn main` may return an integer, top-level code would use the same rule.
 
-Built: `return n` takes an `i32`, as `export fn main` returns, and becomes the exit status; a bare `return` and the end of the code exit with 0. `defer` and `try` aren't built anywhere yet.
+Built: `return n` takes an `i32`, as `export fn main` returns, and becomes the exit status; a bare `return` and the end of the code exit with 0. Step 3c built `defer`, which runs at the code's end and at each `return`, after the exit status is read. `try` isn't built anywhere yet.
 
 ## 5. Whether a library's global may run code at startup
 

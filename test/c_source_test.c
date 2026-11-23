@@ -507,7 +507,7 @@ TEST_CASE(writes_layouts)
 enum
 {
     MAX_JOBS = 8,
-    GRID_FUNCTIONS = 400,
+    GRID_FUNCTIONS = 415,
 };
 
 typedef struct
@@ -1876,6 +1876,22 @@ static const char LINES_A[] =
     "\n"
     "fn flat2(a: int, b: int) -> int {\n"
     "return a * b\n"
+    "}\n"
+    "\n"
+    "fn deferred(a: int, b: int) -> int {\n"
+    "    t := a\n"
+    "    defer t += b\n"
+    "    if a > 0 {\n"
+    "        return t * b\n"
+    "    }\n"
+    "    return t\n"
+    "}\n"
+    "\n"
+    "fn after_defer(a: int, b: int) -> int {\n"
+    "    t := a\n"
+    "    defer t += b\n"
+    "    t += a\n"
+    "    return t\n"
     "}\n";
 
 static const char LINES_B[] =
@@ -1931,6 +1947,11 @@ static const LineTrap LINE_TRAPS[] = {
     { "flat", 1, INT64_MAX, 0, 111, TRAP_OVERFLOW },
     { "flat", INT64_MAX, 1, 0, 114, TRAP_OVERFLOW },
     { "flat2", INT64_MAX, 2, 0, 117, TRAP_OVERFLOW },
+    { "deferred", INT64_MAX, 1, 0, 122, TRAP_OVERFLOW },
+    { "deferred", 2, INT64_MAX, 0, 124, TRAP_OVERFLOW },
+    { "deferred", -1, INT64_MIN, 0, 122, TRAP_OVERFLOW },
+    { "after_defer", INT64_MAX, 0, 0, 132, TRAP_OVERFLOW },
+    { "after_defer", 1, INT64_MAX, 0, 131, TRAP_OVERFLOW },
     { "pick", 3, 1, 1, 3, TRAP_BOUNDS },
     { "pick", 1, INT64_MAX, 1, 4, TRAP_OVERFLOW },
 };

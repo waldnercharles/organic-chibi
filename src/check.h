@@ -290,6 +290,8 @@ enum
     X(DIAG_BREAK_VALUE, "`%t` isn't a block used as a value, so `break` can't give it one")       \
     X(DIAG_BREAK_EMPTY, "`%t` is used as a value, so `break %t` needs one")                        \
     X(DIAG_BLOCK_END, "the block can reach its end without a value; end it with `break` and a value") \
+    X(DIAG_DEFER_EXIT, "`%t` can't leave a `defer`")                                                \
+    X(DIAG_DEFER_DECLARATION, "a `defer` runs its statement later, so the statement can't declare a name") \
     X(DIAG_NO_MEMBER, "`%U` has no member `%n`")                                                   \
     X(DIAG_NOT_ENUM, "`%U` is not an enum, so `.%n` can't be one of its values")                  \
     X(DIAG_UNKNOWN_ENUM, "the enum of `.%n` isn't known here; write its name, as in `Name.%n`")    \
@@ -377,6 +379,7 @@ typedef struct
     u32 type;
     u32 marker;
     u32 facts;
+    u32 defers;
     Peers peers;
 } Loop;
 
@@ -387,6 +390,25 @@ typedef struct
     u32 exit;
     u32 next;
 } Break;
+
+typedef struct
+{
+    u32 at;
+    u32 node;
+    u32 origin;
+    u32 first;
+    u32 count;
+    u32 first_line;
+    u32 nlines;
+    u32 facts;
+    u32 tests;
+    u32 scope;
+    u32 lines;
+    u32 marked;
+    bool open;
+    bool reachable;
+    bool ends;
+} Defer;
 
 typedef struct
 {
@@ -429,6 +451,7 @@ typedef struct
     Peers returns;
     u32 loops;
     u32 breaks;
+    u32 defers;
     u32 depth;
     u32 calls;
     u32 blocks;
@@ -542,6 +565,12 @@ typedef struct
     Break *breaks;
     u32 nbreaks;
     u32 breaks_cap;
+    Defer *defers;
+    u32 ndefers;
+    u32 defers_cap;
+    IrCode defer_code;
+    u8 *openers;
+    u32 openers_cap;
     CaseRange *cases;
     u32 ncases;
     u32 cases_cap;
