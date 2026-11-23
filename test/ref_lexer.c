@@ -308,16 +308,24 @@ ref_token(RefLexer *rl, const char *src, int start)
         return (RefToken){ is_float ? TK_FLOAT : TK_INT, start, i - start, 0, false };
     }
 
-    if (c == '"') {
+    if (c == '"' || c == '\'') {
         i++;
-        while (src[i] != '"') {
+        while (src[i] != c) {
             if (src[i] == '\0' || src[i] == '\n') {
-                return fail(rl, i, "unterminated string");
+                return fail(rl, i, c == '"' ? "unterminated string" : "unterminated character literal");
             }
             if (src[i] == '\\') {
                 char e = src[i + 1];
-                if (e != '\0' && strchr("\"\\/bfnrt", e) != NULL) {
+                if (e != '\0' && strchr("\"'\\/bfnrt", e) != NULL) {
                     i += 2;
+                } else if (e == '0' && is_digit(src[i + 2])) {
+                    return fail(rl, i, "a digit can't follow `\\0`; use `\\x00`");
+                } else if (e == '0') {
+                    i += 2;
+                } else if (e == 'x' && is_hex(src[i + 2]) && is_hex(src[i + 3])) {
+                    i += 4;
+                } else if (e == 'x') {
+                    return fail(rl, i, "invalid hex escape");
                 } else if (e != 'u') {
                     return fail(rl, i, "unknown escape sequence");
                 } else if (is_hex(src[i + 2]) && is_hex(src[i + 3]) && is_hex(src[i + 4]) && is_hex(src[i + 5])) {
@@ -329,7 +337,7 @@ ref_token(RefLexer *rl, const char *src, int start)
                 i++;
             }
         }
-        return (RefToken){ TK_STRING, start, i + 1 - start, 0, false };
+        return (RefToken){ c == '"' ? TK_STRING : TK_CHAR, start, i + 1 - start, 0, false };
     }
 
     for (size_t k = 0; k < sizeof OPS / sizeof OPS[0]; k++) {

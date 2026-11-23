@@ -12,6 +12,7 @@
     LEAF(NODE_INT, TK_INT)                                                     \
     LEAF(NODE_FLOAT, TK_FLOAT)                                                 \
     LEAF(NODE_STRING, TK_STRING)                                               \
+    LEAF(NODE_CHAR, TK_CHAR)                                                   \
     LEAF(NODE_TRUE, TK_TRUE)                                                   \
     LEAF(NODE_FALSE, TK_FALSE)                                                 \
     LEAF(NODE_NIL, TK_NIL)                                                     \

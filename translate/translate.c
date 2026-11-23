@@ -2736,8 +2736,10 @@ constant_value(Tr *t, u32 e, __int128 *v)
     e = strip(t, e);
     switch (t->kinds[e]) {
         case K_INT_LITERAL:
-        case K_CHAR_LITERAL:
             *v = parse_value(text(t, t->a.details[e]));
+            return true;
+        case K_CHAR_LITERAL:
+            *v = wrap_int(&t->types[ctype(t, e)], parse_value(text(t, t->a.details[e])));
             return true;
         case K_BOOL_LITERAL:
             *v = strcmp(text(t, t->a.details[e]), "true") == 0;
@@ -2812,6 +2814,34 @@ put_int(Tr *t, __int128 v)
 }
 
 static void
+put_char(Tr *t, __int128 v)
+{
+    static const char *const escapes[128] = {
+        [0] = "\\0",    ['\b'] = "\\b", ['\t'] = "\\t", ['\n'] = "\\n",
+        ['\f'] = "\\f", ['\r'] = "\\r", ['\''] = "\\'", ['\\'] = "\\\\",
+    };
+    if (escapes[v] != NULL) {
+        putf(&t->out, "'%s'", escapes[v]);
+    } else if (v < 0x20 || v == 0x7F) {
+        putf(&t->out, "'\\x%02X'", (unsigned)v);
+    } else {
+        putf(&t->out, "'%c'", (char)v);
+    }
+}
+
+static void
+put_number(Tr *t, u32 e, __int128 v)
+{
+    __int128 c;
+    if (t->kinds[e] == K_CHAR_LITERAL && constant_value(t, e, &c) && c == v &&
+        v >= 0 && v < 128) {
+        put_char(t, v);
+    } else {
+        put_int(t, v);
+    }
+}
+
+static void
 put_float(Tr *t, const char *s)
 {
     double d = strtod(s, NULL);
@@ -2862,7 +2892,7 @@ put_value(Tr *t, u32 e, __int128 v)
     if (is_enum_constant(t, s) && enum_value(t, decl_of(t, s)) == v) {
         ex(t, s, 0, 0);
     } else {
-        put_int(t, v);
+        put_number(t, s, v);
     }
 }
 
@@ -2926,7 +2956,7 @@ integral_cast(Tr *t, u32 e, bool explicit_cast, u32 want_type)
             if (same && is_enum_constant(t, strip(t, x))) {
                 ex(t, x, 0, 0);
             } else {
-                put_int(t, value);
+                put_number(t, strip(t, x), value);
             }
             put(&t->out, ")");
             return int_type_val(to);
@@ -3117,7 +3147,7 @@ rest_arg(Tr *t, u32 a)
         if (is_enum_constant(t, x)) {
             put_name(t, decl_of(t, x));
         } else {
-            put_int(t, k);
+            put_number(t, x, k);
         }
         return;
     }
@@ -3364,11 +3394,8 @@ put_string(Tr *t, u32 e)
             case '\r': put(&t->out, "\\r"); break;
             case '\t': put(&t->out, "\\t"); break;
             default:
-                if (b >= 0x80) {
-                    die(t, e, "a string literal with a byte above 0x7F");
-                }
-                if (b < 0x20 || b == 0x7F) {
-                    putf(&t->out, "\\u%04X", b);
+                if (b < 0x20 || b >= 0x7F) {
+                    putf(&t->out, "\\x%02X", b);
                 } else {
                     put_bytes(&t->out, (const char *)&b, 1);
                 }
@@ -4208,7 +4235,7 @@ ex(Tr *t, u32 e, u32 want_type, u32 want_bits)
         case K_CHAR_LITERAL: {
             __int128 v;
             constant_value(t, e, &v);
-            put_int(t, v);
+            put_number(t, e, v);
             return (Val){ ctype(t, e), 0, P_POSTFIX, true, false, false };
         }
         case K_FLOAT_LITERAL:

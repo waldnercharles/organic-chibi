@@ -224,6 +224,16 @@ static const char *EDGE_CASES[] = {
     "\"s\"\nx 1.5\ny \"t\" z",
     "x \\ y\n// a comment that ends the file",
     "x \\ y\n// " LONG_TEXT "\n z",
+    "'a' ' ' '\\n' '\"' '\\'' '\\\\' '\\x41' '\\0' '\\u00e9' '\xc3\xa9' '' x",
+    "x'y'z '0'..'9' 1'a' '//' '\"' \"s\" '\"' // it's\n'q'",
+    "\"don't\" 'x' // isn't\n\"it\\'s\" '\\'' \"\\x41\\0\\'\"",
+    "'a''b''c''d''e''f''g''h''i''j''k''l''m''n''o''p''q''r''s''t''u''v'",
+    "'" LONG_TEXT "' x",
+    "'\"" LONG_TEXT "\"' \"'\"",
+    "'a", "'a\nb'", "'''", "'\\'", "x '\\",
+    "'\\01'", "'\\xG1'", "'\\x4'", "'\\q'", "\"\\08\"", "\"\\x4\"", "\"\\x4G\"",
+    "'\\\\\\''",
+    "'\"' \"a'b\" '\"' x",
 };
 // clang-format on
 
@@ -288,7 +298,7 @@ static const struct
 };
 
 static bool
-number_fails_with(const char *text, const char *error, u32 pos)
+lex_fails_with(const char *text, const char *error, u32 pos)
 {
     size_t len = strlen(text);
     char *src = calloc(len + LEXER_SOURCE_PADDING, 1);
@@ -322,10 +332,41 @@ number_fails_with(const char *text, const char *error, u32 pos)
 TEST_CASE(number_errors)
 {
     for (size_t i = 0; i < sizeof NUMBER_ERRORS / sizeof NUMBER_ERRORS[0]; i++) {
-        REQUIRE(number_fails_with(
+        REQUIRE(lex_fails_with(
             NUMBER_ERRORS[i].src,
             NUMBER_ERRORS[i].error,
             NUMBER_ERRORS[i].pos
+        ));
+    }
+    return true;
+}
+
+static const struct
+{
+    const char *src;
+    const char *error;
+    u32 pos;
+} LITERAL_ERRORS[] = {
+    { "'a", "unterminated character literal", 2 },
+    { "'a\n'", "unterminated character literal", 2 },
+    { "x := 'ab", "unterminated character literal", 8 },
+    { "'\\'", "unterminated character literal", 3 },
+    { "\"it's", "unterminated string", 5 },
+    { "'\\01'", "a digit can't follow `\\0`; use `\\x00`", 1 },
+    { "\"a\\09\"", "a digit can't follow `\\0`; use `\\x00`", 2 },
+    { "'\\xG1'", "invalid hex escape", 1 },
+    { "\"\\x4\"", "invalid hex escape", 1 },
+    { "'\\q'", "unknown escape sequence", 1 },
+    { "'\\u12G4'", "invalid unicode hex escape", 1 },
+};
+
+TEST_CASE(literal_errors)
+{
+    for (size_t i = 0; i < sizeof LITERAL_ERRORS / sizeof LITERAL_ERRORS[0]; i++) {
+        REQUIRE(lex_fails_with(
+            LITERAL_ERRORS[i].src,
+            LITERAL_ERRORS[i].error,
+            LITERAL_ERRORS[i].pos
         ));
     }
     return true;
@@ -409,6 +450,8 @@ static const char *const PIECES[] = {
     "+%", "-%", "*%", "+%=", "-%=", "*%=", "!!", "??", "?\?=",
     "|", "^", "~", "<", ">", ":", ";", ".", ",", "{", "}", "(", ")", "[", "]", "#", "'", "\\",
     "`", "\x7f", "\xc3\xa9",
+    "'a'", "' '", "'\\n'", "'\"'", "'\\''", "'\\\\'", "'\\x41'", "'\\0'", "'\\u00e9'", "'\xc3\xa9'",
+    "\"don't\"", "\"\\x41\\0\\'\"", "// it's\n",
     " ", " ", " ", " ", "  ", "        ", "\t", "\n", "\n", "\r\n",
 };
 // clang-format on
@@ -558,6 +601,7 @@ TEST_SUITE(lexer_tests)
 {
     RUN_TEST_CASE(edge_cases);
     RUN_TEST_CASE(number_errors);
+    RUN_TEST_CASE(literal_errors);
     RUN_TEST_CASE(builtin_names);
     RUN_TEST_CASE(name_hashes);
     RUN_TEST_CASE(random_programs);

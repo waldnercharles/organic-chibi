@@ -195,6 +195,8 @@ enum
     X(DIAG_TOO_LARGE, "an integer constant must fit in 512 bits")                                   \
     X(DIAG_FLOAT_TOO_LARGE, "a float constant must fit in 4,095 bits as an exact fraction")          \
     X(DIAG_SURROGATE, "`\\uD800` to `\\uDFFF` must come in pairs, as in `\\uD83D\\uDE00`")          \
+    X(DIAG_CHAR_COUNT, "a character literal holds one character")                                   \
+    X(DIAG_CHAR_UTF8, "a character literal must be valid UTF-8")                                    \
     X(DIAG_DATA_TOO_LARGE, "constants can't take more than 256 MB in all")                          \
     X(DIAG_GLOBALS_TOO_LARGE, "globals can't take more than 2 GB in all")                           \
     X(DIAG_DOES_NOT_FIT, "%v does not fit in `%U`")                                                 \

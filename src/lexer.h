@@ -12,6 +12,7 @@
     OTHER(TK_INT, "INT")                                                       \
     OTHER(TK_FLOAT, "FLOAT")                                                   \
     OTHER(TK_STRING, "STRING")                                                 \
+    OTHER(TK_CHAR, "CHAR")                                                     \
     OTHER(TK_IDENT, "IDENT")                                                   \
     KW(TK_IF, "if")                                                            \
     KW(TK_ELSE, "else")                                                        \

@@ -136,10 +136,18 @@ typedef struct
     u64 digit;
     u64 dot;
     u64 quote;
-    u64 backslash;
+    u64 rare;
     u64 comment;
     u64 line_end;
 } BlockMasks;
+
+static inline u8x16
+is_rare(u8x16 v)
+{
+    const u8x16 rare_char = { 0, 0, 0, 0, 0,    0, 0, '\'',
+                              0, 0, 0, 0, '\\', 0, 0, 0 };
+    return simd_eq(simd_lookup16(rare_char, v & 15), v);
+}
 
 static inline u8x16
 is_comment_start(u8x16 v, u8x16 next)
@@ -182,7 +190,7 @@ block_masks(const u8 *p)
         .digit = MASK64(simd_in_range, v, '0', '9'),
         .dot = MASK64(simd_eq, v, '.'),
         .quote = MASK64(simd_eq, v, '"'),
-        .backslash = MASK64(simd_eq, v, '\\'),
+        .rare = MASK64(is_rare, v),
         .comment = MASK64_PAIR(is_comment_start, v, next),
         .line_end = MASK64(is_line_end, v),
     };
@@ -231,20 +239,34 @@ byte_is_ident(u8 c)
     return byte_is_digit(c) || (u8)((c | 0x20) - 'a') < 26 || c == '_';
 }
 
-static const u8 escape_code[256] = { ['"'] = 1, ['\\'] = 1, ['/'] = 1,
-                                     ['b'] = 1, ['f'] = 1,  ['n'] = 1,
-                                     ['r'] = 1, ['t'] = 1,  ['u'] = 2 };
+enum
+{
+    ESCAPE_BYTE = 1,
+    ESCAPE_ZERO,
+    ESCAPE_HEX2,
+    ESCAPE_HEX4,
+};
+
+static const u8 escape_code[256] = {
+    ['"'] = ESCAPE_BYTE, ['\''] = ESCAPE_BYTE, ['\\'] = ESCAPE_BYTE,
+    ['/'] = ESCAPE_BYTE, ['b'] = ESCAPE_BYTE,  ['f'] = ESCAPE_BYTE,
+    ['n'] = ESCAPE_BYTE, ['r'] = ESCAPE_BYTE,  ['t'] = ESCAPE_BYTE,
+    ['0'] = ESCAPE_ZERO, ['x'] = ESCAPE_HEX2,  ['u'] = ESCAPE_HEX4,
+};
 
 static inline bool
 escapes_valid(const char *p, u64 escaped)
 {
     for (; escaped; escaped &= escaped - 1) {
         const char *e = p + __builtin_ctzll(escaped);
-        bool hex4 = byte_is_hex(e[1]) && byte_is_hex(e[2]) &&
-                    byte_is_hex(e[3]) && byte_is_hex(e[4]);
+        bool hex2 = byte_is_hex(e[1]) && byte_is_hex(e[2]);
+        bool hex4 = hex2 && byte_is_hex(e[3]) && byte_is_hex(e[4]);
 
         u8 code = escape_code[(u8)*e];
-        if (code == 0 || (code == 2 && !hex4)) {
+        bool valid = code == ESCAPE_BYTE ||
+                     (code == ESCAPE_ZERO && !byte_is_digit(e[1])) ||
+                     (code == ESCAPE_HEX2 && hex2) || (code == ESCAPE_HEX4 && hex4);
+        if (!valid) {
             return false;
         }
     }
@@ -267,17 +289,16 @@ typedef struct
 } Literals;
 
 static inline ALWAYS_INLINE Literals
-resolve_literals(BlockMasks m, LiteralState in, const char *p, u32 from)
+literals_in(BlockMasks m, LiteralState in, const char *p, u64 active, u64 backslash, u64 squote)
 {
-    u64 active = ~0ULL << from;
     u64 quote = m.quote & active, comment_starts = m.comment & active;
-    u64 backslash = m.backslash & active;
 
-    // This assumes every backslash is in a string.
+    // This assumes every backslash is in a string or a character literal.
     u64 escaped = 0, escape_carry = in.escaped;
-    if (UNLIKELY(backslash | escape_carry)) {
+    if (backslash | escape_carry) {
         escaped = escaped_bytes(backslash, &escape_carry);
         quote &= ~escaped;
+        squote &= ~escaped;
     }
 
     u64 comment = 0;
@@ -285,26 +306,39 @@ resolve_literals(BlockMasks m, LiteralState in, const char *p, u32 from)
         u64 ends = m.line_end & active;
         comment = ((ends & -ends) - 1) & active;
         quote &= ~comment;
+        squote &= ~comment;
         comment_starts &= ~comment;
     }
 
-    u64 inside;
+    u64 inside, chars = 0, unclosed = 0;
     for (;;) {
         inside = prefix_xor(quote) ^ -in.in_string;
-        u64 c = comment_starts & ~inside;
+        u64 c = (comment_starts | squote) & ~inside;
         if (LIKELY(c == 0)) {
             break;
         }
         c &= -c;
-        u64 ends = m.line_end & -c;
-        u64 span = (ends & -ends) - c;
-        comment |= span;
+
+        u64 span;
+        if (c & squote) {
+            u64 later = squote & -(c << 1);
+            u64 close = later & -later;
+            span = (close << 1) - c;
+            chars |= span & ~c;
+            unclosed |= close == 0 ? c : 0;
+        } else {
+            u64 ends = m.line_end & -c;
+            span = (ends & -ends) - c;
+            comment |= span;
+        }
         quote &= ~span;
+        squote &= ~span;
         comment_starts &= ~span;
     }
 
-    u64 body = inside << 1 | in.in_string;
-    bool fallback = ((backslash & ~comment & ~body) | (m.line_end & body)) != 0 ||
+    u64 body = inside << 1 | in.in_string | chars;
+    bool fallback = (unclosed | (backslash & ~comment & ~body) |
+                     (m.line_end & body)) != 0 ||
                     ((escaped & body) && !escapes_valid(p, escaped & body));
     u64 keep = -(u64)!fallback;
     return (Literals){
@@ -313,6 +347,26 @@ resolve_literals(BlockMasks m, LiteralState in, const char *p, u32 from)
         .in = in,
         .out = { inside >> 63 & keep, comment >> 63 & keep, escape_carry & keep },
     };
+}
+
+static NOINLINE Literals
+rare_literals(BlockMasks m, LiteralState in, const char *p, u64 active)
+{
+    u8x64 v = simd_load64((const u8 *)p);
+    u64 backslash = MASK64(simd_eq, v, '\\') & active;
+    u64 squote = MASK64(simd_eq, v, '\'') & active;
+    return literals_in(m, in, p, active, backslash, squote);
+}
+
+static inline ALWAYS_INLINE Literals
+resolve_literals(BlockMasks m, LiteralState in, const char *p, u32 from)
+{
+    u64 active = ~0ULL << from;
+    if (UNLIKELY((m.rare & active) | in.escaped)) {
+        return rare_literals(m, in, p, active);
+    }
+
+    return literals_in(m, (LiteralState){ in.in_string, in.in_comment, 0 }, p, active, 0, 0);
 }
 
 static inline Literals
@@ -444,6 +498,7 @@ static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "kind2[] is indexed by 
     FIRST('A', 'Z') = TK_IDENT,                                                                                 \
     FIRST('_', '_') = TK_IDENT,                                                                                 \
     FIRST('"', '"') = TK_STRING,                                                                                \
+    FIRST('\'', '\'') = TK_CHAR,                                                                                \
     CHIBI_TOKENS(CHIBI_SKIP, CHIBI_SKIP, CHIBI_SKIP, CHIBI_SKIP, KIND2_OP1)                                     \
     CHIBI_TOKENS(CHIBI_SKIP, CHIBI_SKIP, CHIBI_SKIP, KIND2_OP2, CHIBI_SKIP)                                     \
     PAIR('/', '/') = SLOW,                                                                                      \
@@ -455,6 +510,7 @@ static const u8 kind2[2][256][256] = {
     [1] = { KIND2_ENTRIES,
             FIRST('0', '9') = SLOW,
             FIRST('"', '"') = SLOW,
+            FIRST('\'', '\'') = SLOW,
             CHIBI_TOKENS(CHIBI_SKIP, CHIBI_SKIP, KIND2_SLOW_OP3, CHIBI_SKIP, CHIBI_SKIP) },
 };
 
@@ -465,6 +521,7 @@ static const u8 kind_len[SLOW] = {
     [TK_IDENT] = 0,
     [TK_INT] = 0,
     [TK_STRING] = 0,
+    [TK_CHAR] = 0,
     [TK_EOF] = 0,
     CHIBI_TOKENS(CHIBI_SKIP, CHIBI_SKIP, KIND_LEN_OP3, KIND_LEN_OP2, CHIBI_SKIP)
 };
@@ -578,9 +635,25 @@ static inline int
 escape_len(Lexer *lx, const char *src, const char *q)
 {
     char esc = q[1];
-    if (esc == '"' || esc == '\\' || esc == '/' || esc == 'b' || esc == 'f' ||
-        esc == 'n' || esc == 'r' || esc == 't') {
+    if (esc == '"' || esc == '\'' || esc == '\\' || esc == '/' || esc == 'b' ||
+        esc == 'f' || esc == 'n' || esc == 'r' || esc == 't') {
         return 2;
+    }
+
+    if (esc == '0') {
+        if (byte_is_digit((u8)q[2])) {
+            fail(lx, (u32)(q - src), "a digit can't follow `\\0`; use `\\x00`");
+            return 0;
+        }
+        return 2;
+    }
+
+    if (esc == 'x') {
+        if (!byte_is_hex((u8)q[2]) || !byte_is_hex((u8)q[3])) {
+            fail(lx, (u32)(q - src), "invalid hex escape");
+            return 0;
+        }
+        return 4;
     }
 
     if (esc == 'u') {
@@ -598,13 +671,13 @@ escape_len(Lexer *lx, const char *src, const char *q)
 }
 
 static inline const char *
-closing_quote(Lexer *lx, const char *src, const char *open)
+closing_quote(Lexer *lx, const char *src, const char *open, u8 quote)
 {
     const char *q = open + 1;
     for (;;) {
         u8x16 v = simd_load(q);
-        u8x16 special = simd_eq(v, '"') | simd_eq(v, '\\') | simd_eq(v, '\n') |
-                        simd_eq(v, 0);
+        u8x16 special = simd_eq(v, quote) | simd_eq(v, '\\') |
+                        simd_eq(v, '\n') | simd_eq(v, 0);
         u64 hit = simd_mask16(special);
         if (!hit) {
             q += 16;
@@ -612,12 +685,12 @@ closing_quote(Lexer *lx, const char *src, const char *open)
         }
         q += simd_first16(hit);
 
-        char ch = *q;
+        u8 ch = (u8)*q;
         if (ch == '\0' || ch == '\n') {
-            fail(lx, (u32)(q - src), "unterminated string");
+            fail(lx, (u32)(q - src), quote == '"' ? "unterminated string" : "unterminated character literal");
             return NULL;
         }
-        if (ch == '"') {
+        if (ch == quote) {
             return q;
         }
 
@@ -661,13 +734,13 @@ slow_token(Lexer *lx, const char *src, u32 at, Tokens out, int ntok, int *emitte
         return (u32)(n.end - src);
     }
 
-    if (c == '"') {
-        const char *close = closing_quote(lx, src, p);
+    if (c == '"' || c == '\'') {
+        const char *close = closing_quote(lx, src, p, c);
         if (close == NULL) {
             *emitted = STOP;
             return at;
         }
-        out.kinds[ntok] = TK_STRING;
+        out.kinds[ntok] = c == '"' ? TK_STRING : TK_CHAR;
         out.starts[ntok] = at;
         *emitted = ONE_TOKEN;
         return (u32)(close + 1 - src);
@@ -732,7 +805,7 @@ finish_literal(Lexer *lx, const char *src, u64 base, LiteralState in)
         return (u32)(line_end(src + base) - src);
     }
 
-    const char *close = closing_quote(lx, src, src + base - 1 - in.escaped);
+    const char *close = closing_quote(lx, src, src + base - 1 - in.escaped, '"');
     if (close == NULL) {
         return UINT32_MAX;
     }
@@ -1207,10 +1280,10 @@ lexer_alloc_tokens(Arena *arena, size_t len)
 }
 
 static const char *
-string_end(const char *p)
+quoted_end(const char *p)
 {
     const char *q = p + 1;
-    while (*q != '"') {
+    while (*q != *p) {
         q += *q == '\\' ? (q[1] == 'u' ? 6 : 2) : 1;
     }
     return q + 1;
@@ -1229,8 +1302,8 @@ lexer_token_length(const char *src, TokenKind kind, u32 start)
         return (u32)(scan_number(p).end - p);
     }
 
-    if (kind == TK_STRING) {
-        return (u32)(string_end(p) - p);
+    if (kind == TK_STRING || kind == TK_CHAR) {
+        return (u32)(quoted_end(p) - p);
     }
 
     return kind_len[kind];

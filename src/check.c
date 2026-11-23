@@ -5512,10 +5512,10 @@ put_data(Checker *c, bool global, u32 at, u32 type, Operand v)
 }
 
 static u32
-hex4(const char *p)
+hex_value(const char *p, u32 digits)
 {
     u32 v = 0;
-    for (u32 k = 0; k < 4; k++) {
+    for (u32 k = 0; k < digits; k++) {
         u8 ch = (u8)p[k];
         v = v << 4 | (ch <= '9' ? ch - '0' : (ch | 0x20) - 'a' + 10);
     }
@@ -5551,6 +5551,7 @@ static u8
 escaped_byte(char e)
 {
     switch (e) {
+        case '0': return 0;
         case 'b': return '\b';
         case 'f': return '\f';
         case 'n': return '\n';
@@ -5558,6 +5559,33 @@ escaped_byte(char e)
         case 't': return '\t';
         default: return (u8)e;
     }
+}
+
+static u32
+escape_value(const char *s, u32 *value)
+{
+    if (s[1] == 'x') {
+        *value = hex_value(s + 2, 2);
+        return 4;
+    }
+    if (s[1] != 'u') {
+        *value = escaped_byte(s[1]);
+        return 2;
+    }
+
+    u32 cp = hex_value(s + 2, 4);
+    if (cp - 0xD800u >= 0x800) {
+        *value = cp;
+        return 6;
+    }
+
+    bool paired = cp < 0xDC00 && s[6] == '\\' && s[7] == 'u';
+    u32 low = paired ? hex_value(s + 8, 4) : 0;
+    if (low - 0xDC00u >= 0x400) {
+        return 0;
+    }
+    *value = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
+    return 12;
 }
 
 static NOINLINE Operand
@@ -5584,27 +5612,20 @@ string_literal(Checker *c, u32 file, u32 token)
         if (k == raw) {
             break;
         }
-        if (s[k + 1] != 'u') {
-            to[n++] = escaped_byte(s[k + 1]);
-            k += 2;
-            continue;
-        }
 
-        u32 cp = hex4(s + k + 2);
-        k += 6;
-        if (cp - 0xD800u < 0x800) {
-            bool paired = cp < 0xDC00 && k + 6 <= raw && s[k] == '\\' &&
-                          s[k + 1] == 'u';
-            u32 low = paired ? hex4(s + k + 2) : 0;
-            if (low - 0xDC00u >= 0x400) {
-                report(c, file, token, DIAG_SURROGATE, 0, 0);
-                c->ir.ndata = at;
-                return poison;
-            }
-            cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
-            k += 6;
+        u32 cp;
+        u32 len = escape_value(s + k, &cp);
+        if (len == 0) {
+            report(c, file, token, DIAG_SURROGATE, 0, 0);
+            c->ir.ndata = at;
+            return poison;
         }
-        n += put_utf8(to + n, cp);
+        if (s[k + 1] == 'u') {
+            n += put_utf8(to + n, cp);
+        } else {
+            to[n++] = (u8)cp;
+        }
+        k += len;
     }
     to[n] = 0;
     c->ir.ndata = at + n + 1;
@@ -5617,6 +5638,62 @@ string_literal(Checker *c, u32 file, u32 token)
     c->string_offsets[c->nstrings] = at;
     c->string_lengths[c->nstrings] = n;
     return (Operand){ TYPE_ID_UNTYPED_STRING, c->nstrings++ };
+}
+
+static u32
+utf8_value(const u8 *s, u32 *cp)
+{
+    u8 b = s[0];
+    u32 n = b < 0xC2 ? 0 : b < 0xE0 ? 2 : b < 0xF0 ? 3 : b < 0xF5 ? 4 : 0;
+    if (n == 0) {
+        return 0;
+    }
+
+    u32 v = b & (0x7Fu >> n);
+    for (u32 i = 1; i < n; i++) {
+        if ((s[i] & 0xC0) != 0x80) {
+            return 0;
+        }
+        v = v << 6 | (s[i] & 0x3Fu);
+    }
+
+    u32 least = n == 2 ? 0x80 : n == 3 ? 0x800 : 0x10000;
+    if (v < least || v > 0x10FFFF || v - 0xD800u < 0x800) {
+        return 0;
+    }
+    *cp = v;
+    return n;
+}
+
+static NOINLINE Operand
+char_literal(Checker *c, u32 file, u32 token)
+{
+    const ParsedFile *f = &c->files[file];
+    u32 start = f->tokens.starts[token];
+    const char *s = f->src + start + 1;
+    u32 raw = lexer_token_length(f->src, TK_CHAR, start) - 2;
+
+    u32 cp = (u8)s[0];
+    u32 n = 1;
+    if (s[0] == '\\') {
+        n = escape_value(s, &cp);
+        if (n == 0) {
+            report(c, file, token, DIAG_SURROGATE, 0, 0);
+            return poison;
+        }
+    } else if (cp >= 0x80) {
+        n = utf8_value((const u8 *)s, &cp);
+        if (n == 0) {
+            report(c, file, token, DIAG_CHAR_UTF8, 0, 0);
+            return poison;
+        }
+    }
+
+    if (n != raw) {
+        report(c, file, token, DIAG_CHAR_COUNT, 0, 0);
+        return poison;
+    }
+    return (Operand){ TYPE_ID_UNTYPED_INT, exact_int(&c->exacts, cp) };
 }
 
 static NOINLINE void
@@ -7787,6 +7864,9 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                 break;
             case NODE_STRING:
                 push_operand(c, token, string_literal(c, file, token));
+                break;
+            case NODE_CHAR:
+                push_operand(c, token, char_literal(c, file, token));
                 break;
             case NODE_TRUE:
             case NODE_FALSE:

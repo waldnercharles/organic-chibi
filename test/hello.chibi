@@ -5,5 +5,6 @@ Example :: library {
         title := "My Game"
         // a comment
         lives: int = 3
+        initial := 'G'
     }
 }
