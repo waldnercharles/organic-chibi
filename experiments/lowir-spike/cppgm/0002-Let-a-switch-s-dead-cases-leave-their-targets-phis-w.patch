@@ -1,0 +1,80 @@
+From edd5e06930a1419c965d0e74892a3897499661f8 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 23 Nov 2026 16:27:17 +0000
+Subject: [PATCH 2/4] Let a switch's dead cases leave their targets' phis when
+ switches form
+
+A case whose value the switched root never takes (a negative case on a
+zero-extended u8) was dropped from the test, so its target was never an
+exit of the region: the region's block ended unreachable while that
+target's phis still named it. Later passes then read the stale label and
+crashed in clone_call, jump threading, compact_body and sink_values. Such
+a case's edge now takes no values, as a branch's empty side does, and
+retarget drops its inputs.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_019erWmHHnB6D36aAa4fKvwn
+---
+ dev/src/opt/switch_formation.cpp | 14 ++++++++++++--
+ 1 file changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/dev/src/opt/switch_formation.cpp b/dev/src/opt/switch_formation.cpp
+index f657f84d..ca811ed2 100644
+--- a/dev/src/opt/switch_formation.cpp
++++ b/dev/src/opt/switch_formation.cpp
+@@ -262,8 +262,9 @@ Ranges roots_of(const std::vector<Piece>& pieces, const Ranges& derived)
+ // value a chain of extensions and constant additions derives from it
+ // (`yes`: its values the branch takes), or a switch on either (`cases`:
+ // its value per case, in case order, and `decides`: whether the case is the
+-// first of its value); `cost` the compares it stands for (a switch's runs
+-// of consecutive values per target). `hoist`: the chain's instructions in
++// first of its value; `dead`: the targets of cases whose value the root
++// never takes); `cost` the compares it stands for (a switch's runs of
++// consecutive values per target). `hoist`: the chain's instructions in
+ // the test's own block.
+ struct Test
+ {
+@@ -275,6 +276,7 @@ struct Test
+ 	Ranges yes;
+ 	std::vector<std::pair<int64_t, BlockId>> cases;
+ 	std::vector<uint8_t> decides;
++	std::vector<BlockId> dead;
+ 	std::vector<InstId> hoist;
+ 	BlockId on_true;
+ 	BlockId on_false;
+@@ -519,6 +521,7 @@ bool SwitchFormer::test_of(BlockId block, bool head, Test& test) const
+ 	test.is_switch = false;
+ 	test.yes = roots_of(pieces, true_side(pred, static_cast<int64_t>(bits.low), lo, hi));
+ 	test.cases.clear();
++	test.dead.clear();
+ 	test.on_true = branch.ops[1].index;
+ 	test.on_false = branch.ops[2].index;
+ 	test.cost = 1;
+@@ -542,6 +545,7 @@ bool SwitchFormer::switch_of(BlockId block, bool head, Test& test) const
+ 		!root_of(term.ops[0].index, test.x, pieces, links) || !only_links(block, head, last, links, test.hoist))
+ 		return false;
+ 	test.cases.clear();
++	test.dead.clear();
+ 	std::vector<std::pair<int64_t, BlockId>> cases;
+ 	for (uint32_t k = 0; k + 1 < term.extra_count; k += 2)
+ 	{
+@@ -556,6 +560,8 @@ bool SwitchFormer::switch_of(BlockId block, bool head, Test& test) const
+ 		const Ranges roots = roots_of(pieces, Ranges(1, std::make_pair(v, v)));
+ 		if (!roots.empty())
+ 			test.cases.push_back(std::make_pair(roots[0].first, to));
++		else
++			test.dead.push_back(to);
+ 	}
+ 	std::stable_sort(cases.begin(), cases.end(),
+ 		[](const std::pair<int64_t, BlockId>& a, const std::pair<int64_t, BlockId>& b) { return a.first < b.first; });
+@@ -613,6 +619,10 @@ bool SwitchFormer::sides(const Test& t, const Ranges& entry, int64_t tmin, int64
+ 		if (!take(t.cases[k].second, one))
+ 			return false;
+ 	}
++	// A dead case's edge takes no values, but its target still loses it.
++	for (BlockId to : t.dead)
++		if (!take(to, Ranges()))
++			return false;
+ 	normalize(taken);
+ 	return take(t.on_false, subtract(entry, taken, tmin, tmax));
+ }

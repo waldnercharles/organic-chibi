@@ -1,0 +1,131 @@
+From 35e0e24195a3626a7668519c2a85666ef09c12ff Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 23 Nov 2026 16:52:32 +0000
+Subject: [PATCH 4/4] Keep a partial copy's size when an object value moves
+ through a slot
+
+objects_through_slots gives a loaded object value a slot of its own and
+rewrites its copyobj readers to copy from that slot. It sized every such
+copy by the value's type, so a copy of an object value's first 16 bytes
+became a copy of all 72, which overwrote the destination's later fields.
+A copyobj keeps its own size and alignment now; only whole loads and
+stores take the object's.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_019erWmHHnB6D36aAa4fKvwn
+---
+ dev/src/opt/aggregate_slots.cpp               | 12 +++---
+ .../o1/700-partial-copy-of-object-value.ref   | 24 ++++++++++++
+ ...rtial-copy-of-object-value.ref.exit_status |  1 +
+ .../o1/700-partial-copy-of-object-value.t     | 38 +++++++++++++++++++
+ 4 files changed, 70 insertions(+), 5 deletions(-)
+ create mode 100644 pa33/tests/regression/o1/700-partial-copy-of-object-value.ref
+ create mode 100644 pa33/tests/regression/o1/700-partial-copy-of-object-value.ref.exit_status
+ create mode 100644 pa33/tests/regression/o1/700-partial-copy-of-object-value.t
+
+diff --git a/dev/src/opt/aggregate_slots.cpp b/dev/src/opt/aggregate_slots.cpp
+index a8d4652b..b57ab42c 100644
+--- a/dev/src/opt/aggregate_slots.cpp
++++ b/dev/src/opt/aggregate_slots.cpp
+@@ -1438,13 +1438,15 @@ bool AggregateSlots::objects_through_slots()
+ 		}
+ 	bool rewritten = false;
+ 	const auto copy = [&](Instruction& inst, Value from, Value to) {
+-		const Type type = object_copy(inst) ? body_.temps[inst.ops[0].index].type : inst.type;
+-		inst.op = Opcode::CopyObject;
++		if (inst.op != Opcode::CopyObject)
++		{
++			inst.op = Opcode::CopyObject;
++			inst.immediate = static_cast<int64_t>(storage_bytes(inst.type));
++			inst.sub = static_cast<uint8_t>(inst.type.align_log2);
++			inst.type = Type::scalar(TypeKind::Void);
++		}
+ 		inst.ops[0] = from;
+ 		inst.ops[1] = to;
+-		inst.immediate = static_cast<int64_t>(storage_bytes(type));
+-		inst.sub = static_cast<uint8_t>(type.align_log2);
+-		inst.type = Type::scalar(TypeKind::Void);
+ 		rewritten = true;
+ 	};
+ 	std::vector<SlotId> home(body_.temps.size(), kNoId);
+diff --git a/pa33/tests/regression/o1/700-partial-copy-of-object-value.ref b/pa33/tests/regression/o1/700-partial-copy-of-object-value.ref
+new file mode 100644
+index 00000000..280e81de
+--- /dev/null
++++ b/pa33/tests/regression/o1/700-partial-copy-of-object-value.ref
+@@ -0,0 +1,24 @@
++function @f(%x : i64) -> obj<24x8> [no_inline=yes] {
++  slot $dst : obj<24x8>
++
++  block ^0:
++    %pd = addr $dst
++    zeroinit 24x8 %pd
++    %pd16 = index i8 %pd, 16
++    store i8 4, %pd16
++    store i64 %x, %pd
++    return obj<24x8> $dst
++}
++function @main(%argc : i32, %argv : ptr) -> i32 [role=entry] {
++  slot $out : obj<24x8>
++
++  block ^0:
++    %r = call obj<24x8> @f(0)
++    %po = addr $out
++    copyobj 24x8 %r, %po
++    %p16 = index i8 %po, 16
++    %b = load i8 %p16
++    %w = convert sext i32 i8 %b
++    %code = binary sub i32 %w, 4
++    return i32 %code
++}
+diff --git a/pa33/tests/regression/o1/700-partial-copy-of-object-value.ref.exit_status b/pa33/tests/regression/o1/700-partial-copy-of-object-value.ref.exit_status
+new file mode 100644
+index 00000000..c1d5c934
+--- /dev/null
++++ b/pa33/tests/regression/o1/700-partial-copy-of-object-value.ref.exit_status
+@@ -0,0 +1 @@
++EXIT_SUCCESS
+diff --git a/pa33/tests/regression/o1/700-partial-copy-of-object-value.t b/pa33/tests/regression/o1/700-partial-copy-of-object-value.t
+new file mode 100644
+index 00000000..0104025c
+--- /dev/null
++++ b/pa33/tests/regression/o1/700-partial-copy-of-object-value.t
+@@ -0,0 +1,38 @@
++# A copy of the first eight bytes of an object value into a slot moves
++# eight bytes when the value goes through a slot of its own: byte 16 keeps
++# the 4 stored there, where a copy of the whole object put 0 there.
++# @main exits 0.
++function @f(%x : i64) -> obj<24x8> [no_inline=yes] {
++  slot $src : obj<24x8>
++  slot $dst : obj<24x8>
++
++  block ^0:
++    %ps = addr $src
++    store i64 %x, %ps
++    %ps8 = index i8 %ps, 8
++    store i64 %x, %ps8
++    %ps16 = index i8 %ps, 16
++    store i64 %x, %ps16
++    %v = load obj<24x8> %ps
++    %pd = addr $dst
++    zeroinit 24x8 %pd
++    %pd16 = index i8 %pd, 16
++    store i8 4, %pd16
++    copyobj 8x8 %v, %pd
++    %r = load obj<24x8> %pd
++    return obj<24x8> %r
++}
++
++function @main(%argc : i32, %argv : ptr) -> i32 [role=entry] {
++  slot $out : obj<24x8>
++
++  block ^0:
++    %r = call obj<24x8> @f(0)
++    %po = addr $out
++    copyobj 24x8 %r, %po
++    %p16 = index i8 %po, 16
++    %b = load i8 %p16
++    %w = convert sext i32 i8 %b
++    %code = binary sub i32 %w, 4
++    return i32 %code
++}

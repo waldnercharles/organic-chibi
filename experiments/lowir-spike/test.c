@@ -44,7 +44,7 @@ add_object(const Build *b, u32 k, const char *text, char tag)
 {
     Package p;
     bool ok = check_source(&p, text);
-    if (ok && !lowir_unsupported(&p.c)) {
+    if (ok) {
         char prefix[32];
         snprintf(prefix, sizeof prefix, "%c%u_", tag, k);
         CppgmLowir *m = cppgm_lowir_create(CPPGM_LOWIR_ABI_VERSION, CPPGM_TARGET_LINUX);
@@ -208,27 +208,13 @@ TEST_CASE(lowir_agrees_with_reference)
     ok = ok && link_objects(&b);
 
     u32 tested = 0;
-    u32 skipped = 0;
     for (u32 k = 0; ok && k < grid; k++) {
         Package p;
-        ok = check_source(&p, grid_program(k));
-        const char *unsupported = ok ? lowir_unsupported(&p.c) : NULL;
-        for (u32 f = 0; unsupported && f < p.c.ir.nfuncs; f++) {
-            skipped += takes_two_ints(&p.c, &p.c.ir.funcs[f]);
-        }
-        if (unsupported) {
-            fprintf(stderr, "lowir test: skipped grid program %u: %s\n", k, unsupported);
-        }
-        ok = ok && (unsupported || agree_on_grid(&b, &p, k, &tested));
+        ok = check_source(&p, grid_program(k)) && agree_on_grid(&b, &p, k, &tested);
         release(&p);
     }
-    if (ok && tested + skipped != GRID_FUNCTIONS) {
-        fprintf(
-            stderr,
-            "lowir test: %u functions take two ints, expected %u\n",
-            tested + skipped,
-            (u32)GRID_FUNCTIONS
-        );
+    if (ok && tested != GRID_FUNCTIONS) {
+        fprintf(stderr, "lowir test: %u functions take two ints, expected %u\n", tested, (u32)GRID_FUNCTIONS);
         ok = false;
     }
 
@@ -296,6 +282,94 @@ TEST_CASE(lowir_works_with_c)
     return true;
 }
 
+static const char WIDE_EDGES[] =
+    "import \"std/bits\"\n"
+    "\n"
+    "fn fold(x: i128) -> int {\n"
+    "    u := bitcast(u128, x)\n"
+    "    return bitcast(int, u64(u & 0xFFFF_FFFF_FFFF_FFFF)) ^ bitcast(int, u64(u >> 64))\n"
+    "}\n"
+    "\n"
+    "fn signed_from_float(a: int, b: int) -> int {\n"
+    "    k := a & 3\n"
+    "    d: f64 = -170141183460469231731687303715884105728.0\n"
+    "    if k == 1 {\n"
+    "        d = d * (1.0 + 1.0 / 4503599627370496.0)\n"
+    "    }\n"
+    "    if k == 2 {\n"
+    "        d = -d - 37778931862957161709568.0\n"
+    "    }\n"
+    "    if k == 3 {\n"
+    "        d = -d\n"
+    "    }\n"
+    "    return fold(i128(d)) ^ b\n"
+    "}\n"
+    "\n"
+    "fn unsigned_from_float(a: int, b: int) -> int {\n"
+    "    k := a & 3\n"
+    "    d: f64 = 340282366920938463463374607431768211456.0\n"
+    "    if k == 1 {\n"
+    "        d = d - 37778931862957161709568.0\n"
+    "    }\n"
+    "    if k == 2 {\n"
+    "        d = -0.5\n"
+    "    }\n"
+    "    if k == 3 {\n"
+    "        d = -1.0\n"
+    "    }\n"
+    "    return fold(bitcast(i128, u128(d))) ^ b\n"
+    "}\n"
+    "\n"
+    "fn negate_min(a: int, b: int) -> int {\n"
+    "    x := i128(-0x8000_0000_0000_0000_0000_0000_0000_0000) + i128(a & 1)\n"
+    "    return fold(-x) ^ b\n"
+    "}\n"
+    "\n"
+    "fn divide_min(a: int, b: int) -> int {\n"
+    "    x := i128(-0x8000_0000_0000_0000_0000_0000_0000_0000) + i128(a & 1)\n"
+    "    return fold(x / -1) ^ b\n"
+    "}\n"
+    "\n"
+    "fn divide_low_ones(a: int, b: int) -> int {\n"
+    "    x := i128(-0x8000_0000_0000_0000_0000_0000_0000_0000) + i128(a & 1)\n"
+    "    return fold(x / 0xFFFF_FFFF_FFFF_FFFF) ^ fold(x % 0xFFFF_FFFF_FFFF_FFFF) ^ b\n"
+    "}\n"
+    "\n"
+    "fn remainder_min(a: int, b: int) -> int {\n"
+    "    x := i128(-0x8000_0000_0000_0000_0000_0000_0000_0000) + i128(a & 1)\n"
+    "    y := i128(b) - i128(b) - 1\n"
+    "    return fold(x % y) ^ fold(x % -1) ^ b\n"
+    "}\n"
+    "\n"
+    "fn narrow_signed(a: int, b: int) -> int {\n"
+    "    x := i128(0xFFFF_FFFF_FFFF_FFFF) + i128(a & 1)\n"
+    "    y := i128(-0x8000_0000_0000_0000) - i128(b & 1)\n"
+    "    return bitcast(int, u64(x)) ^ int(y)\n"
+    "}\n"
+    "\n"
+    "fn multiply_highs(a: int, b: int) -> int {\n"
+    "    x := (u128(a & 1) << 64) + u128(b & 7)\n"
+    "    y := (u128(b & 1) << 64) + 1\n"
+    "    return fold(bitcast(i128, x * y)) ^ a\n"
+    "}\n"
+    "\n"
+    "fn multiply_carry(a: int, b: int) -> int {\n"
+    "    x := u128(0xFFFF_FFFF_FFFF_FFFF)\n"
+    "    y := (u128(1) << 64) + 1 + u128(a & 1)\n"
+    "    return fold(bitcast(i128, x * y)) ^ b\n"
+    "}\n"
+    "\n"
+    "fn count_narrow(a: int, b: int) -> int {\n"
+    "    x := u128(a & 1) << 100\n"
+    "    return int(i8(bits.leading_zeros(x))) ^ int(u8(bits.trailing_zeros(x))) ^ b\n"
+    "}\n"
+    "\n"
+    "fn narrow_unsigned(a: int, b: int) -> int {\n"
+    "    x := u128(0x7FFF_FFFF_FFFF_FFFF) + u128(a & 1)\n"
+    "    y := u128(0xFFFF_FFFF_FFFF_FFFF) + u128(b & 1)\n"
+    "    return int(x) ^ bitcast(int, u64(y))\n"
+    "}\n";
+
 TEST_CASE(lowir_passes_arrays)
 {
     Build b;
@@ -310,6 +384,27 @@ TEST_CASE(lowir_passes_arrays)
     }
     if (ok && tested != 15) {
         fprintf(stderr, "lowir test: %u array functions take two ints, expected 15\n", tested);
+        ok = false;
+    }
+    close_objects(&b, ok);
+    REQUIRE(ok);
+    return true;
+}
+
+TEST_CASE(lowir_converts_wide_edges)
+{
+    Build b;
+    REQUIRE(open_objects(&b));
+    bool ok = add_object(&b, 0, WIDE_EDGES, 'g') && link_objects(&b);
+
+    u32 tested = 0;
+    if (ok) {
+        Package p;
+        ok = check_source(&p, WIDE_EDGES) && agree_on_grid(&b, &p, 0, &tested);
+        release(&p);
+    }
+    if (ok && tested != 11) {
+        fprintf(stderr, "lowir test: %u 128-bit edge functions take two ints, expected 11\n", tested);
         ok = false;
     }
     close_objects(&b, ok);
@@ -368,6 +463,7 @@ main(void)
     RUN_TEST_CASE(lowir_agrees_with_reference);
     RUN_TEST_CASE(lowir_works_with_c);
     RUN_TEST_CASE(lowir_passes_arrays);
+    RUN_TEST_CASE(lowir_converts_wide_edges);
     RUN_TEST_CASE(lowir_runs_vectors);
 
     printf("lowir test at -O%u: %s\n", lowir_level, pu_test_failed() ? "FAILED" : "passed");

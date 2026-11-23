@@ -11,7 +11,6 @@ enum
     LOWIR_WRAP = 2,
 };
 
-const char *lowir_unsupported(const Checker *c);
 void lowir_package(CppgmLowir *m, const Checker *c, const char *prefix, u32 flags, const char *suffix);
 
 #endif

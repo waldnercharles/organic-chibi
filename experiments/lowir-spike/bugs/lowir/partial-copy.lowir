@@ -1,0 +1,34 @@
+function @f(%x : i64) -> obj<24x8> [no_inline=yes] {
+  slot $src : obj<24x8>
+  slot $dst : obj<24x8>
+
+  block ^0:
+    %ps = addr $src
+    store i64 %x, %ps
+    %ps8 = index i8 %ps, 8
+    store i64 %x, %ps8
+    %ps16 = index i8 %ps, 16
+    store i64 %x, %ps16
+    %v = load obj<24x8> %ps
+    %pd = addr $dst
+    zeroinit 24x8 %pd
+    %pd16 = index i8 %pd, 16
+    store i8 4, %pd16
+    copyobj 8x8 %v, %pd
+    %r = load obj<24x8> %pd
+    return obj<24x8> %r
+}
+
+function @main(%argc : i32, %argv : ptr) -> i32 [role=entry] {
+  slot $out : obj<24x8>
+
+  block ^0:
+    %r = call obj<24x8> @f(0)
+    %po = addr $out
+    copyobj 24x8 %r, %po
+    %p16 = index i8 %po, 16
+    %b = load i8 %p16
+    %w = convert sext i32 i8 %b
+    %code = binary sub i32 %w, 4
+    return i32 %code
+}
