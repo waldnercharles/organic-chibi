@@ -94,7 +94,7 @@ Since step 3t.12, `make translated` writes the compiler as one program, in a chi
 
 | Test | `-O0` | `-O1` to `-O3` |
 |---|---|---|
-| The C backend's grid: 379 functions of two `int`s on 288 argument pairs, against the reference interpreter (229 at hand-off 1, 371 at hand-off 2; step 3k.23 adds `string` and `cstring`), less the two programs with 128-bit integers, `MUL_HIGH` and `INT128_GRID`, which the test skips | agrees | agrees |
+| The C backend's grid: 391 functions of two `int`s on 288 argument pairs, against the reference interpreter (229 at hand-off 1, 371 at hand-off 2; steps 3k.23 and 3k.24 add strings and tuples), less the two programs with 128-bit integers, `MUL_HIGH` and `INT128_GRID`, which the test skips | agrees | agrees |
 | The C backend's interop test: calls into C, variadic calls, callbacks, exports, `main`, C globals | agrees | agrees |
 | The C backend's array program (step 3k.21): 15 functions of two `int`s on 288 argument pairs, against the reference interpreter; once by hand, 16 calls from C, built with clang and GCC, into its functions that take and give arrays | agrees | agrees |
 | The C backend's vector programs: 185 calls with hand-computed results (168 at hand-off 2), and a grid of 8 functions, one per lane type, on 5,120 argument sets each (main) | agrees | agrees |
