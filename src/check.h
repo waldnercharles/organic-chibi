@@ -82,7 +82,9 @@ typedef enum
     X(TYPE_ID_U32X4, TYPE_VECTOR, TYPE_ID_U32, 4, "u32x4")                     \
     X(TYPE_ID_I32X4, TYPE_VECTOR, TYPE_ID_I32, 4, "i32x4")                     \
     X(TYPE_ID_U64X2, TYPE_VECTOR, TYPE_ID_U64, 2, "u64x2")                     \
-    X(TYPE_ID_I64X2, TYPE_VECTOR, TYPE_ID_I64, 2, "i64x2")
+    X(TYPE_ID_I64X2, TYPE_VECTOR, TYPE_ID_I64, 2, "i64x2")                     \
+    X(TYPE_ID_STRING, TYPE_SLICE, TYPE_ID_U8, 1, "string")                     \
+    X(TYPE_ID_CSTRING, TYPE_MANY, TYPE_ID_U8, 1, "cstring")
 // clang-format on
 
 #define CHIBI_FIXED_TYPE_ID(id, kind, arg0, arg1, text) id,
@@ -233,11 +235,11 @@ enum
     X(DIAG_NEVER_NIL, "`%U` is never nil, so this needs a value")                                   \
     X(DIAG_NIL_MISMATCH, "`%U` is never nil")                                                       \
     X(DIAG_NIL_TYPE, "`nil` needs a type here, as in `p: ?*T = nil`")                               \
-    X(DIAG_STRING_TYPE, "a string needs a type here, as in `s: [*]u8 = \"text\"`")                  \
     X(DIAG_MAYBE_NIL, "`%T` may be nil, so it needs `!!`, `?\?` or a check against `nil` first")    \
     X(DIAG_NOT_OPTIONAL, "`%T` is never nil, so `%t` does nothing")                                 \
     X(DIAG_ALWAYS_NIL, "this is always `nil`, so `!!` always traps")                                \
     X(DIAG_NOT_INDEXABLE, "`%T` can't be indexed")                                                  \
+    X(DIAG_STRING_READ_ONLY, "a `string` is read-only, so its bytes can't be assigned or pointed to") \
     X(DIAG_NOT_INDEX, "an index must be an integer, found `%T`")                                    \
     X(DIAG_INDEX_RANGE, "index %v is out of range for `%U`")                                        \
     X(DIAG_SLICE_ORDER, "this slice starts at %v, after its end")                                   \

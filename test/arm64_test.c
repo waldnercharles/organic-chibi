@@ -2557,6 +2557,7 @@ static const char CALLS_INTO_C
          "extern fn labs(x: i64) -> i64\n"
          "extern fn memset(p: *[8]u8, c: i32, n: u64) -> *[8]u8\n"
          "extern fn strlen(s: [*]u8) -> u64\n"
+         "extern fn atoi(s: cstring) -> i32\n"
          "extern fn chibi_c_eight(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: "
          "int) -> int\n"
          "extern fn chibi_c_mixed(a: i8, b: f64, c: u16, d: f32, e: i32, f: bool) -> f64\n"
@@ -2681,6 +2682,12 @@ static const char CALLS_INTO_C
          "\n"
          "fn literal_length(x: int) -> int {\n"
          "    return int(strlen(\"chibi\")) * 100 + int(strlen(\"\")) + x\n"
+         "}\n"
+         "\n"
+         "fn c_strings(x: int) -> int {\n"
+         "    digits: [*]u8 = \"4096\"\n"
+         "    k: cstring = \"27\"\n"
+         "    return int(atoi(k)) * 10000 + int(atoi(cstring(digits))) + x\n"
          "}\n"
          "\n"
          "fn add_ticks(x: int) -> int {\n"
@@ -2881,6 +2888,7 @@ TEST_CASE(calls_into_c)
         REQUIRE(((I1 *)fn(&p, "wide"))(CONTEXT, x) == 111 * x + 210);
         REQUIRE(((I1 *)fn(&p, "fill"))(CONTEXT, x) == 8 * x);
         REQUIRE(((I1 *)fn(&p, "literal_length"))(CONTEXT, x) == 500 + x);
+        REQUIRE(((I1 *)fn(&p, "c_strings"))(CONTEXT, x) == 274096 + x);
 
         ((V1 *)fn(&p, "registers"))(CONTEXT, x);
         REQUIRE((uint32_t)chibi_c_seen[0] == (uint32_t)(int32_t)(int8_t)(x - 10));
@@ -5914,6 +5922,61 @@ TEST_CASE(int128)
     return true;
 }
 
+static const char *const STRING_VIEW_FUNCTIONS[] = {
+    "sv_index", "sv_slice", "sv_bytes", "sv_loop", "sv_word", "sv_pass", "sv_cstring",
+};
+
+static const CallCase STRING_VIEW_CASES[] = {
+    { "sv_index", 0, 5, 10417, 0 },
+    { "sv_index", 11, -2, 10010, 0 },
+    { "sv_index", 12, 0, 0, TRAP_BOUNDS },
+    { "sv_index", -1, 0, 0, TRAP_BOUNDS },
+    { "sv_slice", 2, 3, 6399, 0 },
+    { "sv_slice", 7, 1, 1204, 0 },
+    { "sv_slice", 6, 3, 0, TRAP_BOUNDS },
+    { "sv_slice", 3, 4, 0, TRAP_BOUNDS },
+    { "sv_bytes", 65, 0, 65148, 0 },
+    { "sv_bytes", 200, 1, 72149, 0 },
+    { "sv_loop", 0, 2, 109, 0 },
+    { "sv_loop", 1, -1, 778, 0 },
+    { "sv_loop", 13, 0, 6044614, 0 },
+    { "sv_loop", 8, 1, 239250227378, 0 },
+    { "sv_word", 0, 3, 51123, 0 },
+    { "sv_word", 1, -4, 52117, 0 },
+    { "sv_pass", 5, 1, 3104, 0 },
+    { "sv_pass", 2, 0, 1097, 0 },
+    { "sv_pass", 3, 7, 2105, 0 },
+    { "sv_cstring", 1, 0, 120110, 0 },
+    { "sv_cstring", 6, 9, 116102, 0 },
+    { "sv_cstring", 3, -1, 110, 0 },
+};
+
+TEST_CASE(string_views)
+{
+    catch_traps();
+    Program p;
+    REQUIRE(build(&p, STRING_VIEWS));
+    REQUIRE(strcmp(global_string(&p, "sv_table", 32), "hello, world") == 0);
+    REQUIRE(strcmp(global_string(&p, "sv_words", 24), "yz") == 0);
+
+    int64_t n = 0;
+    memcpy(&n, p.n.globals + p.c.decls.values[decl_named(&p, "sv_table")] + 40, sizeof n);
+    REQUIRE(n == 12);
+
+    for (size_t k = 0; k < sizeof STRING_VIEW_CASES / sizeof STRING_VIEW_CASES[0]; k++) {
+        CallCase t = STRING_VIEW_CASES[k];
+        int64_t got = 0;
+        int trap = call_i2((I2 *)fn(&p, t.name), t.a, t.b, &got);
+        if (trap != t.trap || (!trap && got != t.want)) {
+            fprintf(stderr, "arm64 test: %s(%lld, %lld) gave %lld (trap %d)\n", t.name, (long long)t.a, (long long)t.b, (long long)got, trap);
+            REQUIRE(false);
+        }
+    }
+    REQUIRE(agree_on_grid(&p, STRING_VIEW_FUNCTIONS, sizeof STRING_VIEW_FUNCTIONS / sizeof STRING_VIEW_FUNCTIONS[0]));
+    release_program(&p);
+    return true;
+}
+
 TEST_SUITE(arm64_tests)
 {
     RUN_TEST_CASE(hidden_context);
@@ -5941,6 +6004,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(release_fast);
     RUN_TEST_CASE(vectors);
     RUN_TEST_CASE(int128);
+    RUN_TEST_CASE(string_views);
     RUN_TEST_CASE(narrow_parameters);
     RUN_TEST_CASE(constant_division);
     RUN_TEST_CASE(differential);

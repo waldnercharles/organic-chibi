@@ -4541,6 +4541,8 @@ static const char *const reserved_names[] = {
     "f64",
     "uintptr",
     "error",
+    "string",
+    "cstring",
     "_",
 };
 

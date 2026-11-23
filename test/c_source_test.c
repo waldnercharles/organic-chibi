@@ -482,7 +482,7 @@ TEST_CASE(writes_layouts)
 enum
 {
     MAX_JOBS = 8,
-    GRID_FUNCTIONS = 372,
+    GRID_FUNCTIONS = 379,
 };
 
 typedef struct
@@ -549,6 +549,7 @@ static const char INTEROP[] =
     "extern fn labs(x: i64) -> i64\n"
     "extern fn memset(p: *[8]u8, c: i32, n: u64) -> *[8]u8\n"
     "extern fn strlen(s: [*]u8) -> u64\n"
+    "extern fn atoi(s: cstring) -> i32\n"
     "extern fn snprintf(buf: [*]u8, n: u64, fmt: [*]u8, ..) -> i32\n"
     "extern fn qsort(base: *[8]int, n: u64, size: u64, cmp: extern fn(a: *int, b: *int) -> i32)\n"
     "extern fn chibi_cs_mixed(a: i8, b: f64, c: u16, d: f32, e: i32, f: bool) -> f64\n"
@@ -654,6 +655,12 @@ static const char INTEROP[] =
     "\n"
     "fn literal_length(x: int) -> int {\n"
     "    return int(strlen(\"chibi\")) * 100 + int(strlen(\"\")) + x\n"
+    "}\n"
+    "\n"
+    "fn c_strings(x: int) -> int {\n"
+    "    digits: [*]u8 = \"4096\"\n"
+    "    k: cstring = \"27\"\n"
+    "    return int(atoi(k)) * 10000 + int(atoi(cstring(digits))) + x\n"
     "}\n"
     "\n"
     "fn add_ticks(x: int) -> int {\n"
@@ -1415,6 +1422,7 @@ calls_c(const Build *b, int64_t x)
     ok &= gives("fill", x, ((I1 *)symbol(b, "i0_fill"))(CONTEXT, x), 8 * x);
     ok &= gives("vpoint", x, ((I1 *)symbol(b, "i0_vpoint"))(CONTEXT, x), point * 10 - 7);
     ok &= gives("literal_length", x, ((I1 *)symbol(b, "i0_literal_length"))(CONTEXT, x), 500 + x);
+    ok &= gives("c_strings", x, ((I1 *)symbol(b, "i0_c_strings"))(CONTEXT, x), 274096 + x);
 
     int64_t ticks = chibi_cs_ticks;
     ok &= gives("ticks", x, ((I1 *)symbol(b, "i0_ticks"))(CONTEXT, x), x);

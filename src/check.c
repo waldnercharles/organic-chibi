@@ -197,7 +197,7 @@ static const u8 lane_vectors[NFIXED_TYPES] = {
     [TYPE_ID_U64] = TYPE_ID_U64X2, [TYPE_ID_I64] = TYPE_ID_I64X2,
 };
 
-static_assert(NBUILTIN_TYPES == 17, "every builtin type name needs an entry in builtin_types");
+static_assert(NBUILTIN_TYPES == 19, "every builtin type name needs an entry in builtin_types");
 static const u8 builtin_types[NBUILTIN_TYPES] = {
     BUILTIN(NAME_VOID) = TYPE_ID_VOID,
     BUILTIN(NAME_BOOL) = TYPE_ID_BOOL,
@@ -216,6 +216,8 @@ static const u8 builtin_types[NBUILTIN_TYPES] = {
     BUILTIN(NAME_F64) = TYPE_ID_F64,
     BUILTIN(NAME_UINTPTR) = TYPE_ID_UINTPTR,
     BUILTIN(NAME_ERROR) = TYPE_ID_ERROR,
+    BUILTIN(NAME_STRING) = TYPE_ID_STRING,
+    BUILTIN(NAME_CSTRING) = TYPE_ID_CSTRING,
 };
 
 #define DIAGNOSTIC_TEXT(name, text) [name] = text,
@@ -641,6 +643,12 @@ static bool
 is_slice(const Checker *c, u32 type)
 {
     return c->types.kinds[type] == TYPE_SLICE;
+}
+
+static bool
+is_byte_slice(const Checker *c, u32 type)
+{
+    return type == c->types.slices[TYPE_ID_U8];
 }
 
 static bool
@@ -1674,8 +1682,11 @@ slice_of_place(Checker *c, u32 file, u32 token, Operand o, u32 to)
     if (from == to) {
         return read_slice(c, o);
     }
+    if (to == TYPE_ID_STRING && is_byte_slice(c, from)) {
+        return (Operand){ to, read_slice(c, o).ref };
+    }
     if (!is_array(c, from) || c->types.arg0[from] != c->types.arg0[to]) {
-        report(c, file, token, DIAG_MISMATCH, from, to);
+        report(c, file, token, from == TYPE_ID_STRING ? DIAG_STRING_READ_ONLY : DIAG_MISMATCH, from, to);
         return poison;
     }
     u8 binding = expose(c, file, o);
@@ -1818,13 +1829,18 @@ points_to_bytes(const Checker *c, u32 type)
 static NOINLINE Operand
 string_pointer(Checker *c, u32 file, u32 token, Operand o, u32 to)
 {
-    if (!points_to_bytes(c, to)) {
+    if (!points_to_bytes(c, to) && to != TYPE_ID_STRING) {
         report(c, file, token, DIAG_MISMATCH, o.type, to);
         return poison;
     }
     if (!c->body.code) {
         report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
         return poison;
+    }
+    if (to == TYPE_ID_STRING) {
+        u32 bytes = intern_type(c, TYPE_MANY, TYPE_ID_U8, 0);
+        u32 at = emit(c, IR_DATA, bytes, c->string_offsets[value_of(o)], 0);
+        return make_pair(c, to, at, ir_const(c, TYPE_ID_I64, c->string_lengths[value_of(o)]));
     }
 
     bool optional = c->types.kinds[to] == TYPE_OPTIONAL;
@@ -1857,8 +1873,9 @@ convert_optional(Checker *c, u32 file, u32 token, Operand o, u32 to)
     if (from == inner) {
         return (Operand){ to, is_constant(o) ? o.ref : o.ref | REF_NONNIL };
     }
-    if (t->kinds[inner] == TYPE_MANY && t->kinds[from] == TYPE_POINTER &&
-        is_array(c, t->arg0[from]) && t->arg0[t->arg0[from]] == t->arg0[inner]) {
+    if (t->kinds[inner] == TYPE_MANY && inner != TYPE_ID_CSTRING &&
+        t->kinds[from] == TYPE_POINTER && is_array(c, t->arg0[from]) &&
+        t->arg0[t->arg0[from]] == t->arg0[inner]) {
         u32 at = emit(c, IR_INDEX, inner, value_of(o), ir_const(c, TYPE_ID_I64, 0));
         return (Operand){ to, REF_VALUE | REF_NONNIL | at };
     }
@@ -1878,9 +1895,20 @@ reshape(Checker *c, u32 file, u32 token, Operand o, u32 to)
         t->kinds[from] == TYPE_OPTIONAL) {
         return convert_optional(c, file, token, o, to);
     }
-    if (t->kinds[to] == TYPE_MANY && t->kinds[from] == TYPE_POINTER &&
-        is_array(c, t->arg0[from]) && t->arg0[t->arg0[from]] == t->arg0[to]) {
+    if (t->kinds[to] == TYPE_MANY && to != TYPE_ID_CSTRING &&
+        t->kinds[from] == TYPE_POINTER && is_array(c, t->arg0[from]) &&
+        t->arg0[t->arg0[from]] == t->arg0[to]) {
         return emit_value(c, IR_INDEX, to, value_of(o), ir_const(c, TYPE_ID_I64, 0));
+    }
+    if (to == TYPE_ID_STRING && is_byte_slice(c, from)) {
+        return (Operand){ to, o.ref };
+    }
+    if (from == TYPE_ID_STRING && is_slice(c, to)) {
+        report(c, file, token, DIAG_STRING_READ_ONLY, from, to);
+        return poison;
+    }
+    if (from == TYPE_ID_CSTRING && to == intern_type(c, TYPE_MANY, TYPE_ID_U8, 0)) {
+        return (Operand){ to, o.ref };
     }
     if (t->kinds[to] == TYPE_VECTOR) {
         return splat(c, file, token, o, to);
@@ -2111,9 +2139,13 @@ cast(Checker *c, u32 file, u32 token, Operand o, u32 to)
     if (!is_value_type(o.type) || !is_number(c, o.type) ||
         (!to_int && to_kind != TYPE_FLOAT)) {
         if (o.type == TYPE_ID_NIL || o.type == TYPE_ID_UNTYPED_STRING ||
-            to_kind == TYPE_OPTIONAL ||
+            o.type == TYPE_ID_CSTRING || to_kind == TYPE_OPTIONAL ||
             (is_value_type(o.type) && t->kinds[o.type] == TYPE_OPTIONAL)) {
             return convert(c, file, token, o, to);
+        }
+        if (to == TYPE_ID_CSTRING &&
+            o.type == intern_type(c, TYPE_MANY, TYPE_ID_U8, 0)) {
+            return (Operand){ to, o.ref };
         }
         refuse_cast(c, file, token, o, to);
         return poison;
@@ -2172,6 +2204,17 @@ unify_vector(Checker *c, u32 file, u32 token, Operand *a, Operand *b)
     return from->type;
 }
 
+static NOINLINE u32
+unify_string(Checker *c, u32 file, u32 token, Operand *a, Operand *b)
+{
+    Operand *from = a->type == TYPE_ID_STRING ? b : a;
+    if (from->type != TYPE_ID_UNTYPED_STRING) {
+        return unify_vector(c, file, token, a, b);
+    }
+    *from = convert(c, file, token, *from, TYPE_ID_STRING);
+    return from->type;
+}
+
 static u32
 unify(Checker *c, u32 file, u32 token, Operand *a, Operand *b)
 {
@@ -2196,6 +2239,9 @@ unify(Checker *c, u32 file, u32 token, Operand *a, Operand *b)
         *from = convert(c, file, token, *from, type);
         return from->type;
     }
+    if (a->type == TYPE_ID_STRING || b->type == TYPE_ID_STRING) {
+        return unify_string(c, file, token, a, b);
+    }
     return unify_vector(c, file, token, a, b);
 }
 
@@ -2207,7 +2253,7 @@ applies(const Checker *c, u8 cls, u32 type)
         case OP_COMPARE: return is_number(c, type);
         case OP_INT:
         case OP_SHIFT: return is_int(c, type);
-        case OP_EQUALITY: return is_scalar(c, type);
+        case OP_EQUALITY: return is_scalar(c, type) && type != TYPE_ID_CSTRING;
         default: assert(false && "unknown operator class"); return false;
     }
 }
@@ -2651,7 +2697,11 @@ static NOINLINE Operand
 lanewise(Checker *c, u32 file, u32 token, u8 kind, u32 type, Operand a, Operand b)
 {
     if (!is_vector(c, type) || kind == NODE_DIV || kind == NODE_MOD) {
-        report(c, file, token, type == TYPE_ID_NIL ? DIAG_NIL_TYPE : DIAG_BAD_OPERATOR, type, 0);
+        u8 diag = type == TYPE_ID_NIL ? DIAG_NIL_TYPE
+                : type == TYPE_ID_STRING && operator_classes[kind] == OP_EQUALITY
+                    ? DIAG_UNSUPPORTED
+                    : DIAG_BAD_OPERATOR;
+        report(c, file, token, diag, type, 0);
         return poison;
     }
     if (operator_classes[kind] == OP_ARITH) {
@@ -2693,6 +2743,10 @@ binary_places(Checker *c, u32 file, u32 token, u8 kind, Operand a, Operand b)
             continue;
         }
         u32 type = place_type(c, ops[k]);
+        if (type == TYPE_ID_STRING) {
+            ops[k] = read_slice(c, ops[k]);
+            continue;
+        }
         u32 vector = lane_vector(c, type);
         if (!vector) {
             report(c, file, token, place_operator_diag(c, kind, type), type, 0);
@@ -2963,8 +3017,7 @@ inferred_type(Checker *c, u32 file, u32 token, Operand v)
         return TYPE_ID_NONE;
     }
     if (v.type == TYPE_ID_UNTYPED_STRING) {
-        report(c, file, token, DIAG_STRING_TYPE, 0, 0);
-        return TYPE_ID_NONE;
+        return TYPE_ID_STRING;
     }
     return v.type;
 }
@@ -2987,14 +3040,11 @@ value_type(Checker *c, u32 file, u32 token, Operand v)
         report(c, file, token, DIAG_NIL_TYPE, 0, 0);
         return TYPE_ID_NONE;
     }
-    if (v.type == TYPE_ID_UNTYPED_STRING) {
-        report(c, file, token, DIAG_STRING_TYPE, 0, 0);
-        return TYPE_ID_NONE;
-    }
-    return v.type == TYPE_ID_UNTYPED_INT   ? TYPE_ID_I64
-         : v.type == TYPE_ID_UNTYPED_FLOAT ? TYPE_ID_F32
-         : is_vector(c, v.type)            ? lane_array(c, v.type)
-                                           : v.type;
+    return v.type == TYPE_ID_UNTYPED_INT    ? TYPE_ID_I64
+         : v.type == TYPE_ID_UNTYPED_FLOAT  ? TYPE_ID_F32
+         : v.type == TYPE_ID_UNTYPED_STRING ? TYPE_ID_STRING
+         : is_vector(c, v.type)             ? lane_array(c, v.type)
+                                            : v.type;
 }
 
 static u32
@@ -4953,12 +5003,16 @@ index_place(Checker *c, u32 file, u32 token, Operand base, Operand index, u32 in
         report(c, file, token, DIAG_NOT_VALUE, 0, 0);
         return poison;
     }
-    bool many = c->types.kinds[type] == TYPE_MANY;
+    bool many = c->types.kinds[type] == TYPE_MANY && type != TYPE_ID_CSTRING;
     if (!many && !is_indexable(c, type)) {
         if (c->types.kinds[type] == TYPE_OPTIONAL && is_nonnil(base)) {
             return index_place(c, file, token, narrowed_value(c, base), index, index_token, next);
         }
         refuse_index(c, file, token, type);
+        return poison;
+    }
+    if (type == TYPE_ID_STRING && takes_place[next]) {
+        report(c, file, token, DIAG_STRING_READ_ONLY, 0, 0);
         return poison;
     }
     if (!check_index(c, file, index_token, index)) {
@@ -5042,12 +5096,12 @@ slice_range(Checker *c, u32 file, u8 kind)
         report(c, file, token, DIAG_NOT_VALUE, 0, 0);
         return poison;
     }
-    bool many = c->types.kinds[type] == TYPE_MANY;
+    bool many = c->types.kinds[type] == TYPE_MANY && type != TYPE_ID_CSTRING;
     if (!many && !is_indexable(c, type) &&
         c->types.kinds[type] == TYPE_OPTIONAL && is_nonnil(base)) {
         base = narrowed_value(c, base);
         type = base.type;
-        many = c->types.kinds[type] == TYPE_MANY;
+        many = c->types.kinds[type] == TYPE_MANY && type != TYPE_ID_CSTRING;
     }
     if (!many && !is_indexable(c, type)) {
         u8 diag = is_vector(c, type)           ? DIAG_UNSUPPORTED
@@ -5113,7 +5167,8 @@ slice_range(Checker *c, u32 file, u8 kind)
         return poison;
     }
 
-    u32 result = slice_type(c, c->types.arg0[type]);
+    u32 result = type == TYPE_ID_STRING ? TYPE_ID_STRING
+                                        : slice_type(c, c->types.arg0[type]);
     if (known && is_constant(lo) && is_constant(hi)) {
         u32 ptr = start
                     ? emit(c, IR_INDEX, result, first, ir_const(c, TYPE_ID_I64, start))
@@ -5662,6 +5717,10 @@ put_data(Checker *c, bool global, u32 at, u32 type, Operand v)
         u64 offset = c->string_offsets[value_of(v)];
         memcpy(to, &offset, sizeof offset);
         add_reloc(relocs, at);
+        if (type == TYPE_ID_STRING) {
+            u64 n = c->string_lengths[value_of(v)];
+            memcpy(to + 8, &n, sizeof n);
+        }
         return;
     }
     if (!is_aggregate(c, type)) {
@@ -6075,7 +6134,8 @@ put_defaults(Checker *c, u8 *to, u32 type)
 static Operand
 constant_item(Checker *c, u32 file, u32 token, Operand v, u32 type)
 {
-    if (v.type == TYPE_ID_UNTYPED_STRING && points_to_bytes(c, type)) {
+    if (v.type == TYPE_ID_UNTYPED_STRING &&
+        (points_to_bytes(c, type) || type == TYPE_ID_STRING)) {
         return v;
     }
     Operand x = convert(c, file, token, v, type);
@@ -6220,6 +6280,9 @@ exit_to_peers(Checker *c, u32 file, u32 token, Peers *peers, u8 kind, u32 loop, 
 {
     if (is_place(v) && is_slice(c, place_type(c, v))) {
         v = read_slice(c, v);
+    }
+    if (v.type == TYPE_ID_UNTYPED_STRING) {
+        v = convert(c, file, token, v, TYPE_ID_STRING);
     }
     if (is_place(v) && is_aggregate(c, place_type(c, v))) {
         u32 vector = kind != IR_RET ? lane_vector(c, place_type(c, v)) : 0;
@@ -7378,6 +7441,10 @@ value_if_else(Checker *c, u32 file, u32 node, u32 token)
             a = hold_value_if(c, file, node, a_token, a, expected, mode, shared);
             at = emit(c, IR_ELSE, 0, 0, 0);
         } else if (expected != TYPE_ID_NONE) {
+            if (is_slice(c, expected) && a.type != TYPE_ID_NONE) {
+                report(c, file, a_token, DIAG_UNSUPPORTED, 0, 0);
+                a = poison;
+            }
             a = convert(c, file, a_token, a, expected);
             at = emit(c, IR_ELSE, expected, a.type == TYPE_ID_NONE ? 0 : operand_ir(c, a), 0);
         } else if (!is_constant(a)) {
@@ -7405,6 +7472,10 @@ settle_value_if(Checker *c, u32 file, u32 mode, u32 at, Operand a, u32 a_token, 
                  ? value_type(c, file, a_token, (Operand){ peer, a.ref })
                  : value_type(c, file, b_token, (Operand){ peer, b.ref });
     if (type == TYPE_ID_NONE) {
+        return TYPE_ID_NONE;
+    }
+    if (is_slice(c, type)) {
+        report(c, file, a_token, DIAG_UNSUPPORTED, 0, 0);
         return TYPE_ID_NONE;
     }
 
@@ -9420,12 +9491,19 @@ print_data(FILE *out, const Checker *c, bool global, u64 at, u32 type)
         fputs(count ? " }" : "", out);
         return;
     }
+    const IrRelocs *relocs = global ? &c->ir.global_relocs : &c->ir.data_relocs;
     if (is_slice(c, type)) {
-        fputs(".[]", out);
+        u32 k = first_reloc(relocs, at);
+        if (k < relocs->count && relocs->offsets[k] == at) {
+            u64 offset;
+            memcpy(&offset, (global ? c->ir.globals : c->ir.data) + at, sizeof offset);
+            print_string(out, c, string_at(c, (u32)offset));
+        } else {
+            fputs(".[]", out);
+        }
         return;
     }
 
-    const IrRelocs *relocs = global ? &c->ir.global_relocs : &c->ir.data_relocs;
     u64 size = check_type_size(c, type);
     u64 bits = 0;
     if (check_is_int128(type)) {

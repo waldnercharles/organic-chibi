@@ -143,6 +143,8 @@ enum
     TYPE(NAME_F64, "f64")                                                      \
     TYPE(NAME_UINTPTR, "uintptr")                                              \
     TYPE(NAME_ERROR, "error")                                                  \
+    TYPE(NAME_STRING, "string")                                                \
+    TYPE(NAME_CSTRING, "cstring")                                              \
     OTHER(NAME_TAIL, "tail")                                                   \
     OTHER(NAME_INLINE, "inline")                                               \
     OTHER(NAME_NOINLINE, "noinline")                                           \
