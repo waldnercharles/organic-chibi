@@ -51,8 +51,8 @@ The translations keep chibi's overflow checks, which cost LowIR more than clang 
 
 ## What's here
 
-- `lowir.c` and `lowir.h`: the translator, 2,365 lines. `lowir_package` adds one package's functions, data and globals to a LowIR module. It translates all of chibi's IR.
-- `main.c`: `chibi-lowir`, the `chibi` driver with one more command. `chibi-lowir lowir -o program [-O0..3] [-c] [--wrap] [--shared] [--ir file.lowir] [--times] [--runtime-suffix name] file.chibi... [-- linker arguments]` builds a program through LowIR; `--wrap` turns the overflow checks off, `--times` prints the time of each phase, and `--runtime-suffix _x` names the runtime `chibi_trap_x` and `chibi_context_x`, so that objects can link into a program that has its own runtime, such as the test suite. The other commands are `chibi`'s.
+- `lowir.c` and `lowir.h`: the translator, 2,408 lines. `lowir_package` adds one package's functions, data and globals to a LowIR module. It translates all of chibi's IR but 128-bit integers (step 3k.17), which `lowir_unsupported` refuses.
+- `main.c`: `chibi-lowir`, the `chibi` driver with one more command. `chibi-lowir lowir -o program [-O0..3] [-c] [--wrap] [--shared] [--ir file.lowir] [--times] [--runtime-suffix name] [--release-fast] file.chibi... [-- linker arguments]` builds a program through LowIR; `--wrap` turns the overflow checks off, `--release-fast` checks the program as `chibi build --release-fast` does, `--times` prints the time of each phase, and `--runtime-suffix _x` names the runtime `chibi_trap_x` and `chibi_context_x`, so that objects can link into a program that has its own runtime, such as the test suite. The other commands are `chibi`'s.
 - `test.c`: the checks below. It includes `test/c_source_test.c` to reuse its programs, its interop functions, its vector programs and its comparison with the reference interpreter.
 - `bench/`: the seven programs that were timed, with `print.c`, which prints their results.
 - `bugs/`: the cppgm bugs: chibi programs that hit them with the LowIR the translator gave cppgm, standalone LowIR repros in `bugs/lowir/`, and draft reports in `bugs/reports.md`.
@@ -88,12 +88,13 @@ Since step 3t.12, `make translated` writes the compiler as one program, in a chi
 - **Calls into C** use C's convention and no context. Variadic arguments narrower than 32 bits are widened, which C does and LowIR leaves to the producer. Callbacks and exports get adapters that load `chibi_context` and call the chibi function, as in the C backend.
 - **Data and globals** become two internal LowIR globals. An 8-byte slot that holds an offset into the data becomes an address item, so that the linker fills in the address.
 - **Vectors** are `v128` values computed with LowIR's SSE operations. A vector constant, or a splat, puts one 64-bit pattern in the low lane with `fromi64` and copies it with `pshufd`. Lane-wise `+%`, `-%`, `&`, `|`, `^` and `~` are one or two operations; `*%` is `pmullw` for 16-bit lanes and a few operations from `pmullw` or `pmuludq` for the others. Compares give masks: unsigned lanes flip their sign bits before `pcmpgt`, `u8` uses `pminub`, and 64-bit lanes combine 32-bit compares. Shifts of 8-bit lanes shift 16-bit lanes and mask; a signed shift of 8-bit or 64-bit lanes flips the sign bit, shifts logically and subtracts the shifted sign bit. `lookup` is `pshufb` after a saturating add of 0x70, so that an index of 16 or more gives 0, and `top_bits` is `pmovmskb`, `movmskps` or `movmskpd`. Everything is SSE2 but `pshufb`, which is SSSE3; the C build's `-march=x86-64-v2` has both.
+- **`assert`** branches to the `chibi_trap` block for its kind of trap, and a release-fast **`assume`** to a block that holds only `unreachable`, so the optimizer may take the condition as true.
 
 ## Correctness
 
 | Test | `-O0` | `-O1` to `-O3` |
 |---|---|---|
-| The C backend's grid: 341 functions of two `int`s on 288 argument pairs, against the reference interpreter (229 at hand-off 1) | agrees | agrees |
+| The C backend's grid: 371 functions of two `int`s on 288 argument pairs, against the reference interpreter (229 at hand-off 1), less the two programs with 128-bit integers, `MUL_HIGH` and `INT128_GRID`, which the test skips | agrees | agrees |
 | The C backend's interop test: calls into C, variadic calls, callbacks, exports, `main`, C globals | agrees | agrees |
 | The C backend's vector programs: 168 calls with hand-computed results, and a grid of 8 functions, one per lane type, on 5,120 argument sets each (hand-off 2, main) | agrees | agrees |
 | 15,000 random programs from `test/random` (seeds 1111, 2222, 3333), 4 entry points × 6 calls each | agrees | `-O2`: 4 crashes, 2 wrong results; main: none |
@@ -160,4 +161,4 @@ On the seven small programs, LowIR's `-O2` compile takes 1.0–2.8 ms, against 3
 
 - Hand-off 2 tried it on real code: the compiler built through LowIR passes the bootstrap check and the test suite, compiles 6.8× faster than through clang `-O2`, and runs at 0.95 of clang's speed with checks on, where the small programs gave 0.79. The optimizer's crashes remain the blocker.
 
-Not done: debug information from the IR's line table (step 3j.5), the M4 Pro, one program for the whole compiler in place of one per file, and the 15,000 hand-off 2 random programs at `-O0`.
+Not done: 128-bit integers, which the compiler's identifier hash uses since step 3k.19, so the compiler doesn't build through LowIR again until they're translated; building the one-program compiler of step 3t.12; debug information from the IR's line table (step 3j.5); the M4 Pro; and the 15,000 hand-off 2 random programs at `-O0`.

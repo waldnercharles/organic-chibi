@@ -7,7 +7,7 @@
 static const char LOWIR_USAGE[] = "usage: chibi-lowir lowir [-o program] "
                                   "[-O0..3] [-c] [--wrap] "
                                   "[--shared] [--ir file.lowir] [--times] "
-                                  "[--runtime-suffix name] "
+                                  "[--runtime-suffix name] [--release-fast] "
                                   "file.chibi... [-- linker arguments]\n"
                                   "       chibi-lowir runtime\n";
 
@@ -24,6 +24,7 @@ typedef struct
     u32 flags;
     bool object;
     bool times;
+    bool release_fast;
 } LowirOptions;
 
 static double
@@ -55,6 +56,8 @@ parse_lowir_options(FILE *err, LowirOptions *o, int argc, char **argv)
             o->flags |= LOWIR_SHARED;
         } else if (strcmp(a, "--times") == 0) {
             o->times = true;
+        } else if (strcmp(a, "--release-fast") == 0) {
+            o->release_fast = true;
         } else if (strcmp(a, "--") == 0) {
             o->link_args = argv + i + 1;
             o->nlink_args = (u32)(argc - i - 1);
@@ -174,10 +177,16 @@ lowir_command(FILE *err, int argc, char **argv)
     Program p = { 0 };
     double times[5] = { 0 };
     double t0 = seconds();
-    bool ok = parse_lowir_options(err, &o, argc, argv) &&
-              check_program(err, &p, o.files, o.nfiles);
+    bool ok = parse_lowir_options(err, &o, argc, argv);
+    p.release_fast = o.release_fast;
+    ok = ok && check_program(err, &p, o.files, o.nfiles);
     times[0] = seconds() - t0;
 
+    const char *unsupported = ok ? lowir_unsupported(&p.c) : NULL;
+    if (unsupported) {
+        fprintf(err, "chibi-lowir: %s\n", unsupported);
+        ok = false;
+    }
     ok = ok && (o.object || has_main(err, &p));
     ok = ok && lowir_build(err, &p.c, &o, times);
     if (ok && o.times) {

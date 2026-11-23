@@ -1780,6 +1780,28 @@ top_bits_op(Lower *l, u32 i, u32 type, u32 a)
 }
 
 static void
+assert_op(Lower *l, u8 kind, u32 a)
+{
+    u32 fail = kind == IR_ASSERT ? trap_block(l, TRAP_ASSERT) : new_block(l);
+    if (kind == IR_ASSUME) {
+        u32 at = l->block;
+        start(l, fail);
+        effect(l, CPPGM_OP_UNREACHABLE, 0, CPPGM_TYPE_VOID, nothing(), nothing(), nothing());
+        l->block = at;
+    }
+    if (a & IR_CONST) {
+        if (!constant_at(l, a).bits) {
+            jump(l, fail);
+        }
+        return;
+    }
+
+    u32 next = new_block(l);
+    branch(l, condition(l, a), next, fail, 0);
+    start(l, next);
+}
+
+static void
 switch_op(Lower *l, u32 i, u32 type, u32 a, const u32 *x)
 {
     u32 narms = 0;
@@ -2017,6 +2039,8 @@ lower_instruction(Lower *l, u32 i)
             jump(l, end_block(l, l->ends[i]));
             start(l, l->blocks[i]);
             break;
+        case IR_ASSERT:
+        case IR_ASSUME: assert_op(l, kind, a); break;
         case IR_SECOND:
         case IR_DROP:
         case IR_BLOCK:
@@ -2267,6 +2291,20 @@ static u32
 max_u32(u32 a, u32 b)
 {
     return a > b ? a : b;
+}
+
+const char *
+lowir_unsupported(const Checker *c)
+{
+    const IrCode *code = &c->ir.code;
+    bool wide = false;
+    for (u32 g = 0; g < code->count; g++) {
+        wide |= check_is_int128(code->types[g]);
+    }
+    for (u32 s = 0; s < code->nslots; s++) {
+        wide |= check_is_int128(code->slots[s].type);
+    }
+    return wide ? "the LowIR translator doesn't support 128-bit integers yet" : NULL;
 }
 
 void
