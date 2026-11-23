@@ -66,7 +66,7 @@ From step 3k.19 the identifier hash multiplies in `u128`, so the compiler stoppe
 - `test.c`: the checks below. It includes `test/c_source_test.c` to reuse its programs, its interop functions, its vector programs and its comparison with the reference interpreter.
 - `bench/`: the seven programs that were timed, with `print.c`, which prints their results.
 - `bugs/`: the cppgm bugs: chibi programs that hit them with the LowIR the translator gave cppgm, standalone LowIR repros in `bugs/lowir/`, and draft reports in `bugs/reports.md`, which won't be filed.
-- `cppgm/`: chibi's fork of cppgm as patches on release 0.10.3, from `git format-patch`. Each fix comes with a fixture in cppgm's PA33 regression lane.
+- `cppgm/`: chibi's fork of cppgm as patches on release 0.10.3, from `git format-patch`. Each fix comes with a fixture in cppgm's PA33 regression lane, and `0005` marks each changed source file, as cppgm's Apache License 2.0 asks of a shared modified file.
 
 ```bash
 git clone https://github.com/vishvananda/cppgm /tmp/cppgm && git -C /tmp/cppgm checkout -b chibi 7bc2ee42
