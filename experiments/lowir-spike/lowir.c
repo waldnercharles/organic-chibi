@@ -122,9 +122,9 @@ is_address(const Checker *c, u32 type)
 static CppgmType
 scalar_type(const Checker *c, u32 type)
 {
-    static const CppgmType ints[2][4] = {
-        { CPPGM_TYPE_U8, CPPGM_TYPE_U16, CPPGM_TYPE_U32, CPPGM_TYPE_I64 },
-        { CPPGM_TYPE_I8, CPPGM_TYPE_I16, CPPGM_TYPE_I32, CPPGM_TYPE_I64 },
+    static const CppgmType ints[2][5] = {
+        { CPPGM_TYPE_U8, CPPGM_TYPE_U16, CPPGM_TYPE_U32, CPPGM_TYPE_I64, CPPGM_TYPE_I128 },
+        { CPPGM_TYPE_I8, CPPGM_TYPE_I16, CPPGM_TYPE_I32, CPPGM_TYPE_I64, CPPGM_TYPE_I128 },
     };
     u8 kind = c->types.kinds[type];
     if (is_address(c, type)) {
@@ -352,6 +352,18 @@ static LowirValue
 integer(Lower *l, u64 bits)
 {
     return literal(l, CPPGM_VALUE_INTEGER, 0, bits, (int64_t)bits < 0 ? UINT64_MAX : 0);
+}
+
+static LowirValue
+wide_integer(Lower *l, __uint128_t bits)
+{
+    return literal(l, CPPGM_VALUE_INTEGER, 0, (u64)bits, (u64)(bits >> 64));
+}
+
+static LowirValue
+signed_min(Lower *l, u32 bits)
+{
+    return wide_integer(l, ~(__uint128_t)0 << (bits - 1));
 }
 
 static void
@@ -699,7 +711,11 @@ static LowirValue
 operand(Lower *l, u32 x)
 {
     if (x & IR_CONST) {
-        return constant(l, constant_at(l, x));
+        IrConst k = constant_at(l, x);
+        if (check_is_int128(k.type)) {
+            return literal(l, CPPGM_VALUE_INTEGER, 0, k.bits, constant_at(l, x + 1).bits);
+        }
+        return constant(l, k);
     }
     if (l->truth[x]) {
         return convert(l, CPPGM_CONVERT_TRUNC, CPPGM_TYPE_I1, CPPGM_TYPE_I64, l->values[x]);
@@ -1000,20 +1016,82 @@ wide_overflow(Lower *l, Scalar s, CppgmType t, LowirValue x, LowirValue y, Lowir
 }
 
 static LowirValue
+high_half(Lower *l, LowirValue x)
+{
+    LowirValue h = binary(l, CPPGM_BINARY_U_SHR, CPPGM_TYPE_I128, x, integer(l, 64));
+    return convert(l, CPPGM_CONVERT_TRUNC, CPPGM_TYPE_I64, CPPGM_TYPE_I128, h);
+}
+
+static LowirValue
+full_product(Lower *l, LowirValue x, LowirValue y)
+{
+    LowirValue wx = convert(l, CPPGM_CONVERT_Z_EXT, CPPGM_TYPE_I128, CPPGM_TYPE_I64, x);
+    LowirValue wy = convert(l, CPPGM_CONVERT_Z_EXT, CPPGM_TYPE_I128, CPPGM_TYPE_I64, y);
+    return binary(l, CPPGM_BINARY_MUL, CPPGM_TYPE_I128, wx, wy);
+}
+
+static LowirValue
+sign_mask(Lower *l, LowirValue x)
+{
+    return binary(l, CPPGM_BINARY_SHR, CPPGM_TYPE_I128, x, integer(l, 127));
+}
+
+static LowirValue
+negate_if(Lower *l, LowirValue x, LowirValue mask)
+{
+    LowirValue flipped = binary(l, CPPGM_BINARY_XOR, CPPGM_TYPE_I128, x, mask);
+    return binary(l, CPPGM_BINARY_SUB, CPPGM_TYPE_I128, flipped, mask);
+}
+
+static LowirValue
+mul_overflow_128(Lower *l, bool sign, LowirValue x, LowirValue y, LowirValue *r)
+{
+    const CppgmType w = CPPGM_TYPE_I128;
+    const CppgmType h = CPPGM_TYPE_I64;
+    LowirValue ux = sign ? negate_if(l, x, sign_mask(l, x)) : x;
+    LowirValue uy = sign ? negate_if(l, y, sign_mask(l, y)) : y;
+
+    LowirValue xl = convert(l, CPPGM_CONVERT_TRUNC, h, w, ux);
+    LowirValue yl = convert(l, CPPGM_CONVERT_TRUNC, h, w, uy);
+    LowirValue xh = high_half(l, ux);
+    LowirValue yh = high_half(l, uy);
+
+    LowirValue xbig = compare(l, CPPGM_CMP_NE, h, xh, integer(l, 0));
+    LowirValue ybig = compare(l, CPPGM_CMP_NE, h, yh, integer(l, 0));
+    LowirValue both = binary(l, CPPGM_BINARY_AND, h, xbig, ybig);
+
+    LowirValue cross = binary(l, CPPGM_BINARY_ADD, w, full_product(l, xh, yl), full_product(l, xl, yh));
+    LowirValue carry = compare(l, CPPGM_CMP_NE, h, high_half(l, cross), integer(l, 0));
+    LowirValue low = full_product(l, xl, yl);
+    LowirValue p = binary(l, CPPGM_BINARY_ADD, w, low, binary(l, CPPGM_BINARY_SHL, w, cross, integer(l, 64)));
+    LowirValue wrapped = compare(l, CPPGM_CMP_ULT, w, p, low);
+    LowirValue fail = binary(l, CPPGM_BINARY_OR, h, both, binary(l, CPPGM_BINARY_OR, h, carry, wrapped));
+    if (!sign) {
+        *r = p;
+        return fail;
+    }
+
+    LowirValue negative = sign_mask(l, binary(l, CPPGM_BINARY_XOR, w, x, y));
+    LowirValue limit = binary(l, CPPGM_BINARY_SUB, w, wide_integer(l, ~(__uint128_t)0 >> 1), negative);
+    LowirValue beyond = compare(l, CPPGM_CMP_UGT, w, p, limit);
+    *r = negate_if(l, p, negative);
+    return binary(l, CPPGM_BINARY_OR, h, fail, beyond);
+}
+
+static LowirValue
 overflow(Lower *l, u8 kind, u32 type, u32 a, u32 b, LowirValue *x, LowirValue *y, LowirValue *r)
 {
     Scalar s = scalar_of(l->c, type);
     CppgmType t = scalar_type(l->c, type);
     *r = nothing();
     if (kind == IR_NEG) {
-        u64 smin = ~0ull << (s.bits - 1);
         *x = operand(l, a);
         LowirValue fail = compare(
             l,
             s.sign ? CPPGM_CMP_EQ : CPPGM_CMP_NE,
             t,
             *x,
-            integer(l, s.sign ? smin : 0)
+            s.sign ? signed_min(l, s.bits) : integer(l, 0)
         );
         *r = unary(l, CPPGM_UNARY_NEG, t, *x);
         return fail;
@@ -1026,7 +1104,7 @@ overflow(Lower *l, u8 kind, u32 type, u32 a, u32 b, LowirValue *x, LowirValue *y
 
     *x = operand(l, a);
     *y = operand(l, b);
-    if (b & IR_CONST) {
+    if ((b & IR_CONST) && s.bits <= 64) {
         return constant_overflow(l, kind, s, t, *x, constant_at(l, b).bits);
     }
     if (kind == IR_ADD && s.sign) {
@@ -1047,6 +1125,9 @@ overflow(Lower *l, u8 kind, u32 type, u32 a, u32 b, LowirValue *x, LowirValue *y
     }
     if (kind == IR_SUB) {
         return compare(l, CPPGM_CMP_ULT, t, *x, *y);
+    }
+    if (s.bits == 128) {
+        return mul_overflow_128(l, s.sign, *x, *y, r);
     }
     return wide_overflow(l, s, t, *x, *y, r);
 }
@@ -1096,6 +1177,9 @@ overflows(Lower *l, u32 i, u8 kind, u32 type, u32 a, u32 b)
 static bool
 is_minus_one(const Lower *l, u32 x, Scalar s)
 {
+    if (s.bits == 128) {
+        return constant_at(l, x).bits == ~0ull && constant_at(l, x + 1).bits == ~0ull;
+    }
     return unsigned_at(constant_at(l, x).bits, s.bits) == unsigned_at(~0ull, s.bits);
 }
 
@@ -1119,14 +1203,13 @@ divide(Lower *l, u32 i, u8 kind, u32 type, u32 a, u32 b)
         return;
     }
 
-    u64 smin = ~0ull << (s.bits - 1);
     if (kind == IR_DIV && (b & IR_CONST)) {
         if (is_minus_one(l, b, s)) {
-            check(l, compare(l, CPPGM_CMP_EQ, t, x, integer(l, smin)), TRAP_OVERFLOW);
+            check(l, compare(l, CPPGM_CMP_EQ, t, x, signed_min(l, s.bits)), TRAP_OVERFLOW);
         }
         l->values[i] = binary(l, CPPGM_BINARY_DIV, t, x, y);
     } else if (kind == IR_DIV) {
-        LowirValue low = compare(l, CPPGM_CMP_EQ, t, x, integer(l, smin));
+        LowirValue low = compare(l, CPPGM_CMP_EQ, t, x, signed_min(l, s.bits));
         LowirValue minus = compare(l, CPPGM_CMP_EQ, t, y, integer(l, ~0ull));
         check(l, binary(l, CPPGM_BINARY_AND, CPPGM_TYPE_I64, low, minus), TRAP_OVERFLOW);
         l->values[i] = binary(l, CPPGM_BINARY_DIV, t, x, y);
@@ -1135,7 +1218,13 @@ divide(Lower *l, u32 i, u8 kind, u32 type, u32 a, u32 b)
                                              : binary(l, CPPGM_BINARY_MOD, t, x, y);
     } else {
         LowirValue minus = compare(l, CPPGM_CMP_EQ, t, y, integer(l, ~0ull));
-        LowirValue safe = choose(l, t, minus, integer(l, 1), y);
+        LowirValue safe;
+        if (s.bits == 128) {
+            LowirValue down = unary(l, CPPGM_UNARY_NEG, CPPGM_TYPE_I64, minus);
+            safe = negate_if(l, y, convert(l, CPPGM_CONVERT_S_EXT, t, CPPGM_TYPE_I64, down));
+        } else {
+            safe = choose(l, t, minus, integer(l, 1), y);
+        }
         l->values[i] = binary(l, CPPGM_BINARY_MOD, t, x, safe);
     }
 }
@@ -1161,12 +1250,41 @@ shift(Lower *l, u32 i, u8 kind, u32 type, u32 a, u32 b)
     l->values[i] = binary(l, op, t, x, y);
 }
 
+static LowirValue
+count_bits_128(Lower *l, u8 kind, LowirValue x)
+{
+    const CppgmType h = CPPGM_TYPE_I64;
+    LowirValue lo = convert(l, CPPGM_CONVERT_TRUNC, h, CPPGM_TYPE_I128, x);
+    LowirValue hi = high_half(l, x);
+    if (kind == IR_COUNT_ONES) {
+        LowirValue n = unary(l, CPPGM_UNARY_COUNT_ONES, h, lo);
+        return binary(l, CPPGM_BINARY_ADD, h, n, unary(l, CPPGM_UNARY_COUNT_ONES, h, hi));
+    }
+
+    bool trailing = kind == IR_TRAILING_ZEROS;
+    u8 op = trailing ? CPPGM_UNARY_COUNT_TRAILING_ZEROS : CPPGM_UNARY_COUNT_LEADING_ZEROS;
+    LowirValue first = trailing ? lo : hi;
+    LowirValue second = trailing ? hi : lo;
+    LowirValue first_zero = compare(l, CPPGM_CMP_EQ, h, first, integer(l, 0));
+    LowirValue second_zero = compare(l, CPPGM_CMP_EQ, h, second, integer(l, 0));
+    LowirValue past = binary(l, CPPGM_BINARY_ADD, h, unary(l, op, h, second), integer(l, 64));
+    LowirValue rest = choose(l, h, second_zero, integer(l, 128), past);
+    return choose(l, h, first_zero, rest, unary(l, op, h, first));
+}
+
 static void
 count_bits(Lower *l, u32 i, u8 kind, u32 type, u32 a)
 {
     const Checker *c = l->c;
     u32 from = value_type(l, a);
     u32 bits = scalar_of(c, from).bits;
+    if (bits == 128) {
+        Scalar ws = { false, false, 64 };
+        LowirValue n = count_bits_128(l, kind, l->values[a]);
+        l->values[i] = change_int(l, n, CPPGM_TYPE_I64, ws, scalar_type(c, type), scalar_of(c, type));
+        return;
+    }
+
     CppgmType ft = scalar_type(c, from);
     CppgmType w = bits == 64 ? CPPGM_TYPE_I64 : CPPGM_TYPE_U32;
     LowirValue x = l->values[a];
@@ -1248,22 +1366,29 @@ put_ranges(Lower *l, CppgmType type, LowirValue selector, u32 n, u32 otherwise)
     l->block = NONE;
 }
 
+static LowirValue
+bound(Lower *l, CppgmType type, __uint128_t bits)
+{
+    return type == CPPGM_TYPE_I128 ? wide_integer(l, bits) : integer(l, (u64)bits);
+}
+
 static void
 range_check(Lower *l, LowirValue x, CppgmType from_type, Scalar from, Scalar to)
 {
-    u64 from_max = ~0ull >> (64 - from.bits + from.sign);
-    u64 to_max = ~0ull >> (64 - to.bits + to.sign);
-    u64 to_min = to.sign ? ~0ull << (to.bits - 1) : 0;
+    __uint128_t ones = ~(__uint128_t)0;
+    __uint128_t from_max = ones >> (128 - from.bits + from.sign);
+    __uint128_t to_max = ones >> (128 - to.bits + to.sign);
+    __uint128_t to_min = to.sign ? ones << (to.bits - 1) : 0;
     bool low = from.sign && (!to.sign || to.bits < from.bits);
     bool high = to_max < from_max;
 
     LowirValue fail = nothing();
     if (low) {
-        fail = compare(l, CPPGM_CMP_LT, from_type, x, integer(l, to_min));
+        fail = compare(l, CPPGM_CMP_LT, from_type, x, bound(l, from_type, to_min));
     }
     if (high) {
         u8 pred = from.sign ? CPPGM_CMP_GT : CPPGM_CMP_UGT;
-        LowirValue over = compare(l, pred, from_type, x, integer(l, to_max));
+        LowirValue over = compare(l, pred, from_type, x, bound(l, from_type, to_max));
         fail = low ? binary(l, CPPGM_BINARY_OR, CPPGM_TYPE_I64, fail, over) : over;
     }
     if (fail.kind) {
@@ -1274,7 +1399,7 @@ range_check(Lower *l, LowirValue x, CppgmType from_type, Scalar from, Scalar to)
 static bool
 run_meets(u64 lo, u64 hi, Scalar from, Scalar to)
 {
-    if (from.bits == 64) {
+    if (from.bits >= 64) {
         return true;
     }
     if (from.sign) {
@@ -1313,14 +1438,14 @@ float_to_int(Lower *l, LowirValue x, CppgmType from_type, CppgmType to_type, Sca
         d = convert(l, CPPGM_CONVERT_FP_EXT, CPPGM_TYPE_F64, CPPGM_TYPE_F32, x);
     }
 
-    double hi = (double)(1ull << (to.bits - 1)) * (to.sign ? 1.0 : 2.0);
-    double lo = to.sign ? -hi - (to.bits == 64 ? 0.0 : 1.0) : -1.0;
-    u64 hi_bits;
+    u64 hi_bits = (u64)(1023 + to.bits - to.sign) << 52;
+    double hi;
+    memcpy(&hi, &hi_bits, sizeof hi);
+    double lo = to.sign ? -hi - (to.bits >= 64 ? 0.0 : 1.0) : -1.0;
     u64 lo_bits;
-    memcpy(&hi_bits, &hi, sizeof hi);
     memcpy(&lo_bits, &lo, sizeof lo);
 
-    u8 low_pred = to.sign && to.bits == 64 ? CPPGM_CMP_ULT : CPPGM_CMP_ULE;
+    u8 low_pred = to.sign && to.bits >= 64 ? CPPGM_CMP_ULT : CPPGM_CMP_ULE;
     LowirValue below = compare(
         l,
         low_pred,
@@ -1339,6 +1464,14 @@ float_to_int(Lower *l, LowirValue x, CppgmType from_type, CppgmType to_type, Sca
 
     u8 op = to.sign ? CPPGM_CONVERT_FP_TO_SI : CPPGM_CONVERT_FP_TO_UI;
     return convert(l, op, to_type, CPPGM_TYPE_F64, d);
+}
+
+static bool
+holds_count(const Lower *l, u32 a, Scalar to)
+{
+    u8 k = l->code->kinds[l->fn->first + a];
+    bool count = k == IR_TRAILING_ZEROS || k == IR_LEADING_ZEROS || k == IR_COUNT_ONES;
+    return count && to.bits - to.sign >= 8;
 }
 
 static void
@@ -1374,7 +1507,7 @@ convert_op(Lower *l, u32 i, u8 kind, u32 type, u32 a, u32 b)
         return;
     }
 
-    if (kind == IR_NARROW) {
+    if (kind == IR_NARROW && !holds_count(l, a, to)) {
         range_check(l, x, ft, from, to);
     }
     if (c->types.kinds[type] == TYPE_BOOL) {
@@ -1503,11 +1636,11 @@ bitcast_op(Lower *l, u32 i, u32 type, u32 a)
     CppgmType to = scalar_type(c, type);
     CppgmType from = scalar_type(c, operand_type(l, a));
     LowirValue x = operand(l, a);
-    bool fl = to == CPPGM_TYPE_F32 || to == CPPGM_TYPE_F64 ||
-              from == CPPGM_TYPE_F32 || from == CPPGM_TYPE_F64;
+    bool spill = to == CPPGM_TYPE_F32 || to == CPPGM_TYPE_F64 || to == CPPGM_TYPE_V128 ||
+                 from == CPPGM_TYPE_F32 || from == CPPGM_TYPE_F64 || from == CPPGM_TYPE_V128;
     if (from == to) {
         l->values[i] = x;
-    } else if (!fl) {
+    } else if (!spill) {
         l->values[i] = put(l, CPPGM_OP_COPY, 0, to, x, nothing(), nothing());
     } else {
         LowirValue p = spill_address(l);
@@ -2268,6 +2401,12 @@ declare_functions(Lower *l)
         );
         u32 signature = chibi_signature(l, fn);
         must(l, cppgm_lowir_function(l->m, l->symbols[fn->decl], signature, binding, CPPGM_FUNCTION_DEFINITION));
+        if (c->decls.flags[fn->decl] & DECL_INLINE) {
+            must(l, cppgm_lowir_symbol_fact(l->m, l->symbols[fn->decl], CPPGM_KEY_FORCE_INLINE, 1));
+        }
+        if (c->decls.flags[fn->decl] & DECL_NOINLINE) {
+            must(l, cppgm_lowir_symbol_fact(l->m, l->symbols[fn->decl], CPPGM_KEY_NO_INLINE, 1));
+        }
     }
 
     for (u32 k = 0; k < ir->ncallbacks; k++) {
@@ -2291,20 +2430,6 @@ static u32
 max_u32(u32 a, u32 b)
 {
     return a > b ? a : b;
-}
-
-const char *
-lowir_unsupported(const Checker *c)
-{
-    const IrCode *code = &c->ir.code;
-    bool wide = false;
-    for (u32 g = 0; g < code->count; g++) {
-        wide |= check_is_int128(code->types[g]);
-    }
-    for (u32 s = 0; s < code->nslots; s++) {
-        wide |= check_is_int128(code->slots[s].type);
-    }
-    return wide ? "the LowIR translator doesn't support 128-bit integers yet" : NULL;
 }
 
 void

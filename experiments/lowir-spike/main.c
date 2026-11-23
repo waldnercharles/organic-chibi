@@ -182,11 +182,6 @@ lowir_command(FILE *err, int argc, char **argv)
     ok = ok && check_program(err, &p, o.files, o.nfiles);
     times[0] = seconds() - t0;
 
-    const char *unsupported = ok ? lowir_unsupported(&p.c) : NULL;
-    if (unsupported) {
-        fprintf(err, "chibi-lowir: %s\n", unsupported);
-        ok = false;
-    }
     ok = ok && (o.object || has_main(err, &p));
     ok = ok && lowir_build(err, &p.c, &o, times);
     if (ok && o.times) {
