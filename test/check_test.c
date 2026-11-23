@@ -2880,6 +2880,102 @@ static const Case ERRORS[] = {
         "struct S { x: int, y: int }\n"
         "fn errs3(s: S, p: *S) -> int\n",
     },
+    {
+        "struct P { p: *int }\n"
+        "enum E { a = 1, b = 2 }\n"
+        "fn p1() -> (p: *int, n: int) { return }\n"
+        "fn p2() -> (e: E) { return }\n"
+        "fn p3() -> (s: P) { return }\n"
+        "fn p4() -> (t: (*int, bool)) { return }\n"
+        "fn p5() -> (ps: [2]*int) { return }\n"
+        "fn d1(q: int) -> (q: int, r: int) { return }\n"
+        "fn d2() -> (q: int, q: i8) { return }\n"
+        "fn d3() -> (_: int, r: int) { return }\n"
+        "fn d4() -> (int: int, r: int) { return }\n"
+        "fn s1() -> (q: int, r: int) {\n"
+        "    if true {\n"
+        "        q := 1\n"
+        "    }\n"
+        "    for r in 0..3 {\n"
+        "    }\n"
+        "    return\n"
+        "}\n"
+        "fn m1() -> (q: int, r: int) {\n"
+        "    q = 1\n"
+        "}\n"
+        "fn u1() -> (q: Nope, r: int) {\n"
+        "    q = 1\n"
+        "    r = q + 2\n"
+        "    return\n"
+        "}\n"
+        "fn e1() -> (int, int) { return }\n"
+        "fn v1() -> (q: int, r: int) { return 1 }\n"
+        "fn v2() -> (q: int) { return 1, 2 }\n"
+        "fn v3() -> (v: void) { return }\n"
+        "extern fn x1() -> (n: i32, m: i32)\n"
+        "export fn x2() -> (n: i32, m: i32) { return }\n"
+        "const K := 3\n"
+        "fn k1() -> (n: K) { return }\n"
+        "fn k2() -> (q: int, r: K) { return }\n"
+        "fn k3() -> (n: K) {\n"
+        "    n = 1\n"
+        "    return n\n"
+        "}\n",
+        "a:3:13: a named result starts at zero, and `*int` has no zero value\n"
+        "a:4:13: a named result starts at zero, and `E` has no zero value\n"
+        "a:5:13: a named result starts at zero, and `P` has no zero value\n"
+        "a:6:13: a named result starts at zero, and `(*int, bool)` has no zero value\n"
+        "a:7:13: a named result starts at zero, and `[2]*int` has no zero value\n"
+        "a:8:19: `q` is already a local at 8:7\n"
+        "a:9:21: `q` is already a local at 9:13\n"
+        "a:10:13: `_` can only discard a value, as in `_ = f()`\n"
+        "a:11:13: `int` is a builtin type name\n"
+        "a:14:9: `q` is already a local at 12:13\n"
+        "a:16:9: `r` is already a local at 12:21\n"
+        "a:22:1: the function can reach its end without returning a value of type `(int, int)`\n"
+        "a:23:16: unknown name `Nope`\n"
+        "a:28:25: `return` needs a value of type `(int, int)`\n"
+        "a:29:38: `untyped integer` and `(int, int)` don't mix without a conversion\n"
+        "a:30:31: `int` is not a struct, so a struct literal can't build it\n"
+        "a:31:13: the checker doesn't support this yet\n"
+        "a:32:16: C has no `(i32, i32)`, so an `extern fn` can't pass or return it\n"
+        "a:33:16: C has no `(i32, i32)`, so an `export fn` can't pass or return it\n"
+        "a:35:16: expected a type\n"
+        "a:36:24: expected a type\n"
+        "a:37:16: expected a type\n"
+        "struct P { p: *int }\n"
+        "enum E: u8 { a = 1, b = 2 }\n"
+        "fn p1() -> (*int, int)\n"
+        "fn p2() -> E\n"
+        "fn p3() -> P\n"
+        "fn p4() -> (*int, bool)\n"
+        "fn p5() -> [2]*int\n"
+        "fn d1(q: int) -> (int, int)\n"
+        "fn d2() -> (int, i8)\n"
+        "fn d3() -> (int, int)\n"
+        "fn d4() -> (int, int)\n"
+        "fn s1() -> (int, int)\n"
+        "fn m1() -> (int, int)\n"
+        "fn u1() -> ?\n"
+        "fn e1() -> (int, int)\n"
+        "fn v1() -> (int, int)\n"
+        "fn v2() -> int\n"
+        "fn v3() -> void\n"
+        "extern fn x1() -> (i32, i32)\n"
+        "export fn x2() -> (i32, i32)\n"
+        "const K = 3\n"
+        "fn k1() -> ?\n"
+        "fn k2() -> ?\n"
+        "fn k3() -> ?\n",
+    },
+    {
+        "fn u2() -> (q: int, r: Nope) {\n"
+        "    q = 7\n"
+        "    return\n"
+        "}\n",
+        "a:1:24: unknown name `Nope`\n"
+        "fn u2() -> ?\n",
+    },
 };
 
 static const Case BODIES[] = {
@@ -8511,6 +8607,198 @@ static const Case BODIES[] = {
         "    %26 = addr *(u8, u8, u8, u8) $1\n"
         "    ret (u8, u8, u8, u8) %26\n",
     },
+    {
+        "struct Pt { x: int = 3, y: int = 4 }\n"
+        "fn bare(a: int, b: int) -> (q: int, r: int) {\n"
+        "    q = a / b\n"
+        "    r = a % b\n"
+        "    return\n"
+        "}\n"
+        "fn listed(a: int, b: int) -> (q: int, r: int) {\n"
+        "    q = a / b\n"
+        "    r = a % b\n"
+        "    return q, r\n"
+        "}\n"
+        "fn kinds(xs: []u8) -> (s: []u8, p: Pt, o: ?*u8, arr: [2]u8) {\n"
+        "    if xs.len > 0 {\n"
+        "        s = xs\n"
+        "        o = &xs[0]\n"
+        "        return\n"
+        "    }\n"
+        "    return xs, p, nil, arr\n"
+        "}\n"
+        "fn whole() -> (t: (int, bool)) {\n"
+        "    return\n"
+        "}\n"
+        "fn arrow(v: int) -> (n: int) => v + 1\n",
+        "fn bare(a: int, b: int) -> (int, int)\n"
+        "    slots: a: int, b: int, q: int, r: int, $4: (int, int)\n"
+        "    store int q, 0\n"
+        "    store int r, 0\n"
+        "    %2 = load int a\n"
+        "    %3 = load int b\n"
+        "    %4 = div int %2, %3\n"
+        "    store int q, %4\n"
+        "    %6 = load int a\n"
+        "    %7 = load int b\n"
+        "    %8 = rem int %6, %7\n"
+        "    store int r, %8\n"
+        "    %10 = load int q\n"
+        "    %11 = load int r\n"
+        "    %12 = addr *(int, int) $4\n"
+        "    %13 = field *int %12, .0\n"
+        "    store-at int %13, %10\n"
+        "    %15 = addr *(int, int) $4\n"
+        "    %16 = field *int %15, .1\n"
+        "    store-at int %16, %11\n"
+        "    %18 = addr *(int, int) $4\n"
+        "    ret (int, int) %18\n"
+        "fn listed(a: int, b: int) -> (int, int)\n"
+        "    slots: a: int, b: int, q: int, r: int, $4: (int, int)\n"
+        "    store int q, 0\n"
+        "    store int r, 0\n"
+        "    %2 = load int a\n"
+        "    %3 = load int b\n"
+        "    %4 = div int %2, %3\n"
+        "    store int q, %4\n"
+        "    %6 = load int a\n"
+        "    %7 = load int b\n"
+        "    %8 = rem int %6, %7\n"
+        "    store int r, %8\n"
+        "    %10 = load int q\n"
+        "    %11 = load int r\n"
+        "    %12 = addr *(int, int) $4\n"
+        "    %13 = field *int %12, .0\n"
+        "    store-at int %13, %10\n"
+        "    %15 = addr *(int, int) $4\n"
+        "    %16 = field *int %15, .1\n"
+        "    store-at int %16, %11\n"
+        "    %18 = addr *(int, int) $4\n"
+        "    ret (int, int) %18\n"
+        "fn kinds(xs: []u8) -> ([]u8, Pt, ?*u8, [2]u8)\n"
+        "    slots: xs: []u8, xs.len: int, s: []u8, s.len: int, p: Pt, o: ?*u8, arr: [2]u8, $7: ([]u8, Pt, ?*u8, [2]u8), $8: ([]u8, Pt, ?*u8, [2]u8)\n"
+        "    store []u8 s, 0\n"
+        "    store int s.len, 0\n"
+        "    %2 = addr *Pt p\n"
+        "    zero Pt %2\n"
+        "    %4 = addr *Pt p\n"
+        "    %5 = field *int %4, .x\n"
+        "    store-at int %5, 3\n"
+        "    %7 = addr *Pt p\n"
+        "    %8 = field *int %7, .y\n"
+        "    store-at int %8, 4\n"
+        "    store ?*u8 o, nil\n"
+        "    %11 = addr *[2]u8 arr\n"
+        "    zero [2]u8 %11\n"
+        "    %13 = load int xs.len\n"
+        "    %14 = gt int %13, 0\n"
+        "    if @15 %14\n"
+        "        %16 = load []u8 xs\n"
+        "        %17 = load int xs.len\n"
+        "        store []u8 s, %16\n"
+        "        store int s.len, %17\n"
+        "        %20 = load []u8 xs\n"
+        "        %21 = load int xs.len\n"
+        "        %22 = index-len *u8 %20, %21, 0\n"
+        "        store ?*u8 o, %22\n"
+        "        %24 = load []u8 s\n"
+        "        %25 = load int s.len\n"
+        "        %26 = load *u8 o\n"
+        "        %27 = addr *([]u8, Pt, ?*u8, [2]u8) $7\n"
+        "        %28 = field *[]u8 %27, .0\n"
+        "        store-pair []u8 %28, %24, %25\n"
+        "        %30 = addr *([]u8, Pt, ?*u8, [2]u8) $7\n"
+        "        %31 = field *Pt %30, .1\n"
+        "        %32 = addr *Pt p\n"
+        "        copy Pt %31, %32\n"
+        "        %34 = addr *([]u8, Pt, ?*u8, [2]u8) $7\n"
+        "        %35 = field *?*u8 %34, .2\n"
+        "        store-at ?*u8 %35, %26\n"
+        "        %37 = addr *([]u8, Pt, ?*u8, [2]u8) $7\n"
+        "        %38 = field *[2]u8 %37, .3\n"
+        "        %39 = addr *[2]u8 arr\n"
+        "        copy [2]u8 %38, %39\n"
+        "        %41 = addr *([]u8, Pt, ?*u8, [2]u8) $7\n"
+        "        ret ([]u8, Pt, ?*u8, [2]u8) %41\n"
+        "    end\n"
+        "    %44 = load []u8 xs\n"
+        "    %45 = load int xs.len\n"
+        "    %46 = addr *([]u8, Pt, ?*u8, [2]u8) $8\n"
+        "    %47 = field *[]u8 %46, .0\n"
+        "    store-pair []u8 %47, %44, %45\n"
+        "    %49 = addr *([]u8, Pt, ?*u8, [2]u8) $8\n"
+        "    %50 = field *Pt %49, .1\n"
+        "    %51 = addr *Pt p\n"
+        "    copy Pt %50, %51\n"
+        "    %53 = addr *([]u8, Pt, ?*u8, [2]u8) $8\n"
+        "    %54 = field *?*u8 %53, .2\n"
+        "    store-at ?*u8 %54, nil\n"
+        "    %56 = addr *([]u8, Pt, ?*u8, [2]u8) $8\n"
+        "    %57 = field *[2]u8 %56, .3\n"
+        "    %58 = addr *[2]u8 arr\n"
+        "    copy [2]u8 %57, %58\n"
+        "    %60 = addr *([]u8, Pt, ?*u8, [2]u8) $8\n"
+        "    ret ([]u8, Pt, ?*u8, [2]u8) %60\n"
+        "fn whole() -> (int, bool)\n"
+        "    slots: t: (int, bool)\n"
+        "    %0 = addr *(int, bool) t\n"
+        "    zero (int, bool) %0\n"
+        "    %2 = addr *(int, bool) t\n"
+        "    ret (int, bool) %2\n"
+        "fn arrow(v: int) -> int\n"
+        "    slots: v: int, n: int\n"
+        "    store int n, 0\n"
+        "    %1 = load int v\n"
+        "    %2 = add int %1, 1\n"
+        "    ret int %2\n",
+    },
+    {
+        "fn arm(a: int) -> (q: int, r: int) {\n"
+        "    q = a\n"
+        "    x := switch a {\n"
+        "        1 => return\n"
+        "        _ => 3\n"
+        "    }\n"
+        "    r = x\n"
+        "    return\n"
+        "}\n",
+        "fn arm(a: int) -> (int, int)\n"
+        "    slots: a: int, q: int, r: int, $3: (int, int), x: int, $5: (int, int)\n"
+        "    store int q, 0\n"
+        "    store int r, 0\n"
+        "    %2 = load int a\n"
+        "    store int q, %2\n"
+        "    block @4\n"
+        "        %5 = load int a\n"
+        "        switch @6 int %5 [1 => 0, _ => 1]\n"
+        "            %7 = load int q\n"
+        "            %8 = load int r\n"
+        "            %9 = addr *(int, int) $3\n"
+        "            %10 = field *int %9, .0\n"
+        "            store-at int %10, %7\n"
+        "            %12 = addr *(int, int) $3\n"
+        "            %13 = field *int %12, .1\n"
+        "            store-at int %13, %8\n"
+        "            %15 = addr *(int, int) $3\n"
+        "            ret (int, int) %15\n"
+        "        case 1\n"
+        "            exit @4 int 3\n"
+        "        end\n"
+        "    %20 = end int\n"
+        "    store int x, %20\n"
+        "    %22 = load int x\n"
+        "    store int r, %22\n"
+        "    %24 = load int q\n"
+        "    %25 = load int r\n"
+        "    %26 = addr *(int, int) $5\n"
+        "    %27 = field *int %26, .0\n"
+        "    store-at int %27, %24\n"
+        "    %29 = addr *(int, int) $5\n"
+        "    %30 = field *int %29, .1\n"
+        "    store-at int %30, %25\n"
+        "    %32 = addr *(int, int) $5\n"
+        "    ret (int, int) %32\n",
+    },
 };
 
 TEST_CASE(declarations)
@@ -8886,6 +9174,32 @@ TEST_CASE(doubling_structs)
     const char *refused = "a:66:13: the checker doesn't support this yet\n";
     REQUIRE(checks_doubling_structs("x: int", "struct L0 "));
     REQUIRE(checks_doubling_structs("q: u128", refused));
+    return true;
+}
+
+TEST_CASE(many_named_results)
+{
+    u32 n = 1000;
+    size_t cap = (size_t)n * 32 + 256;
+    char *text = malloc(cap);
+    size_t len = (size_t)snprintf(text, cap, "fn f() -> (");
+    for (u32 i = 0; i < n; i++) {
+        len += (size_t)snprintf(text + len, cap - len, "r%u: int, ", i);
+    }
+    snprintf(text + len, cap - len, ") {\n    r%u = 7\n    return\n}\n", n - 1);
+
+    const char *texts[] = { text };
+    char *got = check_files(texts, 1, 1, true, false, NULL);
+    free(text);
+
+    bool ok = strncmp(got, "fn f() -> (int, int, ", 21) == 0 &&
+              strstr(got, "    store int r999, 7\n") != NULL &&
+              strstr(got, "    %4999 = field *int %4998, .999\n    store-at int %4999, %2000\n") != NULL;
+    if (!ok) {
+        fprintf(stderr, "many named results\n  got: %.200s\n", got);
+    }
+    free(got);
+    REQUIRE(ok);
     return true;
 }
 
@@ -9840,7 +10154,7 @@ TEST_CASE(positions)
 TEST_CASE(statement_positions)
 {
     static const char text[] =
-        "fn walk(n: int) -> int {\n"
+        "fn walk(n: int) -> (s: int) {\n"
         "    x := 0\n"
         "    y: int\n"
         "    while x < n {\n"
@@ -9856,9 +10170,10 @@ TEST_CASE(statement_positions)
         "    }\n"
         "    a, b := x, y\n"
         "    a, b = b, a\n"
-        "    return a + b\n"
+        "    s = a + b\n"
+        "    return\n"
         "}\n";
-    static const u32 want[] = { 2, 3, 4, 5, 4, 7, 8, 7, 10, 11, 13, 15, 16, 17 };
+    static const u32 want[] = { 1, 2, 3, 4, 5, 4, 7, 8, 7, 10, 11, 13, 15, 16, 17, 18 };
 
     Arena arena = { 0 };
     Lexer lx;
@@ -9866,9 +10181,9 @@ TEST_CASE(statement_positions)
     const char *texts[] = { text };
     ParsedFile *files = check_texts(&c, &arena, &lx, texts, 1, 1, false, NULL);
     bool ok = c.ndiags == 0 && c.ir.nfuncs == 1;
-    u32 got[16];
+    u32 got[20];
     u32 n = 0;
-    for (u32 k = 0; ok && k < c.ir.funcs[0].nlines && n < 16; k++) {
+    for (u32 k = 0; ok && k < c.ir.funcs[0].nlines && n < 20; k++) {
         u32 token = c.ir.code.lines[c.ir.funcs[0].first_line + k].token;
         got[n++] = token_line(files, token);
     }
@@ -9905,6 +10220,7 @@ TEST_SUITE(check_tests)
     RUN_TEST_CASE(imports_per_file);
     RUN_TEST_CASE(depth_limit);
     RUN_TEST_CASE(doubling_structs);
+    RUN_TEST_CASE(many_named_results);
     RUN_TEST_CASE(vectors);
     RUN_TEST_CASE(release_fast);
     RUN_TEST_CASE(asserts);

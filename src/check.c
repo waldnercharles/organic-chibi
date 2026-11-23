@@ -3474,6 +3474,13 @@ close_tuple_type(Checker *c, u32 file, u32 node, u32 token)
 {
     u32 m = list_start(c, NODE_TUPLE_START);
     u32 n = c->sp - m - 1;
+    if (c->files[file].nodes.kinds[node] == NODE_RESULTS) {
+        c->decls.flags[c->body.decl] |= DECL_RESULTS;
+        if (n == 1) {
+            c->sp = m;
+            return type_operand(c, file, c->stack_tokens[m + 1], c->stack[m + 1]);
+        }
+    }
     bool ok = n >= 2;
     if (!ok) {
         report(c, file, token, DIAG_TUPLE_SIZE, 0, 0);
@@ -5755,6 +5762,54 @@ declare_zeroed(Checker *c, u32 file, u32 node, u32 token, u32 type_token)
     }
 }
 
+static u32
+first_result(const u8 *kinds, u32 list)
+{
+    u32 i = list - 1;
+    u32 depth = 0;
+    while (kinds[i] != NODE_TUPLE_START || depth > 0) {
+        depth += kinds[i] == NODE_TUPLE_TYPE;
+        depth -= kinds[i] == NODE_TUPLE_START;
+        i--;
+    }
+    while (kinds[++i] != NODE_RESULT) {
+    }
+    return i;
+}
+
+static NOINLINE void
+declare_results(Checker *c, u32 file, u32 list)
+{
+    const ParsedFile *f = &c->files[file];
+    const u8 *kinds = f->nodes.kinds;
+    const u32 *tokens = f->nodes.tokens;
+
+    u32 i = first_result(kinds, list);
+    bool single = i == list - 1;
+
+    u32 ret = c->body.ret;
+    u32 member = single || ret == TYPE_ID_NONE
+                   ? NO_SLOT
+                   : c->decls.members[c->types.arg0[ret]];
+
+    for (; i < list; i++) {
+        if (kinds[i] != NODE_RESULT) {
+            continue;
+        }
+        u32 t = single ? ret : TYPE_ID_NONE;
+        if (member != NO_SLOT) {
+            t = c->members[member++].type;
+        }
+        if (t != TYPE_ID_NONE && !has_zero(c, t)) {
+            report(c, file, tokens[i], DIAG_RESULT_ZERO, 0, t);
+            t = TYPE_ID_NONE;
+        }
+        push_type(c, tokens[i - 1], t);
+        declare_zeroed(c, file, i, tokens[i], tokens[i - 1]);
+        mark_line(c, tokens[i]);
+    }
+}
+
 static NOINLINE void
 named_item(Checker *c, u32 file)
 {
@@ -6664,6 +6719,98 @@ exit_to_peers(Checker *c, u32 file, u32 token, Peers *peers, u8 kind, u32 loop, 
     add_peer(c, peers, (Break){ v, token, at, 0 });
 }
 
+static Operand
+result_value(Checker *c, u32 file, u32 node)
+{
+    u64 binding = c->bindings[node_name(c, file, node)];
+    u32 slot = (u32)binding;
+    if ((u32)(binding >> 32) != c->body.owner || slot_at(c, slot)->node != node) {
+        return poison;
+    }
+
+    u32 type = slot_at(c, slot)->type;
+    if (c->types.kinds[type] == TYPE_OPTIONAL) {
+        return read_optional(c, slot);
+    }
+    if (is_slice(c, type)) {
+        return read_slice(c, (Operand){ OPERAND_LOCAL, slot });
+    }
+    if (is_aggregate(c, type)) {
+        return (Operand){ OPERAND_LOCAL, slot };
+    }
+    return load_local(c, slot);
+}
+
+static NOINLINE Operand
+named_results(Checker *c, u32 file, u32 token, u32 ret)
+{
+    if (!(c->decls.flags[c->body.decl] & DECL_RESULTS)) {
+        report(c, file, token, DIAG_RETURN_EMPTY, 0, ret);
+        return poison;
+    }
+    if (ret == TYPE_ID_NONE) {
+        return poison;
+    }
+
+    const u8 *kinds = c->files[file].nodes.kinds;
+    u32 list = c->decls.bodies[c->body.decl] - 2;
+
+    u32 i = first_result(kinds, list);
+    if (i == list - 1) {
+        return result_value(c, file, i);
+    }
+
+    reserve_stack(c, list - i);
+    u32 base = c->sp;
+    for (; i < list; i++) {
+        if (kinds[i] == NODE_RESULT) {
+            push_operand(c, token, result_value(c, file, i));
+        }
+    }
+
+    u32 decl = c->types.arg0[ret];
+    u32 member = c->decls.members[decl];
+    u32 slot = add_slot(c, 0, ret, list);
+    for (u32 k = base; k < c->sp; k++, member++) {
+        u32 field = c->members[member].type;
+        u32 to = stored_type(c, field, c->stack[k]);
+        Operand v = convert(c, file, token, c->stack[k], to);
+        if (v.type == TYPE_ID_NONE) {
+            continue;
+        }
+        u32 at = emit(
+            c,
+            IR_FIELD,
+            pointer_type(c, field),
+            place_address(c, (Operand){ OPERAND_LOCAL, slot }),
+            field_layout(c, decl, member)
+        );
+        store_at(c, to, at, v);
+    }
+    c->sp = base;
+    return (Operand){ OPERAND_LOCAL, slot };
+}
+
+static ALWAYS_INLINE void
+emit_return(Checker *c, u32 file, u32 token, Operand v, u32 ret)
+{
+    v = convert(c, file, token, v, ret);
+    if (is_pair(c, v)) {
+        Pair p = pair_of(c, v);
+        emit(c, IR_RET, ret, p.first, p.second);
+    } else if (is_place(v)) {
+        emit(c, IR_RET, ret, place_address(c, v), 0);
+    } else if (v.type != TYPE_ID_NONE) {
+        emit(c, IR_RET, ret, operand_ir(c, v), 0);
+    }
+}
+
+static NOINLINE void
+return_results(Checker *c, u32 file, u32 token, u32 ret)
+{
+    emit_return(c, file, token, named_results(c, file, token, ret), ret);
+}
+
 static void
 return_value(Checker *c, u32 file, u32 token, bool has_value)
 {
@@ -6690,7 +6837,7 @@ return_value(Checker *c, u32 file, u32 token, bool has_value)
         if (returns_nothing(c, ret)) {
             emit(c, IR_RET, ret, 0, 0);
         } else {
-            report(c, file, token, DIAG_RETURN_EMPTY, 0, ret);
+            return_results(c, file, token, ret);
         }
         return;
     }
@@ -6701,15 +6848,7 @@ return_value(Checker *c, u32 file, u32 token, bool has_value)
         return;
     }
 
-    v = convert(c, file, v_token, v, ret);
-    if (is_pair(c, v)) {
-        Pair p = pair_of(c, v);
-        emit(c, IR_RET, ret, p.first, p.second);
-    } else if (is_place(v)) {
-        emit(c, IR_RET, ret, place_address(c, v), 0);
-    } else if (v.type != TYPE_ID_NONE) {
-        emit(c, IR_RET, ret, operand_ir(c, v), 0);
-    }
+    emit_return(c, file, v_token, v, ret);
 }
 
 static void
@@ -8602,6 +8741,7 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
             }
             case NODE_FN_TYPE: push_type(c, token, close_fn_type(c)); break;
             case NODE_TUPLE_TYPE:
+            case NODE_RESULTS:
                 push_type(c, token, close_tuple_type(c, file, i, token));
                 break;
             case NODE_EXTERN: {
@@ -8727,7 +8867,8 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
             case NODE_TARGET:
                 push(c, token, ids[token] == NAME_DISCARD ? OPERAND_DISCARD : OPERAND_TARGET, i);
                 break;
-            case NODE_ASSIGN_TARGET: break;
+            case NODE_ASSIGN_TARGET:
+            case NODE_RESULT: break;
             case NODE_DESTRUCTURE_INIT:
             case NODE_DESTRUCTURE_ASSIGN:
                 destructure(c, file, i, token, kind);
@@ -9290,6 +9431,9 @@ check_body(Checker *c, u32 decl)
     u32 param_slots = code->nslots - c->body.first_slot;
 
     reserve_stack(c, end - begin + 1);
+    if (d->flags[decl] & DECL_RESULTS) {
+        declare_results(c, file, d->bodies[decl] - 2);
+    }
     walk(c, decl, begin, end);
     assert(c->sp == base + 1);
     c->sp = base;

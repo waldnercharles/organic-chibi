@@ -489,6 +489,12 @@ static const struct
     { "fn f() -> !(int, bool) {}", "(fn f (-> (! (tuple int bool))) (block))" },
     { "x: E!(u8, bool)", "(: x (! E (tuple u8 bool)))" },
     { "x: (int,\n    !\n    u8)", "(: x (tuple int (! u8)))" },
+    { "fn divmod(a: int, b: int) -> (q: int, r: int) { return }",
+      "(fn divmod (: a int) (: b int) (-> (results (: q int) (: r int))) (block return))" },
+    { "fn f() -> (n: int) => 1", "(fn f (-> (results (: n int))) (return 1))" },
+    { "fn f() -> (\n  q: int,\n  r: (u8, bool),\n) {}", "(fn f (-> (results (: q int) (: r (tuple u8 bool)))) (block))" },
+    { "fn f() -> (\n  e: !\n  u8,\n) {}", "(fn f (-> (results (: e (! u8)))) (block))" },
+    { "extern fn f() -> (n: i32)", "(extern (fn f (-> (results (: n i32)))))" },
 };
 
 static const struct
@@ -698,6 +704,10 @@ static const struct
     { "a and b, c = 1, 2", "expected a name, a field, an element or `p.*`", 0 },
     { "return a,", "expected an expression", 9 },
     { "q, r := f(),", "expected an expression", 12 },
+    { "fn f() -> (q: int, bool) {}", "name every result or none", 19 },
+    { "fn f() -> (q: int r: int) {}", "expected `,` or `)`", 18 },
+    { "g: fn() -> (q: int, r: int)", "only a function declaration can name its results", 12 },
+    { "fn f() -> (if: int) {}", "expected a type", 11 },
 };
 // clang-format on
 
@@ -819,6 +829,8 @@ static const struct
     { "q, r := f()", "TARGETS_START TARGET TARGET DESTRUCTURE_VALUE NAME CALL_ARGS CALL DESTRUCTURE_INIT" },
     { "a, b = b, a", "TARGETS_START NAME ASSIGN_TARGET NAME ASSIGN_TARGET DESTRUCTURE_VALUES NAME NAME DESTRUCTURE_ASSIGN" },
     { "a.x, b = 1, 2", "TARGETS_START NAME FIELD ASSIGN_TARGET NAME ASSIGN_TARGET DESTRUCTURE_VALUES INT INT DESTRUCTURE_ASSIGN" },
+    { "fn f() -> (q: int, r: (u8, bool)) {}",
+      "FN_START TUPLE_START NAME RESULT TUPLE_START NAME NAME TUPLE_TYPE RESULT RESULTS FN_RETURN FN_BODY BLOCK_START BLOCK FN" },
 };
 // clang-format on
 

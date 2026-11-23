@@ -583,6 +583,14 @@ parse_type(Parser *p)
     parse_composite_type(p);
 }
 
+static bool
+starts_results(Parser *p)
+{
+    return p->tokens.kinds[p->pos] == TK_LPAREN &&
+           p->tokens.kinds[p->pos + 1] == TK_IDENT &&
+           p->tokens.kinds[p->pos + 2] == TK_COLON;
+}
+
 static void
 parse_fn_type(Parser *p)
 {
@@ -620,6 +628,11 @@ parse_fn_type(Parser *p)
 
     if (p->tokens.kinds[p->pos] == TK_ARROW) {
         int arrow = p->pos++;
+        if (starts_results(p)) {
+            p->pos++;
+            fail(p, "only a function declaration can name its results");
+            return;
+        }
         parse_type(p);
         emit(p, NODE_FN_RETURN, arrow);
     }
@@ -1263,6 +1276,36 @@ parse_params(Parser *p, bool variadic)
     }
 }
 
+static NOINLINE void
+parse_results(Parser *p)
+{
+    int open = p->pos++;
+    emit(p, NODE_TUPLE_START, open);
+    p->brackets++;
+    while (p->tokens.kinds[p->pos] != TK_RPAREN) {
+        int name = p->pos;
+        if (p->tokens.kinds[name] != TK_IDENT || p->tokens.kinds[name + 1] != TK_COLON) {
+            fail(p, "name every result or none");
+            return;
+        }
+        p->pos += 2;
+        parse_type(p);
+        emit(p, NODE_RESULT, name);
+        if (p->tokens.kinds[p->pos] != TK_COMMA) {
+            break;
+        }
+        p->pos++;
+    }
+    p->brackets--;
+
+    if (p->tokens.kinds[p->pos] != TK_RPAREN) {
+        fail(p, "expected `,` or `)`");
+        return;
+    }
+    p->pos++;
+    emit(p, NODE_RESULTS, open);
+}
+
 static int
 parse_signature(Parser *p, bool named, bool variadic)
 {
@@ -1287,7 +1330,11 @@ parse_signature(Parser *p, bool named, bool variadic)
 
     if (p->tokens.kinds[p->pos] == TK_ARROW) {
         int arrow = p->pos++;
-        parse_type(p);
+        if (starts_results(p)) {
+            parse_results(p);
+        } else {
+            parse_type(p);
+        }
         emit(p, NODE_FN_RETURN, arrow);
     }
     return close;
@@ -1803,6 +1850,7 @@ static const bool shows_name[NNODES] = {
     [NODE_PARAM_INIT] = true,
     [NODE_PARAM_TYPE] = true,
     [NODE_PARAM_TYPE_INIT] = true,
+    [NODE_RESULT] = true,
     [NODE_CONST_INIT] = true,
     [NODE_CONST_TYPE_INIT] = true,
     [NODE_FN] = true,

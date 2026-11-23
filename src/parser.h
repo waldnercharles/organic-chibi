@@ -142,6 +142,7 @@
     NODE(NODE_NOINLINE, 1, "@noinline")                                        \
     NODE(NODE_VALUE_IF, 5, "if")                                               \
     NODE(NODE_VALUE_IF_ITEM, 5, "if")                                          \
+    NODE(NODE_RESULT, 1, ":")                                                  \
     LIST(NODE_CALL, NODE_CALL_ARGS, 1, "call")                                 \
     LIST(NODE_BLOCK, NODE_BLOCK_START, 0, "block")                             \
     LIST(NODE_IF, NODE_IF_START, 0, "if")                                      \
@@ -167,6 +168,7 @@
     LIST(NODE_TUPLE_TYPE, NODE_TUPLE_START, 0, "tuple")                        \
     LIST(NODE_DESTRUCTURE_INIT, NODE_TARGETS_START, 0, ":=")                   \
     LIST(NODE_DESTRUCTURE_ASSIGN, NODE_TARGETS_START, 0, "=")                  \
+    LIST(NODE_RESULTS, NODE_TUPLE_START, 0, "results")                         \
     MARKER(NODE_CALL_ARGS)                                                     \
     MARKER(NODE_AND_LEFT)                                                      \
     MARKER(NODE_OR_LEFT)                                                       \

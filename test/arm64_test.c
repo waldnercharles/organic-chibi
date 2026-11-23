@@ -6034,6 +6034,64 @@ TEST_CASE(tuples)
     return true;
 }
 
+static const char *const NAMED_RESULT_FUNCTIONS[] = {
+    "nr_div", "nr_find", "nr_kinds", "nr_addr", "nr_fibs", "nr_switch", "nr_nested", "nr_order",
+};
+
+static const CallCase NAMED_RESULT_CASES[] = {
+    { "nr_div", 47, 5, 9002, 0 },
+    { "nr_div", -13, 4, -3001, 0 },
+    { "nr_div", 7, 0, 0, TRAP_DIVIDE },
+    { "nr_div", INT64_MIN, -1, 0, TRAP_OVERFLOW },
+    { "nr_find", 10, 9, 41, 0 },
+    { "nr_find", 1, 3, 0, 0 },
+    { "nr_find", -3, 5, 31, 0 },
+    { "nr_find", 0, 1, 1, 0 },
+    { "nr_find", 0, 16, 0, 0 },
+    { "nr_kinds", 2, 3, 543906, 0 },
+    { "nr_kinds", -1, -2, 240252, 0 },
+    { "nr_kinds", 1, 4, 442908, 0 },
+    { "nr_kinds", INT64_MAX, 0, 0, TRAP_OVERFLOW },
+    { "nr_addr", 10, 3, 14, 0 },
+    { "nr_addr", -4, 6, -20, 0 },
+    { "nr_addr", INT64_MAX, -1, 0, TRAP_OVERFLOW },
+    { "nr_fibs", 10, 1, 255, 0 },
+    { "nr_fibs", 0, -5, -4, 0 },
+    { "nr_fibs", 64, 2, 3, 0 },
+    { "nr_fibs", 63, 0, 30282620817249, 0 },
+    { "nr_switch", 4, 7, 7, 0 },
+    { "nr_switch", 5, 7, 16, 0 },
+    { "nr_switch", 6, 7, 14, 0 },
+    { "nr_switch", -1, 7, 14, 0 },
+    { "nr_switch", 1, INT64_MAX, 0, TRAP_OVERFLOW },
+    { "nr_nested", 3, 9, 9031, 0 },
+    { "nr_nested", 5, -1, 127050, 0 },
+    { "nr_nested", -2, 200, 71981, 0 },
+    { "nr_order", 7, 2, 28, 0 },
+    { "nr_order", 2, 7, 27, 0 },
+    { "nr_order", 4, 4, 44, 0 },
+    { "nr_order", INT64_MAX, 0, 0, TRAP_OVERFLOW },
+};
+
+TEST_CASE(named_results)
+{
+    catch_traps();
+    Program p;
+    REQUIRE(build(&p, NAMED_RESULTS));
+    for (size_t k = 0; k < sizeof NAMED_RESULT_CASES / sizeof NAMED_RESULT_CASES[0]; k++) {
+        CallCase t = NAMED_RESULT_CASES[k];
+        int64_t got = 0;
+        int trap = call_i2((I2 *)fn(&p, t.name), t.a, t.b, &got);
+        if (trap != t.trap || (!trap && got != t.want)) {
+            fprintf(stderr, "arm64 test: %s(%lld, %lld) gave %lld (trap %d)\n", t.name, (long long)t.a, (long long)t.b, (long long)got, trap);
+            REQUIRE(false);
+        }
+    }
+    REQUIRE(agree_on_grid(&p, NAMED_RESULT_FUNCTIONS, sizeof NAMED_RESULT_FUNCTIONS / sizeof NAMED_RESULT_FUNCTIONS[0]));
+    release_program(&p);
+    return true;
+}
+
 TEST_SUITE(arm64_tests)
 {
     RUN_TEST_CASE(hidden_context);
@@ -6063,6 +6121,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(int128);
     RUN_TEST_CASE(string_views);
     RUN_TEST_CASE(tuples);
+    RUN_TEST_CASE(named_results);
     RUN_TEST_CASE(narrow_parameters);
     RUN_TEST_CASE(constant_division);
     RUN_TEST_CASE(differential);

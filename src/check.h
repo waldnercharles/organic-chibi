@@ -124,6 +124,7 @@ enum
     DECL_INLINE = 256,
     DECL_NOINLINE = 512,
     DECL_TUPLE = 1024,
+    DECL_RESULTS = 2048,
 };
 
 enum
@@ -280,6 +281,7 @@ enum
     X(DIAG_RETURN_VALUE, "this function returns nothing, so `return` takes no value")               \
     X(DIAG_RETURN_EMPTY, "`return` needs a value of type `%U`")                                     \
     X(DIAG_MISSING_RETURN, "the function can reach its end without returning a value of type `%U`") \
+    X(DIAG_RESULT_ZERO, "a named result starts at zero, and `%U` has no zero value")                \
     X(DIAG_OUTSIDE_LOOP, "`%t` is only allowed inside a loop")                                      \
     X(DIAG_UNKNOWN_LABEL, "no statement around this is labeled `%t`")                              \
     X(DIAG_CONTINUE_BLOCK, "`%t` labels a block, so `continue` can't go to it")                    \
