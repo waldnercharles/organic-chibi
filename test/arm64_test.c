@@ -982,6 +982,31 @@ typedef struct
     double x, y;
 } CD2;
 
+typedef struct
+{
+    uint8_t a[3];
+} CA3;
+
+typedef struct
+{
+    int64_t a[5];
+} CI5;
+
+typedef struct
+{
+    CP a[2];
+} CP2;
+
+typedef struct
+{
+    uint8_t a[2][3];
+} CR23;
+
+typedef double AMIX(void *, int64_t, CA3, float, CD2, CI5, CV4, uint8_t);
+typedef int64_t ASPILL(void *, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, CA3, CD2, CI5, CB11);
+typedef int64_t AEDGE(void *, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, CB11, int64_t);
+typedef double AFEDGE(void *, double, double, double, double, double, double, double, CD2, double);
+
 typedef double MIX(void *, int64_t, CB3, float, CV3, CP, double, CD2, uint8_t);
 
 static CB3
@@ -1146,6 +1171,89 @@ TEST_CASE(passed_structs)
     lost_contexts = 0;
     REQUIRE(passes_to_c(&p));
     REQUIRE(lost_contexts == 0);
+    release_program(&p);
+    return true;
+}
+
+static const char *const ARRAY_ARG_FUNCTIONS[] = {
+    "ar_small", "ar_large", "ar_copy",  "ar_alias",   "ar_nested",
+    "ar_peer",  "ar_deep",  "ar_stack", "ar_floats",  "ar_structs",
+    "ar_field", "ar_grid",  "ar_infer", "ar_through", "ar_global",
+};
+
+TEST_CASE(passed_arrays)
+{
+    catch_traps();
+    Program p;
+    REQUIRE(build(&p, ARRAY_ARGS));
+
+    CA3 a3 = ((CA3(*)(void *, CA3))fn(&p, "ar_rot"))(CONTEXT, (CA3){ { 1, 2, 3 } });
+    REQUIRE(a3.a[0] == 2 && a3.a[1] == 3 && a3.a[2] == 1);
+    CV4 h = ((CV4(*)(void *, CV4))fn(&p, "ar_halves"))(CONTEXT, (CV4){ { 2, 4, 6, 8 } });
+    REQUIRE(h.v[0] == 1 && h.v[1] == 2 && h.v[2] == 3 && h.v[3] == 4);
+    CD2 d = ((CD2(*)(void *, CD2))fn(&p, "ar_flip"))(CONTEXT, (CD2){ 1.5, -2 });
+    REQUIRE(d.x == -2 && d.y == -1.5);
+    CI5 ones = { { 1, 2, 3, 4, 5 } };
+    CI5 tens = { { 10, 20, 30, 40, 50 } };
+    CI5 sum = ((CI5(*)(void *, CI5, CI5))fn(&p, "ar_add"))(CONTEXT, ones, tens);
+    for (int i = 0; i < 5; i++) {
+        REQUIRE(sum.a[i] == 11 * (i + 1));
+    }
+    CB11 b11;
+    for (int i = 0; i < 11; i++) {
+        b11.a[i] = (uint8_t)(0xF0 + i);
+    }
+    CB11 w = ((CB11(*)(void *, CB11, uint8_t))fn(&p, "ar_wide"))(CONTEXT, b11, 3);
+    for (int i = 0; i < 11; i++) {
+        REQUIRE(w.a[i] == (uint8_t)(0xF3 + i));
+    }
+    CP2 pairs = { { { 1, 2 }, { 3, 4 } } };
+    CP2 swapped = ((CP2(*)(void *, CP2))fn(&p, "ar_swap"))(CONTEXT, pairs);
+    REQUIRE(swapped.a[0].x == 3 && swapped.a[0].y == 4);
+    REQUIRE(swapped.a[1].x == 1 && swapped.a[1].y == 2);
+    CR23 grid = { { { 1, 2, 3 }, { 4, 5, 6 } } };
+    CR23 rows = ((CR23(*)(void *, CR23))fn(&p, "ar_rows"))(CONTEXT, grid);
+    REQUIRE(rows.a[0][0] == 4 && rows.a[0][2] == 6);
+    REQUIRE(rows.a[1][0] == 1 && rows.a[1][2] == 3);
+    CI5 made = ((CI5(*)(void *))fn(&p, "ar_made"))(CONTEXT);
+    REQUIRE(made.a[0] == 1 && made.a[4] == 5);
+    double m = ((AMIX *)fn(&p, "ar_mixed"))(
+        CONTEXT,
+        1,
+        (CA3){ { 0, 0, 2 } },
+        0.5f,
+        (CD2){ 0, 4 },
+        (CI5){ { 0, 0, 0, 0, 8 } },
+        (CV4){ { 0, 0, 0, 16 } },
+        32
+    );
+    REQUIRE(m == 63.5);
+    int64_t spilled = ((ASPILL *)fn(&p, "ar_spill"))(
+        CONTEXT,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        (CA3){ { 0, 0, 9 } },
+        (CD2){ 0, 10 },
+        (CI5){ { 0, 0, 0, 0, 11 } },
+        b11
+    );
+    REQUIRE(spilled == 36 + 9 + 10 + 11 + 0xFA);
+    int64_t edge = ((AEDGE *)fn(&p, "ar_edge"))(CONTEXT, 1, 2, 3, 4, 5, 6, b11, 7);
+    REQUIRE(edge == 21 + 0xFA * 1000 + 700000);
+    double fedge = ((AFEDGE *)fn(&p, "ar_fedge"))(CONTEXT, 1, 2, 3, 4, 5, 6, 7, (CD2){ 0, 8 }, 9);
+    REQUIRE(fedge == 28 + 800 + 9000);
+
+    REQUIRE(agree_on_grid(
+        &p,
+        ARRAY_ARG_FUNCTIONS,
+        sizeof ARRAY_ARG_FUNCTIONS / sizeof ARRAY_ARG_FUNCTIONS[0]
+    ));
     release_program(&p);
     return true;
 }
@@ -5743,7 +5851,7 @@ static const char INT128_SHAPES[] =
 static const char *const INT128_GRID_FUNCTIONS[] = {
     "wide_mul", "signed_mul", "divide", "divide_unsigned", "shifts", "counts", "floats",
     "values", "calls", "compares", "bit_ops", "overflows", "tables", "unaligned",
-    "shift_counts", "narrows", "signs", "big_floats", "edge_constants", "blocks",
+    "shift_counts", "narrows", "signs", "big_floats", "edge_constants", "blocks", "big_arrays",
 };
 
 static const char *const INT128_SHAPE_FUNCTIONS[] = {
@@ -5864,6 +5972,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(slices);
     RUN_TEST_CASE(stored_slices);
     RUN_TEST_CASE(passed_structs);
+    RUN_TEST_CASE(passed_arrays);
     RUN_TEST_CASE(left_to_right);
     RUN_TEST_CASE(large_structs);
     RUN_TEST_CASE(constant_conditions);

@@ -482,7 +482,7 @@ TEST_CASE(writes_layouts)
 enum
 {
     MAX_JOBS = 8,
-    GRID_FUNCTIONS = 371,
+    GRID_FUNCTIONS = 372,
 };
 
 typedef struct
@@ -1532,6 +1532,27 @@ exports(const Build *b, int64_t x)
     return ok;
 }
 
+TEST_CASE(passes_arrays)
+{
+    Build b;
+    REQUIRE(open_build(&b, 1));
+    bool ok = add_package(&b, 0, ARRAY_ARGS, 'g', false) && finish_build(&b, "");
+
+    u32 tested = 0;
+    if (ok) {
+        Package p;
+        ok = check_source(&p, ARRAY_ARGS) && agree_on_grid(&b, &p, 0, &tested);
+        release(&p);
+    }
+    if (ok && tested != 15) {
+        fprintf(stderr, "c_source test: %u array functions take two ints, expected 15\n", tested);
+        ok = false;
+    }
+    close_build(&b, ok);
+    REQUIRE(ok);
+    return true;
+}
+
 TEST_CASE(works_with_c)
 {
     Build b;
@@ -2059,6 +2080,7 @@ TEST_SUITE(c_source_tests)
     RUN_TEST_CASE(writes_layouts);
 #ifdef CHIBI_TEST_CC
     RUN_TEST_CASE(agrees_with_reference);
+    RUN_TEST_CASE(passes_arrays);
     RUN_TEST_CASE(works_with_c);
     RUN_TEST_CASE(runs_vectors);
     RUN_TEST_CASE(maps_lines);

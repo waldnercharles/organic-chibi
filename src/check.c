@@ -828,7 +828,7 @@ is_passed_compound(const Checker *c, u32 type)
         return false;
     }
     return is_slice(c, type) || is_nilable(c, type) ||
-           (is_struct(c, type) && check_struct_regs(c, type));
+           (is_aggregate(c, type) && check_struct_regs(c, type));
 }
 
 static ALWAYS_INLINE bool
@@ -3469,7 +3469,7 @@ note_stack_args(Checker *c, u32 list, u32 nargs, u32 first)
         u32 type = c->lists[list + 1 + i];
         bool lanes = is_vector(c, type) || check_is_int128(type);
         u32 regs = is_slice(c, type)          ? 2
-                 : is_struct(c, type)         ? check_struct_regs(c, type)
+                 : is_aggregate(c, type)      ? check_struct_regs(c, type)
                  : is_float(c, type) || lanes ? 1 | REGS_FLOAT
                                               : 1;
         u32 size = regs & REGS_POINTER ? 8 : (u32)check_type_size(c, type);
@@ -3581,7 +3581,7 @@ call_general(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg,
             code->extra[w++] = p.first;
             code->extra[w++] = p.second;
             used[0] += 2;
-        } else if (is_struct(c, type)) {
+        } else if (is_aggregate(c, type)) {
             u32 block = c->nunread && i < nargs
                           ? early_block(c, first_arg + i, c->stack[first_arg + i])
                           : NO_SLOT;
@@ -3617,7 +3617,7 @@ call_general(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg,
     code->extra[extra] = w - extra - 1;
     c->body.copies = copies > c->body.copies ? copies : c->body.copies;
     u32 slot = 0;
-    if (is_struct(c, ret)) {
+    if (is_aggregate(c, ret)) {
         slot = result_slot(c, file, node, first_arg - 2, ret);
         weigh(c, slot);
         code->extra[w++] = slot;
@@ -3635,7 +3635,7 @@ call_general(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg,
     if (is_slice(c, ret)) {
         return make_pair(c, ret, i, emit(c, IR_SECOND, TYPE_ID_I64, 0, 0));
     }
-    if (is_struct(c, ret)) {
+    if (is_aggregate(c, ret)) {
         return (Operand){ OPERAND_LOCAL, slot };
     }
     return ret == TYPE_ID_VOID ? (Operand){ TYPE_ID_VOID, 0 }
@@ -6035,7 +6035,7 @@ add_peer(Checker *c, Peers *peers, Break b)
 }
 
 static NOINLINE void
-return_struct_peer(Checker *c, u32 file, u32 token, Peers *peers, u8 kind, Operand v)
+return_aggregate_peer(Checker *c, u32 file, u32 token, Peers *peers, u8 kind, Operand v)
 {
     u32 type = place_type(c, v);
     if (kind != IR_RET) {
@@ -6057,8 +6057,8 @@ exit_to_peers(Checker *c, u32 file, u32 token, Peers *peers, u8 kind, u32 loop, 
     if (is_place(v) && is_slice(c, place_type(c, v))) {
         v = read_slice(c, v);
     }
-    if (is_place(v) && is_struct(c, place_type(c, v))) {
-        return_struct_peer(c, file, token, peers, kind, v);
+    if (is_place(v) && is_aggregate(c, place_type(c, v))) {
+        return_aggregate_peer(c, file, token, peers, kind, v);
         return;
     }
     if (v.type == TYPE_ID_NONE) {
@@ -9517,7 +9517,8 @@ print_function(FILE *out, const Checker *c, const IrFunc *fn)
         fprintf(out, "%*s", 4 * depth, "");
 
         bool value = kind < IR_CALL ||
-                     (kind <= IR_CALL_C && type != TYPE_ID_VOID && !is_struct(c, type)) ||
+                     (kind <= IR_CALL_C && type != TYPE_ID_VOID &&
+                      !is_aggregate(c, type)) ||
                      (kind == IR_END && type != TYPE_ID_NONE);
         if (value) {
             fprintf(out, "%%%u = ", i);
@@ -9560,7 +9561,7 @@ print_function(FILE *out, const Checker *c, const IrFunc *fn)
                 print_type(out, c, type);
                 fputc(' ', out);
                 print_operand(out, c, fn, a);
-                if (is_struct(c, type) &&
+                if (is_aggregate(c, type) &&
                     (check_struct_regs(c, type) & REGS_POINTER) && b < DATA_ROOT) {
                     fputs(", ", out);
                     print_slot(out, c, fn, b);
@@ -9611,7 +9612,7 @@ print_function(FILE *out, const Checker *c, const IrFunc *fn)
                     print_operand(out, c, fn, args[j]);
                 }
                 fputc(')', out);
-                if (is_struct(c, type)) {
+                if (is_aggregate(c, type)) {
                     fputs(" -> ", out);
                     print_slot(out, c, fn, args[args[0] + 1]);
                 }

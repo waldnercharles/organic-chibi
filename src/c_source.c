@@ -160,7 +160,8 @@ is_address(const Checker *c, u32 type)
 {
     u8 kind = c->types.kinds[type];
     return kind == TYPE_POINTER || kind == TYPE_MANY || kind == TYPE_SLICE ||
-           kind == TYPE_STRUCT || kind == TYPE_FN || kind == TYPE_OPTIONAL;
+           kind == TYPE_STRUCT || kind == TYPE_ARRAY || kind == TYPE_FN ||
+           kind == TYPE_OPTIONAL;
 }
 
 static const char *
@@ -347,7 +348,8 @@ produces(const Source *s, u32 i)
     u8 kind = s->code->kinds[g];
     u32 type = s->code->types[g];
     if (kind == IR_CALL || kind == IR_CALL_C) {
-        return type != TYPE_ID_VOID && s->c->types.kinds[type] != TYPE_STRUCT;
+        u8 k = s->c->types.kinds[type];
+        return type != TYPE_ID_VOID && k != TYPE_STRUCT && k != TYPE_ARRAY;
     }
     return kind < IR_CALL || (kind == IR_END && type != TYPE_ID_NONE);
 }
@@ -496,6 +498,22 @@ end_statement(Source *s)
 }
 
 static void
+put_object_type(Source *s, u32 type)
+{
+    u8 kind = s->c->types.kinds[type];
+    if (kind == TYPE_STRUCT) {
+        fputs("struct ", s->out);
+        put_name(s, s->c->types.arg0[type]);
+    } else if (kind == TYPE_ARRAY) {
+        fprintf(s->out, "struct chibi_%sarray_%u", s->prefix, type);
+    } else if (kind == TYPE_SLICE) {
+        fputs("chibi_slice", s->out);
+    } else {
+        fputs(value_name(s->c, type), s->out);
+    }
+}
+
+static void
 put_line(Source *s, const char *format, ...)
 {
     va_list ap;
@@ -532,6 +550,7 @@ put_line(Source *s, const char *format, ...)
             }
             case 'c': fputs(va_arg(ap, const char *), s->out); break;
             case 'n': put_name(s, va_arg(ap, u32)); break;
+            case 'O': put_object_type(s, va_arg(ap, u32)); break;
             case 'e': put_c_name(s, va_arg(ap, u32)); break;
             case 'T': fprintf(s->out, "chibi_trap(%d)", va_arg(ap, int)); break;
             case 'L': {
@@ -546,20 +565,6 @@ put_line(Source *s, const char *format, ...)
     }
     end_statement(s);
     va_end(ap);
-}
-
-static void
-put_object_type(Source *s, u32 type)
-{
-    u8 kind = s->c->types.kinds[type];
-    if (kind == TYPE_STRUCT) {
-        fputs("struct ", s->out);
-        put_name(s, s->c->types.arg0[type]);
-    } else if (kind == TYPE_SLICE) {
-        fputs("chibi_slice", s->out);
-    } else {
-        fputs(value_name(s->c, type), s->out);
-    }
 }
 
 static void
@@ -606,6 +611,22 @@ put_struct(Source *s, u32 decl, u8 *done)
         decl,
         check_type_align(c, type)
     );
+}
+
+static void
+put_array_type(Source *s, u32 type, u8 *seen)
+{
+    if (s->c->types.kinds[type] != TYPE_ARRAY || seen[type]) {
+        return;
+    }
+    seen[type] = 1;
+    s->depth = 0;
+    put_line(s, "\n%O", type);
+    put_line(s, "{");
+    fputs("    ", s->out);
+    put_declaration(s, type, 'v', 0);
+    fputs(";\n", s->out);
+    put_line(s, "};");
 }
 
 static void
@@ -717,7 +738,12 @@ put_signature(Source *s, const IrFunc *fn)
     for (u32 p = 0; p < fn->nparams;
          p += c->types.kinds[slots[p].type] == TYPE_SLICE ? 2 : 1) {
         fputs(", ", s->out);
-        put_declaration(s, slots[p].type, 's', p);
+        if (c->types.kinds[slots[p].type] == TYPE_ARRAY) {
+            put_object_type(s, slots[p].type);
+            fprintf(s->out, " s%u", p);
+        } else {
+            put_declaration(s, slots[p].type, 's', p);
+        }
     }
     putc(')', s->out);
 }
@@ -868,7 +894,7 @@ static void
 put_load(Source *s, u32 i, u32 type, u32 a)
 {
     u8 kind = s->c->types.kinds[type];
-    if (kind == TYPE_STRUCT) {
+    if (kind == TYPE_STRUCT || kind == TYPE_ARRAY) {
         put_line(s, "v%u = %o;", i, a);
     } else if (kind == TYPE_SLICE) {
         put_line(s, "__builtin_memcpy(&v%u, %o, 8);", i, a);
@@ -1167,9 +1193,10 @@ put_call(Source *s, u32 i, u8 kind, u32 type, u32 decl, const u32 *list)
     u32 n = list[0];
     u8 result = c->types.kinds[type];
 
-    bool block = result == TYPE_SLICE;
+    bool block = result == TYPE_SLICE || result == TYPE_ARRAY;
     for (u32 p = 0; p < params[0]; p++) {
-        block |= c->types.kinds[params[1 + p]] == TYPE_STRUCT;
+        u8 k = c->types.kinds[params[1 + p]];
+        block |= k == TYPE_STRUCT || k == TYPE_ARRAY;
     }
     if (block) {
         put_line(s, "{");
@@ -1177,16 +1204,20 @@ put_call(Source *s, u32 i, u8 kind, u32 type, u32 decl, const u32 *list)
     }
     for (u32 p = 0, o = 1; p < params[0]; p++) {
         u32 t = params[1 + p];
-        if (c->types.kinds[t] == TYPE_STRUCT) {
-            put_line(s, "struct %n a%u;", c->types.arg0[t], o);
+        u8 k = c->types.kinds[t];
+        if (k == TYPE_STRUCT || k == TYPE_ARRAY) {
+            put_line(s, "%O a%u;", t, o);
             put_line(s, "__builtin_memcpy(&a%u, %o, sizeof a%u);", o, list[o], o);
         }
-        o += c->types.kinds[t] == TYPE_SLICE ? 2 : 1;
+        o += k == TYPE_SLICE ? 2 : 1;
     }
 
     start_statement(s);
     if (result == TYPE_SLICE) {
         fputs("chibi_slice r = ", s->out);
+    } else if (result == TYPE_ARRAY) {
+        put_object_type(s, type);
+        fputs(" r = ", s->out);
     } else if (result == TYPE_STRUCT) {
         fprintf(s->out, "s%u = ", list[n + 1]);
     } else if (type != TYPE_ID_VOID) {
@@ -1206,7 +1237,7 @@ put_call(Source *s, u32 i, u8 kind, u32 type, u32 decl, const u32 *list)
         u8 k = c->types.kinds[params[1 + p]];
         fputs(separator, s->out);
         separator = ", ";
-        if (k == TYPE_STRUCT) {
+        if (k == TYPE_STRUCT || k == TYPE_ARRAY) {
             fprintf(s->out, "a%u", o);
         } else if (k == TYPE_SLICE) {
             fputs("(chibi_slice){ ", s->out);
@@ -1234,6 +1265,8 @@ put_call(Source *s, u32 i, u8 kind, u32 type, u32 decl, const u32 *list)
     if (result == TYPE_SLICE) {
         put_line(s, "v%u = r.ptr;", i);
         put_line(s, "v%u = r.len;", i + 1);
+    } else if (result == TYPE_ARRAY) {
+        put_line(s, "__builtin_memcpy(&s%u, &r, sizeof r);", list[n + 1]);
     }
     if (block) {
         s->depth--;
@@ -1247,10 +1280,10 @@ put_return(Source *s, u32 type, u32 a, u32 b)
     u8 kind = s->c->types.kinds[type];
     if (type == TYPE_ID_VOID) {
         put_line(s, "return;");
-    } else if (kind == TYPE_STRUCT) {
+    } else if (kind == TYPE_STRUCT || kind == TYPE_ARRAY) {
         put_line(s, "{");
         s->depth++;
-        put_line(s, "struct %n r;", s->c->types.arg0[type]);
+        put_line(s, "%O r;", type);
         put_line(s, "__builtin_memcpy(&r, %o, sizeof r);", a);
         put_line(s, "return r;");
         s->depth--;
@@ -1649,6 +1682,16 @@ c_source_package(FILE *out, const Checker *c, const char *prefix)
             put_struct(&s, d, done);
         }
     }
+    u8 *seen = calloc(c->types.count, 1);
+    for (u32 f = 0; f < ir->nfuncs; f++) {
+        const IrFunc *fn = &ir->funcs[f];
+        const IrSlot *slots = ir->code.slots + fn->first_slot;
+        put_array_type(&s, (u32)c->types.arg1[c->decls.types[fn->decl]], seen);
+        for (u32 p = 0; p < fn->nparams; p++) {
+            put_array_type(&s, slots[p].type, seen);
+        }
+    }
+    free(seen);
     if (ir->ndata) {
         put_memory(&s, "const ", "data", ir->data, ir->ndata, ir->ndata, ir->data_relocs);
     }
