@@ -68,6 +68,75 @@ fits(__int128 v, Ty t)
     return v >= 0 && v <= (((__int128)1 << t.bits) - 1);
 }
 
+static unsigned __int128
+extend(u64 v, Ty t)
+{
+    return t.sign ? (unsigned __int128)(__int128)(int64_t)v : (unsigned __int128)v;
+}
+
+static bool
+fits_128(unsigned __int128 v, bool from_sign, Ty t)
+{
+    if (from_sign && (__int128)v < 0) {
+        return t.sign && (t.bits == 128 || (__int128)v >= -((__int128)1 << (t.bits - 1)));
+    }
+    unsigned __int128 max = t.bits == 128 ? ~(unsigned __int128)0 >> t.sign
+                                          : ((unsigned __int128)1 << (t.bits - t.sign)) - 1;
+    return v <= max;
+}
+
+static bool
+signed_mul_overflows_128(unsigned __int128 x, unsigned __int128 y)
+{
+    unsigned __int128 p00 = (unsigned __int128)(u64)x * (u64)y;
+    unsigned __int128 p01 = (unsigned __int128)(u64)x * (u64)(y >> 64);
+    unsigned __int128 p10 = (unsigned __int128)(u64)(x >> 64) * (u64)y;
+    unsigned __int128 p11 = (unsigned __int128)(u64)(x >> 64) * (u64)(y >> 64);
+    unsigned __int128 mid = (p00 >> 64) + (u64)p01 + (u64)p10;
+    unsigned __int128 high = p11 + (p01 >> 64) + (p10 >> 64) + (mid >> 64);
+    high -= (__int128)x < 0 ? y : 0;
+    high -= (__int128)y < 0 ? x : 0;
+
+    unsigned __int128 low = mid << 64 | (u64)p00;
+    return high != ((__int128)low < 0 ? ~(unsigned __int128)0 : 0);
+}
+
+static bool
+overflows_128(u8 op, unsigned __int128 p, unsigned __int128 q, bool sign, unsigned __int128 *r)
+{
+    if (sign && op == IR_MUL) {
+        *r = p * q;
+        return signed_mul_overflows_128(p, q);
+    }
+    if (sign) {
+        __int128 s = 0;
+        bool over = op == IR_ADD ? __builtin_add_overflow((__int128)p, (__int128)q, &s)
+                                 : __builtin_sub_overflow((__int128)p, (__int128)q, &s);
+        *r = (unsigned __int128)s;
+        return over;
+    }
+    return op == IR_ADD   ? __builtin_add_overflow(p, q, r)
+         : op == IR_SUB   ? __builtin_sub_overflow(p, q, r)
+                          : __builtin_mul_overflow(p, q, r);
+}
+
+static bool
+compare_128(u8 kind, unsigned __int128 p, unsigned __int128 q, bool sign)
+{
+    if (sign) {
+        p ^= (unsigned __int128)1 << 127;
+        q ^= (unsigned __int128)1 << 127;
+    }
+    switch (kind) {
+        case IR_EQ: return p == q;
+        case IR_NE: return p != q;
+        case IR_LT: return p < q;
+        case IR_LE: return p <= q;
+        case IR_GT: return p > q;
+        default: return p >= q;
+    }
+}
+
 static double
 as_double(u64 v, Ty t)
 {
@@ -291,7 +360,8 @@ ir_reference_init(IrReference *r, const Checker *c)
         for (u32 s = 0; s < fn->nslots; s++) {
             u32 type = ir->code.slots[fn->first_slot + s].type;
             u8 kind = c->types.kinds[type];
-            u64 bytes = kind == TYPE_ARRAY || kind == TYPE_STRUCT || kind == TYPE_VECTOR
+            u64 bytes = kind == TYPE_ARRAY || kind == TYPE_STRUCT || kind == TYPE_VECTOR ||
+                              check_is_int128(type)
                           ? check_type_size(c, type)
                           : 8;
             assert(bytes < (1u << 24) && size < (1u << 24));
@@ -338,7 +408,7 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
     const u32 *offsets = r->offsets + fn->first_slot;
     for (u32 p = 0; p < fn->nparams; p++) {
         u32 type = ir->slots[fn->first_slot + p].type;
-        if (c->types.kinds[type] == TYPE_STRUCT || is_vector(c, type)) {
+        if (c->types.kinds[type] == TYPE_STRUCT || is_vector(c, type) || check_is_int128(type)) {
             memcpy(frame + offsets[p], (const void *)(uintptr_t)args[p], check_type_size(c, type));
         } else {
             memcpy(frame + offsets[p], &args[p], sizeof *args);
@@ -354,14 +424,23 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
 #define WIDE(x, w)                                                             \
     do {                                                                       \
         if ((x) & IR_CONST) {                                                  \
-            IrConst k_ = ir->consts[fn->first_const + ((x) & ~IR_CONST)];      \
-            u32 bits_ = ty(c, c->types.arg0[k_.type]).bits;                    \
-            (w)[0] = (w)[1] = replicate(k_.bits, bits_);                       \
+            const IrConst *k_ = &ir->consts[fn->first_const + ((x) & ~IR_CONST)]; \
+            if (check_is_int128(k_->type)) {                                   \
+                (w)[0] = k_[0].bits;                                           \
+                (w)[1] = k_[1].bits;                                           \
+            } else {                                                           \
+                u32 bits_ = ty(c, c->types.arg0[k_->type]).bits;               \
+                (w)[0] = (w)[1] = replicate(k_->bits, bits_);                  \
+            }                                                                  \
         } else {                                                               \
             (w)[0] = vals[(x)];                                                \
             (w)[1] = highs[(x)];                                               \
         }                                                                      \
     } while (0)
+#define HIGH(x)                                                                \
+    (((x) & IR_CONST) ? ir->consts[fn->first_const + ((x) & ~IR_CONST) + 1].bits \
+                      : highs[(x)])
+#define WIDE128(x) ((unsigned __int128)HIGH(x) << 64 | OPERAND(x))
 
     int trap = TRAP_UNREACHABLE;
     u64 second = 0;
@@ -462,6 +541,134 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
             }
             vals[i] = out[0];
             highs[i] = out[1];
+            i++;
+            continue;
+        }
+        if (check_is_int128(type) && kind != IR_CALL && kind < IR_BLOCK) {
+            unsigned __int128 out = 0, p = 0, q = 0;
+            if (kind >= IR_ADD && kind <= IR_MUL_OVERFLOWS) {
+                p = WIDE128(a);
+                if ((kind < IR_NEG || kind > IR_COUNT_ONES) && kind != IR_SHL && kind != IR_SHR) {
+                    q = WIDE128(b);
+                }
+            }
+            int fail = 0;
+            switch (kind) {
+                case IR_LOAD: memcpy(&out, frame + offsets[a], sizeof out); break;
+                case IR_STORE: {
+                    unsigned __int128 w = WIDE128(b);
+                    memcpy(frame + offsets[a], &w, sizeof w);
+                    break;
+                }
+                case IR_LOAD_AT: memcpy(&out, (const void *)(uintptr_t)OPERAND(a), sizeof out); break;
+                case IR_STORE_AT: {
+                    unsigned __int128 w = WIDE128(b);
+                    memcpy((void *)(uintptr_t)OPERAND(a), &w, sizeof w);
+                    break;
+                }
+                case IR_ADD:
+                case IR_SUB:
+                case IR_MUL:
+                    if (overflows_128(kind, p, q, t.sign, &out)) {
+                        fail = TRAP_OVERFLOW;
+                    }
+                    break;
+                case IR_ADD_WRAP: out = p + q; break;
+                case IR_SUB_WRAP: out = p - q; break;
+                case IR_MUL_WRAP: out = p * q; break;
+                case IR_DIV:
+                case IR_REM:
+                    if (q == 0) {
+                        fail = TRAP_DIVIDE;
+                    } else if (!t.sign) {
+                        out = kind == IR_DIV ? p / q : p % q;
+                    } else if ((__int128)q == -1) {
+                        if (kind == IR_DIV && p == (unsigned __int128)1 << 127) {
+                            fail = TRAP_OVERFLOW;
+                        }
+                        out = kind == IR_DIV ? 0 - p : 0;
+                    } else {
+                        __int128 w = kind == IR_DIV ? (__int128)p / (__int128)q : (__int128)p % (__int128)q;
+                        out = (unsigned __int128)w;
+                    }
+                    break;
+                case IR_SHL:
+                case IR_SHR: {
+                    Ty count = ty(c, OPERAND_TYPE(b));
+                    unsigned __int128 n = count.bits > 64 ? WIDE128(b) : (unsigned __int128)OPERAND(b);
+                    if (n >= 128) {
+                        fail = TRAP_SHIFT;
+                        break;
+                    }
+                    out = kind == IR_SHL ? p << n
+                        : t.sign         ? (unsigned __int128)((__int128)p >> n)
+                                         : p >> n;
+                    break;
+                }
+                case IR_AND: out = p & q; break;
+                case IR_OR: out = p | q; break;
+                case IR_XOR: out = p ^ q; break;
+                case IR_NEG:
+                    if (t.sign ? p == (unsigned __int128)1 << 127 : p != 0) {
+                        fail = TRAP_OVERFLOW;
+                    }
+                    out = 0 - p;
+                    break;
+                case IR_NEG_WRAP: out = 0 - p; break;
+                case IR_BIT_NOT: out = ~p; break;
+                case IR_EQ:
+                case IR_NE:
+                case IR_LT:
+                case IR_LE:
+                case IR_GT:
+                case IR_GE: out = compare_128(kind, p, q, t.sign); break;
+                case IR_ADD_OVERFLOWS:
+                case IR_SUB_OVERFLOWS:
+                case IR_MUL_OVERFLOWS: {
+                    unsigned __int128 r = 0;
+                    out = overflows_128((u8)(IR_ADD + kind - IR_ADD_OVERFLOWS), p, q, t.sign, &r);
+                    break;
+                }
+                case IR_CONVERT:
+                case IR_NARROW:
+                case IR_TRUNCATE: {
+                    Ty from = ty(c, OPERAND_TYPE(a));
+                    if (from.fl) {
+                        double d = trunc(as_double(OPERAND(a), from));
+                        double lo = t.sign ? -ldexp(1, 127) : 0;
+                        double hi = ldexp(1, t.sign ? 127 : 128);
+                        if (!(d >= lo && d < hi)) {
+                            fail = TRAP_RANGE;
+                        } else {
+                            out = t.sign ? (unsigned __int128)(__int128)d : (unsigned __int128)d;
+                        }
+                        break;
+                    }
+                    out = from.bits > 64 ? WIDE128(a) : extend(OPERAND(a), from);
+                    if (kind == IR_NARROW && !fits_128(out, from.sign, t)) {
+                        fail = TRAP_RANGE;
+                    }
+                    break;
+                }
+                case IR_BITCAST: {
+                    u64 w[2];
+                    WIDE(a, w);
+                    out = (unsigned __int128)w[1] << 64 | w[0];
+                    break;
+                }
+                case IR_RET:
+                    result[0] = OPERAND(a);
+                    result[1] = HIGH(a);
+                    trap = 0;
+                    goto done;
+                default: assert(false && "unknown 128-bit instruction");
+            }
+            if (fail) {
+                trap = fail;
+                break;
+            }
+            vals[i] = (u64)out;
+            highs[i] = (u64)(out >> 64);
             i++;
             continue;
         }
@@ -645,6 +852,15 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
             case IR_LEADING_ZEROS:
             case IR_COUNT_ONES: {
                 u32 bits = ty(c, OPERAND_TYPE(a)).bits;
+                if (bits > 64) {
+                    u64 h = HIGH(a);
+                    v = kind == IR_COUNT_ONES     ? (u64)(__builtin_popcountll(x) + __builtin_popcountll(h))
+                      : (x | h) == 0              ? 128
+                      : kind == IR_TRAILING_ZEROS ? (x ? (u64)__builtin_ctzll(x) : 64 + (u64)__builtin_ctzll(h))
+                      : h                         ? (u64)__builtin_clzll(h)
+                                                  : 64 + (u64)__builtin_clzll(x);
+                    break;
+                }
                 u64 s = x & ~0ull >> (64 - bits);
                 v = kind == IR_COUNT_ONES     ? (u64)__builtin_popcountll(s)
                   : s == 0                    ? bits
@@ -678,6 +894,29 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
             case IR_TRUNCATE: {
                 u64 s = OPERAND(a);
                 Ty from = ty(c, OPERAND_TYPE(a));
+                if (from.bits > 64) {
+                    unsigned __int128 w = WIDE128(a);
+                    if (kind == IR_TRUNCATE) {
+                        v = canon((u64)w, t);
+                    } else if (t.fl) {
+                        double d = from.sign ? (double)(__int128)w : (double)w;
+                        if (t.bits == 32) {
+                            float f = from.sign ? (float)(__int128)w : (float)w;
+                            d = f;
+                        }
+                        v = from_double(d, t);
+                    } else if (
+                        !fits_128(w, from.sign, t) ||
+                        (kind == IR_NARROW && c->types.kinds[type] == TYPE_ENUM &&
+                         !is_member(ir->extra + fn->first_extra + b, t, canon((u64)w, t)))
+                    ) {
+                        assert(kind == IR_NARROW);
+                        fail = TRAP_RANGE;
+                    } else {
+                        v = canon((u64)w, t);
+                    }
+                    break;
+                }
                 if (kind == IR_TRUNCATE) {
                     v = canon(s, t);
                 } else if (from.fl && t.fl) {
@@ -739,7 +978,8 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                 u64 *call_args = calloc(list[0] + 1, sizeof *call_args);
                 u64(*lanes)[2] = calloc(list[0] + 1, sizeof *lanes);
                 for (u32 k = 0; k < list[0]; k++) {
-                    if (is_vector(c, ir->slots[callee->first_slot + k].type)) {
+                    u32 param = ir->slots[callee->first_slot + k].type;
+                    if (is_vector(c, param) || check_is_int128(param)) {
                         WIDE(list[1 + k], lanes[k]);
                         call_args[k] = (u64)(uintptr_t)lanes[k];
                     } else {
@@ -780,6 +1020,7 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
             case IR_ELSE:
                 if (type != TYPE_ID_NONE) {
                     vals[r->ends[g] - fn->first] = OPERAND(a);
+                    highs[r->ends[g] - fn->first] = check_is_int128(type) ? HIGH(a) : 0;
                 }
                 i = r->ends[g] - fn->first + 1;
                 continue;
@@ -787,11 +1028,13 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                 assert(type == TYPE_ID_NONE || ir->kinds[r->opens[g]] == IR_IF);
                 if (type != TYPE_ID_NONE) {
                     v = OPERAND(a);
+                    highs[i] = check_is_int128(type) ? HIGH(a) : 0;
                 }
                 break;
             case IR_EXIT:
                 if (type != TYPE_ID_NONE) {
                     vals[r->ends[fn->first + a] - fn->first] = OPERAND(b);
+                    highs[r->ends[fn->first + a] - fn->first] = check_is_int128(type) ? HIGH(b) : 0;
                 }
                 i = r->ends[fn->first + a] - fn->first + 1;
                 continue;
@@ -837,6 +1080,8 @@ done:
 #undef OPERAND
 #undef OPERAND_TYPE
 #undef WIDE
+#undef HIGH
+#undef WIDE128
 }
 
 int

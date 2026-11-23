@@ -78,6 +78,8 @@ bool exact_fits(const Exacts *e, u32 a, u32 bits, bool is_signed);
 
 u64 exact_bits(const Exacts *e, u32 a);
 
+u64 exact_bits_high(const Exacts *e, u32 a);
+
 u64 exact_float(const Exacts *e, u32 a, u32 width, ExactStatus *status);
 
 u32 exact_from_float(Exacts *e, u64 bits, u32 width);

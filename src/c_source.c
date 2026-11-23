@@ -97,6 +97,8 @@ c_source_prelude(FILE *out)
         "typedef int32_t chibi_i32x4 __attribute__((vector_size(16)));\n"
         "typedef uint64_t chibi_u64x2 __attribute__((vector_size(16)));\n"
         "typedef int64_t chibi_i64x2 __attribute__((vector_size(16)));\n"
+        "__extension__ typedef unsigned __int128 chibi_u128;\n"
+        "__extension__ typedef __int128 chibi_i128;\n"
         "\n"
         "__attribute__((noreturn, cold)) void chibi_trap(int kind);\n"
         "extern void *chibi_context;\n",
@@ -122,9 +124,9 @@ scalar_of(const Checker *c, u32 type)
 static const char *
 scalar_name(Scalar t)
 {
-    static const char *const ints[2][4] = {
-        { "uint8_t", "uint16_t", "uint32_t", "uint64_t" },
-        { "int8_t", "int16_t", "int32_t", "int64_t" },
+    static const char *const ints[2][5] = {
+        { "uint8_t", "uint16_t", "uint32_t", "uint64_t", "chibi_u128" },
+        { "int8_t", "int16_t", "int32_t", "int64_t", "chibi_i128" },
     };
     if (t.fl) {
         return t.bits == 32 ? "float" : "double";
@@ -149,7 +151,8 @@ wide_name(const Checker *c, u32 type)
     if (c->types.kinds[type] == TYPE_VECTOR) {
         return vector_name(c, type, true);
     }
-    return scalar_of(c, type).bits <= 32 ? "uint32_t" : "uint64_t";
+    u32 bits = scalar_of(c, type).bits;
+    return bits <= 32 ? "uint32_t" : bits <= 64 ? "uint64_t" : "chibi_u128";
 }
 
 static bool
@@ -396,12 +399,34 @@ put_constant(Source *s, u64 bits, u32 type)
     }
 }
 
+static NOINLINE void
+put_constant_128(Source *s, u64 low, u64 high, u32 type)
+{
+    const char *name = value_name(s->c, type);
+    if (high == 0 || (type == TYPE_ID_I128 && high == ~0ull && (int64_t)low < 0)) {
+        fprintf(s->out, "(%s)", name);
+        put_constant(s, low, high == 0 ? TYPE_ID_U64 : TYPE_ID_I64);
+        return;
+    }
+    fprintf(
+        s->out,
+        "(%s)((chibi_u128)%lluu << 64 | %lluu)",
+        name,
+        (unsigned long long)high,
+        (unsigned long long)low
+    );
+}
+
 static void
 put_operand(Source *s, u32 x)
 {
     if (x & IR_CONST) {
-        IrConst k = s->code->consts[s->fn->first_const + (x & ~IR_CONST)];
-        put_constant(s, k.bits, k.type);
+        const IrConst *k = &s->code->consts[s->fn->first_const + (x & ~IR_CONST)];
+        if (check_is_int128(k->type)) {
+            put_constant_128(s, k->bits, k[1].bits, k->type);
+        } else {
+            put_constant(s, k->bits, k->type);
+        }
         return;
     }
     fprintf(s->out, "v%u", x);
@@ -891,6 +916,26 @@ put_slice(Source *s, u32 i, u8 kind, u32 type, u32 a, const u32 *x)
     put_line(s, "}");
 }
 
+static NOINLINE void
+put_mul_128(Source *s, u32 i, u8 kind, u32 a, u32 b)
+{
+    put_line(s, "{");
+    s->depth++;
+    put_line(s, "chibi_u128 x = %o < 0 ? -(chibi_u128)%o : (chibi_u128)%o;", a, a, a);
+    put_line(s, "chibi_u128 y = %o < 0 ? -(chibi_u128)%o : (chibi_u128)%o;", b, b, b);
+    put_line(s, "chibi_u128 p;");
+    put_line(s, "int negative = (%o < 0) != (%o < 0);", a, b);
+    put_line(s, "int over = __builtin_mul_overflow(x, y, &p) || p > ((chibi_u128)1 << 127) - !negative;");
+    if (kind == IR_MUL) {
+        put_line(s, "if (over) %T;", TRAP_OVERFLOW);
+        put_line(s, "v%u = (chibi_i128)(negative ? -p : p);", i);
+    } else {
+        put_line(s, "v%u = over;", i);
+    }
+    s->depth--;
+    put_line(s, "}");
+}
+
 static void
 put_divide(Source *s, u32 i, u8 kind, u32 type, u32 a, u32 b)
 {
@@ -906,8 +951,12 @@ put_divide(Source *s, u32 i, u8 kind, u32 type, u32 a, u32 b)
     if (!t.sign) {
         put_line(s, "v%u = %o %c %o;", i, a, operators[kind], b);
     } else if (kind == IR_DIV) {
-        u64 min = ~0ull << (t.bits - 1);
-        put_line(s, "if (%o == %k && %o == -1) %T;", a, min, type, b, TRAP_OVERFLOW);
+        if (t.bits > 64) {
+            put_line(s, "if (%o == (chibi_i128)((chibi_u128)1 << 127) && %o == -1) %T;", a, b, TRAP_OVERFLOW);
+        } else {
+            u64 min = ~0ull << (t.bits - 1);
+            put_line(s, "if (%o == %k && %o == -1) %T;", a, min, type, b, TRAP_OVERFLOW);
+        }
         put_line(s, "v%u = %o / %o;", i, a, b);
     } else {
         put_line(s, "v%u = %o == -1 ? 0 : %o %% %o;", i, b, a, b);
@@ -920,7 +969,8 @@ put_shift(Source *s, u32 i, u8 kind, u32 type, u32 a, u32 b)
     const Checker *c = s->c;
     u32 lane = c->types.kinds[type] == TYPE_VECTOR ? c->types.arg0[type] : type;
     if (!(b & IR_CONST)) {
-        put_line(s, "if ((uint64_t)%o >= %u) %T;", b, scalar_of(c, lane).bits, TRAP_SHIFT);
+        const char *count = check_is_int128(value_type(s, b)) ? "chibi_u128" : "uint64_t";
+        put_line(s, "if ((%c)%o >= %u) %T;", count, b, scalar_of(c, lane).bits, TRAP_SHIFT);
     }
     if (kind == IR_SHL) {
         put_line(s, "v%u = (%t)((%c)%o << %o);", i, type, wide_name(c, type), a, b);
@@ -929,11 +979,32 @@ put_shift(Source *s, u32 i, u8 kind, u32 type, u32 a, u32 b)
     }
 }
 
+static NOINLINE void
+put_count_128(Source *s, u32 i, u8 kind, u32 type, u32 a)
+{
+    put_line(s, "{");
+    s->depth++;
+    put_line(s, "uint64_t lo = (uint64_t)%o, hi = (uint64_t)((chibi_u128)%o >> 64);", a, a);
+    if (kind == IR_COUNT_ONES) {
+        put_line(s, "v%u = (%t)(__builtin_popcountll(lo) + __builtin_popcountll(hi));", i, type);
+    } else if (kind == IR_TRAILING_ZEROS) {
+        put_line(s, "v%u = (%t)(lo ? __builtin_ctzll(lo) : hi ? 64 + __builtin_ctzll(hi) : 128);", i, type);
+    } else {
+        put_line(s, "v%u = (%t)(hi ? __builtin_clzll(hi) : lo ? 64 + __builtin_clzll(lo) : 128);", i, type);
+    }
+    s->depth--;
+    put_line(s, "}");
+}
+
 static void
 put_count(Source *s, u32 i, u8 kind, u32 type, u32 a)
 {
     assert(!(a & IR_CONST));
     u32 bits = scalar_of(s->c, value_type(s, a)).bits;
+    if (bits > 64) {
+        put_count_128(s, i, kind, type, a);
+        return;
+    }
     const char *u = scalar_name((Scalar){ false, false, bits });
     if (kind == IR_COUNT_ONES) {
         put_line(s, "v%u = (%t)__builtin_popcountll((%c)%o);", i, type, u, a);
@@ -955,9 +1026,48 @@ put_count(Source *s, u32 i, u8 kind, u32 type, u32 a)
     }
 }
 
+static NOINLINE void
+put_range_128(Source *s, u32 a, Scalar from, Scalar to)
+{
+    if (to.bits > 64) {
+        put_line(s, "if ((chibi_i128)%o < 0) %T;", a, TRAP_RANGE);
+        return;
+    }
+    const char *name = from.sign ? "chibi_i128" : "chibi_u128";
+    u64 to_max = ~0ull >> (64 - to.bits + to.sign);
+    u64 to_min = to.sign ? ~0ull << (to.bits - 1) : 0;
+    if (from.sign) {
+        put_line(
+            s,
+            "if (%o < (%c)%k || %o > (%c)%k) %T;",
+            a,
+            name,
+            to_min,
+            TYPE_ID_I64,
+            a,
+            name,
+            to_max,
+            TYPE_ID_U64,
+            TRAP_RANGE
+        );
+    } else {
+        put_line(s, "if (%o > (%c)%k) %T;", a, name, to_max, TYPE_ID_U64, TRAP_RANGE);
+    }
+}
+
 static void
 put_range(Source *s, u32 a, u32 from_type, Scalar from, Scalar to)
 {
+    if (from.bits > 64) {
+        put_range_128(s, a, from, to);
+        return;
+    }
+    if (to.bits > 64) {
+        if (from.sign && !to.sign) {
+            put_line(s, "if (%o < 0) %T;", a, TRAP_RANGE);
+        }
+        return;
+    }
     u64 from_max = ~0ull >> (64 - from.bits + from.sign);
     u64 to_max = ~0ull >> (64 - to.bits + to.sign);
     u64 to_min = to.sign ? ~0ull << (to.bits - 1) : 0;
@@ -1025,13 +1135,13 @@ put_convert(Source *s, u32 i, u8 kind, u32 type, u32 a, u32 b)
 static void
 put_bitcast(Source *s, u32 i, u32 type, u32 a)
 {
-    if (s->c->types.kinds[type] == TYPE_VECTOR) {
-        put_line(s, "v%u = (%t)%o;", i, type, a);
-        return;
-    }
     u32 from = a & IR_CONST
                  ? s->code->consts[s->fn->first_const + (a & ~IR_CONST)].type
                  : value_type(s, a);
+    if (s->c->types.kinds[type] == TYPE_VECTOR || s->c->types.kinds[from] == TYPE_VECTOR) {
+        put_line(s, "v%u = (%t)%o;", i, type, a);
+        return;
+    }
     put_line(s, "__builtin_memcpy(&v%u, &(%t){ %o }, sizeof v%u);", i, from, a, i);
 }
 
@@ -1224,6 +1334,8 @@ put_instruction(Source *s, u32 i)
         case IR_MUL:
             if (scalar_of(c, type).fl) {
                 put_line(s, "v%u = %o %c %o;", i, a, operators[kind], b);
+            } else if (kind == IR_MUL && type == TYPE_ID_I128) {
+                put_mul_128(s, i, kind, a, b);
             } else {
                 put_line(s, "if (__builtin_%c_overflow(%o, %o, &v%u)) %T;", builtins[kind], a, b, i, TRAP_OVERFLOW);
             }
@@ -1277,7 +1389,11 @@ put_instruction(Source *s, u32 i)
         case IR_ADD_OVERFLOWS:
         case IR_SUB_OVERFLOWS:
         case IR_MUL_OVERFLOWS:
-            put_line(s, "v%u = __builtin_%c_overflow(%o, %o, &(%t){ 0 });", i, builtins[kind], a, b, type);
+            if (kind == IR_MUL_OVERFLOWS && type == TYPE_ID_I128) {
+                put_mul_128(s, i, kind, a, b);
+            } else {
+                put_line(s, "v%u = __builtin_%c_overflow(%o, %o, &(%t){ 0 });", i, builtins[kind], a, b, type);
+            }
             break;
         case IR_CONVERT:
         case IR_NARROW:

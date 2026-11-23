@@ -190,7 +190,7 @@ static const char *const fixed_texts[NFIXED_TYPES] = { [TYPE_ID_NONE] = "?",
                                                        CHIBI_FIXED_TYPES(FIXED_TEXT) };
 
 #define BUILTIN(name) [name - NAME_LAST_KEYWORD - 1]
-static_assert(NBUILTIN_TYPES == 23, "every builtin type name needs an entry in builtin_types");
+static_assert(NBUILTIN_TYPES == 25, "every builtin type name needs an entry in builtin_types");
 static const u8 builtin_types[NBUILTIN_TYPES] = {
     BUILTIN(NAME_VOID) = TYPE_ID_VOID,
     BUILTIN(NAME_BOOL) = TYPE_ID_BOOL,
@@ -199,10 +199,12 @@ static const u8 builtin_types[NBUILTIN_TYPES] = {
     BUILTIN(NAME_I16) = TYPE_ID_I16,
     BUILTIN(NAME_I32) = TYPE_ID_I32,
     BUILTIN(NAME_I64) = TYPE_ID_I64,
+    BUILTIN(NAME_I128) = TYPE_ID_I128,
     BUILTIN(NAME_U8) = TYPE_ID_U8,
     BUILTIN(NAME_U16) = TYPE_ID_U16,
     BUILTIN(NAME_U32) = TYPE_ID_U32,
     BUILTIN(NAME_U64) = TYPE_ID_U64,
+    BUILTIN(NAME_U128) = TYPE_ID_U128,
     BUILTIN(NAME_F32) = TYPE_ID_F32,
     BUILTIN(NAME_F64) = TYPE_ID_F64,
     BUILTIN(NAME_UINTPTR) = TYPE_ID_UINTPTR,
@@ -984,6 +986,20 @@ mark_line(Checker *c, u32 token)
     b->marked = end;
 }
 
+static NOINLINE u32
+ir_const_128(Checker *c, u32 type, u64 low, u64 high)
+{
+    IrCode *code = c->body.code;
+    if (code->nconsts + 2 > code->consts_cap) {
+        code->consts_cap *= 2;
+        code->consts = resize(code->consts, code->consts_cap, sizeof *code->consts);
+    }
+    code->consts[code->nconsts] = (IrConst){ low, type };
+    code->consts[code->nconsts + 1] = (IrConst){ high, type };
+    code->nconsts += 2;
+    return IR_CONST | (code->nconsts - 2 - c->body.first_const);
+}
+
 static u32
 ir_const(Checker *c, u32 type, u64 bits)
 {
@@ -991,6 +1007,10 @@ ir_const(Checker *c, u32 type, u64 bits)
     if (code->nconsts == code->consts_cap) {
         code->consts_cap *= 2;
         code->consts = resize(code->consts, code->consts_cap, sizeof *code->consts);
+    }
+    if (check_is_int128(type)) {
+        assert((int64_t)bits >= 0);
+        return ir_const_128(c, type, bits, 0);
     }
     code->consts[code->nconsts] = (IrConst){ bits, type };
     return IR_CONST | (code->nconsts++ - c->body.first_const);
@@ -1014,6 +1034,10 @@ operand_ir(Checker *c, Operand o)
     assert(is_value_type(o.type) && !is_untyped(o.type) && !is_slice(c, o.type));
     if (!is_constant(o)) {
         return value_of(o);
+    }
+    if (check_is_int128(o.type)) {
+        u32 v = value_of(o);
+        return ir_const_128(c, o.type, exact_bits(&c->exacts, v), exact_bits_high(&c->exacts, v));
     }
     return ir_const(c, o.type, constant_bits(c, o));
 }
@@ -1833,12 +1857,15 @@ masked(const Checker *c, u32 value, u32 to)
     }
 
     u32 bits = c->types.arg0[to] - c->types.arg1[to];
+    bool wide = check_is_int128(code->types[at]);
     u32 ops[2] = { code->as[at], code->bs[at] };
     for (u32 i = 0; i < 2; i++) {
         if (ops[i] & IR_CONST) {
-            int64_t mask = (int64_t)code
-                               ->consts[c->body.first_const + (ops[i] & ~IR_CONST)]
-                               .bits;
+            const IrConst *k = &code->consts[c->body.first_const + (ops[i] & ~IR_CONST)];
+            int64_t mask = (int64_t)k->bits;
+            if (wide && k[1].bits != 0) {
+                continue;
+            }
             if (mask >= 0 && (bits >= 63 || mask < (int64_t)1 << bits)) {
                 return true;
             }
@@ -1851,7 +1878,7 @@ static bool
 bits_fit(u64 bits, bool from_signed, u32 to_bits, bool to_signed)
 {
     if (from_signed && (int64_t)bits < 0) {
-        return to_signed && (to_bits == 64 ||
+        return to_signed && (to_bits >= 64 ||
                              (int64_t)bits >= -(int64_t)(1ull << (to_bits - 1)));
     }
     u32 room = to_bits - to_signed;
@@ -2212,7 +2239,9 @@ bitcast(Checker *c, u32 file, u32 token, u32 type_token, u32 to, u32 value_token
     if (is_constant(o)) {
         u64 bits = constant_bits(c, o);
         if (is_int(c, to)) {
-            return (Operand){ to, wrap(c, exact_int(&c->exacts, (int64_t)bits), to) };
+            u32 v = is_int(c, from) ? value_of(o)
+                                    : exact_int(&c->exacts, (int64_t)bits);
+            return (Operand){ to, wrap(c, v, to) };
         }
         if (is_float(c, to)) {
             u32 width = c->types.arg0[to];
@@ -2476,6 +2505,10 @@ advance(Checker *c, u32 file, u32 token, u8 kind, Operand p, Operand n)
     }
     if (!is_int(c, n.type)) {
         report(c, file, token, DIAG_NOT_OFFSET, n.type, 0);
+        return poison;
+    }
+    if (check_is_int128(n.type)) {
+        report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
         return poison;
     }
 
@@ -3051,20 +3084,20 @@ close_fn_type(Checker *c)
 }
 
 static bool
-holds_vector(const Checker *c, u32 type)
+holds_128_bit(const Checker *c, u32 type, bool ints)
 {
     while (is_array(c, type)) {
         type = c->types.arg0[type];
     }
     if (!is_struct(c, type) || !is_storable(c, type) || check_type_align(c, type) < 16) {
-        return is_vector(c, type);
+        return is_vector(c, type) || (ints && check_is_int128(type));
     }
 
     u32 decl = c->types.arg0[type];
     u32 first = c->decls.members[decl];
     u32 end = first + c->decls.member_counts[decl];
     for (u32 i = first; i < end; i++) {
-        if (holds_vector(c, c->members[i].type)) {
+        if (holds_128_bit(c, c->members[i].type, ints)) {
             return true;
         }
     }
@@ -3078,7 +3111,7 @@ refuse_non_c(Checker *c, u32 file, u32 token, u32 type, u8 not_c)
         report(c, file, token, not_c, 0, type);
     } else if (c->types.kinds[type] == TYPE_FN && !(c->types.arg1[type] & FN_C_CALL)) {
         report(c, file, token, DIAG_C_FN_TYPE, 0, type);
-    } else if (holds_vector(c, type)) {
+    } else if (holds_128_bit(c, type, true)) {
         report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
     }
 }
@@ -3418,6 +3451,10 @@ promote(Checker *c, u32 file, u32 token, Operand o)
     }
     if (is_place(o) || !is_scalar(c, type)) {
         report(c, file, token, DIAG_NOT_VARIADIC, 0, type);
+        return poison;
+    }
+    if (check_is_int128(type)) {
+        report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
         return poison;
     }
     return o;
@@ -3972,6 +4009,21 @@ call_assert(Checker *c, u32 file, u32 token, u32 first_arg, u32 nargs)
     return (Operand){ TYPE_ID_VOID, 0 };
 }
 
+static u32
+count_bits_128(u8 kind, u64 low, u64 high)
+{
+    if (kind == IR_COUNT_ONES) {
+        return (u32)(__builtin_popcountll(low) + __builtin_popcountll(high));
+    }
+    if ((low | high) == 0) {
+        return 128;
+    }
+    if (kind == IR_TRAILING_ZEROS) {
+        return low ? (u32)__builtin_ctzll(low) : 64 + (u32)__builtin_ctzll(high);
+    }
+    return high ? (u32)__builtin_clzll(high) : 64 + (u32)__builtin_clzll(low);
+}
+
 static NOINLINE Operand
 call_builtin(Checker *c, u32 file, u32 token, Operand callee, u32 first_arg, u32 nargs)
 {
@@ -4020,6 +4072,11 @@ call_builtin(Checker *c, u32 file, u32 token, Operand callee, u32 first_arg, u32
     }
 
     u32 bits = (u32)c->types.arg0[a.type];
+    if (bits > 64) {
+        u32 v = value_of(a);
+        u32 n = count_bits_128(kind, exact_bits(&c->exacts, v), exact_bits_high(&c->exacts, v));
+        return (Operand){ TYPE_ID_I64, exact_int(&c->exacts, n) };
+    }
     u64 x = exact_bits(&c->exacts, value_of(a)) & ~0ull >> (64 - bits);
     u32 n = kind == IR_COUNT_ONES     ? (u32)__builtin_popcountll(x)
           : x == 0                    ? bits
@@ -4677,6 +4734,10 @@ check_index(Checker *c, u32 file, u32 token, Operand index)
     }
     if (!is_int(c, type)) {
         report(c, file, token, DIAG_NOT_INDEX, type, 0);
+        return false;
+    }
+    if (check_is_int128(type)) {
+        report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
         return false;
     }
     return true;
@@ -5435,8 +5496,11 @@ add_reloc(IrRelocs *r, u32 at)
 static void
 put_bits(Checker *c, u8 *to, u32 type, Operand v)
 {
-    u64 bits = constant_bits(c, v);
-    memcpy(to, &bits, check_type_size(c, type));
+    u64 bits[2] = { constant_bits(c, v), 0 };
+    if (check_is_int128(type)) {
+        bits[1] = exact_bits_high(&c->exacts, value_of(v));
+    }
+    memcpy(to, bits, check_type_size(c, type));
 }
 
 static u32
@@ -6303,6 +6367,10 @@ open_switch(Checker *c, u32 file)
     if (type && k != TYPE_INT && k != TYPE_UINTPTR && k != TYPE_ENUM &&
         type != TYPE_ID_BOOL) {
         report(c, file, token, DIAG_SWITCH_TYPE, type, 0);
+        type = TYPE_ID_NONE;
+    }
+    if (check_is_int128(type)) {
+        report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
         type = TYPE_ID_NONE;
     }
     v = type ? convert(c, file, token, v, type) : poison;
@@ -7951,6 +8019,10 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                     report(c, file, child_token(tokens, begin, i), DIAG_NOT_INTEGER, 0, 0);
                     t = TYPE_ID_NONE;
                 }
+                if (check_is_int128(t)) {
+                    report(c, file, child_token(tokens, begin, i), DIAG_UNSUPPORTED, 0, 0);
+                    t = TYPE_ID_NONE;
+                }
                 if (t && k == TYPE_ENUM) {
                     need(c, c->types.arg0[t], file, token);
                 }
@@ -8224,7 +8296,7 @@ set_global(Checker *c, u32 decl, u32 node)
         return;
     }
     claim_contained(c, t, file, t_token);
-    if (!has_layout(c, t) || holds_vector(c, t)) {
+    if (!has_layout(c, t) || holds_128_bit(c, t, d->bodies[decl] == NO_BODY)) {
         report(c, file, t_token, DIAG_UNSUPPORTED, 0, 0);
         return;
     }
@@ -9046,6 +9118,34 @@ string_at(const Checker *c, u32 offset)
 }
 
 static void
+print_128(FILE *out, u64 low, u64 high, bool is_signed)
+{
+    if (is_signed && (int64_t)high < 0) {
+        fputc('-', out);
+        low = ~low + 1;
+        high = ~high + (low == 0);
+    }
+
+    u32 limbs[4] = { (u32)low, (u32)(low >> 32), (u32)high, (u32)(high >> 32) };
+    u32 groups[5];
+    u32 n = 0;
+    do {
+        u64 rest = 0;
+        for (u32 i = 4; i-- > 0;) {
+            u64 part = rest << 32 | limbs[i];
+            limbs[i] = (u32)(part / 1000000000);
+            rest = part % 1000000000;
+        }
+        groups[n++] = (u32)rest;
+    } while (limbs[0] | limbs[1] | limbs[2] | limbs[3]);
+
+    fprintf(out, "%u", groups[n - 1]);
+    for (u32 i = n - 1; i-- > 0;) {
+        fprintf(out, "%09u", groups[i]);
+    }
+}
+
+static void
 print_data(FILE *out, const Checker *c, bool global, u64 at, u32 type)
 {
     if (is_array(c, type) || is_vector(c, type)) {
@@ -9081,6 +9181,12 @@ print_data(FILE *out, const Checker *c, bool global, u64 at, u32 type)
     const IrRelocs *relocs = global ? &c->ir.global_relocs : &c->ir.data_relocs;
     u64 size = check_type_size(c, type);
     u64 bits = 0;
+    if (check_is_int128(type)) {
+        u64 words[2];
+        memcpy(words, (global ? c->ir.globals : c->ir.data) + at, sizeof words);
+        print_128(out, words[0], words[1], type == TYPE_ID_I128);
+        return;
+    }
     memcpy(&bits, (global ? c->ir.globals : c->ir.data) + at, size);
     u32 k = first_reloc(relocs, at);
     if (k < relocs->count && relocs->offsets[k] == at) {
@@ -9305,7 +9411,12 @@ print_operand(FILE *out, const Checker *c, const IrFunc *fn, u32 operand)
         return;
     }
 
-    IrConst k = c->ir.code.consts[fn->first_const + (operand & ~IR_CONST)];
+    const IrConst *at = &c->ir.code.consts[fn->first_const + (operand & ~IR_CONST)];
+    IrConst k = *at;
+    if (check_is_int128(k.type)) {
+        print_128(out, k.bits, at[1].bits, k.type == TYPE_ID_I128);
+        return;
+    }
     u32 type = is_vector(c, k.type) ? c->types.arg0[k.type] : k.type;
     if (c->types.kinds[type] == TYPE_FLOAT) {
         print_float(out, k.bits, c->types.arg0[type]);

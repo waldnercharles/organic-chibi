@@ -132,10 +132,12 @@ enum
     TYPE(NAME_I16, "i16")                                                      \
     TYPE(NAME_I32, "i32")                                                      \
     TYPE(NAME_I64, "i64")                                                      \
+    TYPE(NAME_I128, "i128")                                                    \
     TYPE(NAME_U8, "u8")                                                        \
     TYPE(NAME_U16, "u16")                                                      \
     TYPE(NAME_U32, "u32")                                                      \
     TYPE(NAME_U64, "u64")                                                      \
+    TYPE(NAME_U128, "u128")                                                    \
     TYPE(NAME_F32, "f32")                                                      \
     TYPE(NAME_F64, "f64")                                                      \
     TYPE(NAME_UINTPTR, "uintptr")                                              \

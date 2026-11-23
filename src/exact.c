@@ -933,19 +933,38 @@ exact_is_int(const Exacts *e, u32 a)
     return !x.big || x.den == 0;
 }
 
+static NOINLINE bool
+big_fits(const Exacts *e, Exact x, u32 bits, bool is_signed)
+{
+    if (x.den != 0 || (x.negative && !is_signed)) {
+        return false;
+    }
+
+    u64 top = e->limbs[x.small + x.num - 1];
+    u32 length = 64 * x.num - (u32)__builtin_clzll(top);
+    if (length <= bits - is_signed) {
+        return true;
+    }
+    bool power = (top & (top - 1)) == 0 && (x.num == 1 || e->limbs[x.small] == 0);
+    return x.negative && length == bits && power;
+}
+
 bool
 exact_fits(const Exacts *e, u32 a, u32 bits, bool is_signed)
 {
-    assert(bits >= 1 && bits <= 64);
+    assert(bits >= 1 && bits <= 128);
     Exact x = e->values[a];
-    if (!x.big) {
-        if (is_signed) {
-            int64_t max = bits == 64 ? INT64_MAX : ((int64_t)1 << (bits - 1)) - 1;
-            return x.small >= -max - 1 && x.small <= max;
-        }
-        return x.small >= 0 && (bits == 64 || (u64)x.small < (u64)1 << bits);
+    if (x.big) {
+        return big_fits(e, x, bits, is_signed);
     }
-    return x.den == 0 && !x.negative && !is_signed && bits == 64 && x.num == 1;
+    if (bits >= 64) {
+        return is_signed || x.small >= 0;
+    }
+    if (is_signed) {
+        int64_t max = ((int64_t)1 << (bits - 1)) - 1;
+        return x.small >= -max - 1 && x.small <= max;
+    }
+    return x.small >= 0 && (u64)x.small < (u64)1 << bits;
 }
 
 u64
@@ -958,6 +977,19 @@ exact_bits(const Exacts *e, u32 a)
     assert(x.den == 0);
     u64 low = e->limbs[x.small];
     return x.negative ? 0 - low : low;
+}
+
+u64
+exact_bits_high(const Exacts *e, u32 a)
+{
+    Exact x = e->values[a];
+    if (!x.big) {
+        return x.small < 0 ? ~0ull : 0;
+    }
+    assert(x.den == 0);
+    u64 low = e->limbs[x.small];
+    u64 high = x.num > 1 ? e->limbs[x.small + 1] : 0;
+    return x.negative ? ~high + (low == 0) : high;
 }
 
 static u64

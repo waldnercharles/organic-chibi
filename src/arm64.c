@@ -431,8 +431,9 @@ type_info(const Checker *c, u32 type)
     u32 bits = c->types.arg0[type];
     u8 scale = bits == 64 ? 3 : bits == 32 ? 2 : bits == 16 ? 1 : 0;
     bool integer = kind == TYPE_INT;
-    bool supported = kind == TYPE_NONE || kind == TYPE_VOID || kind == TYPE_BOOL ||
-                     integer || kind == TYPE_UINTPTR || kind == TYPE_FLOAT;
+    bool supported = kind == TYPE_NONE || kind == TYPE_VOID ||
+                     kind == TYPE_BOOL || (integer && bits <= 64) ||
+                     kind == TYPE_UINTPTR || kind == TYPE_FLOAT;
     return (u8)(scale | (kind == TYPE_FLOAT ? INFO_FLOAT : 0) |
                 (supported ? 0 : INFO_UNSUPPORTED) |
                 (integer && c->types.arg1[type] ? INFO_SIGNED : 0) |
@@ -3077,8 +3078,9 @@ find_open(Emit *e, u32 target)
 }
 
 static const char UNSUPPORTED_TYPE[] = "the arm64 backend supports only "
-                                       "integers, floats, bool, pointers, "
-                                       "arrays, slices and vectors so far";
+                                       "integers up to 64 bits, floats, "
+                                       "bool, pointers, arrays, slices and "
+                                       "vectors so far";
 
 static u32
 arm_end(const Emit *e, u32 i)

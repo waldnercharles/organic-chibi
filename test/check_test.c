@@ -409,6 +409,24 @@ static const Case DECLARATIONS[] = {
         "kw: Kw = .{ \"a\", 1, \"b\" }\n"
         "struct Kw { name: [*]u8, len: int, alias: ?[*]u8 }\n",
     },
+    {
+        "struct W { a: u8, x: u128 }\n"
+        "const TABLE := i128.[-1, -0x8000_0000_0000_0000_0000_0000_0000_0000, 0x1_0000_0000_0000_0000]\n"
+        "const POWERS := u128.[1_000_000_000_000_000_000_000_000_005, 0, 0xFFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF]\n"
+        "g: u128 = 0xFEDC_BA98_7654_3210_0123_4567_89AB_CDEF\n"
+        "h: i128 = -2\n"
+        "w: W = .{ .a = 1, .x = 0x8000_0000_0000_0000 }\n"
+        "k: [2]i128 = .[-0x1_0000_0000_0000_0001, 0x7FFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF]\n"
+        "z: u128\n",
+        "struct W { a: u8, x: u128 }\n"
+        "const TABLE: [3]i128 = .[-1, -170141183460469231731687303715884105728, 18446744073709551616]\n"
+        "const POWERS: [3]u128 = .[1000000000000000000000000005, 0, 340282366920938463463374607431768211455]\n"
+        "g: u128 = 338770000845734292516042252062085074415\n"
+        "h: i128 = -2\n"
+        "w: W = .{ 1, 9223372036854775808 }\n"
+        "k: [2]i128 = .[-18446744073709551617, 170141183460469231731687303715884105727]\n"
+        "z: u128\n",
+    },
 };
 
 static const Case ERRORS[] = {
@@ -2318,6 +2336,74 @@ static const Case ERRORS[] = {
         "fn f(xs: []int) -> int\n"
         "fn g(xs: ..int) -> int\n"
         "export fn h() -> void\n",
+    },
+    {
+        "struct Box { x: u128, n: int }\n"
+        "struct H { f: extern fn(x: i128) -> int }\n"
+        "extern fn take(x: u128) -> int\n"
+        "extern fn give() -> i128\n"
+        "extern fn reg(cb: extern fn() -> u128)\n"
+        "export fn send(x: int) -> u128 {\n"
+        "    return 0\n"
+        "}\n"
+        "extern v: u128\n"
+        "extern w: [2]Box\n"
+        "enum E: u128 { a }\n"
+        "union U: i128 { a: int }\n"
+        "const BIG: u128 = 0xFFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF\n"
+        "const OVER := u128(0x1_0000_0000_0000_0000_0000_0000_0000_0000)\n"
+        "const HIGH: i128 = 0x8000_0000_0000_0000_0000_0000_0000_0000\n"
+        "const LOW: i128 = -0x8000_0000_0000_0000_0000_0000_0000_0001\n"
+        "const OK: i128 = -0x8000_0000_0000_0000_0000_0000_0000_0000\n"
+        "const NEG: u128 = -1\n"
+        "extern fn printf(fmt: [*]u8, ..) -> i32\n"
+        "fn body(p: [*]u8, s: []u8, x: u128, k: i128) -> int {\n"
+        "    a := s[x]\n"
+        "    b := p + k\n"
+        "    c := s[k..]\n"
+        "    switch x {\n"
+        "        0 => {}\n"
+        "        _ => {}\n"
+        "    }\n"
+        "    _ = printf(\"%d\", x)\n"
+        "    return int(a) + int(b[0]) + c.len\n"
+        "}\n",
+        "a:2:15: the checker doesn't support this yet\n"
+        "a:3:16: the checker doesn't support this yet\n"
+        "a:4:18: the checker doesn't support this yet\n"
+        "a:5:19: the checker doesn't support this yet\n"
+        "a:6:24: the checker doesn't support this yet\n"
+        "a:9:11: the checker doesn't support this yet\n"
+        "a:10:11: the checker doesn't support this yet\n"
+        "a:11:9: the checker doesn't support this yet\n"
+        "a:12:10: the checker doesn't support this yet\n"
+        "a:14:20: 340282366920938463463374607431768211456 does not fit in `u128`\n"
+        "a:15:7: 170141183460469231731687303715884105728 does not fit in `i128`\n"
+        "a:16:7: -170141183460469231731687303715884105729 does not fit in `i128`\n"
+        "a:18:7: -1 does not fit in `u128`\n"
+        "a:21:12: the checker doesn't support this yet\n"
+        "a:22:12: the checker doesn't support this yet\n"
+        "a:23:12: the checker doesn't support this yet\n"
+        "a:24:12: the checker doesn't support this yet\n"
+        "a:28:22: the checker doesn't support this yet\n"
+        "struct Box { x: u128, n: int }\n"
+        "struct H { f: extern fn(i128) -> int }\n"
+        "extern fn take(x: u128) -> int\n"
+        "extern fn give() -> i128\n"
+        "extern fn reg(cb: extern fn() -> u128) -> void\n"
+        "export fn send(x: int) -> u128\n"
+        "extern v = ?\n"
+        "extern w = ?\n"
+        "enum E: u8 { a = 0 }\n"
+        "union U { a: int }\n"
+        "const BIG: u128 = 340282366920938463463374607431768211455\n"
+        "const OVER = ?\n"
+        "const HIGH = ?\n"
+        "const LOW = ?\n"
+        "const OK: i128 = -170141183460469231731687303715884105728\n"
+        "const NEG = ?\n"
+        "extern fn printf(fmt: [*]u8, ..) -> i32\n"
+        "fn body(p: [*]u8, s: []u8, x: u128, k: i128) -> int\n",
     },
 };
 
@@ -6974,6 +7060,121 @@ static const Case BODIES[] = {
         "    end\n"
         "    ret ?extern fn(i32) -> void nil\n",
     },
+    {
+        "import \"std/bits\"\n"
+        "\n"
+        "const BIG: u128 = 0xFEDC_BA98_7654_3210_0123_4567_89AB_CDEF\n"
+        "const TABLE := i128.[-1, -0x8000_0000_0000_0000_0000_0000_0000_0000, 0x1_0000_0000_0000_0000]\n"
+        "g: u128 = BIG\n"
+        "h: i128 = -2\n"
+        "\n"
+        "fn folds() -> int {\n"
+        "    a := bits.count_ones(BIG) + bits.leading_zeros(u128(1)) * 1000\n"
+        "    b := bits.trailing_zeros(u128(0)) + bits.trailing_zeros(u128(0x1_0000_0000_0000_0000)) * 1000\n"
+        "    c := bits.leading_zeros(i128(-1)) + bits.count_ones(i128(-0x8000_0000_0000_0000_0000_0000_0000_0000)) * 1000\n"
+        "    d := bitcast(i128, BIG)\n"
+        "    e := bitcast(u128, i128(-1))\n"
+        "    f := u128(1) << 100\n"
+        "    return a + b + c + int(d >> 100) + int(e >> 120) + int(f >> 90)\n"
+        "}\n"
+        "\n"
+        "enum Level: i8 { low = -3, high = 5 }\n"
+        "\n"
+        "fn levels(l: Level) -> u128 {\n"
+        "    return bitcast(u128, i128(l)) +% u128(l)\n"
+        "}\n"
+        "\n"
+        "fn ops(x: u128, k: i128, n: int) -> u128 {\n"
+        "    y := x * 0xFFFF_FFFF_FFFF_FFFF_FFFF + BIG\n"
+        "    z := k / -0x1_0000_0000_0000_0001\n"
+        "    w := u64(x & 0xFFFF) + u64(x & 0x1_0000_0000_0000_FFFF) + u64(x & 0xFFFF_FFFF_FFFF_FFFF)\n"
+        "    v := y >> n\n"
+        "    t := TABLE[n & 1] + h\n"
+        "    return v +% u128(w) +% bitcast(u128, z +% t) +% g\n"
+        "}\n",
+        "fn folds() -> int\n"
+        "    slots: a: int, b: int, c: int, d: i128, e: u128, f: u128\n"
+        "    store int a, 127064\n"
+        "    store int b, 64128\n"
+        "    store int c, 1000\n"
+        "    store i128 d, -1512366075204170947332355369683137041\n"
+        "    store u128 e, 340282366920938463463374607431768211455\n"
+        "    store u128 f, 1267650600228229401496703205376\n"
+        "    %6 = load int a\n"
+        "    %7 = load int b\n"
+        "    %8 = add int %6, %7\n"
+        "    %9 = load int c\n"
+        "    %10 = add int %8, %9\n"
+        "    %11 = load i128 d\n"
+        "    %12 = shr i128 %11, 100\n"
+        "    %13 = narrow int %12\n"
+        "    %14 = add int %10, %13\n"
+        "    %15 = load u128 e\n"
+        "    %16 = shr u128 %15, 120\n"
+        "    %17 = narrow int %16\n"
+        "    %18 = add int %14, %17\n"
+        "    %19 = load u128 f\n"
+        "    %20 = shr u128 %19, 90\n"
+        "    %21 = narrow int %20\n"
+        "    %22 = add int %18, %21\n"
+        "    ret int %22\n"
+        "fn levels(l: Level) -> u128\n"
+        "    slots: l: Level\n"
+        "    %0 = load Level l\n"
+        "    %1 = convert i128 %0\n"
+        "    %2 = bitcast u128 %1\n"
+        "    %3 = load Level l\n"
+        "    %4 = narrow u128 %3\n"
+        "    %5 = add-wrap u128 %2, %4\n"
+        "    ret u128 %5\n"
+        "fn ops(x: u128, k: i128, n: int) -> u128\n"
+        "    slots: x: u128, k: i128, n: int, y: u128, z: i128, w: u64, v: u128, t: i128\n"
+        "    %0 = load u128 x\n"
+        "    %1 = mul u128 %0, 1208925819614629174706175\n"
+        "    %2 = add u128 %1, 338770000845734292516042252062085074415\n"
+        "    store u128 y, %2\n"
+        "    %4 = load i128 k\n"
+        "    %5 = div i128 %4, -18446744073709551617\n"
+        "    store i128 z, %5\n"
+        "    %7 = load u128 x\n"
+        "    %8 = and u128 %7, 65535\n"
+        "    %9 = truncate u64 %8\n"
+        "    %10 = load u128 x\n"
+        "    %11 = and u128 %10, 18446744073709617151\n"
+        "    %12 = narrow u64 %11\n"
+        "    %13 = add u64 %9, %12\n"
+        "    %14 = load u128 x\n"
+        "    %15 = and u128 %14, 18446744073709551615\n"
+        "    %16 = narrow u64 %15\n"
+        "    %17 = add u64 %13, %16\n"
+        "    store u64 w, %17\n"
+        "    %19 = load u128 y\n"
+        "    %20 = load int n\n"
+        "    %21 = shr u128 %19, %20\n"
+        "    store u128 v, %21\n"
+        "    %23 = data *[3]i128 TABLE\n"
+        "    %24 = load int n\n"
+        "    %25 = and int %24, 1\n"
+        "    %26 = index *i128 %23, %25\n"
+        "    %27 = load-at i128 %26\n"
+        "    %28 = global *i128 h\n"
+        "    %29 = load-at i128 %28\n"
+        "    %30 = add i128 %27, %29\n"
+        "    store i128 t, %30\n"
+        "    %32 = load u128 v\n"
+        "    %33 = load u64 w\n"
+        "    %34 = convert u128 %33\n"
+        "    %35 = add-wrap u128 %32, %34\n"
+        "    %36 = load i128 z\n"
+        "    %37 = load i128 t\n"
+        "    %38 = add-wrap i128 %36, %37\n"
+        "    %39 = bitcast u128 %38\n"
+        "    %40 = add-wrap u128 %35, %39\n"
+        "    %41 = global *u128 g\n"
+        "    %42 = load-at u128 %41\n"
+        "    %43 = add-wrap u128 %40, %42\n"
+        "    ret u128 %43\n",
+    },
 };
 
 TEST_CASE(declarations)
@@ -7904,6 +8105,432 @@ TEST_CASE(asserts)
     return true;
 }
 
+static const char INT128_PROGRAM[] =
+    "import \"std/bits\"\n"
+    "\n"
+    "struct Seed { tag: u8, value: u128 }\n"
+    "\n"
+    "const MASK: u128 = 0xFFFF_FFFF_FFFF_FFFF\n"
+    "G: Seed = .{ .tag = 7, .value = 0x0123_4567_89AB_CDEF_FEDC_BA98_7654_3210 }\n"
+    "\n"
+    "fn wide(a: int) -> u128 {\n"
+    "    return u128(bitcast(u64, a))\n"
+    "}\n"
+    "\n"
+    "fn fold(x: u128) -> int {\n"
+    "    return bitcast(int, u64(x >> 64)) +% bitcast(int, u64(x & MASK))\n"
+    "}\n"
+    "\n"
+    "fn mul_hi(a: int, b: int) -> int {\n"
+    "    return bitcast(int, u64(wide(a) * wide(b) >> 64))\n"
+    "}\n"
+    "\n"
+    "fn smul(a: int, b: int) -> int {\n"
+    "    return fold(bitcast(u128, i128(a) * i128(b)))\n"
+    "}\n"
+    "\n"
+    "fn scaled(a: int, b: int, n: int) -> int {\n"
+    "    x := i128(a) << n\n"
+    "    return int(x * i128(b) >> 100)\n"
+    "}\n"
+    "\n"
+    "fn quotient(a: int, b: int) -> int {\n"
+    "    return int((i128(a) << 64) / i128(b) >> 32)\n"
+    "}\n"
+    "\n"
+    "fn remainder(a: int, b: int) -> int {\n"
+    "    return int(((i128(a) << 64) | 12345) % i128(b))\n"
+    "}\n"
+    "\n"
+    "fn udiv(a: int, b: int) -> int {\n"
+    "    return fold((wide(a) << 64) / wide(b))\n"
+    "}\n"
+    "\n"
+    "fn shift(a: int, n: int) -> int {\n"
+    "    return fold(wide(a) << n)\n"
+    "}\n"
+    "\n"
+    "fn shift_wide(a: int, n: int) -> int {\n"
+    "    k := i128(n) << 64 >> 64\n"
+    "    return int((i128(a) << 64) >> k >> 64)\n"
+    "}\n"
+    "\n"
+    "fn to_float(a: int) -> int {\n"
+    "    return bitcast(int, f64(i128(a) << 70))\n"
+    "}\n"
+    "\n"
+    "fn to_float32(a: int, n: int) -> int {\n"
+    "    return int(bitcast(u32, f32((wide(a) << n) | 1)))\n"
+    "}\n"
+    "\n"
+    "fn from_float(a: int) -> int {\n"
+    "    x := i128(f64(a) * 1e30)\n"
+    "    return int(x >> 64)\n"
+    "}\n"
+    "\n"
+    "fn from_float_unsigned(a: int) -> int {\n"
+    "    x := u128(f64(a) * 1e30)\n"
+    "    return int(x >> 100)\n"
+    "}\n"
+    "\n"
+    "fn counts(a: int) -> int {\n"
+    "    x := (wide(a) << 64) | 1\n"
+    "    s := i128(a)\n"
+    "    return bits.count_ones(x) + 1000 * bits.leading_zeros(x) + 1000000 * bits.trailing_zeros(x >> 1) + 1000000000 * bits.leading_zeros(s)\n"
+    "}\n"
+    "\n"
+    "fn compare(a: int, b: int) -> int {\n"
+    "    x := i128(a) << 64\n"
+    "    r := 0\n"
+    "    if x < i128(b) {\n"
+    "        r += 1\n"
+    "    }\n"
+    "    if bitcast(u128, x) < wide(b) {\n"
+    "        r += 2\n"
+    "    }\n"
+    "    if x == i128(b) << 64 {\n"
+    "        r += 4\n"
+    "    }\n"
+    "    return r\n"
+    "}\n"
+    "\n"
+    "fn narrow(a: int, b: int) -> int {\n"
+    "    return int(i128(a) * i128(b) >> 1)\n"
+    "}\n"
+    "\n"
+    "fn neg(a: int) -> int {\n"
+    "    x := -(i128(a) << 64)\n"
+    "    return int(x >> 64)\n"
+    "}\n"
+    "\n"
+    "fn uneg(a: int) -> int {\n"
+    "    return int(-wide(a))\n"
+    "}\n"
+    "\n"
+    "fn wrapping(a: int, b: int) -> int {\n"
+    "    x := wide(a) << 64\n"
+    "    return fold(x *% x +% x -% wide(b))\n"
+    "}\n"
+    "\n"
+    "fn select(a: int, b: int) -> int {\n"
+    "    return fold(if a < b then wide(a) << 64 else wide(b))\n"
+    "}\n"
+    "\n"
+    "fn seeded(a: int) -> int {\n"
+    "    return fold(G.value +% wide(a)) +% int(G.tag)\n"
+    "}\n"
+    "\n"
+    "fn loop_sum(a: int) -> int {\n"
+    "    total: u128 = 0\n"
+    "    for i in u128(0)..u128(a) {\n"
+    "        total += (i << 64) | i\n"
+    "    }\n"
+    "    return fold(total)\n"
+    "}\n"
+    "\n"
+    "fn steps(a: int) -> int {\n"
+    "    total: u128 = 0\n"
+    "    for i in u128(0)..u128(a) {\n"
+    "        total += i\n"
+    "    }\n"
+    "    return int(total) + 1000\n"
+    "}\n"
+    "\n"
+    "fn twice(x: u128) -> u128 {\n"
+    "    return x + x\n"
+    "}\n"
+    "\n"
+    "fn call(a: int, n: int) -> int {\n"
+    "    return fold(twice(wide(a) << n))\n"
+    "}\n";
+
+static const VectorRun INT128_RUNS[] = {
+    { "mul_hi", { -1, -1 }, -2, 0 },
+    { "mul_hi", { 4294967297, 4294967297 }, 1, 0 },
+    { "mul_hi", { INT64_MIN, 2 }, 1, 0 },
+    { "mul_hi", { 123456789, 987654321 }, 0, 0 },
+    { "smul", { INT64_MIN, INT64_MIN }, 4611686018427387904, 0 },
+    { "smul", { INT64_MIN, -1 }, INT64_MIN, 0 },
+    { "smul", { -3, 5 }, -16, 0 },
+    { "smul", { INT64_MAX, INT64_MAX }, 4611686018427387904, 0 },
+    { "scaled", { 3, 5, 100 }, 15, 0 },
+    { "scaled", { 1, 1, 127 }, -134217728, 0 },
+    { "scaled", { 1, 2, 126 }, 0, TRAP_OVERFLOW },
+    { "scaled", { 1, 1, 128 }, 0, TRAP_SHIFT },
+    { "scaled", { 1, 1, -1 }, 0, TRAP_SHIFT },
+    { "scaled", { 5, -3, 0 }, -1, 0 },
+    { "scaled", { -1, INT64_MIN, 64 }, 0, TRAP_OVERFLOW },
+    { "scaled", { -1, INT64_MAX, 64 }, -134217728, 0 },
+    { "quotient", { 1, 3 }, 1431655765, 0 },
+    { "quotient", { INT64_MIN, -1 }, 0, TRAP_OVERFLOW },
+    { "quotient", { 5, 0 }, 0, TRAP_DIVIDE },
+    { "quotient", { -7, 2 }, -15032385536, 0 },
+    { "quotient", { INT64_MIN, 1 }, 0, TRAP_RANGE },
+    { "quotient", { INT64_MIN, -3000000000 }, 0, TRAP_RANGE },
+    { "remainder", { 1, 7 }, 6, 0 },
+    { "remainder", { -1, 7 }, -5, 0 },
+    { "remainder", { 3, 0 }, 0, TRAP_DIVIDE },
+    { "remainder", { INT64_MIN, -1 }, 0, 0 },
+    { "remainder", { 5, INT64_MIN }, 12345, 0 },
+    { "udiv", { 1, 3 }, 6148914691236517205, 0 },
+    { "udiv", { -1, -1 }, 1, 0 },
+    { "udiv", { 5, 0 }, 0, TRAP_DIVIDE },
+    { "udiv", { INT64_MIN, 2 }, 4611686018427387904, 0 },
+    { "shift", { 1, 127 }, INT64_MIN, 0 },
+    { "shift", { -1, 64 }, -1, 0 },
+    { "shift", { -1, 65 }, -2, 0 },
+    { "shift", { 3, 128 }, 0, TRAP_SHIFT },
+    { "shift", { 3, -1 }, 0, TRAP_SHIFT },
+    { "shift", { 32767, 100 }, 2251731094208512, 0 },
+    { "shift_wide", { 5, 3 }, 0, 0 },
+    { "shift_wide", { -5, 3 }, -1, 0 },
+    { "shift_wide", { INT64_MIN, 127 }, -1, 0 },
+    { "shift_wide", { 1, 128 }, 0, TRAP_SHIFT },
+    { "shift_wide", { 1, -1 }, 0, TRAP_SHIFT },
+    { "shift_wide", { 1, INT64_MIN }, 0, TRAP_SHIFT },
+    { "shift_wide", { 12345, 0 }, 12345, 0 },
+    { "to_float", { 1 }, 4922434392715952128, 0 },
+    { "to_float", { -1 }, -4300937644138823680, 0 },
+    { "to_float", { 3 }, 4929189792157007872, 0 },
+    { "to_float", { 144115188075855873 }, -4044232465378705408, 0 },
+    { "to_float", { INT64_MAX }, -4300937644138823680, 0 },
+    { "to_float32", { 16777217, 76 }, 1904214017, 0 },
+    { "to_float32", { 1, 0 }, 1065353216, 0 },
+    { "to_float32", { -1, 64 }, 2139095040, 0 },
+    { "to_float32", { 3, 128 }, 0, TRAP_SHIFT },
+    { "from_float", { 1 }, 54210108624, 0 },
+    { "from_float", { -1 }, -54210108625, 0 },
+    { "from_float", { 200000000 }, 0, TRAP_RANGE },
+    { "from_float", { 170141183 }, 9223372011892688896, 0 },
+    { "from_float", { -170141184 }, 0, TRAP_RANGE },
+    { "from_float_unsigned", { 1 }, 0, 0 },
+    { "from_float_unsigned", { -1 }, 0, TRAP_RANGE },
+    { "from_float_unsigned", { 100000000 }, 78886090, 0 },
+    { "from_float_unsigned", { 200000000 }, 157772181, 0 },
+    { "from_float_unsigned", { 340282366 }, 268435455, 0 },
+    { "from_float_unsigned", { 340282367 }, 0, TRAP_RANGE },
+    { "from_float_unsigned", { 0 }, 0, 0 },
+    { "counts", { 0 }, 128128127001, 0 },
+    { "counts", { -1 }, 63000065, 0 },
+    { "counts", { 1 }, 127063063002, 0 },
+    { "counts", { INT64_MIN }, 126000002, 0 },
+    { "compare", { 1, 2 }, 0, 0 },
+    { "compare", { -1, 5 }, 1, 0 },
+    { "compare", { 3, 3 }, 4, 0 },
+    { "compare", { 0, -1 }, 2, 0 },
+    { "compare", { -2, -2 }, 5, 0 },
+    { "narrow", { INT64_MAX, 2 }, INT64_MAX, 0 },
+    { "narrow", { INT64_MIN, 2 }, INT64_MIN, 0 },
+    { "narrow", { INT64_MIN, -2 }, 0, TRAP_RANGE },
+    { "narrow", { 3, 5 }, 7, 0 },
+    { "narrow", { -3, 5 }, -8, 0 },
+    { "neg", { 1 }, -1, 0 },
+    { "neg", { INT64_MIN }, 0, TRAP_OVERFLOW },
+    { "neg", { -5 }, 5, 0 },
+    { "neg", { 0 }, 0, 0 },
+    { "uneg", { 0 }, 0, 0 },
+    { "uneg", { 1 }, 0, TRAP_OVERFLOW },
+    { "uneg", { -1 }, 0, TRAP_OVERFLOW },
+    { "wrapping", { 1, 1 }, -1, 0 },
+    { "wrapping", { 0, 1 }, -2, 0 },
+    { "wrapping", { 3, 0 }, 3, 0 },
+    { "wrapping", { -1, -1 }, -1, 0 },
+    { "select", { 1, 2 }, 1, 0 },
+    { "select", { 2, 1 }, 1, 0 },
+    { "select", { -1, 0 }, -1, 0 },
+    { "select", { 5, -7 }, -7, 0 },
+    { "seeded", { 0 }, 6, 0 },
+    { "seeded", { 81985529216486896 }, 81985529216486903, 0 },
+    { "loop_sum", { 0 }, 0, 0 },
+    { "loop_sum", { 4 }, 12, 0 },
+    { "loop_sum", { -1 }, 0, TRAP_RANGE },
+    { "loop_sum", { 1000 }, 999000, 0 },
+    { "steps", { 0 }, 1000, 0 },
+    { "steps", { 2 }, 1001, 0 },
+    { "steps", { 100 }, 5950, 0 },
+    { "steps", { -1 }, 0, TRAP_RANGE },
+    { "call", { 1, 63 }, 1, 0 },
+    { "call", { -1, 64 }, 0, TRAP_OVERFLOW },
+    { "call", { -1, 63 }, -1, 0 },
+    { "call", { 1, 128 }, 0, TRAP_SHIFT },
+};
+
+static const char INT128_RELEASE_FAST[] =
+    "fn wide(a: int) -> u128 {\n"
+    "    return u128(bitcast(u64, a))\n"
+    "}\n"
+    "\n"
+    "fn fold(x: u128) -> int {\n"
+    "    return bitcast(int, u64(x >> 64)) +% bitcast(int, u64(x & 0xFFFF_FFFF_FFFF_FFFF))\n"
+    "}\n"
+    "\n"
+    "fn wrap_in(a: int) -> int {\n"
+    "    x := u128(a)\n"
+    "    return int(x >> 64)\n"
+    "}\n"
+    "\n"
+    "fn wrap_out(a: int, b: int) -> int {\n"
+    "    x := i128(a) * i128(b) * 4\n"
+    "    return int(x >> 2)\n"
+    "}\n"
+    "\n"
+    "fn masked(a: int, n: int) -> int {\n"
+    "    return fold(wide(a) << n)\n"
+    "}\n"
+    "\n"
+    "fn masked_wide(a: int, n: int) -> int {\n"
+    "    return fold(wide(a) << u128(n))\n"
+    "}\n"
+    "\n"
+    "fn byte(a: int) -> int {\n"
+    "    return int(i8(i128(a)))\n"
+    "}\n"
+    "\n"
+    "fn quotient(a: int, b: int) -> int {\n"
+    "    return int(i128(a) / i128(b))\n"
+    "}\n";
+
+static const char INT128_RELEASE_FAST_IR[] =
+    "fn wide(a: int) -> u128\n"
+    "    slots: a: int\n"
+    "    %0 = load int a\n"
+    "    %1 = bitcast u64 %0\n"
+    "    %2 = convert u128 %1\n"
+    "    ret u128 %2\n"
+    "fn fold(x: u128) -> int\n"
+    "    slots: x: u128\n"
+    "    %0 = load u128 x\n"
+    "    %1 = shr u128 %0, 64\n"
+    "    %2 = truncate u64 %1\n"
+    "    %3 = bitcast int %2\n"
+    "    %4 = load u128 x\n"
+    "    %5 = and u128 %4, 18446744073709551615\n"
+    "    %6 = truncate u64 %5\n"
+    "    %7 = bitcast int %6\n"
+    "    %8 = add-wrap int %3, %7\n"
+    "    ret int %8\n"
+    "fn wrap_in(a: int) -> int\n"
+    "    slots: a: int, x: u128\n"
+    "    %0 = load int a\n"
+    "    %1 = convert i128 %0\n"
+    "    %2 = truncate u128 %1\n"
+    "    store u128 x, %2\n"
+    "    %4 = load u128 x\n"
+    "    %5 = shr u128 %4, 64\n"
+    "    %6 = truncate int %5\n"
+    "    ret int %6\n"
+    "fn wrap_out(a: int, b: int) -> int\n"
+    "    slots: a: int, b: int, x: i128\n"
+    "    %0 = load int a\n"
+    "    %1 = convert i128 %0\n"
+    "    %2 = load int b\n"
+    "    %3 = convert i128 %2\n"
+    "    %4 = mul-wrap i128 %1, %3\n"
+    "    %5 = mul-wrap i128 %4, 4\n"
+    "    store i128 x, %5\n"
+    "    %7 = load i128 x\n"
+    "    %8 = shr i128 %7, 2\n"
+    "    %9 = truncate int %8\n"
+    "    ret int %9\n"
+    "fn masked(a: int, n: int) -> int\n"
+    "    slots: a: int, n: int\n"
+    "    %0 = load int a\n"
+    "    %1 = call u128 wide(%0)\n"
+    "    %2 = load int n\n"
+    "    %3 = and int %2, 127\n"
+    "    %4 = shl u128 %1, %3\n"
+    "    %5 = call int fold(%4)\n"
+    "    ret int %5\n"
+    "fn masked_wide(a: int, n: int) -> int\n"
+    "    slots: a: int, n: int\n"
+    "    %0 = load int a\n"
+    "    %1 = call u128 wide(%0)\n"
+    "    %2 = load int n\n"
+    "    %3 = convert i128 %2\n"
+    "    %4 = truncate u128 %3\n"
+    "    %5 = and u128 %4, 127\n"
+    "    %6 = shl u128 %1, %5\n"
+    "    %7 = call int fold(%6)\n"
+    "    ret int %7\n"
+    "fn byte(a: int) -> int\n"
+    "    slots: a: int\n"
+    "    %0 = load int a\n"
+    "    %1 = convert i128 %0\n"
+    "    %2 = truncate i8 %1\n"
+    "    %3 = convert int %2\n"
+    "    ret int %3\n"
+    "fn quotient(a: int, b: int) -> int\n"
+    "    slots: a: int, b: int\n"
+    "    %0 = load int a\n"
+    "    %1 = convert i128 %0\n"
+    "    %2 = load int b\n"
+    "    %3 = convert i128 %2\n"
+    "    %4 = div i128 %1, %3\n"
+    "    %5 = truncate int %4\n"
+    "    ret int %5\n";
+
+static const VectorRun INT128_RELEASE_FAST_RUNS[] = {
+    { "wrap_in", { -1 }, -1, 0 },
+    { "wrap_in", { 5 }, 0, 0 },
+    { "wrap_in", { INT64_MIN }, -1, 0 },
+    { "wrap_out", { INT64_MIN, INT64_MIN }, 0, 0 },
+    { "wrap_out", { INT64_MAX, 3 }, 9223372036854775805, 0 },
+    { "wrap_out", { -3, 5 }, -15, 0 },
+    { "masked", { 1, 130 }, 4, 0 },
+    { "masked", { 1, -1 }, INT64_MIN, 0 },
+    { "masked_wide", { 1, 129 }, 2, 0 },
+    { "masked_wide", { 3, -1 }, INT64_MIN, 0 },
+    { "byte", { 300 }, 44, 0 },
+    { "byte", { -129 }, 127, 0 },
+    { "byte", { 200 }, -56, 0 },
+    { "quotient", { 1, 0 }, 0, TRAP_DIVIDE },
+    { "quotient", { INT64_MIN, -1 }, INT64_MIN, 0 },
+    { "quotient", { 7, -2 }, -3, 0 },
+};
+
+static const char INT128_CHAIN[] =
+    "fn chain(a: int) -> int {\n"
+    "    x := u128(a)\n"
+    "    x = x ^ 1 ^ 2 ^ 3 ^ 4 ^ 5 ^ 6 ^ 7 ^ 8\n"
+    "    x = x ^ 9 ^ 10 ^ 11 ^ 12 ^ 13 ^ 14 ^ 15 ^ 16\n"
+    "    x = x ^ 17 ^ 18 ^ 19 ^ 20 ^ 21 ^ 22 ^ 23 ^ 24\n"
+    "    x = x ^ 25 ^ 26 ^ 27 ^ 28 ^ 29 ^ 30 ^ 31 ^ 32\n"
+    "    x = x ^ 33 ^ 34 ^ 35 ^ 36 ^ 37 ^ 38 ^ 39 ^ 40\n"
+    "    return int(x)\n"
+    "}\n";
+
+static const char INT128_CHAIN_SHIFTED[] =
+    "fn chain(a: int) -> int {\n"
+    "    x := u128(a | 1)\n"
+    "    x = x ^ 1 ^ 2 ^ 3 ^ 4 ^ 5 ^ 6 ^ 7 ^ 8\n"
+    "    x = x ^ 9 ^ 10 ^ 11 ^ 12 ^ 13 ^ 14 ^ 15 ^ 16\n"
+    "    x = x ^ 17 ^ 18 ^ 19 ^ 20 ^ 21 ^ 22 ^ 23 ^ 24\n"
+    "    x = x ^ 25 ^ 26 ^ 27 ^ 28 ^ 29 ^ 30 ^ 31 ^ 32\n"
+    "    x = x ^ 33 ^ 34 ^ 35 ^ 36 ^ 37 ^ 38 ^ 39 ^ 40\n"
+    "    return int(x)\n"
+    "}\n";
+
+static const VectorRun INT128_CHAIN_RUNS[] = {
+    { "chain", { 2 }, 42, 0 },
+    { "chain", { -1 }, 0, TRAP_RANGE },
+};
+
+static const VectorRun INT128_CHAIN_SHIFTED_RUNS[] = {
+    { "chain", { 2 }, 43, 0 },
+    { "chain", { -1 }, 0, TRAP_RANGE },
+};
+
+TEST_CASE(int128)
+{
+    REQUIRE(runs_to(INT128_PROGRAM, INT128_RUNS, sizeof INT128_RUNS / sizeof INT128_RUNS[0], false));
+    REQUIRE(dumps_ir(INT128_RELEASE_FAST, true, INT128_RELEASE_FAST_IR));
+    size_t n = sizeof INT128_RELEASE_FAST_RUNS / sizeof INT128_RELEASE_FAST_RUNS[0];
+    REQUIRE(runs_to(INT128_RELEASE_FAST, INT128_RELEASE_FAST_RUNS, n, true));
+    REQUIRE(runs_to(INT128_CHAIN, INT128_CHAIN_RUNS, 2, false));
+    REQUIRE(runs_to(INT128_CHAIN_SHIFTED, INT128_CHAIN_SHIFTED_RUNS, 2, false));
+    return true;
+}
+
 static const char TARGET_PROGRAM[] =
     "const PAGE: u64 = if target_os == .macos and target_arch == .arm64 then 16384 else 4096\n"
     "\n"
@@ -8276,6 +8903,7 @@ TEST_SUITE(check_tests)
     RUN_TEST_CASE(vectors);
     RUN_TEST_CASE(release_fast);
     RUN_TEST_CASE(asserts);
+    RUN_TEST_CASE(int128);
     RUN_TEST_CASE(targets);
     RUN_TEST_CASE(positions);
     RUN_TEST_CASE(statement_positions);

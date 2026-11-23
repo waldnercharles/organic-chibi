@@ -57,10 +57,12 @@ typedef enum
     X(TYPE_ID_I16, TYPE_INT, 16, 1, "i16")                                     \
     X(TYPE_ID_I32, TYPE_INT, 32, 1, "i32")                                     \
     X(TYPE_ID_I64, TYPE_INT, 64, 1, "int")                                     \
+    X(TYPE_ID_I128, TYPE_INT, 128, 1, "i128")                                  \
     X(TYPE_ID_U8, TYPE_INT, 8, 0, "u8")                                        \
     X(TYPE_ID_U16, TYPE_INT, 16, 0, "u16")                                     \
     X(TYPE_ID_U32, TYPE_INT, 32, 0, "u32")                                     \
     X(TYPE_ID_U64, TYPE_INT, 64, 0, "u64")                                     \
+    X(TYPE_ID_U128, TYPE_INT, 128, 0, "u128")                                  \
     X(TYPE_ID_F32, TYPE_FLOAT, 32, 0, "f32")                                   \
     X(TYPE_ID_F64, TYPE_FLOAT, 64, 0, "f64")                                   \
     X(TYPE_ID_UINTPTR, TYPE_UINTPTR, 64, 0, "uintptr")                         \
@@ -89,6 +91,12 @@ enum
     TYPE_ID_NONE,
     CHIBI_FIXED_TYPES(CHIBI_FIXED_TYPE_ID) NFIXED_TYPES,
 };
+
+static inline bool
+check_is_int128(u32 type)
+{
+    return type == TYPE_ID_I128 || type == TYPE_ID_U128;
+}
 
 typedef enum
 {

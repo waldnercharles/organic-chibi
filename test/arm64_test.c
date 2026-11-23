@@ -506,6 +506,8 @@ rejects(const char *text)
 TEST_CASE(unsupported_types)
 {
     REQUIRE(rejects("fn b(a: int) -> !void {\n    if a > 0 {\n        return\n    }\n}\n"));
+    REQUIRE(rejects("fn w(a: int) -> int {\n    x := u128(bitcast(u64, a)) * 3\n    return int(x >> 64)\n}\n"));
+    REQUIRE(rejects("fn s(x: i128) -> i128 {\n    return x\n}\n"));
     return true;
 }
 
