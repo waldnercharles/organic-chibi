@@ -506,8 +506,6 @@ rejects(const char *text)
 TEST_CASE(unsupported_types)
 {
     REQUIRE(rejects("fn b(a: int) -> !void {\n    if a > 0 {\n        return\n    }\n}\n"));
-    REQUIRE(rejects("fn w(a: int) -> int {\n    x := u128(bitcast(u64, a)) * 3\n    return int(x >> 64)\n}\n"));
-    REQUIRE(rejects("fn s(x: i128) -> i128 {\n    return x\n}\n"));
     return true;
 }
 
@@ -5064,10 +5062,14 @@ call_i3(I3 *f, const int64_t *args, int64_t *result)
 }
 
 static bool
-vector_runs_agree(const char *text, const VectorRun *runs, size_t n)
+vector_runs_agree(const char *text, const VectorRun *runs, size_t n, bool release_fast)
 {
     Program p;
-    if (!build(&p, text)) {
+    if (!check_text(&p, text, release_fast)) {
+        return false;
+    }
+    if (!arm64_compile(&p.n, &p.c, CONVENTION_HOST)) {
+        fprintf(stderr, "arm64 test: %s\n", p.n.error);
         return false;
     }
     bool ok = true;
@@ -5474,8 +5476,8 @@ vector_calls_agree(void)
 TEST_CASE(vectors)
 {
     catch_traps();
-    REQUIRE(vector_runs_agree(VECTOR_BODY, VECTOR_BODY_RESULTS, NVECTOR_BODY_RESULTS));
-    REQUIRE(vector_runs_agree(VECTOR_RUNS, VECTOR_RESULTS, NVECTOR_RESULTS));
+    REQUIRE(vector_runs_agree(VECTOR_BODY, VECTOR_BODY_RESULTS, NVECTOR_BODY_RESULTS, false));
+    REQUIRE(vector_runs_agree(VECTOR_RUNS, VECTOR_RESULTS, NVECTOR_RESULTS, false));
     REQUIRE(vector_calls_agree());
 
     Program p;
@@ -5610,6 +5612,222 @@ TEST_CASE(vectors)
     return true;
 }
 
+static const char INT128_SHAPES[] =
+    "struct One { x: u128 }\n"
+    "\n"
+    "fn wide(a: int) -> u128 {\n"
+    "    return u128(bitcast(u64, a))\n"
+    "}\n"
+    "\n"
+    "fn fold(x: u128) -> int {\n"
+    "    return bitcast(int, u64(x >> 64)) +% bitcast(int, u64(x & 0xFFFF_FFFF_FFFF_FFFF))\n"
+    "}\n"
+    "\n"
+    "fn leaf_divide(a: int, b: int) -> int {\n"
+    "    k := a *% 3 +% b\n"
+    "    q := (i128(a) << 64) / i128(b)\n"
+    "    r := i128(a) % i128(b | 1)\n"
+    "    return int(q >> 64) +% int(r) *% 1000 +% a *% 7 +% b +% k *% 100\n"
+    "}\n"
+    "\n"
+    "fn leaf_locals(a: int, b: int) -> int {\n"
+    "    c := a +% 1\n"
+    "    d := b +% 2\n"
+    "    e := a *% b\n"
+    "    f := a -% b\n"
+    "    g := a ^ b\n"
+    "    h := a | b\n"
+    "    q := int((i128(a) << 64) / i128(b | 1) >> 64)\n"
+    "    return q +% c *% 3 +% d *% 5 +% e *% 7 +% f *% 11 +% g *% 13 +% h *% 17 +% a *% 19 +% b *% 23\n"
+    "}\n"
+    "\n"
+    "fn crowded(a: int, b: int) -> int {\n"
+    "    return (a +% 1) +% ((b +% 2) *% 3 +% ((a ^ b) *% 5 +% ((a | 3) *% 7 +% ((b & 12) *% 11 +% ((a -% b) *% 13 +% "
+    "((a +% 9) *% 17 +% ((b -% 4) *% 19 +% int(i128(a) * i128(b) / i128(b | 1)))))))))\n"
+    "}\n"
+    "\n"
+    "fn with_calls(a: int, b: int) -> int {\n"
+    "    x := a *% 5\n"
+    "    y := b *% 7\n"
+    "    q := wide(a) * wide(b) / wide(b | 1)\n"
+    "    s := i128(a) * i128(x) % i128(y | 1)\n"
+    "    return fold(q) +% int(s) +% x +% y\n"
+    "}\n"
+    "\n"
+    "fn ten(a: u128, b: u128, c: u128, d: u128, e: u128, f: u128, g: u128, h: u128, i: u128, j: u128) -> u128 {\n"
+    "    return a +% b *% 3 +% c *% 5 +% d *% 7 +% e *% 11 +% f *% 13 +% g *% 17 +% h *% 19 +% i *% 23 +% j *% 29\n"
+    "}\n"
+    "\n"
+    "fn call_ten(a: int, b: int) -> int {\n"
+    "    x := wide(a)\n"
+    "    y := wide(b)\n"
+    "    return fold(ten(x, y, x << 64, y << 64, x +% 1, y +% 2, x << 32, y << 96, x *% 3, y << 120))\n"
+    "}\n"
+    "\n"
+    "fn floats_wide(a: f64, b: f64, c: f64, d: f64, e: f64, f: f64, g: f64, h: f64, x: u128) -> int {\n"
+    "    return int(a + b + c + d + e + f + g + h) +% fold(x)\n"
+    "}\n"
+    "\n"
+    "fn call_floats_wide(a: int, b: int) -> int {\n"
+    "    return floats_wide(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, f64(a), wide(b) << 64)\n"
+    "}\n"
+    "\n"
+    "fn one(s: One, k: int) -> One {\n"
+    "    return One.{ .x = s.x +% wide(k) }\n"
+    "}\n"
+    "\n"
+    "fn call_one(a: int, b: int) -> int {\n"
+    "    s := one(One.{ .x = wide(a) << 64 }, b)\n"
+    "    return fold(s.x)\n"
+    "}\n"
+    "\n"
+    "fn vector_pick(a: int, b: int) -> int {\n"
+    "    v: u8x16 = u8(a & 255)\n"
+    "    v[15] = 7\n"
+    "    w: u8x16 = u8(b & 255)\n"
+    "    p := if a < b then v +% w else v -% w\n"
+    "    return int(p[3]) + int(p[15]) * 1000\n"
+    "}\n"
+    "\n"
+    "fn mixed_leaf(x: u128, k: int, y: u128, j: int) -> int {\n"
+    "    return int(u64(x >> 64) & 0xFFFF) +% k *% 3 +% int(u64(y & 0xFFFF)) *% 5 +% j *% 7\n"
+    "}\n"
+    "\n"
+    "fn call_mixed(a: int, b: int) -> int {\n"
+    "    return mixed_leaf((wide(a) << 64) | 5, a, wide(b), b)\n"
+    "}\n"
+    "\n"
+    "fn wide_pick(a: int, b: int) -> int {\n"
+    "    c := a < b\n"
+    "    x := if c then wide(a) << 64 else wide(b) *% 3\n"
+    "    y := if wide(a) < wide(b) then x else x >> 1\n"
+    "    return fold(y)\n"
+    "}\n"
+    "\n"
+    "fn churn(a: int, b: int) -> int {\n"
+    "    x := f64(a) * 1e20 + f64(b)\n"
+    "    y := f64(i128(f64(i128(f64(i128(f64(i128(f64(i128(f64(i128(x))))))))))))\n"
+    "    u := f32(u128(f64(u128(f32(u128(y * y / 1e8))))))\n"
+    "    return int(i128(y) >> 40) +% int(u128(u) >> 70)\n"
+    "}\n"
+    "\n"
+    "fn far_wide(a: int, b: int) -> int {\n"
+    "    buf: [5000]u8\n"
+    "    buf[b & 7] = u8(a & 255)\n"
+    "    x := (wide(a) << 64) | wide(b)\n"
+    "    y := x *% x +% (x >> 3)\n"
+    "    q := i128(a) * i128(b) / i128(b | 1)\n"
+    "    return fold(y) +% int(q) +% int(buf[b & 7])\n"
+    "}\n"
+    "\n"
+    "fn wide_switch(a: int, b: int) -> int {\n"
+    "    x := switch a & 7 {\n"
+    "        0 => wide(a) << 64\n"
+    "        1 => wide(b) *% 5\n"
+    "        2 => wide(a) +% wide(b)\n"
+    "        3 => wide(b) >> 1\n"
+    "        _ => u128(7)\n"
+    "    }\n"
+    "    return fold(x)\n"
+    "}\n"
+    "\n"
+    "fn lanes_switch(a: int, b: int) -> int {\n"
+    "    v: u32x4 = u32(a & 0xFFFF)\n"
+    "    w: u32x4 = u32(b & 0xFFFF)\n"
+    "    p := switch b & 3 {\n"
+    "        0 => v +% w\n"
+    "        1 => v -% w\n"
+    "        _ => w\n"
+    "    }\n"
+    "    return int(p[2])\n"
+    "}\n";
+
+static const char *const INT128_GRID_FUNCTIONS[] = {
+    "wide_mul", "signed_mul", "divide", "divide_unsigned", "shifts", "counts", "floats",
+    "values", "calls", "compares", "bit_ops", "overflows", "tables", "unaligned",
+    "shift_counts", "narrows", "signs", "big_floats", "edge_constants", "blocks",
+};
+
+static const char *const INT128_SHAPE_FUNCTIONS[] = {
+    "leaf_divide", "leaf_locals", "crowded", "with_calls", "call_ten", "call_floats_wide", "call_one",
+    "vector_pick", "call_mixed", "wide_pick", "churn", "far_wide", "wide_switch", "lanes_switch",
+};
+
+static const CallCase INT128_CASES[] = {
+    { "leaf_divide", 100, 7, 33421, 0 },
+    { "leaf_divide", -100, 7, -32008, 0 },
+    { "leaf_divide", 5, 0, 0, TRAP_DIVIDE },
+    { "leaf_divide", INT64_MIN, -1, 0, TRAP_OVERFLOW },
+    { "leaf_divide", INT64_MIN, 2, 4611686018427386106, 0 },
+    { "crowded", 13, 12, 849, 0 },
+    { "crowded", -3, 5, 30, 0 },
+    { "crowded", INT64_MIN, -3, 195, 0 },
+    { "with_calls", 13, 12, 241, 0 },
+    { "with_calls", -3, -2, -27, 0 },
+    { "with_calls", INT64_MIN, 7, 50, 0 },
+    { "call_ten", 13, 12, 6629300579929687447, 0 },
+    { "call_ten", -1, -3, -6269010926112866326, 0 },
+    { "call_floats_wide", 5, -9, 24, 0 },
+    { "call_one", INT64_MAX, 1, INT64_MIN, 0 },
+    { "wide_pick", -3, 5, -2, 0 },
+    { "wide_pick", 5, -3, -7, 0 },
+    { "vector_pick", 200, 100, 163100, 0 },
+    { "vector_pick", 3, 1, 6002, 0 },
+    { "vector_pick", 1, 3, 10004, 0 },
+    { "call_mixed", 7, 9, 136, 0 },
+    { "call_mixed", -1, 2, 65556, 0 },
+    { "wide_switch", 8, 5, 8, 0 },
+    { "wide_switch", 9, 5, 25, 0 },
+    { "wide_switch", -6, 5, -1, 0 },
+    { "wide_switch", 3, -1, 9223372036854775807, 0 },
+    { "wide_switch", 4, 0, 7, 0 },
+    { "wide_switch", -9, 2, 7, 0 },
+    { "lanes_switch", 10, 4, 14, 0 },
+    { "lanes_switch", 10, 5, 5, 0 },
+    { "lanes_switch", 3, 5, 4294967294, 0 },
+    { "lanes_switch", 10, 6, 6, 0 },
+    { "lanes_switch", -1, 7, 7, 0 },
+    { "lanes_switch", 70000, 4, 4468, 0 },
+};
+
+enum
+{
+    WORD_BL = 0x94000000u,
+};
+
+TEST_CASE(int128)
+{
+    catch_traps();
+    REQUIRE(vector_runs_agree(INT128_PROGRAM, INT128_RUNS, NINT128_RUNS, false));
+    REQUIRE(vector_runs_agree(INT128_RELEASE_FAST, INT128_RELEASE_FAST_RUNS, NINT128_RELEASE_FAST_RUNS, true));
+    REQUIRE(vector_runs_agree(INT128_CHAIN, INT128_CHAIN_RUNS, 2, false));
+    REQUIRE(vector_runs_agree(INT128_CHAIN_SHIFTED, INT128_CHAIN_SHIFTED_RUNS, 2, false));
+
+    Program p;
+    REQUIRE(build(&p, INT128_GRID));
+    REQUIRE(agree_on_grid(&p, INT128_GRID_FUNCTIONS, sizeof INT128_GRID_FUNCTIONS / sizeof INT128_GRID_FUNCTIONS[0]));
+    release_program(&p);
+
+    REQUIRE(build(&p, INT128_SHAPES));
+    for (size_t k = 0; k < sizeof INT128_CASES / sizeof INT128_CASES[0]; k++) {
+        CallCase t = INT128_CASES[k];
+        int64_t got = 0;
+        int trap = call_i2((I2 *)fn(&p, t.name), t.a, t.b, &got);
+        if (trap != t.trap || (!trap && got != t.want)) {
+            fprintf(stderr, "arm64 test: %s(%lld, %lld) gave %lld (trap %d)\n", t.name, (long long)t.a, (long long)t.b, (long long)got, trap);
+            REQUIRE(false);
+        }
+    }
+    REQUIRE(agree_on_grid(&p, INT128_SHAPE_FUNCTIONS, sizeof INT128_SHAPE_FUNCTIONS / sizeof INT128_SHAPE_FUNCTIONS[0]));
+    REQUIRE(count_words(&p, "leaf_divide", WORD_BL, B_OFFSET) == 2);
+    REQUIRE(count_words(&p, "leaf_locals", WORD_BL, B_OFFSET) == 1);
+    REQUIRE(count_words(&p, "crowded", WORD_BL, B_OFFSET) == 2);
+    REQUIRE(count_words(&p, "mixed_leaf", WORD_MOV_X | 1u << 16, RD_FIELD) == 0);
+    REQUIRE(count_words(&p, "mixed_leaf", WORD_MOV_X | 2u << 16, RD_FIELD) == 0);
+    release_program(&p);
+    return true;
+}
+
 TEST_SUITE(arm64_tests)
 {
     RUN_TEST_CASE(hidden_context);
@@ -5636,6 +5854,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(targets);
     RUN_TEST_CASE(release_fast);
     RUN_TEST_CASE(vectors);
+    RUN_TEST_CASE(int128);
     RUN_TEST_CASE(narrow_parameters);
     RUN_TEST_CASE(constant_division);
     RUN_TEST_CASE(differential);

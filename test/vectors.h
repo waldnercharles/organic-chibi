@@ -29,5 +29,15 @@ extern const size_t NVECTOR_RESULTS;
 extern const char VECTOR_GRID[];
 extern const GridFunction VECTOR_GRID_FUNCTIONS[];
 extern const size_t NVECTOR_GRID_FUNCTIONS;
+extern const char INT128_PROGRAM[];
+extern const VectorRun INT128_RUNS[];
+extern const size_t NINT128_RUNS;
+extern const char INT128_RELEASE_FAST[];
+extern const VectorRun INT128_RELEASE_FAST_RUNS[];
+extern const size_t NINT128_RELEASE_FAST_RUNS;
+extern const char INT128_CHAIN[];
+extern const char INT128_CHAIN_SHIFTED[];
+extern const VectorRun INT128_CHAIN_RUNS[];
+extern const VectorRun INT128_CHAIN_SHIFTED_RUNS[];
 
 #endif

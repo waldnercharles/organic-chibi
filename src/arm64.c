@@ -212,6 +212,26 @@ enum
     OP_MOVI_16 = 0x4F008400u,
     OP_MOVI_32 = 0x4F000400u,
     OP_MOVI_64 = 0x6F00E400u,
+    OP_ADC = 0x1A000000u,
+    OP_ADCS = 0x3A000000u,
+    OP_SBC = 0x5A000000u,
+    OP_SBCS = 0x7A000000u,
+    OP_BICS = 0x6A200000u,
+    OP_CCMP = 0x7A400000u,
+    OP_CCMP_IMM = 0x7A400800u,
+    OP_CSEL = 0x1A800000u,
+    OP_CSINC = 0x1A800400u,
+    OP_CSINV = 0x5A800000u,
+    OP_EXTR = 0x93C00000u,
+    OP_LSL_IMM = 0xD3400000u,
+    OP_BL = 0x94000000u,
+    OP_TBZ = 0x36000000u,
+    OP_TBNZ = 0x37000000u,
+    OP_LDP_X_POST = 0xA8C00000u,
+    OP_STP_X_PRE = 0xA9800000u,
+    OP_FABS = 0x1E20C000u,
+    OP_FCMP_ZERO = 0x1E202008u,
+    OP_FCSEL = 0x1E200C00u,
     SF = 0x80000000u,
     DOUBLE = 0x00400000u,
 };
@@ -226,6 +246,7 @@ enum
     INFO_MEMORY = 0x40,
     INFO_PAIR = 0x80,
     INFO_VECTOR = INFO_UNSUPPORTED | INFO_MEMORY,
+    INFO_WIDE = INFO_VECTOR | INFO_PAIR | 3,
 };
 
 typedef struct
@@ -328,6 +349,8 @@ typedef struct
     Range *ranges;
     u32 ranges_cap;
     u32 traps[NTRAPS];
+    u32 divisions;
+    u32 products;
     u32 fused;
     u8 fused_cond;
     u32 tested;
@@ -406,6 +429,12 @@ is_vector(u8 info)
     return (info & INFO_VECTOR) == INFO_VECTOR;
 }
 
+static bool
+is_wide(u8 info)
+{
+    return (info & (INFO_VECTOR | INFO_PAIR)) == (INFO_VECTOR | INFO_PAIR);
+}
+
 static u8
 type_info(const Checker *c, u32 type)
 {
@@ -431,6 +460,9 @@ type_info(const Checker *c, u32 type)
     u32 bits = c->types.arg0[type];
     u8 scale = bits == 64 ? 3 : bits == 32 ? 2 : bits == 16 ? 1 : 0;
     bool integer = kind == TYPE_INT;
+    if (integer && bits == 128) {
+        return INFO_WIDE | (c->types.arg1[type] ? INFO_SIGNED : 0);
+    }
     bool supported = kind == TYPE_NONE || kind == TYPE_VOID ||
                      kind == TYPE_BOOL || (integer && bits <= 64) ||
                      kind == TYPE_UINTPTR || kind == TYPE_FLOAT;
@@ -455,6 +487,12 @@ constant_bits(const Emit *e, u32 x)
     return e->ir->consts[e->fn->first_const + (x & ~IR_CONST)].bits;
 }
 
+static u64
+constant_high(const Emit *e, u32 x)
+{
+    return e->ir->consts[e->fn->first_const + (x & ~IR_CONST) + 1].bits;
+}
+
 static void
 add_fixup(Emit *e, u32 *list)
 {
@@ -468,7 +506,7 @@ patch_one(Emit *e, u32 at, u32 target)
 {
     int32_t delta = (int32_t)target - (int32_t)at;
     u32 word = e->code[at];
-    if ((word & 0xFC000000u) == OP_B) {
+    if ((word & 0x7C000000u) == OP_B) {
         e->code[at] = word | ((u32)delta & 0x03FFFFFFu);
     } else {
         if (delta < -(1 << 18) || delta >= (1 << 18)) {
@@ -947,7 +985,7 @@ release(Emit *e, u32 x)
     e->regs[x] = NO_REG;
 }
 
-static void
+static ALWAYS_INLINE void
 save_for_call(Emit *e, u32 used, bool fl)
 {
     u32 base = fl ? 32 : 0;
@@ -1291,6 +1329,12 @@ shift_imm(Emit *e, u32 op, u32 sf, u32 d, u32 n, u32 count)
     put(e, op | sf | (sf ? 0x00408000u : 0) | count << 16 | n << 5 | d);
 }
 
+static void
+lsl_imm(Emit *e, u32 d, u32 n, u32 count)
+{
+    put(e, OP_LSL_IMM | ((64 - count) & 63) << 16 | (63 - count) << 10 | n << 5 | d);
+}
+
 static bool
 tests_zero(const Emit *e, u32 i)
 {
@@ -1501,6 +1545,61 @@ bitwise(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
 }
 
 static void
+release_home(Emit *e, u32 home)
+{
+    e->homes = grow(e->homes, &e->homes_cap, e->nhomes + 1, sizeof *e->homes);
+    e->homes[e->nhomes++] = home;
+}
+
+static void
+pair_at(Emit *e, u32 op, u32 lo, u32 hi, u32 home)
+{
+    if (home < 512) {
+        put(e, op | (home >> 3) << 15 | hi << 10 | SP << 5 | lo);
+        return;
+    }
+    sp_address(e, X8, home);
+    put(e, op | hi << 10 | X8 << 5 | lo);
+}
+
+static void
+fetch_wide(Emit *e, u32 x, u32 lo, u32 hi)
+{
+    if (x & IR_CONST) {
+        mov_imm(e, lo, constant_bits(e, x), SF);
+        mov_imm(e, hi, constant_high(e, x), SF);
+        return;
+    }
+    u32 home = e->spills[x];
+    if (home == NO_VALUE) {
+        put(e, OP_FMOV_TO_X | V29 << 5 | lo);
+        put(e, OP_UMOV_D | 1u << 20 | V29 << 5 | hi);
+        return;
+    }
+    pair_at(e, OP_LDP_X, lo, hi, home);
+    release_home(e, home);
+}
+
+static NOINLINE void
+check_wide_count(Emit *e, u32 b, u32 bits, u32 d)
+{
+    fetch_wide(e, b, d, X8);
+    trap_unless_zero(e, X8, SF, TRAP_SHIFT);
+    put(e, OP_SUBS_IMM | SF | bits << 10 | d << 5 | ZR);
+    trap_if(e, COND_HS, TRAP_SHIFT);
+}
+
+static void
+shift_by(Emit *e, u8 kind, u8 t, u32 d, u32 n, u32 count)
+{
+    u32 op = kind == IR_SHL ? OP_LSLV : is_signed(t) ? OP_ASRV : OP_LSRV;
+    put(e, op | width(t) | count << 16 | n << 5 | d);
+    if (kind == IR_SHL && is_small(t)) {
+        normalize(e, t, d, d);
+    }
+}
+
+static void
 shift(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
 {
     u8 t = e->info[type];
@@ -1528,17 +1627,19 @@ shift(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
     }
 
     u8 count_info = operand_info(e, b);
+    if (UNLIKELY(count_info & INFO_UNSUPPORTED)) {
+        check_wide_count(e, b, bits_of(t), X17);
+        release(e, a);
+        shift_by(e, kind, t, result(e, i, t), ra, X17);
+        return;
+    }
     u32 rb = fetch(e, b, X17);
     release(e, a);
     release(e, b);
     u32 d = result(e, i, t);
     put(e, OP_SUBS_IMM | width(count_info) | bits_of(t) << 10 | rb << 5 | ZR);
     trap_if(e, COND_HS, TRAP_SHIFT);
-    u32 op = kind == IR_SHL ? OP_LSLV : s ? OP_ASRV : OP_LSRV;
-    put(e, op | sf | rb << 16 | ra << 5 | d);
-    if (kind == IR_SHL && is_small(t)) {
-        normalize(e, t, d, d);
-    }
+    shift_by(e, kind, t, d, ra, rb);
 }
 
 static u8
@@ -1659,9 +1760,47 @@ unary(Emit *e, u32 i, u8 kind, u32 type, u32 a)
 }
 
 static NOINLINE void
+count_wide(Emit *e, u32 i, u8 kind, u32 type, u32 a)
+{
+    fetch_wide(e, a, X16, X17);
+    u32 d = result(e, i, e->info[type]);
+
+    switch (kind) {
+        case IR_TRAILING_ZEROS:
+            put(e, OP_RBIT | SF | X16 << 5 | X8);
+            put(e, OP_CLZ | SF | X8 << 5 | X8);
+            put(e, OP_RBIT | SF | X17 << 5 | d);
+            put(e, OP_CLZ | SF | d << 5 | d);
+            put(e, OP_ADD_IMM | SF | 64u << 10 | d << 5 | d);
+            put(e, OP_SUBS_IMM | SF | X16 << 5 | ZR);
+            put(e, OP_CSEL | SF | d << 16 | (u32)COND_NE << 12 | X8 << 5 | d);
+            break;
+        case IR_LEADING_ZEROS:
+            put(e, OP_CLZ | SF | X17 << 5 | X8);
+            put(e, OP_CLZ | SF | X16 << 5 | d);
+            put(e, OP_ADD_IMM | SF | 64u << 10 | d << 5 | d);
+            put(e, OP_SUBS_IMM | SF | X17 << 5 | ZR);
+            put(e, OP_CSEL | SF | d << 16 | (u32)COND_NE << 12 | X8 << 5 | d);
+            break;
+        case IR_COUNT_ONES:
+            put(e, OP_FMOV_FROM_X | X16 << 5 | V31);
+            put(e, OP_INS_D1 | X17 << 5 | V31);
+            put(e, OP_CNT_8B | 1u << 30 | V31 << 5 | V31);
+            put(e, OP_ADDV_8B | 1u << 30 | V31 << 5 | V31);
+            put(e, OP_FMOV_TO_W | V31 << 5 | d);
+            break;
+        default: assert(false && "not a bit count");
+    }
+}
+
+static NOINLINE void
 count_bits(Emit *e, u32 i, u8 kind, u32 type, u32 a)
 {
     u8 from = operand_info(e, a);
+    if (UNLIKELY(from & INFO_UNSUPPORTED)) {
+        count_wide(e, i, kind, type, a);
+        return;
+    }
     u32 bits = bits_of(from);
     u32 sf = width(from);
     u32 ra = fetch(e, a, X16);
@@ -1743,10 +1882,73 @@ test_overflow(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
 }
 
 static void
+negate_if(Emit *e, u32 lo, u32 hi, u32 mask)
+{
+    put(e, OP_EOR | SF | mask << 16 | lo << 5 | lo);
+    put(e, OP_EOR | SF | mask << 16 | hi << 5 | hi);
+    put(e, OP_SUBS | SF | mask << 16 | lo << 5 | lo);
+    put(e, OP_SBC | SF | mask << 16 | hi << 5 | hi);
+}
+
+static NOINLINE void
+float_from_wide(Emit *e, u32 i, u8 tt, u8 from, u32 a)
+{
+    bool s = is_signed(from);
+    bool dbl = bits_of(tt) == 64;
+    u32 t0 = take_reg(e, false);
+    u32 t1 = take_reg(e, false);
+    u32 sign = s ? take_reg(e, false) : ZR;
+    fetch_wide(e, a, X16, X17);
+    u32 d = result(e, i, tt);
+
+    if (s) {
+        shift_imm(e, OP_ASR_IMM, SF, sign, X17, 63);
+        negate_if(e, X16, X17, sign);
+    }
+    u32 big = here(e);
+    put(e, OP_CBNZ | SF | X17);
+    put(e, OP_UCVTF | SF | precision(tt) | X16 << 5 | d);
+    u32 done = here(e);
+    put(e, OP_B);
+    patch_one(e, big, here(e));
+
+    put(e, OP_CLZ | SF | X17 << 5 | X8);
+    put(e, OP_LSLV | SF | X8 << 16 | X17 << 5 | X17);
+    put(e, OP_ORN | SF | X8 << 16 | ZR << 5 | t0);
+    shift_imm(e, OP_LSR_IMM, SF, t1, X16, 1);
+    put(e, OP_LSRV | SF | t0 << 16 | t1 << 5 | t1);
+    put(e, OP_ORR | SF | t1 << 16 | X17 << 5 | X17);
+    put(e, OP_LSLV | SF | X8 << 16 | X16 << 5 | X16);
+    put(e, OP_SUBS_IMM | SF | X16 << 5 | ZR);
+    put(e, OP_CSET | (u32)(COND_NE ^ 1) << 12 | t1);
+    put(e, OP_ORR | SF | t1 << 16 | X17 << 5 | X17);
+    put(e, OP_UCVTF | SF | precision(tt) | X17 << 5 | d);
+
+    mov_imm(e, t0, dbl ? 1087 : 191, 0);
+    put(e, OP_SUB | X8 << 16 | t0 << 5 | t0);
+    lsl_imm(e, t0, t0, dbl ? 52 : 23);
+    put(e, (dbl ? OP_FMOV_FROM_X : OP_FMOV_FROM_W) | t0 << 5 | V31);
+    put(e, OP_FMUL | precision(tt) | V31 << 16 | d << 5 | d);
+    patch_one(e, done, here(e));
+
+    if (s) {
+        put(e, OP_SUBS_IMM | SF | sign << 5 | ZR);
+        put(e, OP_FNEG | precision(tt) | d << 5 | V31);
+        put(e, OP_FCSEL | precision(tt) | d << 16 | (u32)COND_NE << 12 | V31 << 5 | d);
+        e->free_int |= 1u << sign;
+    }
+    e->free_int |= 1u << t0 | 1u << t1;
+}
+
+static void
 convert(Emit *e, u32 i, u32 to, u32 a)
 {
     u8 tt = e->info[to];
     u8 from = operand_info(e, a);
+    if (UNLIKELY(from & INFO_UNSUPPORTED)) {
+        float_from_wide(e, i, tt, from, a);
+        return;
+    }
     bool float_from = is_float(from);
     bool float_to = is_float(tt);
     if (!float_from && !float_to) {
@@ -1781,10 +1983,10 @@ convert(Emit *e, u32 i, u32 to, u32 a)
     }
 }
 
-static double
-power_of_two(u32 k)
+static u64
+power_bits(u8 t, int32_t k)
 {
-    return k == 64 ? 0x1p64 : (double)(1ull << k);
+    return bits_of(t) == 64 ? (u64)(1023 + k) << 52 : (u64)(127 + k) << 23;
 }
 
 static void
@@ -1799,6 +2001,31 @@ float_bound(Emit *e, u32 reg, u8 t, double value)
         u32 bits;
         memcpy(&bits, &f, sizeof bits);
         float_imm(e, reg, bits, false);
+    }
+}
+
+static ALWAYS_INLINE void
+check_float_range(Emit *e, u32 ra, u8 from, u32 to_bits, bool to_signed)
+{
+    u32 fp = precision(from);
+    bool dbl = bits_of(from) == 64;
+    u32 mantissa = dbl ? 53 : 24;
+    float_imm(e, V29, power_bits(from, (int32_t)(to_signed ? to_bits - 1 : to_bits)), dbl);
+    put(e, OP_FCMP | fp | V29 << 16 | ra << 5);
+    trap_if(e, COND_PL, TRAP_RANGE);
+    if (!to_signed) {
+        float_bound(e, V29, from, -1.0);
+        put(e, OP_FCMP | fp | V29 << 16 | ra << 5);
+        trap_if(e, COND_LE, TRAP_RANGE);
+    } else if (to_bits - 1 < mantissa) {
+        float_bound(e, V29, from, -(double)(1ull << (to_bits - 1)) - 1.0);
+        put(e, OP_FCMP | fp | V29 << 16 | ra << 5);
+        trap_if(e, COND_LE, TRAP_RANGE);
+    } else {
+        u64 sign = dbl ? 1ull << 63 : 1ull << 31;
+        float_imm(e, V29, sign | power_bits(from, (int32_t)to_bits - 1), dbl);
+        put(e, OP_FCMP | fp | V29 << 16 | ra << 5);
+        trap_if(e, COND_LT, TRAP_RANGE);
     }
 }
 
@@ -1910,6 +2137,19 @@ check_member(Emit *e, u32 d, u8 t, const u32 *runs)
     e->nbranches = first;
 }
 
+static NOINLINE u8
+narrow_wide(Emit *e, u32 a, u8 from, bool to_signed)
+{
+    fetch_wide(e, a, X16, X17);
+    if (is_signed(from) && to_signed) {
+        put(e, OP_SUBS | SF | SHIFT_ASR | X16 << 16 | 63u << 10 | X17 << 5 | ZR);
+        trap_if(e, COND_NE, TRAP_RANGE);
+        return e->info[TYPE_ID_I64];
+    }
+    trap_unless_zero(e, X17, SF, TRAP_RANGE);
+    return e->info[TYPE_ID_U64];
+}
+
 static void
 narrow(Emit *e, u32 i, u32 to, u32 a)
 {
@@ -1920,31 +2160,21 @@ narrow(Emit *e, u32 i, u32 to, u32 a)
     if (is_float(from)) {
         u32 ra = fetch(e, a, V30);
         release(e, a);
-        u32 fp = precision(from);
-        u32 mantissa = bits_of(from) == 64 ? 53 : 24;
-        float_bound(e, V29, from, power_of_two(to_signed ? to_bits - 1 : to_bits));
-        put(e, OP_FCMP | fp | V29 << 16 | ra << 5);
-        trap_if(e, COND_PL, TRAP_RANGE);
-        if (!to_signed) {
-            float_bound(e, V29, from, -1.0);
-            put(e, OP_FCMP | fp | V29 << 16 | ra << 5);
-            trap_if(e, COND_LE, TRAP_RANGE);
-        } else if (to_bits - 1 < mantissa) {
-            float_bound(e, V29, from, -power_of_two(to_bits - 1) - 1.0);
-            put(e, OP_FCMP | fp | V29 << 16 | ra << 5);
-            trap_if(e, COND_LE, TRAP_RANGE);
-        } else {
-            float_bound(e, V29, from, -power_of_two(to_bits - 1));
-            put(e, OP_FCMP | fp | V29 << 16 | ra << 5);
-            trap_if(e, COND_LT, TRAP_RANGE);
-        }
+        check_float_range(e, ra, from, to_bits, to_signed);
         u32 d = result(e, i, tt);
-        put(e, (to_signed ? OP_FCVTZS : OP_FCVTZU) | width(tt) | fp | ra << 5 | d);
+        put(e,
+            (to_signed ? OP_FCVTZS : OP_FCVTZU) | width(tt) | precision(from) |
+                ra << 5 | d);
         return;
     }
 
-    u32 ra = fetch(e, a, X16);
-    release(e, a);
+    u32 ra = X16;
+    if (UNLIKELY(from & INFO_UNSUPPORTED)) {
+        from = narrow_wide(e, a, from, to_signed);
+    } else {
+        ra = fetch(e, a, X16);
+        release(e, a);
+    }
     u32 sf = width(from);
     u32 from_bits = bits_of(from);
     if (is_signed(from)) {
@@ -1988,8 +2218,13 @@ static void
 truncate_to(Emit *e, u32 i, u32 to, u32 a)
 {
     u8 tt = e->info[to];
-    u32 ra = fetch(e, a, X16);
-    release(e, a);
+    u32 ra = X16;
+    if (UNLIKELY(operand_info(e, a) & INFO_UNSUPPORTED)) {
+        fetch_wide(e, a, X16, X8);
+    } else {
+        ra = fetch(e, a, X16);
+        release(e, a);
+    }
     u32 d = result(e, i, tt);
     if (is_small(tt)) {
         put(e, extend_op(tt) | ra << 5 | d);
@@ -2613,13 +2848,6 @@ stack_struct(Emit *e, u32 v, u32 type, u32 regs, u32 offset)
 }
 
 static void
-release_home(Emit *e, u32 home)
-{
-    e->homes = grow(e->homes, &e->homes_cap, e->nhomes + 1, sizeof *e->homes);
-    e->homes[e->nhomes++] = home;
-}
-
-static void
 lane_constant(Emit *e, u32 d, u8 t, u64 bits)
 {
     u32 scale = t & INFO_SCALE;
@@ -2639,11 +2867,32 @@ lane_constant(Emit *e, u32 d, u8 t, u64 bits)
     put(e, OP_DUP | (1u << scale) << 16 | X16 << 5 | d);
 }
 
+static void
+wide_constant(Emit *e, u32 d, u64 lo, u64 hi)
+{
+    if ((lo == 0 || lo == ~0ull) && hi == lo) {
+        u32 imm = lo ? 0xFF : 0;
+        put(e, OP_MOVI_64 | (imm >> 5) << 16 | (imm & 31) << 5 | d);
+        return;
+    }
+    mov_imm(e, X16, lo, SF);
+    put(e, OP_FMOV_FROM_X | X16 << 5 | d);
+    if (hi) {
+        mov_imm(e, X16, hi, SF);
+        put(e, OP_INS_D1 | X16 << 5 | d);
+    }
+}
+
 static u32
 fetch_lanes(Emit *e, u32 x, u32 scratch)
 {
     if (x & IR_CONST) {
-        lane_constant(e, scratch, operand_info(e, x), constant_bits(e, x));
+        u8 t = operand_info(e, x);
+        if (is_wide(t)) {
+            wide_constant(e, scratch, constant_bits(e, x), constant_high(e, x));
+        } else {
+            lane_constant(e, scratch, t, constant_bits(e, x));
+        }
         return scratch;
     }
     u32 home = e->spills[x];
@@ -2880,7 +3129,9 @@ call(Emit *e, u32 i, u32 type, u32 decl, u32 b, const Native *n, u32 ints)
     put(e, OP_LDR_X16_X16 | (u32)((entry & 0xFFF) >> 3) << 10);
     put(e, OP_BLR_X16);
 
-    if (t & INFO_PAIR) {
+    if (t & INFO_MEMORY) {
+        receive_result(e, type, args);
+    } else if (t & INFO_PAIR) {
         u32 d0 = half_result(e, i, 0, t);
         u32 d1 = half_result(e, i, 1, e->info[TYPE_ID_I64]);
         assert(d1 != 0);
@@ -2891,8 +3142,6 @@ call(Emit *e, u32 i, u32 type, u32 decl, u32 b, const Native *n, u32 ints)
             mov(e, SF, d0, 0);
             mov(e, SF, d1, 1);
         }
-    } else if (t & INFO_MEMORY) {
-        receive_result(e, type, args);
     } else if (type != TYPE_ID_VOID) {
         bool fl = is_float(t);
         u32 d = result(e, i, e->info[type]);
@@ -3078,9 +3327,8 @@ find_open(Emit *e, u32 target)
 }
 
 static const char UNSUPPORTED_TYPE[] = "the arm64 backend supports only "
-                                       "integers up to 64 bits, floats, "
-                                       "bool, pointers, arrays, slices and "
-                                       "vectors so far";
+                                       "integers, floats, bool, pointers, "
+                                       "arrays, slices and vectors so far";
 
 static u32
 arm_end(const Emit *e, u32 i)
@@ -3189,7 +3437,7 @@ pin_by_weight(Emit *e, bool fl, u32 first, u32 cheap, u32 callee)
 static NOINLINE void
 skip_memory_param(const Emit *e, u32 type, u32 *used)
 {
-    if (e->c->types.kinds[type] == TYPE_VECTOR) {
+    if (is_vector(e->info[type])) {
         used[1]++;
         return;
     }
@@ -3613,15 +3861,20 @@ shift_lanes(Emit *e, u8 kind, u8 t, u32 a, u32 b)
     }
 
     u8 count_info = operand_info(e, b);
-    u32 rb = fetch(e, b, X17);
-    put(e, OP_SUBS_IMM | width(count_info) | bits << 10 | rb << 5 | ZR);
-    trap_if(e, COND_HS, TRAP_SHIFT);
+    u32 rb = X17;
+    if (UNLIKELY(count_info & INFO_UNSUPPORTED)) {
+        check_wide_count(e, b, bits, X17);
+    } else {
+        rb = fetch(e, b, X17);
+        put(e, OP_SUBS_IMM | width(count_info) | bits << 10 | rb << 5 | ZR);
+        trap_if(e, COND_HS, TRAP_SHIFT);
+        release(e, b);
+    }
     if (kind == IR_SHR) {
         put(e, OP_SUB | rb << 16 | ZR << 5 | X16);
         rb = X16;
     }
     put(e, OP_DUP | (1u << scale) << 16 | rb << 5 | V31);
-    release(e, b);
 
     u32 r = fetch_lanes(e, a, V30);
     put(e, (is_signed(t) ? OP_SSHL : OP_USHL) | scale << 22 | V31 << 16 | r << 5 | V29);
@@ -3680,10 +3933,404 @@ multiply_wide_lanes(Emit *e, u32 ra, u32 rb)
     put(e, OP_INS_D1 | X17 << 5 | V29);
 }
 
+static u32
+logical_field(u64 value, u32 sf)
+{
+    u32 field = 0;
+    [[maybe_unused]] bool ok = logical_imm(value, sf, &field);
+    assert(ok);
+    return field;
+}
+
+static void
+keep_wide(Emit *e, u32 v, u8 t, u32 lo, u32 hi)
+{
+    u32 home = new_home(e);
+    pair_at(e, OP_STP_X, lo, hi, home);
+    e->spills[v] = home;
+    e->vinfo[v] = t;
+}
+
+static u32
+wide_home(Emit *e, u32 x)
+{
+    if (x & IR_CONST) {
+        u32 home = new_home(e);
+        fetch_wide(e, x, X16, X17);
+        pair_at(e, OP_STP_X, X16, X17, home);
+        return home;
+    }
+    u32 home = e->spills[x];
+    if (home == NO_VALUE) {
+        home = new_home(e);
+        memory(e, OP_STR_Q, 4, V29, home, X8);
+    }
+    return home;
+}
+
+static u32
+call_routine(Emit *e, u32 a, u32 b, u32 *calls, u32 mode)
+{
+    u32 ha = wide_home(e, a);
+    u32 hb = wide_home(e, b);
+    u32 hr = new_home(e);
+
+    sp_address(e, X16, ha);
+    sp_address(e, X17, hb);
+    sp_address(e, X8, hr);
+    if (mode) {
+        put(e, OP_ADD_IMM | SF | mode << 10 | X8 << 5 | X8);
+    }
+    add_fixup(e, calls);
+    put(e, OP_BL);
+
+    release_home(e, ha);
+    release_home(e, hb);
+    return hr;
+}
+
+static void
+add_sub_wide(Emit *e, u32 i, u8 kind, u8 t, u32 a, u32 b)
+{
+    bool sub = kind == IR_SUB || kind == IR_SUB_WRAP;
+    bool checked = kind == IR_ADD || kind == IR_SUB;
+    u32 b1 = take_reg(e, false);
+    fetch_wide(e, a, X16, X17);
+    fetch_wide(e, b, X8, b1);
+
+    u32 carry = sub ? (checked ? OP_SBCS : OP_SBC) : (checked ? OP_ADCS : OP_ADC);
+    put(e, (sub ? OP_SUBS : OP_ADDS) | SF | X8 << 16 | X16 << 5 | X16);
+    put(e, carry | SF | b1 << 16 | X17 << 5 | X17);
+    if (checked) {
+        trap_if(e, is_signed(t) ? COND_VS : (sub ? COND_LO : COND_HS), TRAP_OVERFLOW);
+    }
+    e->free_int |= 1u << b1;
+    keep_wide(e, i, t, X16, X17);
+}
+
+static void
+unsigned_product(Emit *e, u32 b0, u32 b1, u32 *overflow)
+{
+    put(e, OP_SUBS_IMM | SF | X17 << 5 | ZR);
+    put(e, OP_CCMP_IMM | SF | (u32)COND_NE << 12 | b1 << 5 | 4);
+    add_fixup(e, overflow);
+    put(e, OP_B_COND | COND_NE);
+    put(e, OP_UMULH | b0 << 16 | X17 << 5 | X8);
+    add_fixup(e, overflow);
+    put(e, OP_CBNZ | SF | X8);
+    put(e, OP_UMULH | b1 << 16 | X16 << 5 | X8);
+    add_fixup(e, overflow);
+    put(e, OP_CBNZ | SF | X8);
+    put(e, OP_MUL | SF | b0 << 16 | X17 << 5 | X8);
+    put(e, OP_MADD | SF | b1 << 16 | X8 << 10 | X16 << 5 | X8);
+    put(e, OP_UMULH | b0 << 16 | X16 << 5 | X17);
+    put(e, OP_ADDS | SF | X8 << 16 | X17 << 5 | X17);
+    add_fixup(e, overflow);
+    put(e, OP_B_COND | COND_HS);
+    put(e, OP_MUL | SF | b0 << 16 | X16 << 5 | X16);
+}
+
+static void
+multiply_wide(Emit *e, u32 i, u8 kind, u8 t, u32 a, u32 b)
+{
+    if (kind == IR_MUL && is_signed(t)) {
+        e->spills[i] = call_routine(e, a, b, &e->products, 0);
+        e->vinfo[i] = t;
+        trap_if(e, COND_NE, TRAP_OVERFLOW);
+        return;
+    }
+
+    u32 b0 = take_reg(e, false);
+    u32 b1 = take_reg(e, false);
+    fetch_wide(e, a, X16, X17);
+    fetch_wide(e, b, b0, b1);
+
+    if (kind == IR_MUL) {
+        unsigned_product(e, b0, b1, &e->traps[TRAP_OVERFLOW]);
+    } else {
+        put(e, OP_MUL | SF | b1 << 16 | X16 << 5 | b1);
+        put(e, OP_MADD | SF | b0 << 16 | b1 << 10 | X17 << 5 | X17);
+        put(e, OP_UMULH | b0 << 16 | X16 << 5 | b1);
+        put(e, OP_ADD | SF | b1 << 16 | X17 << 5 | X17);
+        put(e, OP_MUL | SF | b0 << 16 | X16 << 5 | X16);
+    }
+    e->free_int |= 1u << b0 | 1u << b1;
+    keep_wide(e, i, t, X16, X17);
+}
+
+static void
+shift_wide(Emit *e, u32 i, u8 kind, u8 t, u32 a, u32 b)
+{
+    bool s = is_signed(t);
+    u32 shr = s ? OP_ASR_IMM : OP_LSR_IMM;
+    if (b & IR_CONST) {
+        u32 n = (u32)constant_bits(e, b);
+        fetch_wide(e, a, X16, X17);
+        u32 lo = X16, hi = X17;
+        if (kind == IR_SHL && n >= 64) {
+            lsl_imm(e, X17, X16, n - 64);
+            lo = ZR;
+        } else if (kind == IR_SHL && n > 0) {
+            put(e, OP_EXTR | X16 << 16 | (64 - n) << 10 | X17 << 5 | X17);
+            lsl_imm(e, X16, X16, n);
+        } else if (n >= 64) {
+            shift_imm(e, shr, SF, X16, X17, n - 64);
+            if (s) {
+                shift_imm(e, OP_ASR_IMM, SF, X17, X17, 63);
+            } else {
+                hi = ZR;
+            }
+        } else if (n > 0) {
+            put(e, OP_EXTR | X16 << 16 | n << 10 | X17 << 5 | X16);
+            shift_imm(e, shr, SF, X17, X17, n);
+        }
+        keep_wide(e, i, t, lo, hi);
+        return;
+    }
+
+    u8 count_info = operand_info(e, b);
+    u32 c = take_reg(e, false);
+    u32 t1 = take_reg(e, false);
+    u32 n = c;
+    if (count_info & INFO_UNSUPPORTED) {
+        check_wide_count(e, b, 128, c);
+    } else {
+        n = fetch(e, b, c);
+        put(e, OP_SUBS_IMM | width(count_info) | 128u << 10 | n << 5 | ZR);
+        trap_if(e, COND_HS, TRAP_SHIFT);
+        release(e, b);
+    }
+    fetch_wide(e, a, X16, X17);
+
+    u32 field = logical_field(64, 0);
+    put(e, OP_ORN | SF | n << 16 | ZR << 5 | X8);
+    if (kind == IR_SHL) {
+        shift_imm(e, OP_LSR_IMM, SF, t1, X16, 1);
+        put(e, OP_LSRV | SF | X8 << 16 | t1 << 5 | t1);
+        put(e, OP_LSLV | SF | n << 16 | X17 << 5 | X8);
+        put(e, OP_ORR | SF | X8 << 16 | t1 << 5 | t1);
+        put(e, OP_LSLV | SF | n << 16 | X16 << 5 | X8);
+        put(e, OP_ANDS_IMM | field | n << 5 | ZR);
+        put(e, OP_CSEL | SF | t1 << 16 | (u32)COND_NE << 12 | X8 << 5 | X17);
+        put(e, OP_CSEL | SF | X8 << 16 | (u32)COND_NE << 12 | ZR << 5 | X16);
+    } else {
+        lsl_imm(e, t1, X17, 1);
+        put(e, OP_LSLV | SF | X8 << 16 | t1 << 5 | t1);
+        put(e, OP_LSRV | SF | n << 16 | X16 << 5 | X8);
+        put(e, OP_ORR | SF | X8 << 16 | t1 << 5 | t1);
+        put(e, (s ? OP_ASRV : OP_LSRV) | SF | n << 16 | X17 << 5 | X8);
+        put(e, OP_ANDS_IMM | field | n << 5 | ZR);
+        put(e, OP_CSEL | SF | t1 << 16 | (u32)COND_NE << 12 | X8 << 5 | X16);
+        u32 fill = ZR;
+        if (s) {
+            shift_imm(e, OP_ASR_IMM, SF, t1, X17, 63);
+            fill = t1;
+        }
+        put(e, OP_CSEL | SF | X8 << 16 | (u32)COND_NE << 12 | fill << 5 | X17);
+    }
+    e->free_int |= 1u << c | 1u << t1;
+    keep_wide(e, i, t, X16, X17);
+}
+
+static void
+negate_wide(Emit *e, u32 i, u8 kind, u8 t, u32 a)
+{
+    fetch_wide(e, a, X16, X17);
+    if (kind == IR_NEG && !is_signed(t)) {
+        put(e, OP_ORR | SF | X17 << 16 | X16 << 5 | X8);
+        trap_unless_zero(e, X8, SF, TRAP_OVERFLOW);
+        keep_wide(e, i, t, ZR, ZR);
+        return;
+    }
+    put(e, OP_SUBS | SF | X16 << 16 | ZR << 5 | X16);
+    put(e, (kind == IR_NEG ? OP_SBCS : OP_SBC) | SF | X17 << 16 | ZR << 5 | X17);
+    if (kind == IR_NEG) {
+        trap_if(e, COND_VS, TRAP_OVERFLOW);
+    }
+    keep_wide(e, i, t, X16, X17);
+}
+
+static void
+compare_wide(Emit *e, u32 i, u8 kind, u8 t, u32 a, u32 b)
+{
+    u32 b1 = take_reg(e, false);
+    fetch_wide(e, a, X16, X17);
+    fetch_wide(e, b, X8, b1);
+
+    u8 cond;
+    if (kind == IR_EQ || kind == IR_NE) {
+        put(e, OP_SUBS | SF | X8 << 16 | X16 << 5 | ZR);
+        put(e, OP_CCMP | SF | b1 << 16 | (u32)COND_EQ << 12 | X17 << 5);
+        cond = kind == IR_EQ ? COND_EQ : COND_NE;
+    } else {
+        bool swapped = kind == IR_GT || kind == IR_LE;
+        u32 l0 = swapped ? X8 : X16, l1 = swapped ? b1 : X17;
+        u32 r0 = swapped ? X16 : X8, r1 = swapped ? X17 : b1;
+        put(e, OP_SUBS | SF | r0 << 16 | l0 << 5 | ZR);
+        put(e, OP_SBCS | SF | r1 << 16 | l1 << 5 | ZR);
+        bool less = kind == IR_LT || kind == IR_GT;
+        cond = is_signed(t) ? (less ? COND_LT : COND_GE) : (less ? COND_LO : COND_HS);
+    }
+    e->free_int |= 1u << b1;
+    flag_result(e, i, cond);
+}
+
+static void
+overflows_wide(Emit *e, u32 i, u8 kind, u8 t, u32 a, u32 b)
+{
+    bool s = is_signed(t);
+    if (kind == IR_MUL_OVERFLOWS && s) {
+        release_home(e, call_routine(e, a, b, &e->products, 0));
+        flag_result(e, i, COND_NE);
+        return;
+    }
+    if (kind == IR_MUL_OVERFLOWS) {
+        u32 b0 = take_reg(e, false);
+        u32 b1 = take_reg(e, false);
+        fetch_wide(e, a, X16, X17);
+        fetch_wide(e, b, b0, b1);
+        u32 d = result(e, i, e->info[TYPE_ID_BOOL]);
+
+        u32 done = 0;
+        put(e, OP_MOVZ | 1u << 5 | d);
+        unsigned_product(e, b0, b1, &done);
+        put(e, OP_MOVZ | d);
+        patch(e, done, here(e));
+        e->free_int |= 1u << b0 | 1u << b1;
+        return;
+    }
+
+    bool sub = kind == IR_SUB_OVERFLOWS;
+    u32 b1 = take_reg(e, false);
+    fetch_wide(e, a, X16, X17);
+    fetch_wide(e, b, X8, b1);
+    put(e, (sub ? OP_SUBS : OP_ADDS) | SF | X8 << 16 | X16 << 5 | ZR);
+    put(e, (sub ? OP_SBCS : OP_ADCS) | SF | b1 << 16 | X17 << 5 | ZR);
+    e->free_int |= 1u << b1;
+    flag_result(e, i, s ? COND_VS : sub ? COND_LO : COND_HS);
+}
+
+static NOINLINE void
+wide_from_float(Emit *e, u32 i, u8 t, u8 from, u32 a)
+{
+    bool s = is_signed(t);
+    bool dbl = bits_of(from) == 64;
+    u32 fp = precision(from);
+    u32 ra = fetch(e, a, V30);
+    release(e, a);
+    check_float_range(e, ra, from, 128, s);
+
+    u32 src = ra;
+    if (s) {
+        put(e, OP_FCMP_ZERO | fp | ra << 5);
+        put(e, OP_FABS | fp | ra << 5 | V30);
+        src = V30;
+    }
+    float_imm(e, V29, power_bits(from, -64), dbl);
+    put(e, OP_FMUL | fp | V29 << 16 | src << 5 | V31);
+    put(e, OP_FCVTZU | SF | fp | V31 << 5 | X17);
+    put(e, OP_UCVTF | SF | fp | X17 << 5 | V31);
+    float_imm(e, V29, power_bits(from, 64), dbl);
+    put(e, OP_FMUL | fp | V29 << 16 | V31 << 5 | V31);
+    put(e, OP_FSUB | fp | V31 << 16 | src << 5 | V31);
+    put(e, OP_FCVTZU | SF | fp | V31 << 5 | X16);
+    if (s) {
+        put(e, OP_CSINV | SF | ZR << 16 | (u32)(COND_MI ^ 1) << 12 | ZR << 5 | X8);
+        negate_if(e, X16, X17, X8);
+    }
+    keep_wide(e, i, t, X16, X17);
+}
+
+static void
+convert_to_wide(Emit *e, u32 i, u8 kind, u8 t, u32 a)
+{
+    u8 from = operand_info(e, a);
+    if (is_float(from)) {
+        wide_from_float(e, i, t, from, a);
+        return;
+    }
+    if (is_wide(from) && kind != IR_NARROW) {
+        move_lanes(e, V29, a);
+        e->vinfo[i] = t;
+        keep_lanes(e, i);
+        return;
+    }
+    if (is_wide(from)) {
+        fetch_wide(e, a, X16, X17);
+        put(e, OP_SUBS_IMM | SF | X17 << 5 | ZR);
+        trap_if(e, COND_LT, TRAP_RANGE);
+        keep_wide(e, i, t, X16, X17);
+        return;
+    }
+
+    u32 ra = fetch(e, a, X16);
+    release(e, a);
+    if (kind == IR_NARROW) {
+        put(e, OP_SUBS_IMM | width(from) | ra << 5 | ZR);
+        trap_if(e, COND_LT, TRAP_RANGE);
+    }
+    if (width(from)) {
+        mov(e, SF, X16, ra);
+    } else {
+        put(e,
+            is_signed(from) ? OP_SXTW | ra << 5 | X16
+                            : OP_ORR | ra << 16 | ZR << 5 | X16);
+    }
+    u32 hi = ZR;
+    if (is_signed(from)) {
+        shift_imm(e, OP_ASR_IMM, SF, X17, X16, 63);
+        hi = X17;
+    }
+    keep_wide(e, i, t, X16, hi);
+}
+
+static NOINLINE void
+wide_int(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
+{
+    u8 t = e->info[type];
+    switch (kind) {
+        case IR_ADD:
+        case IR_SUB:
+        case IR_ADD_WRAP:
+        case IR_SUB_WRAP: add_sub_wide(e, i, kind, t, a, b); break;
+        case IR_MUL:
+        case IR_MUL_WRAP: multiply_wide(e, i, kind, t, a, b); break;
+        case IR_DIV:
+        case IR_REM: {
+            u32 mode = (is_signed(t) ? 2u : 0u) | (kind == IR_REM ? 1u : 0u);
+            e->spills[i] = call_routine(e, a, b, &e->divisions, mode);
+            e->vinfo[i] = t;
+            break;
+        }
+        case IR_SHL:
+        case IR_SHR: shift_wide(e, i, kind, t, a, b); break;
+        case IR_NEG:
+        case IR_NEG_WRAP: negate_wide(e, i, kind, t, a); break;
+        case IR_EQ:
+        case IR_NE:
+        case IR_LT:
+        case IR_LE:
+        case IR_GT:
+        case IR_GE: compare_wide(e, i, kind, t, a, b); break;
+        case IR_ADD_OVERFLOWS:
+        case IR_SUB_OVERFLOWS:
+        case IR_MUL_OVERFLOWS: overflows_wide(e, i, kind, t, a, b); break;
+        case IR_CONVERT:
+        case IR_NARROW:
+        case IR_TRUNCATE: convert_to_wide(e, i, kind, t, a); break;
+        default: assert(false && "not a 128-bit instruction");
+    }
+}
+
 static NOINLINE void
 lanes(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b, const Native *n)
 {
     u8 t = e->info[type];
+    if (is_wide(t) && kind >= IR_ADD && kind <= IR_TRUNCATE && kind != IR_AND &&
+        kind != IR_OR && kind != IR_XOR && kind != IR_BIT_NOT) {
+        wide_int(e, i, kind, type, a, b);
+        return;
+    }
     switch (kind) {
         case IR_LOAD:
             memory(e, OP_LDR_Q, 4, V29, e->slot_offsets[a], X8);
@@ -3734,6 +4381,33 @@ lanes(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b, const Native *n)
                 put(e, OP_B);
             }
             return;
+        case IR_IF: {
+            e->open = grow(e->open, &e->open_cap, e->nopen + 1, sizeof *e->open);
+            Open o = { .target = i, .kind = IR_IF, .result = NO_REG };
+            if (e->fused == a) {
+                spill_all(e);
+                add_fixup(e, &o.skip);
+                put(e, OP_B_COND | (u32)(e->fused_cond ^ 1));
+                e->fused = NO_VALUE;
+            } else {
+                u32 r = fetch(e, a, X16);
+                release(e, a);
+                spill_all(e);
+                add_fixup(e, &o.skip);
+                put(e, OP_CBZ | r);
+            }
+            e->open[e->nopen++] = o;
+            return;
+        }
+        case IR_ELSE: {
+            Open *o = &e->open[e->nopen - 1];
+            move_lanes(e, V29, a);
+            add_fixup(e, &o->ends);
+            put(e, OP_B);
+            patch(e, o->skip, here(e));
+            o->skip = 0;
+            return;
+        }
         case IR_EXIT: {
             Open *o = find_open(e, a);
             fetch_lanes(e, b, V29);
@@ -3748,7 +4422,10 @@ lanes(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b, const Native *n)
         }
         case IR_END: {
             Open o = e->open[--e->nopen];
-            assert(o.kind == IR_BLOCK);
+            assert(o.kind == IR_BLOCK || o.kind == IR_IF);
+            if (o.kind == IR_IF) {
+                move_lanes(e, V29, a);
+            }
             patch(e, o.ends, here(e));
             break;
         }
@@ -3773,6 +4450,141 @@ lanes(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b, const Native *n)
     keep_lanes(e, i);
 }
 
+static const u8 routine_saves[] = { 0, 2, 4, 6, 9 };
+
+static void
+save_routine_regs(Emit *e)
+{
+    for (u32 k = 0; k < sizeof routine_saves; k++) {
+        u32 r = routine_saves[k];
+        put(e, OP_STP_X_PRE | 0x7Eu << 15 | (r + 1) << 10 | SP << 5 | r);
+    }
+}
+
+static void
+restore_routine_regs(Emit *e)
+{
+    for (u32 k = sizeof routine_saves; k-- > 0;) {
+        u32 r = routine_saves[k];
+        put(e, OP_LDP_X_POST | 2u << 15 | (r + 1) << 10 | SP << 5 | r);
+    }
+}
+
+static void
+patch_test(Emit *e, u32 at)
+{
+    e->code[at] |= ((here(e) - at) & 0x3FFFu) << 5;
+}
+
+static NOINLINE void
+emit_divmod(Emit *e)
+{
+    save_routine_regs(e);
+    put(e, OP_LDP_X | 1u << 10 | X16 << 5 | 0);
+    put(e, OP_LDP_X | 3u << 10 | X17 << 5 | 2);
+    put(e, OP_ORR | SF | 3u << 16 | 2u << 5 | 9);
+    trap_if_zero(e, 9, SF, TRAP_DIVIDE);
+
+    u32 to_unsigned = here(e);
+    put(e, OP_TBZ | 1u << 19 | X8);
+    put(e, OP_EOR | SF | 3u << 16 | 1u << 5 | 10);
+    put(e, OP_ANDS_IMM | SF | logical_field(1, SF) | X8 << 5 | ZR);
+    put(e, OP_CSEL | SF | 10u << 16 | (u32)COND_NE << 12 | 1u << 5 | 10);
+    shift_imm(e, OP_ASR_IMM, SF, 9, 1, 63);
+    negate_if(e, 0, 1, 9);
+    shift_imm(e, OP_ASR_IMM, SF, 9, 3, 63);
+    negate_if(e, 2, 3, 9);
+    patch_test(e, to_unsigned);
+
+    put(e, OP_ORR | SF | 3u << 16 | 1u << 5 | 9);
+    u32 to_slow = here(e);
+    put(e, OP_CBNZ | SF | 9);
+    put(e, OP_UDIV | SF | 2u << 16 | 0u << 5 | 9);
+    put(e, OP_MSUB | SF | 2u << 16 | 0u << 10 | 9u << 5 | 4);
+    mov(e, SF, 0, 9);
+    mov(e, SF, 5, ZR);
+    u32 to_select = here(e);
+    put(e, OP_B);
+    patch_one(e, to_slow, here(e));
+
+    mov(e, SF, 4, ZR);
+    mov(e, SF, 5, ZR);
+    put(e, OP_MOVZ | 128u << 5 | 9);
+    u32 loop = here(e);
+    put(e, OP_EXTR | 4u << 16 | 63u << 10 | 5u << 5 | 5);
+    put(e, OP_EXTR | 1u << 16 | 63u << 10 | 4u << 5 | 4);
+    put(e, OP_EXTR | 0u << 16 | 63u << 10 | 1u << 5 | 1);
+    lsl_imm(e, 0, 0, 1);
+    put(e, OP_SUBS | SF | 2u << 16 | 4u << 5 | 6);
+    put(e, OP_SBCS | SF | 3u << 16 | 5u << 5 | 7);
+    put(e, OP_CSEL | SF | 4u << 16 | (u32)COND_HS << 12 | 6u << 5 | 4);
+    put(e, OP_CSEL | SF | 5u << 16 | (u32)COND_HS << 12 | 7u << 5 | 5);
+    put(e, OP_CSINC | SF | 0u << 16 | (u32)COND_LO << 12 | 0u << 5 | 0);
+    put(e, OP_SUBS_IMM | SF | 1u << 10 | 9u << 5 | 9);
+    put(e, OP_B_COND | ((loop - here(e)) & 0x7FFFFu) << 5 | COND_NE);
+    patch_one(e, to_select, here(e));
+
+    put(e, OP_ANDS_IMM | SF | logical_field(1, SF) | X8 << 5 | ZR);
+    put(e, OP_CSEL | SF | 0u << 16 | (u32)COND_NE << 12 | 4u << 5 | 0);
+    put(e, OP_CSEL | SF | 1u << 16 | (u32)COND_NE << 12 | 5u << 5 | 1);
+    u32 to_store = here(e);
+    put(e, OP_TBZ | 1u << 19 | X8);
+    shift_imm(e, OP_ASR_IMM, SF, 10, 10, 63);
+    u32 to_negate = here(e);
+    put(e, OP_TBNZ | X8);
+    put(e, OP_BICS | SF | 10u << 16 | 1u << 5 | ZR);
+    trap_if(e, COND_MI, TRAP_OVERFLOW);
+    patch_test(e, to_negate);
+    negate_if(e, 0, 1, 10);
+    patch_test(e, to_store);
+
+    put(e, OP_AND_IMM | SF | logical_field(~3ull, SF) | X8 << 5 | X8);
+    put(e, OP_STP_X | 1u << 10 | X8 << 5 | 0);
+    restore_routine_regs(e);
+    put(e, OP_RET);
+}
+
+static NOINLINE void
+emit_signed_multiply(Emit *e)
+{
+    save_routine_regs(e);
+    put(e, OP_LDP_X | 1u << 10 | X16 << 5 | 0);
+    put(e, OP_LDP_X | 3u << 10 | X17 << 5 | 2);
+    put(e, OP_EOR | SF | 3u << 16 | 1u << 5 | 10);
+    shift_imm(e, OP_ASR_IMM, SF, 10, 10, 63);
+    shift_imm(e, OP_ASR_IMM, SF, 9, 1, 63);
+    negate_if(e, 0, 1, 9);
+    shift_imm(e, OP_ASR_IMM, SF, 9, 3, 63);
+    negate_if(e, 2, 3, 9);
+
+    put(e, OP_SUBS_IMM | SF | 1u << 5 | ZR);
+    put(e, OP_CCMP_IMM | SF | (u32)COND_NE << 12 | 3u << 5 | 4);
+    put(e, OP_CSET | (u32)(COND_NE ^ 1) << 12 | 6);
+    put(e, OP_UMULH | 2u << 16 | 1u << 5 | 4);
+    put(e, OP_UMULH | 3u << 16 | 0u << 5 | 5);
+    put(e, OP_ORR | SF | 5u << 16 | 4u << 5 | 4);
+    put(e, OP_SUBS_IMM | SF | 4u << 5 | ZR);
+    put(e, OP_CSINC | 6u << 16 | (u32)COND_EQ << 12 | 6u << 5 | 6);
+    put(e, OP_MUL | SF | 2u << 16 | 1u << 5 | 4);
+    put(e, OP_MADD | SF | 3u << 16 | 4u << 10 | 0u << 5 | 4);
+    put(e, OP_UMULH | 2u << 16 | 0u << 5 | 5);
+    put(e, OP_ADDS | SF | 4u << 16 | 5u << 5 | 5);
+    put(e, OP_CSINC | 6u << 16 | (u32)COND_LO << 12 | 6u << 5 | 6);
+    put(e, OP_MUL | SF | 2u << 16 | 0u << 5 | 4);
+
+    mov_imm(e, 9, 0x7FFFFFFFFFFFFFFFull, SF);
+    put(e, OP_SUB | SF | 10u << 16 | 9u << 5 | 9);
+    put(e, OP_ORN | SF | 10u << 16 | ZR << 5 | 7);
+    put(e, OP_SUBS | SF | 4u << 16 | 7u << 5 | ZR);
+    put(e, OP_SBCS | SF | 5u << 16 | 9u << 5 | ZR);
+    put(e, OP_CSINC | 6u << 16 | (u32)COND_HS << 12 | 6u << 5 | 6);
+    negate_if(e, 4, 5, 10);
+    put(e, OP_STP_X | 5u << 10 | X8 << 5 | 4);
+    put(e, OP_SUBS_IMM | 6u << 5 | ZR);
+    restore_routine_regs(e);
+    put(e, OP_RET);
+}
+
 static u32
 emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
 {
@@ -3794,6 +4606,8 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
     e->free_float = FLOAT_POOL;
     e->fused = NO_VALUE;
     e->tested = NO_VALUE;
+    e->divisions = 0;
+    e->products = 0;
     memset(e->traps, 0, sizeof e->traps);
     memset(e->holders, 0xFF, sizeof e->holders);
     if (fn->count > e->values_cap) {
@@ -3842,9 +4656,11 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
     }
 
     u32 i = 0;
-    while (i < fn->count && !e->error) {
-        for (; i < fn->count && !e->error; i++) {
-            u32 at = fn->first + i;
+    u32 count = fn->count;
+    u32 first = fn->first;
+    while (i < count && !e->error) {
+        for (; i < count && !e->error; i++) {
+            u32 at = first + i;
             u8 kind = ir->kinds[at];
             u32 type = ir->types[at];
             u32 a = ir->as[at];
@@ -3982,7 +4798,7 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                     } else if (type != TYPE_ID_VOID) {
                         move_into(e, 0, a, is_float(e->info[type]));
                     }
-                    if (i + 1 < fn->count) {
+                    if (i + 1 < count) {
                         add_fixup(e, &e->epilogue);
                         put(e, OP_B);
                     }
@@ -4005,7 +4821,7 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                             break;
                         }
                         i = arm_end(e, i);
-                        if (ir->kinds[fn->first + i] == IR_ELSE) {
+                        if (ir->kinds[first + i] == IR_ELSE) {
                             e->open[e->nopen++] = (Open){ .target = i, .kind = IR_BLOCK };
                         }
                         break;
@@ -4081,8 +4897,7 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                     if (type != TYPE_ID_NONE) {
                         hand_over(e, o, type, b);
                     }
-                    bool falls = i + 1 < fn->count &&
-                                 ir->kinds[fn->first + i + 1] == IR_END &&
+                    bool falls = i + 1 < count && ir->kinds[first + i + 1] == IR_END &&
                                  o == &e->open[e->nopen - 1];
                     if (!falls) {
                         add_fixup(e, &o->ends);
@@ -4101,8 +4916,8 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                 default: assert(false && "unknown IR instruction");
             }
         }
-        if (i < fn->count && !e->error) {
-            u32 at = fn->first + i;
+        if (i < count && !e->error) {
+            u32 at = first + i;
             if (!is_vector(e->info[ir->types[at]])) {
                 e->error = UNSUPPORTED_TYPE;
                 break;
@@ -4121,6 +4936,7 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
     u32 nsaves = callee_words(saves, false, e->saved_int, e->saved_float);
     u32 frame = (16 * nsaves + e->locals + e->spill_max + 15) & ~15u;
     bool record = fn->calls || frame || e->wide_record;
+    assert(frame || !(e->divisions | e->products));
     bool wide = e->context_saved || e->wide_record;
     patch(e, e->epilogue, here(e));
     e->at += callee_words(e->at, true, e->saved_int, e->saved_float);
@@ -4131,6 +4947,14 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
         put(e, wide ? OP_POP_CONTEXT_FRAME : OP_POP_FRAME);
     }
     put(e, OP_RET);
+    if (e->divisions) {
+        patch(e, e->divisions, here(e));
+        emit_divmod(e);
+    }
+    if (e->products) {
+        patch(e, e->products, here(e));
+        emit_signed_multiply(e);
+    }
 
     static_assert(NTRAPS <= 32, "every trap kind needs a bit in `kinds`");
     u32 kinds = 0;

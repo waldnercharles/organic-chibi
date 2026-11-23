@@ -3467,7 +3467,7 @@ note_stack_args(Checker *c, u32 list, u32 nargs, u32 first)
     ArgCursor at = { first, 0, 0 };
     for (u32 i = 0; i < n; i++) {
         u32 type = c->lists[list + 1 + i];
-        bool lanes = is_vector(c, type);
+        bool lanes = is_vector(c, type) || check_is_int128(type);
         u32 regs = is_slice(c, type)          ? 2
                  : is_struct(c, type)         ? check_struct_regs(c, type)
                  : is_float(c, type) || lanes ? 1 | REGS_FLOAT
@@ -3597,7 +3597,7 @@ call_general(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg,
             used[(regs & REGS_FLOAT) != 0] += regs & REGS_COUNT;
         } else {
             code->extra[w++] = operand_ir(c, v);
-            used[is_float(c, type) || is_vector(c, type)]++;
+            used[is_float(c, type) || is_vector(c, type) || check_is_int128(type)]++;
         }
     }
     for (u32 i = n; i < nargs; i++) {

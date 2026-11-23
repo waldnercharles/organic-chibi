@@ -1052,3 +1052,495 @@ const GridFunction VECTOR_GRID_FUNCTIONS[] = {
 };
 
 const size_t NVECTOR_GRID_FUNCTIONS = sizeof VECTOR_GRID_FUNCTIONS / sizeof VECTOR_GRID_FUNCTIONS[0];
+
+const char INT128_PROGRAM[] =
+    "import \"std/bits\"\n"
+    "\n"
+    "struct Seed { tag: u8, value: u128 }\n"
+    "\n"
+    "const MASK: u128 = 0xFFFF_FFFF_FFFF_FFFF\n"
+    "G: Seed = .{ .tag = 7, .value = 0x0123_4567_89AB_CDEF_FEDC_BA98_7654_3210 }\n"
+    "\n"
+    "fn wide(a: int) -> u128 {\n"
+    "    return u128(bitcast(u64, a))\n"
+    "}\n"
+    "\n"
+    "fn fold(x: u128) -> int {\n"
+    "    return bitcast(int, u64(x >> 64)) +% bitcast(int, u64(x & MASK))\n"
+    "}\n"
+    "\n"
+    "fn mul_hi(a: int, b: int) -> int {\n"
+    "    return bitcast(int, u64(wide(a) * wide(b) >> 64))\n"
+    "}\n"
+    "\n"
+    "fn smul(a: int, b: int) -> int {\n"
+    "    return fold(bitcast(u128, i128(a) * i128(b)))\n"
+    "}\n"
+    "\n"
+    "fn scaled(a: int, b: int, n: int) -> int {\n"
+    "    x := i128(a) << n\n"
+    "    return int(x * i128(b) >> 100)\n"
+    "}\n"
+    "\n"
+    "fn quotient(a: int, b: int) -> int {\n"
+    "    return int((i128(a) << 64) / i128(b) >> 32)\n"
+    "}\n"
+    "\n"
+    "fn remainder(a: int, b: int) -> int {\n"
+    "    return int(((i128(a) << 64) | 12345) % i128(b))\n"
+    "}\n"
+    "\n"
+    "fn udiv(a: int, b: int) -> int {\n"
+    "    return fold((wide(a) << 64) / wide(b))\n"
+    "}\n"
+    "\n"
+    "fn shift(a: int, n: int) -> int {\n"
+    "    return fold(wide(a) << n)\n"
+    "}\n"
+    "\n"
+    "fn shift_wide(a: int, n: int) -> int {\n"
+    "    k := i128(n) << 64 >> 64\n"
+    "    return int((i128(a) << 64) >> k >> 64)\n"
+    "}\n"
+    "\n"
+    "fn to_float(a: int) -> int {\n"
+    "    return bitcast(int, f64(i128(a) << 70))\n"
+    "}\n"
+    "\n"
+    "fn to_float32(a: int, n: int) -> int {\n"
+    "    return int(bitcast(u32, f32((wide(a) << n) | 1)))\n"
+    "}\n"
+    "\n"
+    "fn from_float(a: int) -> int {\n"
+    "    x := i128(f64(a) * 1e30)\n"
+    "    return int(x >> 64)\n"
+    "}\n"
+    "\n"
+    "fn from_float_unsigned(a: int) -> int {\n"
+    "    x := u128(f64(a) * 1e30)\n"
+    "    return int(x >> 100)\n"
+    "}\n"
+    "\n"
+    "fn counts(a: int) -> int {\n"
+    "    x := (wide(a) << 64) | 1\n"
+    "    s := i128(a)\n"
+    "    return bits.count_ones(x) + 1000 * bits.leading_zeros(x) + 1000000 * bits.trailing_zeros(x >> 1) + 1000000000 * bits.leading_zeros(s)\n"
+    "}\n"
+    "\n"
+    "fn compare(a: int, b: int) -> int {\n"
+    "    x := i128(a) << 64\n"
+    "    r := 0\n"
+    "    if x < i128(b) {\n"
+    "        r += 1\n"
+    "    }\n"
+    "    if bitcast(u128, x) < wide(b) {\n"
+    "        r += 2\n"
+    "    }\n"
+    "    if x == i128(b) << 64 {\n"
+    "        r += 4\n"
+    "    }\n"
+    "    return r\n"
+    "}\n"
+    "\n"
+    "fn narrow(a: int, b: int) -> int {\n"
+    "    return int(i128(a) * i128(b) >> 1)\n"
+    "}\n"
+    "\n"
+    "fn neg(a: int) -> int {\n"
+    "    x := -(i128(a) << 64)\n"
+    "    return int(x >> 64)\n"
+    "}\n"
+    "\n"
+    "fn uneg(a: int) -> int {\n"
+    "    return int(-wide(a))\n"
+    "}\n"
+    "\n"
+    "fn wrapping(a: int, b: int) -> int {\n"
+    "    x := wide(a) << 64\n"
+    "    return fold(x *% x +% x -% wide(b))\n"
+    "}\n"
+    "\n"
+    "fn select(a: int, b: int) -> int {\n"
+    "    return fold(if a < b then wide(a) << 64 else wide(b))\n"
+    "}\n"
+    "\n"
+    "fn seeded(a: int) -> int {\n"
+    "    return fold(G.value +% wide(a)) +% int(G.tag)\n"
+    "}\n"
+    "\n"
+    "fn to_unsigned(a: int, b: int) -> int {\n"
+    "    x := u128(a) << 3\n"
+    "    y := u128(i32(b)) << 70\n"
+    "    return fold(x | y)\n"
+    "}\n"
+    "\n"
+    "fn loop_sum(a: int) -> int {\n"
+    "    total: u128 = 0\n"
+    "    for i in u128(0)..u128(a) {\n"
+    "        total += (i << 64) | i\n"
+    "    }\n"
+    "    return fold(total)\n"
+    "}\n"
+    "\n"
+    "fn steps(a: int) -> int {\n"
+    "    total: u128 = 0\n"
+    "    for i in u128(0)..u128(a) {\n"
+    "        total += i\n"
+    "    }\n"
+    "    return int(total) + 1000\n"
+    "}\n"
+    "\n"
+    "fn twice(x: u128) -> u128 {\n"
+    "    return x + x\n"
+    "}\n"
+    "\n"
+    "fn call(a: int, n: int) -> int {\n"
+    "    return fold(twice(wide(a) << n))\n"
+    "}\n"
+    "\n"
+    "fn narrow_shift(a: int, b: int) -> int {\n"
+    "    n := (wide(b) << 64) | 3\n"
+    "    return (a << n) + (a >> n)\n"
+    "}\n"
+    "\n"
+    "fn lane_shift(a: int, b: int) -> int {\n"
+    "    v: u32x4 = u32(a)\n"
+    "    n := (wide(b) << 64) | 4\n"
+    "    w := v << n\n"
+    "    return int(w[2])\n"
+    "}\n"
+    "\n"
+    "fn shift_by_call(a: int, b: int) -> int {\n"
+    "    n := wide(b)\n"
+    "    x := a << n\n"
+    "    v: u32x4 = u32(a)\n"
+    "    w := v >> n\n"
+    "    return x + int(w[1])\n"
+    "}\n"
+    "\n"
+    "fn shift_param(a: int, n: u128) -> int {\n"
+    "    return (a << n) - (a >> n)\n"
+    "}\n"
+    "\n"
+    "fn shift_by_param(a: int, b: int) -> int {\n"
+    "    return shift_param(a, wide(b))\n"
+    "}\n"
+    "\n"
+    "fn to_u64(a: int, b: int) -> int {\n"
+    "    return bitcast(int, u64(i128(wide(a)) - i128(b)))\n"
+    "}\n"
+    "\n"
+    "fn to_int(a: int, b: int) -> int {\n"
+    "    return int((wide(a) << 64) | wide(b))\n"
+    "}\n"
+    "\n"
+    "fn mul_cross(a: int, b: int) -> int {\n"
+    "    return fold(wide(a) * ((wide(b) << 64) | 7))\n"
+    "}\n"
+    "\n"
+    "fn mul_both(a: int, b: int) -> int {\n"
+    "    x := (wide(a) << 64) | 7\n"
+    "    y := (wide(b) << 64) | 9\n"
+    "    r := 0\n"
+    "    if bits.mul_overflows(x, y) {\n"
+    "        r = 1\n"
+    "    }\n"
+    "    return r + 10 * fold(x *% y)\n"
+    "}\n"
+    "\n"
+    "fn masks(a: int, b: int) -> int {\n"
+    "    x := i128(a) ^ -1\n"
+    "    return int(x) +% fold(wide(b) ^ 0xFFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF)\n"
+    "}\n"
+    "\n"
+    "fn widen_small(a: int, b: int) -> int {\n"
+    "    x := i128(i32(a)) * 3 + i128(i16(b))\n"
+    "    y := u128(u32(a & 0xFFFF_FFFF))\n"
+    "    return int(x) +% fold(y)\n"
+    "}\n"
+    "\n"
+    "fn smul_both(a: int, b: int) -> int {\n"
+    "    return int((i128(a) << 64) * ((i128(b) << 64) | 1) >> 64)\n"
+    "}\n"
+    "\n"
+    "fn smul_carry(a: int, b: int) -> int {\n"
+    "    return fold(bitcast(u128, i128(wide(a)) * ((i128(1) << 64) | i128(b))))\n"
+    "}\n"
+    "\n"
+    "fn smul_edge(a: int, b: int) -> int {\n"
+    "    x := (i128(a) << 64) | i128(b & 1)\n"
+    "    y := i128(b) << 63\n"
+    "    return int(x * y >> 100)\n"
+    "}\n"
+    "\n"
+    "fn smul_parts(a: int, b: int, c: int) -> int {\n"
+    "    x := bitcast(i128, (wide(a) << 64) | wide(b))\n"
+    "    return fold(bitcast(u128, x * i128(c)))\n"
+    "}\n";
+
+const VectorRun INT128_RUNS[] = {
+    { "mul_hi", { -1, -1 }, -2, 0 },
+    { "mul_hi", { 4294967297, 4294967297 }, 1, 0 },
+    { "mul_hi", { INT64_MIN, 2 }, 1, 0 },
+    { "mul_hi", { 123456789, 987654321 }, 0, 0 },
+    { "smul", { INT64_MIN, INT64_MIN }, 4611686018427387904, 0 },
+    { "smul", { INT64_MIN, -1 }, INT64_MIN, 0 },
+    { "smul", { -3, 5 }, -16, 0 },
+    { "smul", { INT64_MAX, INT64_MAX }, 4611686018427387904, 0 },
+    { "scaled", { 3, 5, 100 }, 15, 0 },
+    { "scaled", { 1, 1, 127 }, -134217728, 0 },
+    { "scaled", { 1, 2, 126 }, 0, TRAP_OVERFLOW },
+    { "scaled", { 1, 1, 128 }, 0, TRAP_SHIFT },
+    { "scaled", { 1, 1, -1 }, 0, TRAP_SHIFT },
+    { "scaled", { 5, -3, 0 }, -1, 0 },
+    { "scaled", { -1, INT64_MIN, 64 }, 0, TRAP_OVERFLOW },
+    { "scaled", { -1, INT64_MAX, 64 }, -134217728, 0 },
+    { "quotient", { 1, 3 }, 1431655765, 0 },
+    { "quotient", { INT64_MIN, -1 }, 0, TRAP_OVERFLOW },
+    { "quotient", { 5, 0 }, 0, TRAP_DIVIDE },
+    { "quotient", { -7, 2 }, -15032385536, 0 },
+    { "quotient", { INT64_MIN, 1 }, 0, TRAP_RANGE },
+    { "quotient", { INT64_MIN, -3000000000 }, 0, TRAP_RANGE },
+    { "remainder", { 1, 7 }, 6, 0 },
+    { "remainder", { -1, 7 }, -5, 0 },
+    { "remainder", { 3, 0 }, 0, TRAP_DIVIDE },
+    { "remainder", { INT64_MIN, -1 }, 0, 0 },
+    { "remainder", { 5, INT64_MIN }, 12345, 0 },
+    { "udiv", { 1, 3 }, 6148914691236517205, 0 },
+    { "udiv", { -1, -1 }, 1, 0 },
+    { "udiv", { 5, 0 }, 0, TRAP_DIVIDE },
+    { "udiv", { INT64_MIN, 2 }, 4611686018427387904, 0 },
+    { "shift", { 1, 127 }, INT64_MIN, 0 },
+    { "shift", { -1, 64 }, -1, 0 },
+    { "shift", { -1, 65 }, -2, 0 },
+    { "shift", { 3, 128 }, 0, TRAP_SHIFT },
+    { "shift", { 3, -1 }, 0, TRAP_SHIFT },
+    { "shift", { 32767, 100 }, 2251731094208512, 0 },
+    { "shift_wide", { 5, 3 }, 0, 0 },
+    { "shift_wide", { -5, 3 }, -1, 0 },
+    { "shift_wide", { INT64_MIN, 127 }, -1, 0 },
+    { "shift_wide", { 1, 128 }, 0, TRAP_SHIFT },
+    { "shift_wide", { 1, -1 }, 0, TRAP_SHIFT },
+    { "shift_wide", { 1, INT64_MIN }, 0, TRAP_SHIFT },
+    { "shift_wide", { 12345, 0 }, 12345, 0 },
+    { "to_float", { 1 }, 4922434392715952128, 0 },
+    { "to_float", { -1 }, -4300937644138823680, 0 },
+    { "to_float", { 3 }, 4929189792157007872, 0 },
+    { "to_float", { 144115188075855873 }, -4044232465378705408, 0 },
+    { "to_float", { INT64_MAX }, -4300937644138823680, 0 },
+    { "to_float32", { 16777217, 76 }, 1904214017, 0 },
+    { "to_float32", { 1, 0 }, 1065353216, 0 },
+    { "to_float32", { -1, 64 }, 2139095040, 0 },
+    { "to_float32", { 3, 128 }, 0, TRAP_SHIFT },
+    { "from_float", { 1 }, 54210108624, 0 },
+    { "from_float", { -1 }, -54210108625, 0 },
+    { "from_float", { 200000000 }, 0, TRAP_RANGE },
+    { "from_float", { 170141183 }, 9223372011892688896, 0 },
+    { "from_float", { -170141184 }, 0, TRAP_RANGE },
+    { "from_float_unsigned", { 1 }, 0, 0 },
+    { "from_float_unsigned", { -1 }, 0, TRAP_RANGE },
+    { "from_float_unsigned", { 100000000 }, 78886090, 0 },
+    { "from_float_unsigned", { 200000000 }, 157772181, 0 },
+    { "from_float_unsigned", { 340282366 }, 268435455, 0 },
+    { "from_float_unsigned", { 340282367 }, 0, TRAP_RANGE },
+    { "from_float_unsigned", { 0 }, 0, 0 },
+    { "counts", { 0 }, 128128127001, 0 },
+    { "counts", { -1 }, 63000065, 0 },
+    { "counts", { 1 }, 127063063002, 0 },
+    { "counts", { INT64_MIN }, 126000002, 0 },
+    { "compare", { 1, 2 }, 0, 0 },
+    { "compare", { -1, 5 }, 1, 0 },
+    { "compare", { 3, 3 }, 4, 0 },
+    { "compare", { 0, -1 }, 2, 0 },
+    { "compare", { -2, -2 }, 5, 0 },
+    { "narrow", { INT64_MAX, 2 }, INT64_MAX, 0 },
+    { "narrow", { INT64_MIN, 2 }, INT64_MIN, 0 },
+    { "narrow", { INT64_MIN, -2 }, 0, TRAP_RANGE },
+    { "narrow", { 3, 5 }, 7, 0 },
+    { "narrow", { -3, 5 }, -8, 0 },
+    { "neg", { 1 }, -1, 0 },
+    { "neg", { INT64_MIN }, 0, TRAP_OVERFLOW },
+    { "neg", { -5 }, 5, 0 },
+    { "neg", { 0 }, 0, 0 },
+    { "uneg", { 0 }, 0, 0 },
+    { "uneg", { 1 }, 0, TRAP_OVERFLOW },
+    { "uneg", { -1 }, 0, TRAP_OVERFLOW },
+    { "wrapping", { 1, 1 }, -1, 0 },
+    { "wrapping", { 0, 1 }, -2, 0 },
+    { "wrapping", { 3, 0 }, 3, 0 },
+    { "wrapping", { -1, -1 }, -1, 0 },
+    { "select", { 1, 2 }, 1, 0 },
+    { "select", { 2, 1 }, 1, 0 },
+    { "select", { -1, 0 }, -1, 0 },
+    { "select", { 5, -7 }, -7, 0 },
+    { "seeded", { 0 }, 6, 0 },
+    { "seeded", { 81985529216486896 }, 81985529216486903, 0 },
+    { "to_unsigned", { 5, 7 }, 488, 0 },
+    { "to_unsigned", { INT64_MAX, 1 }, 59, 0 },
+    { "to_unsigned", { 0, 2147483647 }, 137438953408, 0 },
+    { "to_unsigned", { -1, 0 }, 0, TRAP_RANGE },
+    { "to_unsigned", { 0, -1 }, 0, TRAP_RANGE },
+    { "to_unsigned", { INT64_MIN, 5 }, 0, TRAP_RANGE },
+    { "loop_sum", { 0 }, 0, 0 },
+    { "loop_sum", { 4 }, 12, 0 },
+    { "loop_sum", { -1 }, 0, TRAP_RANGE },
+    { "loop_sum", { 1000 }, 999000, 0 },
+    { "steps", { 0 }, 1000, 0 },
+    { "steps", { 2 }, 1001, 0 },
+    { "steps", { 100 }, 5950, 0 },
+    { "steps", { -1 }, 0, TRAP_RANGE },
+    { "call", { 1, 63 }, 1, 0 },
+    { "call", { -1, 64 }, 0, TRAP_OVERFLOW },
+    { "call", { -1, 63 }, -1, 0 },
+    { "call", { 1, 128 }, 0, TRAP_SHIFT },
+    { "narrow_shift", { 5, 0 }, 40, 0 },
+    { "narrow_shift", { 5, 1 }, 0, TRAP_SHIFT },
+    { "narrow_shift", { -1, 0 }, -9, 0 },
+    { "narrow_shift", { 1, INT64_MIN }, 0, TRAP_SHIFT },
+    { "lane_shift", { 3, 0 }, 48, 0 },
+    { "lane_shift", { 3, 1 }, 0, TRAP_SHIFT },
+    { "lane_shift", { 4294967295, 0 }, 4294967280, 0 },
+    { "lane_shift", { 1, -1 }, 0, TRAP_SHIFT },
+    { "shift_by_call", { 3, 4 }, 48, 0 },
+    { "shift_by_call", { 1000, 3 }, 8125, 0 },
+    { "shift_by_call", { 5, 40 }, 0, TRAP_SHIFT },
+    { "shift_by_call", { 5, 64 }, 0, TRAP_SHIFT },
+    { "shift_by_call", { -1, 2 }, 0, TRAP_RANGE },
+    { "shift_by_call", { 7, -1 }, 0, TRAP_SHIFT },
+    { "shift_by_param", { 3, 4 }, 48, 0 },
+    { "shift_by_param", { 1000, 3 }, 7875, 0 },
+    { "shift_by_param", { -1, 1 }, -1, 0 },
+    { "shift_by_param", { 5, 64 }, 0, TRAP_SHIFT },
+    { "shift_by_param", { 5, -1 }, 0, TRAP_SHIFT },
+    { "to_u64", { -1, 0 }, -1, 0 },
+    { "to_u64", { -1, -1 }, 0, TRAP_RANGE },
+    { "to_u64", { 0, 1 }, 0, TRAP_RANGE },
+    { "to_u64", { INT64_MIN, 0 }, INT64_MIN, 0 },
+    { "to_int", { 0, 5 }, 5, 0 },
+    { "to_int", { 0, -1 }, 0, TRAP_RANGE },
+    { "to_int", { -1, -1 }, 0, TRAP_RANGE },
+    { "to_int", { 1, 0 }, 0, TRAP_RANGE },
+    { "to_int", { 0, INT64_MAX }, INT64_MAX, 0 },
+    { "mul_cross", { 3, 5 }, 36, 0 },
+    { "mul_cross", { 4611686018427387904, 8 }, 0, TRAP_OVERFLOW },
+    { "mul_cross", { -1, 1 }, 0, TRAP_OVERFLOW },
+    { "mul_cross", { -1, 0 }, -1, 0 },
+    { "mul_both", { 1, 1 }, 791, 0 },
+    { "mul_both", { 0, 5 }, 980, 0 },
+    { "mul_both", { 3, 0 }, 900, 0 },
+    { "mul_both", { -1, 0 }, 541, 0 },
+    { "masks", { 5, 7 }, -15, 0 },
+    { "masks", { -1, 0 }, -2, 0 },
+    { "widen_small", { -5, -7 }, 4294967269, 0 },
+    { "widen_small", { 100000, 300 }, 400300, 0 },
+    { "widen_small", { 3000000000, 0 }, 0, TRAP_RANGE },
+    { "smul_both", { 5, 0 }, 5, 0 },
+    { "smul_both", { -5, 0 }, -5, 0 },
+    { "smul_both", { 0, 7 }, 0, 0 },
+    { "smul_both", { 1, 1 }, 0, TRAP_OVERFLOW },
+    { "smul_both", { -1, -1 }, 0, TRAP_OVERFLOW },
+    { "smul_carry", { -1, 2 }, 0, TRAP_OVERFLOW },
+    { "smul_carry", { 3, 2 }, 9, 0 },
+    { "smul_carry", { -1, 0 }, 0, TRAP_OVERFLOW },
+    { "smul_carry", { 2, -3 }, -7, 0 },
+    { "smul_edge", { 1, -1 }, 0, TRAP_OVERFLOW },
+    { "smul_edge", { -1, 1 }, -134217728, 0 },
+    { "smul_edge", { 0, -1 }, -1, 0 },
+    { "smul_edge", { 2, 0 }, 0, 0 },
+    { "smul_parts", { INT64_MAX, -1, 1 }, 9223372036854775806, 0 },
+    { "smul_parts", { INT64_MIN, 1, -1 }, 9223372036854775806, 0 },
+    { "smul_parts", { 4294967296, 1, -2147483648 }, 0, TRAP_OVERFLOW },
+    { "smul_parts", { 4294967296, 0, -2147483648 }, INT64_MIN, 0 },
+    { "smul_parts", { INT64_MIN, 0, 1 }, INT64_MIN, 0 },
+    { "smul_parts", { INT64_MIN, 0, -1 }, 0, TRAP_OVERFLOW },
+};
+
+const size_t NINT128_RUNS = sizeof INT128_RUNS / sizeof INT128_RUNS[0];
+
+const char INT128_RELEASE_FAST[] =
+    "fn wide(a: int) -> u128 {\n"
+    "    return u128(bitcast(u64, a))\n"
+    "}\n"
+    "\n"
+    "fn fold(x: u128) -> int {\n"
+    "    return bitcast(int, u64(x >> 64)) +% bitcast(int, u64(x & 0xFFFF_FFFF_FFFF_FFFF))\n"
+    "}\n"
+    "\n"
+    "fn wrap_in(a: int) -> int {\n"
+    "    x := u128(a)\n"
+    "    return int(x >> 64)\n"
+    "}\n"
+    "\n"
+    "fn wrap_out(a: int, b: int) -> int {\n"
+    "    x := i128(a) * i128(b) * 4\n"
+    "    return int(x >> 2)\n"
+    "}\n"
+    "\n"
+    "fn masked(a: int, n: int) -> int {\n"
+    "    return fold(wide(a) << n)\n"
+    "}\n"
+    "\n"
+    "fn masked_wide(a: int, n: int) -> int {\n"
+    "    return fold(wide(a) << u128(n))\n"
+    "}\n"
+    "\n"
+    "fn byte(a: int) -> int {\n"
+    "    return int(i8(i128(a)))\n"
+    "}\n"
+    "\n"
+    "fn quotient(a: int, b: int) -> int {\n"
+    "    return int(i128(a) / i128(b))\n"
+    "}\n";
+
+const VectorRun INT128_RELEASE_FAST_RUNS[] = {
+    { "wrap_in", { -1 }, -1, 0 },
+    { "wrap_in", { 5 }, 0, 0 },
+    { "wrap_in", { INT64_MIN }, -1, 0 },
+    { "wrap_out", { INT64_MIN, INT64_MIN }, 0, 0 },
+    { "wrap_out", { INT64_MAX, 3 }, 9223372036854775805, 0 },
+    { "wrap_out", { -3, 5 }, -15, 0 },
+    { "masked", { 1, 130 }, 4, 0 },
+    { "masked", { 1, -1 }, INT64_MIN, 0 },
+    { "masked_wide", { 1, 129 }, 2, 0 },
+    { "masked_wide", { 3, -1 }, INT64_MIN, 0 },
+    { "byte", { 300 }, 44, 0 },
+    { "byte", { -129 }, 127, 0 },
+    { "byte", { 200 }, -56, 0 },
+    { "quotient", { 1, 0 }, 0, TRAP_DIVIDE },
+    { "quotient", { INT64_MIN, -1 }, INT64_MIN, 0 },
+    { "quotient", { 7, -2 }, -3, 0 },
+};
+
+const size_t NINT128_RELEASE_FAST_RUNS = sizeof INT128_RELEASE_FAST_RUNS / sizeof INT128_RELEASE_FAST_RUNS[0];
+
+const char INT128_CHAIN[] =
+    "fn chain(a: int) -> int {\n"
+    "    x := u128(a)\n"
+    "    x = x ^ 1 ^ 2 ^ 3 ^ 4 ^ 5 ^ 6 ^ 7 ^ 8\n"
+    "    x = x ^ 9 ^ 10 ^ 11 ^ 12 ^ 13 ^ 14 ^ 15 ^ 16\n"
+    "    x = x ^ 17 ^ 18 ^ 19 ^ 20 ^ 21 ^ 22 ^ 23 ^ 24\n"
+    "    x = x ^ 25 ^ 26 ^ 27 ^ 28 ^ 29 ^ 30 ^ 31 ^ 32\n"
+    "    x = x ^ 33 ^ 34 ^ 35 ^ 36 ^ 37 ^ 38 ^ 39 ^ 40\n"
+    "    return int(x)\n"
+    "}\n";
+
+const char INT128_CHAIN_SHIFTED[] =
+    "fn chain(a: int) -> int {\n"
+    "    x := u128(a | 1)\n"
+    "    x = x ^ 1 ^ 2 ^ 3 ^ 4 ^ 5 ^ 6 ^ 7 ^ 8\n"
+    "    x = x ^ 9 ^ 10 ^ 11 ^ 12 ^ 13 ^ 14 ^ 15 ^ 16\n"
+    "    x = x ^ 17 ^ 18 ^ 19 ^ 20 ^ 21 ^ 22 ^ 23 ^ 24\n"
+    "    x = x ^ 25 ^ 26 ^ 27 ^ 28 ^ 29 ^ 30 ^ 31 ^ 32\n"
+    "    x = x ^ 33 ^ 34 ^ 35 ^ 36 ^ 37 ^ 38 ^ 39 ^ 40\n"
+    "    return int(x)\n"
+    "}\n";
+
+const VectorRun INT128_CHAIN_RUNS[] = {
+    { "chain", { 2 }, 42, 0 },
+    { "chain", { -1 }, 0, TRAP_RANGE },
+};
+
+const VectorRun INT128_CHAIN_SHIFTED_RUNS[] = {
+    { "chain", { 2 }, 43, 0 },
+    { "chain", { -1 }, 0, TRAP_RANGE },
+};

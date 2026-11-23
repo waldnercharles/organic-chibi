@@ -470,10 +470,12 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                     out[0] = out[1] = replicate(OPERAND(a), ty(c, c->types.arg0[type]).bits);
                     break;
                 case IR_SHL:
-                case IR_SHR:
+                case IR_SHR: {
                     WIDE(a, w);
-                    fail = lanewise(c, kind, type, w, w, OPERAND(b), out);
+                    u64 n = check_is_int128(OPERAND_TYPE(b)) && HIGH(b) != 0 ? ~0ull : OPERAND(b);
+                    fail = lanewise(c, kind, type, w, w, n, out);
                     break;
+                }
                 case IR_NEG_WRAP:
                 case IR_BIT_NOT:
                     WIDE(a, w);
@@ -483,6 +485,20 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                     WIDE(a, result);
                     trap = 0;
                     goto done;
+                case IR_IF:
+                    if (!OPERAND(a)) {
+                        u32 to = r->elses[g] != NONE ? r->elses[g] : r->ends[g];
+                        i = to - fn->first + 1;
+                        continue;
+                    }
+                    break;
+                case IR_ELSE:
+                    WIDE(a, w);
+                    vals[r->ends[g] - fn->first] = w[0];
+                    highs[r->ends[g] - fn->first] = w[1];
+                    i = r->ends[g] - fn->first + 1;
+                    continue;
+                case IR_END: WIDE(a, out); break;
                 case IR_EXIT:
                     WIDE(b, w);
                     vals[r->ends[fn->first + a] - fn->first] = w[0];
@@ -825,7 +841,7 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
             }
             case IR_SHL:
             case IR_SHR:
-                if (y >= t.bits) {
+                if (y >= t.bits || (check_is_int128(OPERAND_TYPE(b)) && HIGH(b) != 0)) {
                     fail = TRAP_SHIFT;
                     break;
                 }
