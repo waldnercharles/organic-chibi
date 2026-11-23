@@ -1,6 +1,6 @@
 # The cppgm LowIR spike
 
-The Compiler row of 2026-11-19 in [decisions.md](../../docs/decisions.md) asks for a spike of cppgm's LowIR as the release backend in place of LLVM, once the C backend works. The C backend reached that point at commit 5347399 (step 3j.4). This experiment translates chibi's IR to LowIR through LowIR's C API, checks the result against the IR reference interpreter, and times compile and run speed against the C backend with clang `-O2`. All timings come from the cloud's x86-64 Xeon (Granite Rapids, 4 vCPUs) and are wall time unless marked as CPU time, with cppgm 0.10.2 (ABI version 5) built from source with GCC 13, and clang 18. Hand-off 2 (below) used cppgm's main branch at 0025136 instead, which has the same ABI and fewer bugs.
+The Compiler row of 2026-11-19 in [decisions.md](../../docs/decisions.md) asks for a spike of cppgm's LowIR as the release backend in place of LLVM, once the C backend works. The C backend reached that point at commit 5347399 (step 3j.4). This experiment translates chibi's IR to LowIR through LowIR's C API, checks the result against the IR reference interpreter, and times compile and run speed against the C backend with clang `-O2`. All timings come from the cloud's x86-64 Xeon (Granite Rapids, 4 vCPUs) and are wall time unless marked as CPU time, with cppgm 0.10.2 (ABI version 5) built from source with GCC 13, and clang 18. Hand-off 2 (below) used cppgm's main branch at 0025136 instead, which has the same ABI and fewer bugs. Since 2026-11-23 the spike builds against chibi's fork of cppgm: release 0.10.3 (7bc2ee42) with the patches in `cppgm/`, which fix every cppgm bug the spike found.
 
 ## Result
 
@@ -55,11 +55,13 @@ The translations keep chibi's overflow checks, which cost LowIR more than clang 
 - `main.c`: `chibi-lowir`, the `chibi` driver with one more command. `chibi-lowir lowir -o program [-O0..3] [-c] [--wrap] [--shared] [--ir file.lowir] [--times] [--runtime-suffix name] [--release-fast] file.chibi... [-- linker arguments]` builds a program through LowIR; `--wrap` turns the overflow checks off, `--release-fast` checks the program as `chibi build --release-fast` does, `--times` prints the time of each phase, and `--runtime-suffix _x` names the runtime `chibi_trap_x` and `chibi_context_x`, so that objects can link into a program that has its own runtime, such as the test suite. The other commands are `chibi`'s.
 - `test.c`: the checks below. It includes `test/c_source_test.c` to reuse its programs, its interop functions, its vector programs and its comparison with the reference interpreter.
 - `bench/`: the seven programs that were timed, with `print.c`, which prints their results.
-- `bugs/`: the cppgm bugs: chibi programs that hit them with the LowIR the translator gave cppgm, standalone LowIR repros in `bugs/lowir/`, and draft reports in `bugs/reports.md`.
+- `bugs/`: the cppgm bugs: chibi programs that hit them with the LowIR the translator gave cppgm, standalone LowIR repros in `bugs/lowir/`, and draft reports in `bugs/reports.md`, which won't be filed.
+- `cppgm/`: chibi's fork of cppgm as patches on release 0.10.3, from `git format-patch`. Each fix comes with a fixture in cppgm's PA33 regression lane.
 
 ```bash
-git clone https://github.com/vishvananda/cppgm /tmp/cppgm && git -C /tmp/cppgm checkout 0025136
-make -C /tmp/cppgm/dev lowir-library CXX=g++ CPPGM_HOST_CXX=g++ -j4   # about 1 minute
+git clone https://github.com/vishvananda/cppgm /tmp/cppgm && git -C /tmp/cppgm checkout -b chibi 7bc2ee42
+git -C /tmp/cppgm am "$PWD"/cppgm/*.patch
+make -C /tmp/cppgm/dev lowir-library CXX=g++ CPPGM_HOST_CXX=g++ -j4
 make chibi CPPGM=/tmp/cppgm   # build/lowir-spike/chibi-lowir
 make test CPPGM=/tmp/cppgm    # CHIBI_LOWIR_LEVEL=0..3, CHIBI_DIFFERENTIAL, CHIBI_DIFFERENTIAL_SEED
 ```
@@ -94,24 +96,26 @@ Since step 3t.12, `make translated` writes the compiler as one program, in a chi
 
 | Test | `-O0` | `-O1` to `-O3` |
 |---|---|---|
-| The C backend's grid: 391 functions of two `int`s on 288 argument pairs, against the reference interpreter (229 at hand-off 1, 371 at hand-off 2; steps 3k.23 and 3k.24 add strings and tuples), less the two programs with 128-bit integers, `MUL_HIGH` and `INT128_GRID`, which the test skips | agrees | agrees |
+| The C backend's grid: 399 functions of two `int`s on 288 argument pairs, against the reference interpreter (229 at hand-off 1, 371 at hand-off 2; steps 3k.23 to 3k.25 add strings, tuples and named results), less the two programs with 128-bit integers, `MUL_HIGH` and `INT128_GRID`, which the test skips | agrees | agrees |
 | The C backend's interop test: calls into C, variadic calls, callbacks, exports, `main`, C globals | agrees | agrees |
 | The C backend's array program (step 3k.21): 15 functions of two `int`s on 288 argument pairs, against the reference interpreter; once by hand, 16 calls from C, built with clang and GCC, into its functions that take and give arrays | agrees | agrees |
 | The C backend's vector programs: 185 calls with hand-computed results (168 at hand-off 2), and a grid of 8 functions, one per lane type, on 5,120 argument sets each (main) | agrees | agrees |
 | 15,000 random programs from `test/random` (seeds 1111, 2222, 3333), 4 entry points × 6 calls each | agrees | `-O2`: 4 crashes, 2 wrong results; main: none |
 | 15,000 more (seeds 4444, 5555, 6666) | agrees | `-O2`: 11 crashes, 1 wrong result; main: 7 crashes |
 | 15,000 more at hand-off 2 (seeds 7777, 8888, 9999), main only | not run | `-O2`: 9 crashes, no wrong results |
+| All 45,000 at step 3k.24 through the fork (`cppgm/`) | not run | `-O2`: no crashes; 1 wrong result (bug 5), none since `cppgm/0004` |
 
 Seven planted faults in the vector translation, in lookups, shifts, the 64-bit multiply and 64-bit compares, each made the vector programs fail. The 9 crashes at hand-off 2 are all in functions already in bug 3: 5 in `opt::compact_body`, 3 in `opt::clone_call` and 1 in `opt::sink_values`.
 
 The bugs, in 0.10.2 at `-O1` and up. [bugs/README.md](bugs/README.md) has a standalone LowIR file for each that needs only cppgm's own tools.
 
-1. **A `switch` on an `i1`** with cases 0 and 1 always takes the default, in `lowiropt`. Worked around: the translator switches on the `bool` widened to `i64`. Not fixed on main.
+1. **A `switch` on an `i1`** with cases 0 and 1 always takes the default, in `lowiropt`. Worked around: the translator switches on the `bool` widened to `i64`. Not fixed on main or in 0.10.3. Fixed in the fork (`cppgm/0001`): `range_switch` took the selector's width from its storage, 8 bits for an `i1`, so the bound 2 wrapped to 0.
 2. **A compare of a truncated `and` against zero** tests the whole mask, in instruction selection. `u16(i32(b & 2147483647) & 65535) == 0` compiles to `test $0x7fffffff`, so `b = 65536` gives false. The two wrong results in the first 15,000 random programs, both a lost division-by-zero trap, are this bug. No workaround: the mask is the program's own. Fixed on main.
-3. **Four crashes on a `switch` with a case its selector can't reach**, in the inliner (`opt::clone_call`), jump threading, `opt::compact_body` and `opt::sink_values`. In chibi the inliner crash came from converting a `u8` to an enum whose members are all negative, and the translator now drops enum member ranges the source type can't reach. A `switch` on a narrow value still gets through: 7 of the second 15,000 programs crash this way. Not fixed on main.
+3. **Four crashes on a `switch` with a case its selector can't reach**, in the inliner (`opt::clone_call`), jump threading, `opt::compact_body` and `opt::sink_values`. In chibi the inliner crash came from converting a `u8` to an enum whose members are all negative, and the translator now drops enum member ranges the source type can't reach. A `switch` on a narrow value still gets through: 7 of the second 15,000 programs crash this way. Not fixed on main or in 0.10.3. Fixed in the fork (`cppgm/0002`): all four have one cause, which `lowiropt --verify-passes` found. Switch formation dropped a case whose value the switched root never takes, so its target never counted as an exit of the region, and that target's phis kept naming a block the rewrite made unreachable. Each later pass that read the stale label crashed.
 4. **A crash in `opt::remove_loops`** on a loop that stores a truncated value into a slot, in 4 of the first 15,000 random programs and 4 of the second. Fixed on main.
+5. **A copy of an object value's first bytes copies the whole object**, in `split_aggregate_slots`, so the bytes after them lose what was stored there. Found on 2026-11-23 through the fork, in 1 of the 45,000 random programs: a struct built from part of a by-value argument lost a field's default. 0.10.2, main and 0.10.3 all have it. Fixed in the fork (`cppgm/0004`): when the pass gives an object value a slot of its own, the copies from the value keep their own size.
 
-The second 15,000 also gave 0.10.2 one wrong result, which main doesn't give; it wasn't reduced. [bugs/reports.md](bugs/reports.md) drafts reports for what main still has. Filing them needs the owner's go-ahead.
+The second 15,000 also gave 0.10.2 one wrong result, which main doesn't give; it wasn't reduced. [bugs/reports.md](bugs/reports.md) drafts reports for what main still has. They won't be filed: on 2026-11-23 Charles chose to fix the bugs in a private fork instead.
 
 ## Code speed
 

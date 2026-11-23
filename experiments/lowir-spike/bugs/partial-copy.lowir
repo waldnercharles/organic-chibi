@@ -1,0 +1,298 @@
+target linux 1
+
+declare global @chibi_context : ptr [binding=strong]
+
+declare function @chibi_trap(%arg0 : i32) -> void [unwind=no, return=noreturn, linkage=c, binding=strong, cold=yes]
+
+function @p_h1(%__param0 : ptr, %__param1 : i16, %__param2 : i64, %__param3 : obj<72x8>) -> obj<72x8> [linkage=c, binding=strong] {
+  slot $0 : obj<72x8>
+  slot $1 : obj<72x8>
+
+  block ^0:
+    %t1 = addr $0
+    copyobj 72x8 %__param3, %t1
+    %t2 = addr $0
+    %t3 = addr $1
+    zeroinit 72x8 %t3
+    %t4 = addr $1
+    %t5 = index i8 %t4, 36
+    store i8 4, %t5
+    %t6 = addr $1
+    copyobj 16x8 %t2, %t6
+    %t7 = addr $1
+    %t8 = load obj<72x8> %t7
+    return obj<72x8> %t8
+}
+function @p_e2(%__param0 : ptr, %__param1 : i64, %__param2 : i64, %__param3 : i64, %__param4 : f64) -> i64 [linkage=c, binding=strong] {
+  slot $0 : f32
+  slot $1 : i16
+  slot $2 : i8
+  slot $3 : obj<16x8>
+  slot $4 : obj<16x8>
+  slot $5 : obj<16x8>
+  slot $6 : obj<16x8>
+  slot $7 : obj<32x8>
+  slot $8 : obj<72x8>
+  slot $9 : obj<72x8>
+  slot $10 : obj<72x8>
+  slot $11 : i64
+  slot $12 : i64
+  slot $13 : obj<72x8>
+  slot $14 : i64
+
+  block ^0:
+    %t1 = convert fptrunc f32 f64 %__param4
+    store f32 %t1, $0
+    %t2 = binary and i64 %__param3, 32767
+    %t3 = convert trunc i16 i64 %t2
+    store i16 %t3, $1
+    %t4 = cmp ule f64 %__param4, -129
+    %t5 = cmp uge f64 %__param4, 128
+    %t6 = binary or i64 %t4, %t5
+    branch unlikely %t6, ^1, ^2
+
+  block ^2:
+    %t7 = convert fptosi i8 f64 %__param4
+    store i8 %t7, $2
+    %t8 = load i16 $1
+    %t9 = cmp gt i16 %t8, 32640
+    branch unlikely %t9, ^3, ^4
+
+  block ^4:
+    %t10 = binary add nowrap i16 %t8, 127
+    %t11 = load i8 $2
+    %t12 = binary and i8 %t11, 127
+    %t13 = convert sext i64 i8 %t12
+    %t14 = addr $3
+    store f64 %__param4, %t14
+    %t15 = addr $3
+    %t16 = index i8 %t15, 8
+    store f64 %__param4, %t16
+    %t17 = addr $4
+    zeroinit 16x8 %t17
+    %t18 = load i8 $2
+    %t19 = binary and i8 %t18, 127
+    %t20 = convert sext u32 i8 %t19
+    %t21 = load i8 $2
+    %t22 = addr $5
+    store f64 %__param4, %t22
+    %t23 = addr $5
+    %t24 = index i8 %t23, 8
+    store f64 %__param4, %t24
+    %t25 = addr $6
+    zeroinit 16x8 %t25
+    %t26 = addr $7
+    %t27 = addr $5
+    copyobj 16x8 %t27, %t26
+    %t28 = addr $7
+    %t29 = index i8 %t28, 16
+    %t30 = addr $6
+    copyobj 16x8 %t30, %t29
+    %t31 = addr $8
+    %t32 = addr $3
+    copyobj 16x8 %t32, %t31
+    %t33 = addr $8
+    %t34 = index i8 %t33, 16
+    %t35 = addr $4
+    copyobj 16x8 %t35, %t34
+    %t36 = addr $8
+    %t37 = index i8 %t36, 32
+    store u32 %t20, %t37
+    %t38 = addr $8
+    %t39 = index i8 %t38, 36
+    store i8 %t21, %t39
+    %t40 = addr $8
+    %t41 = index i8 %t40, 40
+    %t42 = addr $7
+    copyobj 32x8 %t42, %t41
+    %t43 = addr $8
+    %t44 = load obj<72x8> %t43
+    %t45 = call obj<72x8> @p_h1(%__param0, %t10, %t13, %t44)
+    %t46 = addr $9
+    copyobj 72x8 %t45, %t46
+    %t47 = addr $10
+    %t48 = addr $9
+    copyobj 72x8 %t48, %t47
+    store i64 0, $11
+    store i64 0, $12
+    jump ^5
+
+  block ^5:
+    %t49 = load i64 $12
+    %t50 = cmp lt i64 %t49, 1
+    branch %t50, ^6, ^7
+
+  block ^6:
+    %t51 = addr $10
+    %t52 = load i64 $12
+    %t53 = cmp uge i64 %t52, 1
+    branch unlikely %t53, ^8, ^9
+
+  block ^9:
+    %t54 = index obj<72x1> %t51, %t52
+    %t55 = addr $13
+    copyobj 72x8 %t54, %t55
+    %t56 = addr $13
+    %t57 = load f64 %t56
+    %t58 = cmp lt f64 %t57, 0
+    branch %t58, ^10, ^11
+
+  block ^10:
+    %t59 = load i64 $11
+    %t60 = binary add i64 %t59, 1
+    store i64 %t60, $11
+    jump ^11
+
+  block ^11:
+    %t61 = addr $13
+    %t62 = load f64 %t61
+    %t63 = cmp gt f64 %t62, 0
+    branch %t63, ^12, ^13
+
+  block ^12:
+    %t64 = load i64 $11
+    %t65 = binary add i64 %t64, 2
+    store i64 %t65, $11
+    jump ^13
+
+  block ^13:
+    %t66 = load i64 $11
+    %t67 = binary mul i64 %t66, 31
+    store i64 %t67, $11
+    %t68 = addr $13
+    %t69 = index i8 %t68, 8
+    %t70 = load f64 %t69
+    %t71 = cmp lt f64 %t70, 0
+    branch %t71, ^14, ^15
+
+  block ^14:
+    %t72 = load i64 $11
+    %t73 = binary add i64 %t72, 1
+    store i64 %t73, $11
+    jump ^15
+
+  block ^15:
+    %t74 = addr $13
+    %t75 = index i8 %t74, 8
+    %t76 = load f64 %t75
+    %t77 = cmp gt f64 %t76, 0
+    branch %t77, ^16, ^17
+
+  block ^16:
+    %t78 = load i64 $11
+    %t79 = binary add i64 %t78, 2
+    store i64 %t79, $11
+    jump ^17
+
+  block ^17:
+    %t80 = load i64 $11
+    %t81 = binary mul i64 %t80, 31
+    store i64 %t81, $11
+    %t82 = addr $13
+    %t83 = index i8 %t82, 16
+    %t84 = load f64 %t83
+    %t85 = cmp lt f64 %t84, 0
+    branch %t85, ^18, ^19
+
+  block ^18:
+    %t86 = load i64 $11
+    %t87 = binary add i64 %t86, 1
+    store i64 %t87, $11
+    jump ^19
+
+  block ^19:
+    %t88 = addr $13
+    %t89 = index i8 %t88, 16
+    %t90 = load f64 %t89
+    %t91 = cmp gt f64 %t90, 0
+    branch %t91, ^20, ^21
+
+  block ^20:
+    %t92 = load i64 $11
+    %t93 = binary add i64 %t92, 2
+    store i64 %t93, $11
+    jump ^21
+
+  block ^21:
+    %t94 = load i64 $11
+    %t95 = binary mul i64 %t94, 31
+    store i64 %t95, $11
+    %t96 = addr $13
+    %t97 = index i8 %t96, 16
+    %t98 = index i8 %t97, 8
+    %t99 = load f64 %t98
+    %t100 = cmp lt f64 %t99, 0
+    branch %t100, ^22, ^23
+
+  block ^22:
+    %t101 = load i64 $11
+    %t102 = binary add i64 %t101, 1
+    store i64 %t102, $11
+    jump ^23
+
+  block ^23:
+    %t103 = addr $13
+    %t104 = index i8 %t103, 16
+    %t105 = index i8 %t104, 8
+    %t106 = load f64 %t105
+    %t107 = cmp gt f64 %t106, 0
+    branch %t107, ^24, ^25
+
+  block ^24:
+    %t108 = load i64 $11
+    %t109 = binary add i64 %t108, 2
+    store i64 %t109, $11
+    jump ^25
+
+  block ^25:
+    %t110 = load i64 $11
+    %t111 = binary mul i64 %t110, 31
+    store i64 %t111, $11
+    %t112 = load i64 $11
+    %t113 = binary mul i64 %t112, 31
+    %t114 = addr $13
+    %t115 = index i8 %t114, 36
+    %t116 = load i8 %t115
+    %t117 = convert sext i64 i8 %t116
+    %t118 = binary add i64 %t113, %t117
+    store i64 %t118, $11
+    jump ^26
+
+  block ^26:
+    %t119 = load i64 $12
+    %t120 = binary add i64 %t119, 1
+    store i64 %t120, $12
+    jump ^5
+
+  block ^7:
+    jump ^27
+
+  block ^27:
+    %t121 = load f32 $0
+    %t122 = convert fpext f64 f32 %t121
+    %t123 = cmp ule f64 %t122, -1
+    %t124 = cmp uge f64 %t122, 65536
+    %t125 = binary or i64 %t123, %t124
+    branch unlikely %t125, ^1, ^28
+
+  block ^28:
+    %t126 = convert fptoui u16 f64 %t122
+    %t127 = convert zext i64 u16 %t126
+    store i64 %t127, $14
+    %t128 = load i64 $11
+    %t129 = load i64 $14
+    %t130 = binary add i64 %t128, %t129
+    return i64 %t130
+
+  block ^3:
+    call void @chibi_trap(1)
+    unreachable
+
+  block ^1:
+    call void @chibi_trap(4)
+    unreachable
+
+  block ^8:
+    call void @chibi_trap(6)
+    unreachable
+}
