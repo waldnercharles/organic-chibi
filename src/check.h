@@ -216,6 +216,8 @@ enum
     X(DIAG_TAG_MISMATCH, "`%t` is not a member of the tag enum `%U`")                               \
     X(DIAG_TAG_MISSING, "the union has no member `%n` of the tag enum `%U`")                        \
     X(DIAG_CODE_OUTSIDE_ENTRY, "only the file you run may contain code")                           \
+    X(DIAG_MAIN_BESIDE_CODE, "the program starts at the code in the file you run, so it can't declare `main`") \
+    X(DIAG_ARGS_NEED_CODE, "`os.args` is set only when the program starts at the code in the file you run") \
     X(DIAG_SHADOW, "`%t` is already a local at %m")                                                 \
     X(DIAG_NOT_VALUE, "expected a value")                                                           \
     X(DIAG_NOT_BOOL, "expected `bool`, found `%T`")                                                 \
@@ -564,6 +566,10 @@ typedef struct
     u32 tuple_count;
     u32 zeroed;
     u32 zeroed_align;
+    u32 *entry_code;
+    u32 nentry_code;
+    u32 entry;
+    u32 args;
 } Checker;
 
 void check_init(Checker *c, const Names *names, const ParsedFile *files, u32 nfiles);

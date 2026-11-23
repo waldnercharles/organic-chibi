@@ -5660,6 +5660,27 @@ struct_field(Checker *c, u32 file, u32 token, Operand o, bool place)
 }
 
 static NOINLINE Operand
+os_args(Checker *c, u32 file, u32 token, bool place)
+{
+    u32 decl = c->args;
+    if (decl == 0) {
+        report(c, file, token, DIAG_ARGS_NEED_CODE, 0, 0);
+        return poison;
+    }
+    if (!in_body(c)) {
+        report(c, file, token, DIAG_NOT_CONSTANT, 0, 0);
+        return poison;
+    }
+
+    u32 type = c->decls.types[decl];
+    u32 at = emit(c, IR_GLOBAL, pointer_type(c, type), c->decls.values[decl], decl);
+    if (place) {
+        return (Operand){ OPERAND_ADDRESS, REF_VALUE | at };
+    }
+    return load_at(c, type, at);
+}
+
+static NOINLINE Operand
 member_access(Checker *c, u32 file, u32 token, Operand o, bool place)
 {
     if (o.type == TYPE_ID_TYPE && c->types.kinds[o.ref] == TYPE_ENUM) {
@@ -5694,6 +5715,8 @@ member_access(Checker *c, u32 file, u32 token, Operand o, bool place)
         } else {
             report(c, file, token, DIAG_NO_MEMBER, c->files[file].tokens.ids[token], t);
         }
+    } else if (o.type == OPERAND_PACKAGE && o.ref == NAME_ARGS) {
+        return os_args(c, file, token, place);
     } else if (o.type == OPERAND_PACKAGE) {
         return (Operand){ OPERAND_BUILTIN, o.ref };
     } else if (o.type != TYPE_ID_NONE) {
@@ -6840,6 +6863,9 @@ static NOINLINE Operand
 named_results(Checker *c, u32 file, u32 token, u32 ret)
 {
     if (!(c->decls.flags[c->body.decl] & DECL_RESULTS)) {
+        if (c->body.decl == c->entry) {
+            return (Operand){ TYPE_ID_I32, exact_int(&c->exacts, 0) };
+        }
         report(c, file, token, DIAG_RETURN_EMPTY, 0, ret);
         return poison;
     }
@@ -8380,14 +8406,12 @@ static const u32 target_names[NTARGETS + 1] = { NAME_LINUX, NAME_ARM64, NAME_X86
 
 enum
 {
-    NPACKAGES = NAME_SIMD + 1 - NAME_BITS,
+    NPACKAGES = NAME_OS + 1 - NAME_BITS,
 };
 
 static const u32 package_members[NPACKAGES + 1] = {
-    NAME_TRAILING_ZEROS,
-    NAME_UNALIGNED_LOAD,
-    NAME_LOOKUP,
-    NAME_ASSERT,
+    NAME_TRAILING_ZEROS, NAME_UNALIGNED_LOAD, NAME_LOOKUP,
+    NAME_ARGS,           NAME_ASSERT,
 };
 
 static u32
@@ -8453,7 +8477,7 @@ package_member(Checker *c, u32 file, u32 node, u32 package)
         }
         return poison;
     }
-    if (f->nodes.kinds[node + 2] != NODE_CALL_ARGS) {
+    if (f->nodes.kinds[node + 2] != NODE_CALL_ARGS && id != NAME_ARGS) {
         report(c, file, token, DIAG_FN_VALUE, 0, 0);
         return poison;
     }
@@ -9377,7 +9401,7 @@ append_code(IrCode *to, const IrCode *from, u32 first, u32 first_extra, u32 firs
     to->nlines += nlines;
 }
 
-static u32
+static ALWAYS_INLINE u32
 finish_ir(Checker *c, u32 decl, u32 nparams)
 {
     Ir *ir = &c->ir;
@@ -9451,20 +9475,22 @@ code_init(IrCode *code)
     };
 }
 
-static void
-check_body(Checker *c, u32 decl)
+typedef struct
 {
-    Decls *d = &c->decls;
-    u32 file = d->files[decl];
-    u32 begin = d->bodies[decl] + 1;
-    u32 end = d->roots[decl];
-    u32 fn = d->types[decl];
-    [[maybe_unused]] u32 base = c->sp;
+    Body body;
+    u32 scope;
+    u32 pairs;
+    u32 unread;
+    u32 unread_done;
+} Outer;
 
-    d->busy[decl] = 1;
+static ALWAYS_INLINE Outer
+open_body(Checker *c, u32 decl, u32 fn)
+{
+    c->decls.busy[decl] = 1;
     c->claims[c->nclaims++] = decl;
 
-    Body outer = c->body;
+    Outer outer = { .body = c->body };
     IrCode *code = c->nbodies == 0 ? &c->ir.code : &c->builders[c->nbodies];
     if (c->nbodies > c->nbuilders) {
         code_init(code);
@@ -9490,16 +9516,51 @@ check_body(Checker *c, u32 decl)
         .addressed = c->naddressed,
         .reachable = true,
     };
-    u32 scope = c->nscope;
-    u32 pairs = c->npairs;
-    u32 unread = 0;
-    u32 unread_done = 0;
+    outer.scope = c->nscope;
+    outer.pairs = c->npairs;
     if (c->nunread > 0) {
         drop_unread(c, c->sp);
-        unread = c->nunread;
-        unread_done = c->unread_done;
-        c->unread_done = unread;
+        outer.unread = c->nunread;
+        outer.unread_done = c->unread_done;
+        c->unread_done = outer.unread;
     }
+    return outer;
+}
+
+static ALWAYS_INLINE void
+close_body(Checker *c, u32 decl, const Outer *outer, u32 param_slots)
+{
+    unbind_to(c, outer->scope);
+    c->nloops = c->body.loops;
+    c->nbreaks = c->body.breaks;
+    c->nfacts = c->body.facts;
+    c->ntests = c->body.tests;
+    c->naddressed = c->body.addressed;
+    free(c->body.narrowed);
+    c->npairs = outer->pairs;
+    c->nunread = outer->unread;
+    c->unread_done = outer->unread_done;
+    c->decls.funcs[decl] = finish_ir(c, decl, param_slots);
+    c->body = outer->body;
+    c->nbodies--;
+
+    c->nclaims--;
+    c->decls.busy[decl] = 0;
+    c->decls.phases[decl] = PHASE_CHECKED;
+}
+
+static void
+check_body(Checker *c, u32 decl)
+{
+    Decls *d = &c->decls;
+    u32 file = d->files[decl];
+    u32 begin = d->bodies[decl] + 1;
+    u32 end = d->roots[decl];
+    u32 fn = d->types[decl];
+    [[maybe_unused]] u32 base = c->sp;
+
+    Outer outer = open_body(c, decl, fn);
+    IrCode *code = c->body.code;
 
     const u32 *tokens = c->files[file].nodes.tokens;
     if (!is_passed(c, c->body.ret)) {
@@ -9558,23 +9619,59 @@ check_body(Checker *c, u32 decl)
         d->flags[decl] |= is_compound(c, c->body.ret) ? DECL_GENERAL_CALL : 0;
     }
 
-    unbind_to(c, scope);
-    c->nloops = c->body.loops;
-    c->nbreaks = c->body.breaks;
-    c->nfacts = c->body.facts;
-    c->ntests = c->body.tests;
-    c->naddressed = c->body.addressed;
-    free(c->body.narrowed);
-    c->npairs = pairs;
-    c->nunread = unread;
-    c->unread_done = unread_done;
-    d->funcs[decl] = finish_ir(c, decl, param_slots);
-    c->body = outer;
-    c->nbodies--;
+    close_body(c, decl, &outer, param_slots);
+}
 
-    c->nclaims--;
-    d->busy[decl] = 0;
-    d->phases[decl] = PHASE_CHECKED;
+static NOINLINE void
+store_args(Checker *c, u32 file, u32 token, u32 argc, u32 argv)
+{
+    u32 decl = c->args;
+    u32 type = c->decls.types[decl];
+    u32 at = emit(c, IR_GLOBAL, pointer_type(c, type), c->decls.values[decl], decl);
+    u32 ptr = operand_ir(c, load_local(c, argv));
+    u32 len = operand_ir(c, convert(c, file, token, load_local(c, argc), TYPE_ID_I64));
+    store_at(c, type, at, make_pair(c, type, ptr, len));
+}
+
+static NOINLINE void
+check_entry(Checker *c)
+{
+    Decls *d = &c->decls;
+    u32 decl = c->entry;
+    u32 file = d->files[decl];
+    const ParsedFile *f = &c->files[file];
+    u32 node = d->roots[decl];
+    u32 token = f->nodes.tokens[node];
+    u32 base = c->sp;
+
+    Outer outer = open_body(c, decl, d->types[decl]);
+    const Member *params = c->members + d->members[decl];
+    u32 argc = add_slot(c, params[0].name, params[0].type, node);
+    u32 argv = add_slot(c, params[1].name, params[1].type, node);
+    if (c->args) {
+        store_args(c, file, token, argc, argv);
+    }
+
+    reserve_stack(c, 1);
+    push(c, token, OPERAND_MARKER + NODE_BLOCK_START, c->nscope);
+    u32 end = 0;
+    for (u32 k = 0; k < c->nentry_code; k++) {
+        u32 s = c->entry_code[k];
+        u32 begin = s ? f->nodes.top_ends[s - 1] : 0;
+        end = f->nodes.top_ends[s];
+        reserve_stack(c, end - begin + 1);
+        walk(c, decl, begin, end);
+        c->sp = base + 1;
+    }
+    c->sp = base;
+
+    u32 last = f->nodes.tokens[end - 1];
+    if (c->body.reachable) {
+        Operand zero = { TYPE_ID_I32, exact_int(&c->exacts, 0) };
+        emit_return(c, file, last, zero, TYPE_ID_I32);
+    }
+    mark_line(c, last);
+    close_body(c, decl, &outer, 2);
 }
 
 static NOINLINE void
@@ -9600,14 +9697,87 @@ declare_import(Checker *c, u32 file, u32 token)
     report(c, file, token, in_std ? DIAG_UNKNOWN_PACKAGE : DIAG_UNSUPPORTED, 0, 0);
 }
 
+static NOINLINE void
+declare_args(Checker *c, u32 file, u32 node)
+{
+    Decls *d = &c->decls;
+    u32 type = slice_type(c, TYPE_ID_CSTRING);
+    assert(d->count < d->cap);
+
+    u32 decl = d->count++;
+    d->names[decl] = NAME_ARGS;
+    d->kinds[decl] = DECL_VAR;
+    d->flags[decl] = DECL_ZEROED;
+    d->files[decl] = file;
+    d->firsts[decl] = node;
+    d->roots[decl] = node;
+    d->types[decl] = type;
+    d->values[decl] = reserve_zeroed(c, file, c->files[file].nodes.tokens[node], type);
+    d->phases[decl] = PHASE_CHECKED;
+    c->args = decl;
+}
+
+static NOINLINE void
+declare_entry(Checker *c, u32 file)
+{
+    Decls *d = &c->decls;
+    const ParsedFile *f = &c->files[file];
+    u32 s = c->entry_code[0];
+    u32 begin = s ? f->nodes.top_ends[s - 1] : 0;
+    u32 root = f->nodes.top_ends[s] - 1;
+    u32 node = f->nodes.tokens[root] < f->nodes.tokens[begin] ? root : begin;
+
+    u32 argv = intern_type(c, TYPE_MANY, TYPE_ID_CSTRING, 0);
+    u32 list = reserve_list(c, 2);
+    c->lists[list + 1] = TYPE_ID_I32;
+    c->lists[list + 2] = argv;
+
+    reserve_members(c, 2);
+    u32 first = c->nmembers;
+    c->members[c->nmembers++] = (Member){ NAME_ARGC, TYPE_ID_I32, node, MEMBER_NONE };
+    c->members[c->nmembers++] = (Member){ NAME_ARGV, argv, node, MEMBER_NONE };
+
+    assert(d->count < d->cap);
+    u32 decl = d->count++;
+    d->names[decl] = NAME_MAIN;
+    d->kinds[decl] = DECL_FN;
+    d->flags[decl] = DECL_EXPORT;
+    d->files[decl] = file;
+    d->firsts[decl] = node;
+    d->roots[decl] = node;
+    d->bodies[decl] = node;
+    d->types[decl] = fn_type(c, list, TYPE_ID_I32);
+    d->members[decl] = first;
+    d->member_counts[decl] = 2;
+    d->phases[decl] = PHASE_RESOLVED;
+    add_callback(c, decl);
+    c->entry = decl;
+
+    u32 declared = c->package_names[NAME_MAIN];
+    if (declared) {
+        u32 at = d->files[declared];
+        report(c, at, c->files[at].nodes.tokens[d->roots[declared]], DIAG_MAIN_BESIDE_CODE, 0, 0);
+    }
+    for (u32 k = 0; k < c->nfiles; k++) {
+        if (c->imports[k * NPACKAGES + NAME_OS - NAME_BITS]) {
+            declare_args(c, file, node);
+            return;
+        }
+    }
+}
+
 static void
 declare(Checker *c)
 {
     Decls *d = &c->decls;
+    u32 entry_file = 0;
     for (u32 f = 0; f < c->nfiles; f++) {
         const ParsedFile *file = &c->files[f];
         const u8 *kinds = file->nodes.kinds;
         const u32 *tokens = file->nodes.tokens;
+        if (file->entry) {
+            entry_file = f;
+        }
 
         u32 first = 0;
         for (u32 s = 0; s < file->top_count; s++) {
@@ -9629,15 +9799,21 @@ declare(Checker *c)
 
             u8 kind = decl_kinds[kinds[root]];
             if (kind == DECL_VAR && file->entry && !external) {
-                report(c, f, tokens[root], DIAG_UNSUPPORTED, 0, 0);
+                if (flags) {
+                    report(c, f, tokens[root], DIAG_UNSUPPORTED, 0, 0);
+                } else {
+                    c->entry_code[c->nentry_code++] = s;
+                }
                 first = end;
                 continue;
             }
             if (kind == DECL_NONE) {
                 if (kinds[root] == NODE_IMPORT_DECL) {
                     declare_import(c, f, tokens[root]);
+                } else if (kinds[root] != NODE_PACKAGE && file->entry) {
+                    c->entry_code[c->nentry_code++] = s;
                 } else if (kinds[root] != NODE_PACKAGE) {
-                    report(c, f, tokens[first], file->entry ? DIAG_UNSUPPORTED : DIAG_CODE_OUTSIDE_ENTRY, 0, 0);
+                    report(c, f, tokens[first], DIAG_CODE_OUTSIDE_ENTRY, 0, 0);
                 }
                 first = end;
                 continue;
@@ -9683,6 +9859,9 @@ declare(Checker *c)
         if (c->imports[i] && decl) {
             report(c, i / NPACKAGES, c->imports[i], DIAG_IMPORT_CLASH, NAME_BITS + i % NPACKAGES, decl);
         }
+    }
+    if (c->nentry_code > 0) {
+        declare_entry(c, entry_file);
     }
 }
 
@@ -9741,6 +9920,7 @@ check_init(Checker *c, const Names *names, const ParsedFile *files, u32 nfiles)
     c->decls.count = 1;
     c->decls.cap = cap;
     c->imports = calloc((size_t)nfiles * NPACKAGES, sizeof *c->imports);
+    c->entry_code = malloc(cap * sizeof *c->entry_code);
 
     c->types.cap = 256;
     c->types.kinds = malloc(c->types.cap * sizeof *c->types.kinds);
@@ -9862,6 +10042,9 @@ check_package(Checker *c)
         nodes += c->files[f].count;
     }
     reserve_code(&c->ir.code, nodes, nodes / 4, nodes / 4, nodes / 4, nodes / 8);
+    if (c->entry) {
+        check_entry(c);
+    }
     for (u32 decl = 1; decl < d->count; decl++) {
         if (d->kinds[decl] == DECL_FN && d->phases[decl] == PHASE_RESOLVED) {
             check_body(c, decl);
@@ -10735,6 +10918,7 @@ check_free(Checker *c)
     exacts_free(&c->exacts);
     free(c->package_names);
     free(c->imports);
+    free(c->entry_code);
     free(c->bound);
     free(c->bindings);
     free(c->scope);

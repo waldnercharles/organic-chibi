@@ -29,7 +29,7 @@ typedef struct
 } Program;
 
 static bool
-check_text(Program *p, const char *text, bool release_fast)
+check_text(Program *p, const char *text, bool release_fast, bool entry)
 {
     *p = (Program){ 0 };
     size_t len = strlen(text);
@@ -50,7 +50,7 @@ check_text(Program *p, const char *text, bool release_fast)
 
     p->file = (ParsedFile){ "a",   src,        tokens,
                             nodes, (u32)count, (u32)parser.top_count,
-                            false };
+                            entry };
     check_init(&p->c, &p->lx.names, &p->file, 1);
     p->c.release_fast = release_fast;
     check_package(&p->c);
@@ -64,7 +64,7 @@ check_text(Program *p, const char *text, bool release_fast)
 static bool
 build(Program *p, const char *text)
 {
-    if (!check_text(p, text, false)) {
+    if (!check_text(p, text, false, false)) {
         return false;
     }
     if (!arm64_compile(&p->n, &p->c, CONVENTION_HOST)) {
@@ -2008,6 +2008,7 @@ TEST_CASE(store_while_loaded)
         "    x = 5\n"
         "    return y * 10 + x\n"
         "}\n",
+        false,
         false
     ));
     IrCode *code = &p.c.ir.code;
@@ -2925,7 +2926,7 @@ TEST_CASE(calls_into_c)
     release_program(&p);
 
     for (size_t k = 0; k < sizeof C_CALL_LIMITS / sizeof C_CALL_LIMITS[0]; k++) {
-        REQUIRE(check_text(&p, C_CALL_LIMITS[k][0], false));
+        REQUIRE(check_text(&p, C_CALL_LIMITS[k][0], false, false));
         REQUIRE(!arm64_compile(&p.n, &p.c, CONVENTION_HOST) && strcmp(p.n.error, C_CALL_LIMITS[k][1]) == 0);
         release_program(&p);
     }
@@ -3293,7 +3294,7 @@ TEST_CASE(stack_arguments)
     }
     release_program(&p);
 
-    REQUIRE(check_text(&p, STACK_ARGUMENTS, false));
+    REQUIRE(check_text(&p, STACK_ARGUMENTS, false, false));
     REQUIRE(arm64_compile(&p.n, &p.c, CONVENTION_APPLE));
     for (int64_t x = 0; x < 20; x++) {
         REQUIRE(chibi_calls_agree(&p, x));
@@ -3439,7 +3440,7 @@ TEST_CASE(variadic_calls)
     }
     release_program(&p);
 
-    REQUIRE(check_text(&p, VARIADIC_CALLS, false));
+    REQUIRE(check_text(&p, VARIADIC_CALLS, false, false));
     REQUIRE(arm64_compile(&p.n, &p.c, CONVENTION_APPLE));
     for (int64_t x = 0; x < 20; x++) {
         REQUIRE(((I1 *)fn(&p, "vprobe"))(CONTEXT, x) == x);
@@ -3840,7 +3841,7 @@ TEST_CASE(callbacks)
     REQUIRE(((GET1 *)fn(&p, "get_tap"))(CONTEXT) == tapped);
     release_program(&p);
 
-    REQUIRE(check_text(&p, CALLBACKS, false));
+    REQUIRE(check_text(&p, CALLBACKS, false, false));
     REQUIRE(arm64_compile(&p.n, &p.c, CONVENTION_APPLE));
     for (int64_t x = 0; x < 20; x++) {
         REQUIRE(sorts(&p, x));
@@ -3871,7 +3872,7 @@ TEST_CASE(callback_stack_limit)
     snprintf(text + at, sizeof text - (size_t)at, ") -> int)\nfn give() {\n    take(many)\n}\n");
 
     Program p;
-    REQUIRE(check_text(&p, text, false));
+    REQUIRE(check_text(&p, text, false, false));
     REQUIRE(!arm64_compile(&p.n, &p.c, CONVENTION_HOST));
     REQUIRE(strcmp(p.n.error, "a callback for C needs over 4064 bytes of stack arguments") == 0);
     release_program(&p);
@@ -4046,6 +4047,48 @@ static const char MANY_POINTERS[] =
     "    }\n"
     "    return i32(n) * 100 + argc\n"
     "}\n";
+
+static const char TOP_LEVEL[] =
+    "import \"std/os\"\n"
+    "\n"
+    "fn length(s: cstring) -> int {\n"
+    "    p: [*]u8 = s\n"
+    "    n := 0\n"
+    "    while p[n] != 0 {\n"
+    "        n += 1\n"
+    "    }\n"
+    "    return n\n"
+    "}\n"
+    "\n"
+    "fn count() -> int {\n"
+    "    return os.args.len\n"
+    "}\n"
+    "\n"
+    "fn skip() {\n"
+    "    os.args = os.args[1..]\n"
+    "}\n"
+    "\n"
+    "fn skipped() -> int {\n"
+    "    skip()\n"
+    "    return count()\n"
+    "}\n"
+    "\n"
+    "fn pick(a: []cstring, n: int) -> int {\n"
+    "    return a.len * 10 + n\n"
+    "}\n"
+    "\n"
+    "total := 0\n"
+    "for a in os.args {\n"
+    "    total += length(a)\n"
+    "}\n"
+    "if total == 0 {\n"
+    "    return\n"
+    "}\n"
+    "both := pick(os.args, skipped())\n"
+    "if count() == 0 {\n"
+    "    return -1\n"
+    "}\n"
+    "return i32(total) * 1000 + i32(both)\n";
 
 static const char *const MANY_GRID_FUNCTIONS[] = {
     "walk_many", "cut_many", "ends_many", "ptr_many", "same_many",
@@ -5159,7 +5202,7 @@ TEST_CASE(release_fast)
 {
     catch_traps();
     Program p;
-    REQUIRE(check_text(&p, RELEASE_FAST_GRID, true));
+    REQUIRE(check_text(&p, RELEASE_FAST_GRID, true, false));
     REQUIRE(arm64_compile(&p.n, &p.c, CONVENTION_HOST));
     for (size_t k = 0; k < sizeof RELEASE_FAST_CASES / sizeof RELEASE_FAST_CASES[0]; k++) {
         CallCase t = RELEASE_FAST_CASES[k];
@@ -5193,7 +5236,7 @@ static bool
 vector_runs_agree(const char *text, const VectorRun *runs, size_t n, bool release_fast)
 {
     Program p;
-    if (!check_text(&p, text, release_fast)) {
+    if (!check_text(&p, text, release_fast, false)) {
         return false;
     }
     if (!arm64_compile(&p.n, &p.c, CONVENTION_HOST)) {
@@ -6106,6 +6149,30 @@ TEST_CASE(named_results)
     return true;
 }
 
+TEST_CASE(top_level_code)
+{
+    Program p;
+    REQUIRE(check_text(&p, TOP_LEVEL, false, true));
+    REQUIRE(arm64_compile(&p.n, &p.c, CONVENTION_HOST));
+    native_set_context(&p.n, DEFAULT_CONTEXT);
+    REQUIRE(p.c.ir.nexports == 1 && p.c.ir.callbacks[0] == p.c.entry);
+    MAIN *entry = (MAIN *)native_export(&p.n, 0);
+    I0 *count = (I0 *)fn(&p, "count");
+
+    char a0[] = "chibi", a1[] = "run", a2[] = "x";
+    char *argv[] = { a0, a1, a2, NULL };
+    REQUIRE(entry(3, argv) == 9032);
+    REQUIRE(count(CONTEXT) == 2);
+    REQUIRE(entry(1, argv) == -1);
+    REQUIRE(count(CONTEXT) == 0);
+    REQUIRE(entry(2, argv + 1) == 4021);
+    REQUIRE(count(CONTEXT) == 1);
+    REQUIRE(entry(0, argv) == 0);
+    REQUIRE(count(CONTEXT) == 0);
+    release_program(&p);
+    return true;
+}
+
 TEST_SUITE(arm64_tests)
 {
     RUN_TEST_CASE(hidden_context);
@@ -6116,6 +6183,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(callback_stack_limit);
     RUN_TEST_CASE(exports);
     RUN_TEST_CASE(many_pointers);
+    RUN_TEST_CASE(top_level_code);
     RUN_TEST_CASE(bit_counts);
     RUN_TEST_CASE(overflow_tests);
     RUN_TEST_CASE(mul_high_tests);

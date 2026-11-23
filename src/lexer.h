@@ -169,6 +169,7 @@ enum
     OTHER(NAME_LE, "le")                                                       \
     OTHER(NAME_GT, "gt")                                                       \
     OTHER(NAME_GE, "ge")                                                       \
+    OTHER(NAME_ARGS, "args")                                                   \
     OTHER(NAME_ASSERT, "assert")                                               \
     OTHER(NAME_TARGET_OS, "target_os")                                         \
     OTHER(NAME_TARGET_ARCH, "target_arch")                                     \
@@ -181,7 +182,11 @@ enum
     OTHER(NAME_X86_64, "x86_64")                                               \
     OTHER(NAME_BITS, "bits")                                                   \
     OTHER(NAME_MEM, "mem")                                                     \
-    OTHER(NAME_SIMD, "simd")
+    OTHER(NAME_SIMD, "simd")                                                   \
+    OTHER(NAME_OS, "os")                                                       \
+    OTHER(NAME_MAIN, "main")                                                   \
+    OTHER(NAME_ARGC, "argc")                                                   \
+    OTHER(NAME_ARGV, "argv")
 // clang-format on
 
 #define CHIBI_BUILTIN_NAME_ID(name, text) name,

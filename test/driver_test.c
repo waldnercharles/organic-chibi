@@ -115,6 +115,36 @@ static const char CODE[] =
     "}\n"
     "_ = g()\n";
 
+static const char TOP_MAIN[] =
+    "import \"std/os\"\n"
+    "extern fn puts(s: cstring) -> i32\n"
+    "\n"
+    "words :=\n"
+    "    0\n"
+    "skip_program()\n"
+    "for a in os.args {\n"
+    "    _ = puts(a)\n"
+    "    words += 1\n"
+    "}\n"
+    "if words == 0 {\n"
+    "    return\n"
+    "}\n"
+    "return i32(words) * scale + last_length()\n";
+
+static const char TOP_LIBRARY[] =
+    "import \"std/os\"\n"
+    "extern fn strlen(s: cstring) -> u64\n"
+    "\n"
+    "scale: i32 = 10\n"
+    "\n"
+    "fn skip_program() {\n"
+    "    os.args = os.args[1..]\n"
+    "}\n"
+    "\n"
+    "fn last_length() -> i32 {\n"
+    "    return i32(strlen(os.args[os.args.len - 1]))\n"
+    "}\n";
+
 static const char ODD_NAME[] = "b \"q\\?\?=.chibi";
 
 static const char FIB[] =
@@ -179,11 +209,19 @@ static const BadFile BAD_FILES[] = {
     { "bad_string.chibi", "fn f() -> int {\n    return \"abc\n}\n", "%s/bad_string.chibi:2:16: unterminated string\n", false },
     { "bad_parse.chibi", "fn f() -> int {\n    return 1 +\n}\n", "%s/bad_parse.chibi:3:1: expected an expression\n", false },
     { "bad_check.chibi", "fn f() -> int {\n    return x\n}\n", "%s/bad_check.chibi:2:12: unknown name `x`\n", false },
-    { "no_main.chibi", "fn main() -> i32 {\n    return 0\n}\n", "chibi: the program has no `export fn main`\n", true },
+    { "no_main.chibi", "fn main() -> i32 {\n    return 0\n}\n", "chibi: the program has no code at the top level of %s/no_main.chibi and no `export fn main`\n", true },
     { "int_main.chibi", "export fn main() -> int {\n    return 1\n}\n", "%s/int_main.chibi:1:11: `export fn main` must return `i32`\n", true },
     { "only_dots.chibi",
       "extern fn tally(..) -> int\nexport fn main() -> i32 {\n    return 0\n}\n",
       "chibi: C11 can't declare an `extern fn` that takes only `..`\n",
+      false },
+    { "main_beside.chibi",
+      "fn main() -> i32 {\n    return 0\n}\nreturn main()\n",
+      "%s/main_beside.chibi:1:4: the program starts at the code in the file you run, so it can't declare `main`\n",
+      false },
+    { "args_no_code.chibi",
+      "import \"std/os\"\nexport fn main() -> i32 {\n    return i32(os.args.len)\n}\n",
+      "%s/args_no_code.chibi:3:19: `os.args` is set only when the program starts at the code in the file you run\n",
       false },
 };
 
@@ -323,7 +361,11 @@ runs_to(char **argv, const char *want, int code, int signal)
               (signal ? WIFSIGNALED(status) && WTERMSIG(status) == signal
                       : WIFEXITED(status) && WEXITSTATUS(status) == code);
     if (!ok) {
-        fprintf(stderr, "driver test: %s %s %s gave status %d and\n%s  want exit %d, signal %d and\n%s", argv[0], argv[1], argv[2], status, out, code, signal, want);
+        fputs("driver test:", stderr);
+        for (u32 i = 0; argv[i]; i++) {
+            fprintf(stderr, " %s", argv[i]);
+        }
+        fprintf(stderr, " gave status %d and\n%s  want exit %d, signal %d and\n%s", status, out, code, signal, want);
     }
     return ok;
 }
@@ -350,6 +392,43 @@ TEST_CASE(builds_programs)
     ok = ok && runs_to((char *[]){ program, "hello", "91", NULL }, "hello\n4660046610375530309\n", 3, 0);
 
     static const char *const files[] = { "a.chibi", ODD_NAME, "it's a program" };
+    remove_files(dir, files, sizeof files / sizeof files[0]);
+    REQUIRE(ok);
+    return true;
+}
+
+TEST_CASE(builds_top_level_code)
+{
+    char dir[] = "/tmp/chibi-d-XXXXXX";
+    REQUIRE(mkdtemp(dir));
+    setenv("CC", CHIBI_TEST_CC, 1);
+
+    char a[64], b[64], program[64];
+    snprintf(a, sizeof a, "%s/top.chibi", dir);
+    snprintf(b, sizeof b, "%s/library.chibi", dir);
+    snprintf(program, sizeof program, "%s/top", dir);
+    bool ok = write_file(dir, "top.chibi", TOP_MAIN) && write_file(dir, "library.chibi", TOP_LIBRARY);
+
+    char line[128];
+    snprintf(line, sizeof line, "#line 4 \"%s\"\nCHIBI_FN int32_t p_main(void *ctx, int32_t s0, uint8_t * s1)\n", a);
+    Drive d = drive((char *[]){ "chibi", "c", a, b, NULL });
+    ok = ok && d.status == 0 && strstr(d.out, line) != NULL;
+    release(&d);
+
+    char assign[64];
+    snprintf(assign, sizeof assign, "%s/assign.chibi", dir);
+    ok = ok && write_file(dir, "assign.chibi", "import \"std/os\"\nos.args[\n    0] = os.args[0]\n");
+    snprintf(line, sizeof line, "#line 2 \"%s\"\nCHIBI_FN int32_t p_main(void *ctx, int32_t s0, uint8_t * s1)\n", assign);
+    d = drive((char *[]){ "chibi", "c", assign, NULL });
+    ok = ok && d.status == 0 && strstr(d.out, line) != NULL;
+    release(&d);
+
+    ok = ok && drives_to((char *[]){ "chibi", "build", "-o", program, a, b, NULL }, 0, "", "");
+    ok = ok && runs_to((char *[]){ program, NULL }, "", 0, 0);
+    ok = ok && runs_to((char *[]){ program, "ab", "cde", NULL }, "ab\ncde\n", 23, 0);
+    ok = ok && runs_to((char *[]){ program, "x", NULL }, "x\n", 11, 0);
+
+    static const char *const files[] = { "top.chibi", "library.chibi", "assign.chibi", "top" };
     remove_files(dir, files, sizeof files / sizeof files[0]);
     REQUIRE(ok);
     return true;
@@ -568,7 +647,7 @@ TEST_CASE(reports_errors)
     ok = ok && write_file(dir, "entry.chibi", ENTRY) && write_file(dir, "code.chibi", CODE);
     snprintf(want, sizeof want, "%s:4:1: only the file you run may contain code\n", code);
     ok = ok && drives_to((char *[]){ "chibi", "build", "-o", never, entry, code, NULL }, 1, "", want);
-    snprintf(want, sizeof want, "%s:4:1: the checker doesn't support this yet\n", code);
+    snprintf(want, sizeof want, "%s:1:11: the program starts at the code in the file you run, so it can't declare `main`\n", entry);
     ok = ok && drives_to((char *[]){ "chibi", "build", "-o", never, code, entry, NULL }, 1, "", want);
 
     for (u32 k = 0; ok && k < sizeof BAD_ARGS / sizeof BAD_ARGS[0]; k++) {
@@ -646,6 +725,7 @@ TEST_SUITE(driver_tests)
 {
 #ifdef CHIBI_TEST_CC
     RUN_TEST_CASE(builds_programs);
+    RUN_TEST_CASE(builds_top_level_code);
     RUN_TEST_CASE(builds_release_fast);
     RUN_TEST_CASE(names_programs);
     RUN_TEST_CASE(builds_for_target);

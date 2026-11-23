@@ -9197,20 +9197,266 @@ TEST_CASE(extern_globals)
 TEST_CASE(entry_file)
 {
     const char *texts[] = {
-        "import \"std/bits\"\nfmt.print(1)\nif ready { go() }\ntotal += "
-        "1\nconst A := 1\nlocal := 2\n",
+        "import \"std/bits\"\nn := bits.count_ones(7)\nif n > 2 { return 1 }\n"
+        "const A := 1\nlocal := A + n\n",
         "struct Player { hp: int }\nfmt.print(2)\nscore := 5\n",
     };
     REQUIRE(checks_to(
         texts,
         2,
         0,
-        "a:2:1: the checker doesn't support this yet\n"
-        "a:3:1: the checker doesn't support this yet\n"
-        "a:4:1: the checker doesn't support this yet\n"
-        "a:6:1: the checker doesn't support this yet\n"
         "b:2:1: only the file you run may contain code\n"
         "const A = 1\nstruct Player { hp: int }\nscore: int = 5\n"
+        "export fn main(argc: i32, argv: [*]cstring) -> i32\n"
+    ));
+    return true;
+}
+
+TEST_CASE(top_level_code)
+{
+    const char *texts[] = {
+        "import \"std/os\"\n"
+        "extern fn atoi(s: cstring) -> i32\n"
+        "total := 0\n"
+        "for a in os.args[1..] {\n"
+        "    total += atoi(a)\n"
+        "}\n"
+        "if total > 100 {\n"
+        "    return\n"
+        "}\n"
+        "const LIMIT := 7\n"
+        "if total > 50 {\n"
+        "    return i32(total) + first(LIMIT)\n"
+        "}\n"
+        "total = 0\n",
+        "import \"std/os\"\n"
+        "fn first(k: int) -> i32 {\n"
+        "    os.args = os.args[1..]\n"
+        "    return i32(os.args.len + k)\n"
+        "}\n",
+    };
+    REQUIRE(compiles_to(
+        texts,
+        2,
+        0,
+        true,
+        "fn first(k: int) -> i32\n"
+        "    slots: k: int\n"
+        "    %0 = global *[]cstring args\n"
+        "    %1 = global *[]cstring args\n"
+        "    %2 = load-at []cstring %1\n"
+        "    %3 = second int\n"
+        "    %4 = slice-from []cstring %2, %3, 1\n"
+        "    %5 = second int\n"
+        "    store-pair []cstring %0, %4, %5\n"
+        "    %7 = global *[]cstring args\n"
+        "    %8 = load-at []cstring %7\n"
+        "    %9 = second int\n"
+        "    drop %8\n"
+        "    %11 = load int k\n"
+        "    %12 = add int %9, %11\n"
+        "    %13 = narrow i32 %12\n"
+        "    ret i32 %13\n"
+        "export fn main(argc: i32, argv: [*]cstring) -> i32\n"
+        "    slots: argc: i32, argv: [*]cstring, total: int, $3: []cstring, $4: int, $5: int, a: cstring\n"
+        "    %0 = global *[]cstring args\n"
+        "    %1 = load [*]cstring argv\n"
+        "    %2 = load i32 argc\n"
+        "    %3 = convert int %2\n"
+        "    store-pair []cstring %0, %1, %3\n"
+        "    store int total, 0\n"
+        "    %6 = global *[]cstring args\n"
+        "    %7 = load-at []cstring %6\n"
+        "    %8 = second int\n"
+        "    %9 = slice-from []cstring %7, %8, 1\n"
+        "    %10 = second int\n"
+        "    store []cstring $3, %9\n"
+        "    store int $4, %10\n"
+        "    store int $5, 0\n"
+        "    loop @14\n"
+        "        %15 = load int $5\n"
+        "        %16 = load int $4\n"
+        "        %17 = lt int %15, %16\n"
+        "        if @18 %17\n"
+        "            block @19\n"
+        "                %20 = load []cstring $3\n"
+        "                %21 = load int $5\n"
+        "                %22 = index *cstring %20, %21\n"
+        "                %23 = load-at cstring %22\n"
+        "                store cstring a, %23\n"
+        "                %25 = load cstring a\n"
+        "                %26 = call-c i32 atoi(%25)\n"
+        "                %27 = load int total\n"
+        "                %28 = convert int %26\n"
+        "                %29 = add int %27, %28\n"
+        "                store int total, %29\n"
+        "            end\n"
+        "            %32 = load int $5\n"
+        "            %33 = add-wrap int %32, 1\n"
+        "            store int $5, %33\n"
+        "            repeat @14\n"
+        "        end\n"
+        "    end\n"
+        "    %38 = load int total\n"
+        "    %39 = gt int %38, 100\n"
+        "    if @40 %39\n"
+        "        ret i32 0\n"
+        "    end\n"
+        "    %43 = load int total\n"
+        "    %44 = gt int %43, 50\n"
+        "    if @45 %44\n"
+        "        %46 = load int total\n"
+        "        %47 = narrow i32 %46\n"
+        "        %48 = call i32 first(7)\n"
+        "        %49 = add i32 %47, %48\n"
+        "        ret i32 %49\n"
+        "    end\n"
+        "    store int total, 0\n"
+        "    ret i32 0\n"
+    ));
+
+    const char *plain = "x := 1\nx += 2\n";
+    REQUIRE(compiles_to(
+        &plain,
+        1,
+        0,
+        true,
+        "export fn main(argc: i32, argv: [*]cstring) -> i32\n"
+        "    slots: argc: i32, argv: [*]cstring, x: int\n"
+        "    store int x, 1\n"
+        "    %1 = load int x\n"
+        "    %2 = add int %1, 2\n"
+        "    store int x, %2\n"
+        "    ret i32 0\n"
+    ));
+
+    const char *library[] = {
+        "n := count()\n",
+        "import \"std/os\"\nfn count() -> int => os.args.len\n",
+    };
+    REQUIRE(compiles_to(
+        library,
+        2,
+        0,
+        true,
+        "fn count() -> int\n"
+        "    slots:\n"
+        "    %0 = global *[]cstring args\n"
+        "    %1 = load-at []cstring %0\n"
+        "    %2 = second int\n"
+        "    drop %1\n"
+        "    ret int %2\n"
+        "export fn main(argc: i32, argv: [*]cstring) -> i32\n"
+        "    slots: argc: i32, argv: [*]cstring, n: int\n"
+        "    %0 = global *[]cstring args\n"
+        "    %1 = load [*]cstring argv\n"
+        "    %2 = load i32 argc\n"
+        "    %3 = convert int %2\n"
+        "    store-pair []cstring %0, %1, %3\n"
+        "    %5 = call int count()\n"
+        "    store int n, %5\n"
+        "    ret i32 0\n"
+    ));
+
+    const char *order[] = {
+        "import \"std/os\"\nn := pick(os.args, skip())\n",
+        "import \"std/os\"\n"
+        "fn skip() -> int {\n"
+        "    os.args = os.args[1..]\n"
+        "    return 0\n"
+        "}\n"
+        "fn pick(a: []cstring, n: int) -> int => a.len + n\n",
+    };
+    REQUIRE(compiles_to(
+        order,
+        2,
+        0,
+        true,
+        "fn skip() -> int\n"
+        "    slots:\n"
+        "    %0 = global *[]cstring args\n"
+        "    %1 = global *[]cstring args\n"
+        "    %2 = load-at []cstring %1\n"
+        "    %3 = second int\n"
+        "    %4 = slice-from []cstring %2, %3, 1\n"
+        "    %5 = second int\n"
+        "    store-pair []cstring %0, %4, %5\n"
+        "    ret int 0\n"
+        "fn pick(a: []cstring, n: int) -> int\n"
+        "    slots: a: []cstring, a.len: int, n: int\n"
+        "    %0 = load int a.len\n"
+        "    %1 = load int n\n"
+        "    %2 = add int %0, %1\n"
+        "    ret int %2\n"
+        "export fn main(argc: i32, argv: [*]cstring) -> i32\n"
+        "    slots: argc: i32, argv: [*]cstring, n: int\n"
+        "    %0 = global *[]cstring args\n"
+        "    %1 = load [*]cstring argv\n"
+        "    %2 = load i32 argc\n"
+        "    %3 = convert int %2\n"
+        "    store-pair []cstring %0, %1, %3\n"
+        "    %5 = global *[]cstring args\n"
+        "    %6 = load-at []cstring %5\n"
+        "    %7 = second int\n"
+        "    %8 = call int skip()\n"
+        "    %9 = call int pick(%6, %7, %8)\n"
+        "    store int n, %9\n"
+        "    ret i32 0\n"
+    ));
+    return true;
+}
+
+TEST_CASE(top_level_errors)
+{
+    const char *texts[] = {
+        "import \"std/os\"\n"
+        "const K := os.args.len\n"
+        "pub shared := 2\n"
+        "fn uses() -> int => local\n"
+        "local := 1\n"
+        "_ = os\n"
+        "_ = os.nope\n"
+        "_ = args\n"
+        "if local > 0 {\n"
+        "    return local\n"
+        "}\n"
+        "return \"no\"\n",
+        "import \"std/os\"\n"
+        "export fn main() -> i32 {\n"
+        "    return 0\n"
+        "}\n",
+    };
+    REQUIRE(checks_to(
+        texts,
+        2,
+        0,
+        "a:2:15: expected a constant\n"
+        "a:3:5: the checker doesn't support this yet\n"
+        "a:4:21: unknown name `local`\n"
+        "a:6:5: `os` is a package, so it can't be used here\n"
+        "a:7:8: the package `os` has no member `nope`\n"
+        "a:8:5: `args` is in the package `os`; write `os.args` after `import \"std/os\"`\n"
+        "a:10:12: `int` and `i32` don't mix without a conversion\n"
+        "a:12:8: `untyped string` and `i32` don't mix without a conversion\n"
+        "b:2:11: the program starts at the code in the file you run, so it can't declare `main`\n"
+        "const K = ?\n"
+        "fn uses() -> int\n"
+        "export fn main() -> i32\n"
+        "export fn main(argc: i32, argv: [*]cstring) -> i32\n"
+        "args: []cstring\n"
+    ));
+
+    const char *library[] = {
+        "fn f() {}\n",
+        "import \"std/os\"\nfn count() -> int => os.args.len\n",
+    };
+    REQUIRE(checks_to(
+        library,
+        2,
+        0,
+        "b:2:25: `os.args` is set only when the program starts at the code in the file you run\n"
+        "fn f() -> void\n"
+        "fn count() -> int\n"
     ));
     return true;
 }
@@ -10337,6 +10583,8 @@ TEST_SUITE(check_tests)
     RUN_TEST_CASE(globals_across_files);
     RUN_TEST_CASE(extern_globals);
     RUN_TEST_CASE(entry_file);
+    RUN_TEST_CASE(top_level_code);
+    RUN_TEST_CASE(top_level_errors);
     RUN_TEST_CASE(imports_per_file);
     RUN_TEST_CASE(depth_limit);
     RUN_TEST_CASE(doubling_structs);

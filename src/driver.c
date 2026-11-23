@@ -247,7 +247,12 @@ has_main(FILE *err, const Program *p)
         print_error_at(err, f->path, f->src, pos, "`export fn main` must return `i32`");
         return false;
     }
-    fputs("chibi: the program has no `export fn main`\n", err);
+    fprintf(
+        err,
+        "chibi: the program has no code at the top level of %s "
+        "and no `export fn main`\n",
+        p->files[0].path
+    );
     return false;
 }
 
