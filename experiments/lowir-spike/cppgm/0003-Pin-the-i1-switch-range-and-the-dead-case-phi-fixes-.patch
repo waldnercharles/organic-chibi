@@ -1,7 +1,7 @@
 From 734ce535a963cfd0ac60c12726be2d263f761b86 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Mon, 23 Nov 2026 16:29:51 +0000
-Subject: [PATCH 3/4] Pin the i1 switch range and the dead-case phi fixes in
+Subject: [PATCH 3/5] Pin the i1 switch range and the dead-case phi fixes in
  PA33's regression lane
 
 Five fixtures reduced from LowIR that chibi generates: a switch on an i1

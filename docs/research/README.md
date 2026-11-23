@@ -20,6 +20,7 @@ Written 2026-11-09 from primary sources: official docs, the projects' own code a
 | [checker-and-ir.md](checker-and-ir.md) | The checker and IR design sheet: what the checker reads, names, checking on many threads, constants and literals, the typed IR, and guaranteed tail calls and computed `goto` for fast interpreters, with measurements on the owner's M4 Pro |
 | [top-level-code.md](top-level-code.md) | The details that the 2026-11-12 decision on top-level code left open: which file is the entry, top-level code beside a `fn main`, `name := value` among the entry file's code, `return`, `defer` and `try` there, and library globals that run code at startup |
 | [optimizing-backends.md](optimizing-backends.md) | Backends other than LLVM for release builds: QBE, libgccjit, Cranelift, TPDE, MimIR, cppgm's LowIR, MYC, MIR, Tilde, libFirm and B3, with code size, compile speed, code speed against clang `-O2`, targets, licenses and what chibi could borrow (2026-11-19) |
+| [optimizer-from-lowir.md](optimizer-from-lowir.md) | What an optimizer of chibi's own can take from cppgm's LowIR: what each LowIR pass is worth on the compiler's own code, where LowIR still trails clang there, and the bugs' lessons (2026-11-23) |
 | [simd-and-builtins.md](simd-and-builtins.md) | What self-hosting needs for SIMD and overflow: the compiler's own uses, a vector type, lane masks and table lookups, and how other languages return an overflow check's two results (2026-11-21) |
 | [translator.md](translator.md) | The C-to-chibi translator: how it reads clang's AST, the rules it follows, and what it doesn't translate yet |
 
@@ -152,7 +153,7 @@ Updated 2026-11-23. The owner's answers are in [../decisions.md](../decisions.md
    - **Targets:** whether WebAssembly is a target, and whether the game must run on platforms that forbid writable code.
    - **The metric:** whether it counts unique physical lines, whether the build is cold or warm, whether it includes linking or reaching runnable code, and on which machine.
    - Bitfields (sheet 4f), which the compiler's C doesn't use.
-   - **After the LowIR spike** (the Compiler row of 2026-11-19; [optimizing-backends.md](optimizing-backends.md) section 8, questions 2 and 3): whether chibi may depend on an LLM-written backend, and how close to clang is good enough for chibi's own optimizing backend.
+   - **After the LowIR spike** (the Compiler row of 2026-11-19; [optimizing-backends.md](optimizing-backends.md) section 8, questions 2 and 3): whether chibi may depend on an LLM-written backend, and how close to clang is good enough for chibi's own optimizing backend. [optimizer-from-lowir.md](optimizer-from-lowir.md) section 8 adds numbers from the compiler's own code and where chibi's optimizer would start.
    - Tail-call rules and computed `goto` (checker-and-ir.md section 9, questions 8 and 9), the rest of rank 9 (no failed check becomes an assumption of the optimizer), and open enums (rank 15).
    - Top-level code in the entry file ([top-level-code.md](top-level-code.md) 1–4) and how code reads its command line, built before the switch with the recommendations while the owner reviews them (the Compiler row of 2026-11-23).
    - The GPU recommendations that [shader-languages.md](shader-languages.md) section 1.1 marks open.

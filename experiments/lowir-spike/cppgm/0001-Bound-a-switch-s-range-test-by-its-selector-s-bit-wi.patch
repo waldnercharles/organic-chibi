@@ -1,7 +1,7 @@
 From 4053f034117ae73c13a70a1fd31a72b103787e8b Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Mon, 23 Nov 2026 16:24:26 +0000
-Subject: [PATCH 1/4] Bound a switch's range test by its selector's bit width,
+Subject: [PATCH 1/5] Bound a switch's range test by its selector's bit width,
  not its storage
 
 A switch on an i1 whose cases 0 and 1 share a block became cmp ult i1 x, 2,

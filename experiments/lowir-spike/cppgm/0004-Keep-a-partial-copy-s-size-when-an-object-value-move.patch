@@ -1,7 +1,7 @@
 From 35e0e24195a3626a7668519c2a85666ef09c12ff Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Mon, 23 Nov 2026 16:52:32 +0000
-Subject: [PATCH 4/4] Keep a partial copy's size when an object value moves
+Subject: [PATCH 4/5] Keep a partial copy's size when an object value moves
  through a slot
 
 objects_through_slots gives a loaded object value a slot of its own and
