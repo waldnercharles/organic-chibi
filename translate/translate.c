@@ -3384,15 +3384,13 @@ call(Tr *t, u32 e)
         free(ty);
         return value(ctype(t, e), 0, P_POSTFIX);
     }
-    const char *overflow = overflow_name(t, e);
-    if (overflow != NULL) {
-        use_package(t, PACKAGE_BITS);
-        putf(&t->out, "bits.%s_overflows(", overflow);
-        ex(t, first_arg, 0, 0);
-        put(&t->out, ", ");
-        ex(t, t->a.ends[first_arg], 0, 0);
-        put(&t->out, ")");
-        return (Val){ t->type_bool, 0, P_POSTFIX, false, false, true };
+    if (overflow_name(t, e) != NULL) {
+        if (t->subst[e] == 0) {
+            die(t, e, "an overflow builtin that can't be hoisted");
+        }
+        Temp temp = t->temps[t->subst[e] - 1];
+        put(&t->out, text(t, temp.name));
+        return temp.val;
     }
     if (strcmp(w, "__builtin_isfinite") == 0 || strcmp(w, "__builtin_signbit") == 0) {
         die(t, e, "`isfinite` or `signbit` used other than as a condition");
@@ -5089,57 +5087,9 @@ refuse_branch(const Tr *t, u32 e, u32 root, const char *what)
     }
 }
 
-static bool
-mentions(const Tr *t, u32 root, u32 decl)
-{
-    for (u32 i = root; i < t->a.ends[root]; i++) {
-        if (t->kinds[i] == K_DECL_REF && decl_of(t, i) == decl) {
-            return true;
-        }
-    }
-    return false;
-}
-
-static bool
-mentions_outside(const Tr *t, u32 root, u32 inner, u32 decl)
-{
-    for (u32 i = root; i < t->a.ends[root]; i++) {
-        if (i == inner) {
-            i = t->a.ends[inner] - 1;
-        } else if (t->kinds[i] == K_DECL_REF && decl_of(t, i) == decl) {
-            return true;
-        }
-    }
-    return false;
-}
-
 static void
-put_overflow_store(Tr *t, u32 e)
+put_overflow(Tr *t, u32 e, u32 flag)
 {
-    u32 a = t->a.ends[e + 1];
-    u32 b = t->a.ends[a];
-    u32 r = strip(t, t->a.ends[b]);
-    const char *name = overflow_name(t, e);
-    ex(t, r + 1, 0, 0);
-    put(&t->out, " = ");
-    operand(t, a, P_ADD);
-    put(&t->out, name[0] == 'a' ? " +% " : name[0] == 's' ? " -% " : " *% ");
-    operand(t, b, name[0] == 'm' ? P_MUL + 1 : P_ADD + 1);
-}
-
-static void
-hoist_overflow(Tr *t, u32 e, u32 root, bool after)
-{
-    for (u32 at = e; at != root;) {
-        u32 p = t->parents[at];
-        if ((t->kinds[p] == K_BINARY &&
-             (op(t, p) == OP_LAND || op(t, p) == OP_LOR) && at != p + 1) ||
-            t->kinds[p] == K_CONDITIONAL || t->kinds[p] == K_TYPE_TRAIT) {
-            die(t, e, "an overflow builtin where it may not run");
-        }
-        at = p;
-    }
-
     u32 a = t->a.ends[e + 1];
     u32 b = t->a.ends[a];
     u32 r = strip(t, t->a.ends[b]);
@@ -5147,25 +5097,37 @@ hoist_overflow(Tr *t, u32 e, u32 root, bool after)
         has_effects(t, b) || has_effects(t, r + 1)) {
         die(t, e, "an overflow builtin whose operands have side effects");
     }
-    u32 target = strip(t, r + 1);
-    u32 d = decl_of(t, target);
-    bool own = mentions(t, a, d) || mentions(t, b, d);
-    if (!private_local(t, target) ||
-        (own && (!after || mentions_outside(t, root, e, d)))) {
-        die(t, e, "an overflow builtin whose result may be one of its operands");
+    if (!private_local(t, r + 1)) {
+        die(t, e, "an overflow builtin whose result isn't a private local");
     }
     u32 type = ctype(t, r + 1);
     if (ctype(t, a) != type || ctype(t, b) != type) {
         die(t, e, "an overflow builtin whose operands and result differ in type");
     }
 
-    if (own) {
-        t->posts = grow(t->posts, &t->posts_cap, t->nposts + 1, sizeof *t->posts);
-        t->posts[t->nposts++] = e;
-        return;
-    }
-    put_overflow_store(t, e);
+    use_package(t, PACKAGE_BITS);
+    put_name(t, decl_of(t, strip(t, r + 1)));
+    putf(&t->out, ", %s = bits.%s_overflow(", text(t, flag), overflow_name(t, e));
+    ex(t, a, 0, 0);
+    put(&t->out, ", ");
+    ex(t, b, 0, 0);
+    put(&t->out, ")");
+}
+
+static void
+hoist_overflow(Tr *t, u32 e, u32 root)
+{
+    refuse_branch(t, e, root, "an overflow builtin");
+    u32 name = declare_temp(t, "overflowed", "");
+    putf(&t->out, "%s: bool = undefined", text(t, name));
     line(t);
+    put_overflow(t, e, name);
+    line(t);
+
+    Val flag = { t->type_bool, 0, P_POSTFIX, false, false, true };
+    t->temps = grow(t->temps, &t->temps_cap, t->ntemps + 1, sizeof *t->temps);
+    t->temps[t->ntemps++] = (Temp){ name, flag };
+    t->subst[e] = t->ntemps;
 }
 
 static void
@@ -5204,7 +5166,7 @@ hoist_increments(Tr *t, u32 root, bool after, bool used)
     u32 lists = 0;
     for (u32 i = root; i < t->a.ends[root]; i++) {
         if (overflow_name(t, i) != NULL) {
-            hoist_overflow(t, i, root, after);
+            hoist_overflow(t, i, root);
             continue;
         }
         if (t->kinds[i] == K_VA_ARG) {
@@ -5254,9 +5216,7 @@ finish_posts(Tr *t, u32 posts)
 {
     for (u32 k = posts; k < t->nposts; k++) {
         line(t);
-        if (overflow_name(t, t->posts[k]) != NULL) {
-            put_overflow_store(t, t->posts[k]);
-        } else if (t->kinds[t->posts[k]] == K_VA_ARG) {
+        if (t->kinds[t->posts[k]] == K_VA_ARG) {
             advance_list(t, t->posts[k]);
         } else {
             increment(t, t->posts[k]);
@@ -5341,6 +5301,13 @@ var_decl(Tr *t, u32 v)
         branch_assign(t, v, child(t, x, 1));
         put(&t->out, " else");
         branch_assign(t, v, child(t, x, 2));
+        return;
+    }
+    if (x != 0 && overflow_name(t, x) != NULL) {
+        assert(is_kind(t, ctype(t, v), CT_BOOL));
+        put_var_decl(t, v, 0);
+        line(t);
+        put_overflow(t, x, t->names[v]);
         return;
     }
     u32 posts = init != 0 ? hoist_increments(t, init, true, true) : t->nposts;
@@ -5857,7 +5824,8 @@ for_stmt(Tr *t, u32 s)
     u32 inc = child(t, s, 3);
     u32 body = child(t, s, 4);
     if (t->kinds[c] != K_NONE && needs_hoist(t, c)) {
-        die(t, c, "`++`, `--` or `va_arg` used as a value in a `for` condition");
+        die(t, c, "`++`, `--`, `va_arg` or an overflow builtin used as a value in a `for` condition"
+        );
     }
     bool scoped = t->kinds[init] == K_DECL_STMT;
     u32 mark = t->nscope;

@@ -292,7 +292,8 @@ static const char INT128_FORMS[] = "import \"std/bits\"\n"
                                    "}\n"
                                    "\n"
                                    "fn product_overflows(a: i128, b: i128) -> bool {\n"
-                                   "    return bits.mul_overflows(a, b)\n"
+                                   "    _, o := bits.mul_overflow(a, b)\n"
+                                   "    return o\n"
                                    "}\n"
                                    "\n"
                                    "fn unsigned_product(a: u128, b: u128) -> u128 {\n"
@@ -506,7 +507,7 @@ TEST_CASE(writes_layouts)
 enum
 {
     MAX_JOBS = 8,
-    GRID_FUNCTIONS = 399,
+    GRID_FUNCTIONS = 400,
 };
 
 typedef struct

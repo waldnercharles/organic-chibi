@@ -4288,6 +4288,7 @@ static const char *const OVERFLOW_GRID_FUNCTIONS[] = {
 };
 
 typedef bool B2(void *, int64_t, int64_t);
+typedef uint32_t U2(void *, int64_t, int64_t);
 
 enum
 {
@@ -4304,13 +4305,12 @@ enum
     WORD_MUL_X = 0x9B007C00u,
     WORD_CSET_NE = 0x1A9F07E0u,
     WORD_CSET_VS = 0x1A9F77E0u,
-    WORD_B_LO = 0x54000003u,
+    WORD_CSET_HS = 0x1A9F37E0u,
     SOURCE_FIELDS = 0x001F03E0u,
     THREE_REGISTERS = 0x001F03FFu,
     RN_FIELD = 0x000003E0u,
     RD_FIELD = 0x0000001Fu,
     CSET_FIELDS = 0x0000F01Fu,
-    B_TARGET = 0x00FFFFE0u,
 };
 
 TEST_CASE(overflow_tests)
@@ -4374,9 +4374,22 @@ TEST_CASE(overflow_tests)
     REQUIRE(add_minus_one(CONTEXT, INT64_MIN));
     REQUIRE(!add_minus_one(CONTEXT, INT64_MIN + 1));
 
+    I2 *checked_add = (I2 *)fn(&p, "checked_add");
+    REQUIRE(checked_add(CONTEXT, 40, 2) == 42);
+    REQUIRE(checked_add(CONTEXT, INT64_MAX, 1) == (INT64_MIN ^ 1));
+    REQUIRE(checked_add(CONTEXT, INT64_MIN, -1) == (INT64_MAX ^ 1));
+    U2 *wrapped_mul = (U2 *)fn(&p, "wrapped_mul");
+    REQUIRE(wrapped_mul(CONTEXT, (int64_t)(JUNK << 32 | 65536u), (int64_t)(JUNK << 32 | 65536u)) == 0);
+    REQUIRE(wrapped_mul(CONTEXT, 65535, 65537) == 4294967295u);
+    REQUIRE(wrapped_mul(CONTEXT, 0xFFFFFFFF, 0xFFFFFFFF) == 1);
+    I2 *from_pair = (I2 *)fn(&p, "from_pair");
+    REQUIRE(from_pair(CONTEXT, 100, 30) == 140);
+    REQUIRE(from_pair(CONTEXT, (int64_t)(JUNK << 16 | 0x8000u), 1) == 65535);
+    REQUIRE(from_pair(CONTEXT, 32767, -1) == -65535);
+
     REQUIRE(count_words(&p, "carry", WORD_ADDS_X_ZR, SOURCE_FIELDS) == 1);
-    REQUIRE(count_words(&p, "carry", WORD_B_LO, B_TARGET) == 1);
-    REQUIRE(count_words(&p, "carry", WORD_CSET_NE, CSET_FIELDS) == 0);
+    REQUIRE(count_words(&p, "carry", WORD_CSET_HS, RD_FIELD) == 1);
+    REQUIRE(count_words(&p, "carry", WORD_CSET_NE, CSET_FIELDS) == 1);
     REQUIRE(count_words(&p, "signed_add", WORD_ADDS_X_ZR, SOURCE_FIELDS) == 1);
     REQUIRE(count_words(&p, "signed_add", WORD_CSET_VS, RD_FIELD) == 1);
     REQUIRE(count_words(&p, "mul64", WORD_SMULH, THREE_REGISTERS) == 1);
@@ -4390,6 +4403,7 @@ TEST_CASE(overflow_tests)
     REQUIRE(count_words(&p, "sub8", WORD_CMP_SXTB, SOURCE_FIELDS) == 1);
     REQUIRE(count_words(&p, "add_one", WORD_ADDS_X_ZR_1, RN_FIELD) == 1);
     REQUIRE(count_words(&p, "add_minus_one", WORD_SUBS_X_ZR_1, RN_FIELD) == 1);
+    REQUIRE(count_words(&p, "wrapped_mul", WORD_UMULL, THREE_REGISTERS) == 0);
     release_program(&p);
 
     REQUIRE(build(&p, OVERFLOW_GRID));

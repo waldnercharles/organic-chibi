@@ -4319,8 +4319,88 @@ compare_lanes(Checker *c, u32 file, u32 token, u32 name, u32 first_arg, u32 narg
     return (Operand){ type, REF_VALUE | REF_RESULT | emit(c, kind, type, x, y) };
 }
 
+static u32
+reserve_bytes(Checker *c, u32 file, u32 token, u64 size, u32 align)
+{
+    Ir *ir = &c->ir;
+    u32 at = (ir->ndata + align - 1) & ~(align - 1);
+    if (size > DATA_LIMIT - at) {
+        report(c, file, token, DIAG_DATA_TOO_LARGE, 0, 0);
+        return NO_SLOT;
+    }
+
+    u32 end = at + (u32)size;
+    if (end >= ir->data_cap) {
+        ir->data_cap = 2 * end + 64;
+        ir->data = resize(ir->data, ir->data_cap, 1);
+    }
+    ir->ndata = end;
+    return at;
+}
+
+static u32
+reserve_data(Checker *c, u32 file, u32 token, u32 type)
+{
+    u32 from = c->ir.ndata;
+    u32 at = reserve_bytes(c, file, token, check_type_size(c, type), check_type_align(c, type));
+    if (at != NO_SLOT) {
+        memset(c->ir.data + from, 0, c->ir.ndata - from);
+    }
+    return at;
+}
+
+static void
+put_bits(Checker *c, u8 *to, u32 type, Operand v)
+{
+    u64 bits[2] = { constant_bits(c, v), 0 };
+    if (check_is_int128(type)) {
+        bits[1] = exact_bits_high(&c->exacts, value_of(v));
+    }
+    memcpy(to, bits, check_type_size(c, type));
+}
+
+static u32
+field_layout(const Checker *c, u32 decl, u32 member)
+{
+    return c->decls.values[decl] + 2 + 2 * (member - c->decls.members[decl]);
+}
+
 static Operand
-test_overflow(Checker *c, u32 file, u32 token, u32 name, u32 first_arg, u32 nargs)
+hold(Checker *c, u32 node, Operand v)
+{
+    if (is_constant(v)) {
+        return v;
+    }
+    u32 slot = add_slot(c, 0, v.type, node);
+    store_local(c, slot, v);
+    return (Operand){ OPERAND_LOCAL, slot };
+}
+
+static Operand
+held(Checker *c, Operand v)
+{
+    return v.type == OPERAND_LOCAL ? load_local(c, v.ref) : v;
+}
+
+static u32
+flagged_type(Checker *c, u32 file, u32 node, u32 type)
+{
+    u32 first = c->nmembers;
+    reserve_members(c, 2);
+    c->members[c->nmembers++] = (Member){ .type = type, .value = MEMBER_NONE };
+    c->members[c->nmembers++] = (Member){ .type = TYPE_ID_BOOL, .value = MEMBER_NONE };
+
+    u32 tuple = tuple_type(c, file, node, first, 2);
+    u32 decl = c->types.arg0[tuple];
+    if (c->decls.phases[decl] < PHASE_RESOLVED) {
+        lay_out_struct(c, decl);
+        c->decls.phases[decl] = PHASE_RESOLVED;
+    }
+    return tuple;
+}
+
+static NOINLINE Operand
+call_overflow(Checker *c, u32 file, u32 node, u32 token, u32 name, u32 first_arg, u32 nargs)
 {
     if (nargs != 2) {
         report(c, file, token, DIAG_ARG_COUNT, 2, nargs);
@@ -4344,21 +4424,66 @@ test_overflow(Checker *c, u32 file, u32 token, u32 name, u32 first_arg, u32 narg
         return poison;
     }
 
-    u8 kind = (u8)(IR_ADD_OVERFLOWS + name - NAME_ADD_OVERFLOWS);
-    if (!is_constant(a) || !is_constant(b)) {
-        u32 x = operand_ir(c, a);
-        u32 y = operand_ir(c, b);
-        return (Operand){ TYPE_ID_BOOL,
-                          REF_VALUE | REF_RESULT | emit(c, kind, type, x, y) };
+    u32 tuple = flagged_type(c, file, node, type);
+    u32 below = first_arg - 3;
+    bool split = in_body(c) &&
+                 c->stack[below].type == OPERAND_MARKER + NODE_DESTRUCTURE_VALUE;
+    bool wraps = !split || c->stack[below - 2].type != OPERAND_DISCARD;
+    bool tests = !split || c->stack[below - 1].type != OPERAND_DISCARD || !wraps;
+
+    u32 k = name - NAME_ADD_OVERFLOW;
+    Operand value = poison;
+    Operand overflowed = poison;
+    if (is_constant(a) && is_constant(b)) {
+        static const ExactOp ops[3] = { EXACT_ADD, EXACT_SUB, EXACT_MUL };
+        ExactStatus status;
+        u32 r = exact_binary(&c->exacts, ops[k], value_of(a), value_of(b), EXACT_INT_BITS, &status);
+        assert(status == EXACT_OK);
+        bool fits = int_fits(c, type, r);
+        value = (Operand){ type, wrap(c, r, type) };
+        overflowed = (Operand){ TYPE_ID_BOOL, fits ? EXACT_ZERO : EXACT_ONE };
+    } else {
+        if (wraps && tests) {
+            a = hold(c, node, a);
+            b = hold(c, node, b);
+        }
+        if (wraps) {
+            u32 x = operand_ir(c, held(c, a));
+            u32 y = operand_ir(c, held(c, b));
+            value = emit_value(c, (u8)(IR_ADD_WRAP + k), type, x, y);
+        }
+        if (tests) {
+            u32 x = operand_ir(c, held(c, a));
+            u32 y = operand_ir(c, held(c, b));
+            u32 test = emit(c, (u8)(IR_ADD_OVERFLOWS + k), type, x, y);
+            overflowed = (Operand){ TYPE_ID_BOOL, REF_VALUE | test };
+        }
+    }
+    if (split) {
+        return make_pair(c, tuple, value.ref, overflowed.ref);
     }
 
-    ExactOp op = kind == IR_ADD_OVERFLOWS ? EXACT_ADD
-               : kind == IR_SUB_OVERFLOWS ? EXACT_SUB
-                                          : EXACT_MUL;
-    ExactStatus status;
-    u32 r = exact_binary(&c->exacts, op, value_of(a), value_of(b), EXACT_INT_BITS, &status);
-    assert(status == EXACT_OK);
-    return (Operand){ TYPE_ID_BOOL, int_fits(c, type, r) ? EXACT_ZERO : EXACT_ONE };
+    u32 decl = c->types.arg0[tuple];
+    u32 first = c->decls.members[decl];
+    if (!in_body(c)) {
+        u32 at = reserve_data(c, file, token, tuple);
+        if (at == NO_SLOT) {
+            return poison;
+        }
+        u8 *to = c->ir.data + at;
+        put_bits(c, to, type, value);
+        put_bits(c, to + check_field_offset(c, field_layout(c, decl, first + 1)), TYPE_ID_BOOL, overflowed);
+        return (Operand){ tuple, at };
+    }
+
+    Operand place = { OPERAND_LOCAL, add_slot(c, 0, tuple, node) };
+    u32 address = place_address(c, place);
+    u32 at = emit(c, IR_FIELD, pointer_type(c, type), address, field_layout(c, decl, first));
+    store_at(c, type, at, value);
+    address = place_address(c, place);
+    at = emit(c, IR_FIELD, pointer_type(c, TYPE_ID_BOOL), address, field_layout(c, decl, first + 1));
+    store_at(c, TYPE_ID_BOOL, at, overflowed);
+    return place;
 }
 
 static NOINLINE Operand
@@ -4441,8 +4566,9 @@ count_bits_128(u8 kind, u64 low, u64 high)
 }
 
 static NOINLINE Operand
-call_builtin(Checker *c, u32 file, u32 token, Operand callee, u32 first_arg, u32 nargs)
+call_builtin(Checker *c, u32 file, u32 node, Operand callee, u32 first_arg, u32 nargs)
 {
+    u32 token = c->stack_tokens[first_arg - 2];
     if (callee.type != OPERAND_BUILTIN) {
         report(c, file, token, DIAG_NOT_CALLABLE, 0, 0);
         return poison;
@@ -4468,8 +4594,8 @@ call_builtin(Checker *c, u32 file, u32 token, Operand callee, u32 first_arg, u32
         case NAME_ASSERT: return call_assert(c, file, token, first_arg, nargs);
         default: break;
     }
-    if (callee.ref >= NAME_ADD_OVERFLOWS) {
-        return test_overflow(c, file, token, callee.ref, first_arg, nargs);
+    if (callee.ref >= NAME_ADD_OVERFLOW) {
+        return call_overflow(c, file, node, token, callee.ref, first_arg, nargs);
     }
     if (nargs != 1) {
         report(c, file, token, DIAG_ARG_COUNT, 1, nargs);
@@ -4529,7 +4655,7 @@ call(Checker *c, u32 file, u32 node)
             report(c, file, callee_token, DIAG_ARG_COUNT, 1, nargs);
         }
     } else if (callee.type != TYPE_ID_NONE) {
-        r = call_builtin(c, file, callee_token, callee, m + 1, nargs);
+        r = call_builtin(c, file, node, callee, m + 1, nargs);
     }
 
     c->sp = m - 1;
@@ -5486,12 +5612,6 @@ array_field(Checker *c, u32 file, u32 token, Operand o)
                       exact_int(&c->exacts, (int64_t)c->types.arg1[type]) };
 }
 
-static u32
-field_layout(const Checker *c, u32 decl, u32 member)
-{
-    return c->decls.values[decl] + 2 + 2 * (member - c->decls.members[decl]);
-}
-
 u64
 check_member_offset(const Checker *c, u32 decl, u32 member)
 {
@@ -5922,36 +6042,6 @@ literal_fields(Checker *c, u32 file, u32 m, u32 type, u32 token, u32 *items)
     return true;
 }
 
-static u32
-reserve_bytes(Checker *c, u32 file, u32 token, u64 size, u32 align)
-{
-    Ir *ir = &c->ir;
-    u32 at = (ir->ndata + align - 1) & ~(align - 1);
-    if (size > DATA_LIMIT - at) {
-        report(c, file, token, DIAG_DATA_TOO_LARGE, 0, 0);
-        return NO_SLOT;
-    }
-
-    u32 end = at + (u32)size;
-    if (end >= ir->data_cap) {
-        ir->data_cap = 2 * end + 64;
-        ir->data = resize(ir->data, ir->data_cap, 1);
-    }
-    ir->ndata = end;
-    return at;
-}
-
-static u32
-reserve_data(Checker *c, u32 file, u32 token, u32 type)
-{
-    u32 from = c->ir.ndata;
-    u32 at = reserve_bytes(c, file, token, check_type_size(c, type), check_type_align(c, type));
-    if (at != NO_SLOT) {
-        memset(c->ir.data + from, 0, c->ir.ndata - from);
-    }
-    return at;
-}
-
 static void
 add_reloc(IrRelocs *r, u32 at)
 {
@@ -5966,16 +6056,6 @@ add_reloc(IrRelocs *r, u32 at)
         k--;
     }
     r->offsets[k] = at;
-}
-
-static void
-put_bits(Checker *c, u8 *to, u32 type, Operand v)
-{
-    u64 bits[2] = { constant_bits(c, v), 0 };
-    if (check_is_int128(type)) {
-        bits[1] = exact_bits_high(&c->exacts, value_of(v));
-    }
-    memcpy(to, bits, check_type_size(c, type));
 }
 
 static u32
@@ -6362,6 +6442,15 @@ split_tuple(Checker *c, u32 file, u32 node, u32 token, u32 targets, u32 n)
     if (c->decls.member_counts[decl] != n) {
         report(c, file, token, DIAG_VALUE_COUNT, n, c->decls.member_counts[decl]);
         return NO_SLOT;
+    }
+
+    if (!is_place(v)) {
+        Pair p = pair_of(c, v);
+        u32 first = c->sp;
+        reserve_stack(c, 2);
+        push_operand(c, v_token, (Operand){ c->members[c->decls.members[decl]].type, p.first });
+        push_operand(c, v_token, (Operand){ TYPE_ID_BOOL, p.second });
+        return first;
     }
 
     u32 needed = 0;
