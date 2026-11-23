@@ -183,10 +183,11 @@ check_program(FILE *err, Program *p, const char *const *paths, u32 n)
     size_t *lens = arena_alloc(&p->arena, n * sizeof *lens, alignof(size_t));
     size_t total = 0;
     for (u32 i = 0; i < n; i++) {
-        srcs[i] = read_source(err, &p->arena, paths[i], &lens[i]);
-        if (!srcs[i]) {
+        char *src = read_source(err, &p->arena, paths[i], &lens[i]);
+        if (!src) {
             return false;
         }
+        srcs[i] = src;
         total += lens[i];
     }
 
@@ -213,13 +214,13 @@ check_program(FILE *err, Program *p, const char *const *paths, u32 n)
         };
     }
 
-    check_init(&p->c, &p->lx.names);
+    check_init(&p->c, &p->lx.names, p->files, n);
     p->c.release_fast = p->release_fast;
     p->checked = true;
     if (p->target && !set_target(err, &p->c, p->target)) {
         return false;
     }
-    check_package(&p->c, p->files, n);
+    check_package(&p->c);
     if (p->c.ndiags) {
         check_print_diagnostics(err, &p->c);
         return false;

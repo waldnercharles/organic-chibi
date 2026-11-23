@@ -99,8 +99,8 @@ main(int argc, char **argv)
         clock_gettime(CLOCK_MONOTONIC, &t0);
         cpu_counters(&i0, &c0);
         Checker c;
-        check_init(&c, &lx.names);
-        check_package(&c, files, (u32)n);
+        check_init(&c, &lx.names, files, (u32)n);
+        check_package(&c);
         decls = c.decls.count - 1;
         types = c.types.count;
         diags = c.ndiags;

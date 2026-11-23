@@ -22,9 +22,9 @@ next_pow2(u64 x)
 }
 
 static NameSlot *
-alloc_slots(Names *t, u32 nslots)
+alloc_slots(Arena *arena, u32 nslots)
 {
-    NameSlot *slots = arena_alloc(t->arena, (size_t)nslots * sizeof *slots, 64);
+    NameSlot *slots = arena_alloc(arena, (size_t)nslots * sizeof *slots, 64);
     memset(slots, 0, (size_t)nslots * sizeof *slots);
     return slots;
 }
@@ -36,15 +36,21 @@ names_init(Names *t, Arena *arena, u32 expected)
         expected = NAMES_MIN_EXPECTED;
     }
 
-    *t = (Names){ .arena = arena };
     u32 nslots = next_pow2((u64)expected * 2);
-    t->slots = alloc_slots(t, nslots);
-    t->mask = nslots - 1;
+    NameSlot *slots = alloc_slots(arena, nslots);
 
-    t->cap = next_pow2((u64)expected + 1);
-    t->names = arena_alloc(t->arena, (size_t)t->cap * sizeof *t->names, alignof(Name));
-    t->names[0] = (Name){ "", 0, 0 };
-    t->count = 1;
+    u32 cap = next_pow2((u64)expected + 1);
+    Name *names = arena_alloc(arena, (size_t)cap * sizeof *names, alignof(Name));
+    names[0] = (Name){ "", 0, 0 };
+
+    *t = (Names){
+        .slots = slots,
+        .mask = nslots - 1,
+        .names = names,
+        .count = 1,
+        .cap = cap,
+        .arena = arena,
+    };
 }
 
 static void
@@ -52,7 +58,7 @@ grow(Names *t)
 {
     u32 nslots = next_pow2((u64)(t->mask + 1) * 2);
     u32 mask = nslots - 1;
-    NameSlot *slots = alloc_slots(t, nslots);
+    NameSlot *slots = alloc_slots(t->arena, nslots);
 
     for (u32 id = 1; id < t->count; id++) {
         NameSlot s = t->slots[t->names[id].slot];

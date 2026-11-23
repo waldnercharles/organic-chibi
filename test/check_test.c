@@ -46,12 +46,12 @@ check_texts(Checker *c, Arena *arena, Lexer *lx, const char *const *texts, u32 n
         };
     }
 
-    check_init(c, &lx->names);
+    check_init(c, &lx->names, files, n);
     c->release_fast = release_fast;
     if (target) {
         memcpy(c->target, target, sizeof c->target);
     }
-    check_package(c, files, n);
+    check_package(c);
     return files;
 }
 

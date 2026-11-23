@@ -123,8 +123,8 @@ main(int argc, char **argv)
         u64 c1 = cpu_cycles(&i1);
 
         Checker c;
-        check_init(&c, &lx.names);
-        check_package(&c, files, (u32)n);
+        check_init(&c, &lx.names, files, (u32)n);
+        check_package(&c);
         double t2 = now();
         u64 c2 = cpu_cycles(&i2);
         diags = c.ndiags;

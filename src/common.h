@@ -12,6 +12,7 @@ typedef uint64_t u64;
 
 #define ALWAYS_INLINE __attribute__((always_inline))
 #define NOINLINE __attribute__((noinline))
+#define COLD __attribute__((cold))
 #define NORETURN __attribute__((noreturn))
 #define RETURNS_NONNULL __attribute__((returns_nonnull))
 

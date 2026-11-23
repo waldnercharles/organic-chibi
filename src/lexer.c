@@ -66,8 +66,9 @@ lexer_init(Lexer *lx, Arena *arena, size_t total_source_bytes)
         expected = UINT32_MAX / 4;
     }
 
-    *lx = (Lexer){ 0 };
-    names_init(&lx->names, arena, (u32)expected);
+    Names names;
+    names_init(&names, arena, (u32)expected);
+    *lx = (Lexer){ .names = names };
     for (u32 i = 0; i < NFIXED_NAMES; i++) {
         const char *name = fixed_names[i];
         [[maybe_unused]] u32 id = names_intern(&lx->names, name, (u32)strlen(name));

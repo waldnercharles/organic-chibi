@@ -5258,6 +5258,7 @@ arm64_compile(Native *n, const Checker *c, Convention convention)
                .spill_free_cap = 16,
                .slot_offsets = malloc(16 * sizeof *e.slot_offsets),
                .slot_offsets_cap = 16,
+               .slots = ir->code.slots,
                .retyped = malloc(16 * sizeof *e.retyped),
                .retyped_cap = 16,
                .place = convention == CONVENTION_APPLE ? PLACE_APPLE : 0,

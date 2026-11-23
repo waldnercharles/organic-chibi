@@ -62,12 +62,12 @@ check_files(Package *p, const char *const *texts, const char *const *paths, u32 
                                     false };
     }
 
-    check_init(&p->c, &p->lx.names);
+    check_init(&p->c, &p->lx.names, p->files, n);
     p->c.release_fast = release_fast;
     if (target) {
         memcpy(p->c.target, target, sizeof p->c.target);
     }
-    check_package(&p->c, p->files, n);
+    check_package(&p->c);
     if (p->c.ndiags) {
         check_print_diagnostics(stderr, &p->c);
         return false;

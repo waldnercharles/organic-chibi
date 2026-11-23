@@ -51,9 +51,9 @@ check_text(Program *p, const char *text, bool release_fast)
     p->file = (ParsedFile){ "a",   src,        tokens,
                             nodes, (u32)count, (u32)parser.top_count,
                             false };
-    check_init(&p->c, &p->lx.names);
+    check_init(&p->c, &p->lx.names, &p->file, 1);
     p->c.release_fast = release_fast;
-    check_package(&p->c, &p->file, 1);
+    check_package(&p->c);
     if (p->c.ndiags) {
         check_print_diagnostics(stderr, &p->c);
         return false;
@@ -492,8 +492,8 @@ rejects(const char *text)
     p.file = (ParsedFile){ "a",   src,        tokens,
                            nodes, (u32)count, (u32)parser.top_count,
                            true };
-    check_init(&p.c, &p.lx.names);
-    check_package(&p.c, &p.file, 1);
+    check_init(&p.c, &p.lx.names, &p.file, 1);
+    check_package(&p.c);
     bool ok = count >= 0 && p.c.ndiags == 0 && !arm64_compile(&p.n, &p.c, CONVENTION_HOST) &&
               p.n.error && strstr(p.n.error, "supports only") != NULL;
     if (!ok) {

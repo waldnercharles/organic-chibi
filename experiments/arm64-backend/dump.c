@@ -25,8 +25,8 @@ main(int argc, char **argv)
     int c = parser_parse(&p, t, nt, o);
     ParsedFile f = { "a", src, t, o, c, p.top_count, true };
     Checker ch;
-    check_init(&ch, &lx.names);
-    check_package(&ch, &f, 1);
+    check_init(&ch, &lx.names, &f, 1);
+    check_package(&ch);
     if (ch.ndiags) {
         check_print_diagnostics(stderr, &ch);
         return 1;
