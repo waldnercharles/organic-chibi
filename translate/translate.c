@@ -5330,17 +5330,50 @@ var_decl(Tr *t, u32 v)
 }
 
 static bool
-is_assert(Tr *t, u32 e)
+is_assert_function(Tr *t, u32 f)
+{
+    const char *w = text(t, t->a.names[f]);
+    return strcmp(w, "__assert_fail") == 0 || strcmp(w, "__assert_rtn") == 0;
+}
+
+static bool
+calls(Tr *t, u32 e, const char *name)
+{
+    e = strip(t, e);
+    if (t->kinds[e] != K_CALL) {
+        return false;
+    }
+    u32 f = callee(t, e);
+    return f != 0 && strcmp(text(t, t->a.names[f]), name) == 0;
+}
+
+static u32
+strip_casts(Tr *t, u32 e)
+{
+    e = strip(t, e);
+    while (is_cast(t, e)) {
+        e = strip(t, e + 1);
+    }
+    return e;
+}
+
+static u32
+asserted(Tr *t, u32 e)
 {
     if (t->kinds[e] != K_CONDITIONAL) {
-        return false;
+        return 0;
     }
-    u32 c = strip(t, child(t, e, 2));
-    if (t->kinds[c] != K_CALL) {
-        return false;
+    if (calls(t, child(t, e, 2), "__assert_fail")) {
+        return child(t, e, 0);
     }
-    u32 f = callee(t, c);
-    return f != 0 && strcmp(text(t, t->a.names[f]), "__assert_fail") == 0;
+    if (!calls(t, child(t, e, 1), "__assert_rtn")) {
+        return 0;
+    }
+    u32 expect = strip_casts(t, child(t, e, 0));
+    assert(calls(t, expect, "__builtin_expect"));
+    u32 not = strip_casts(t, t->a.ends[expect + 1]);
+    assert(t->kinds[not] == K_UNARY && op(t, not) == OP_NOT);
+    return not + 1;
 }
 
 static void
@@ -5610,8 +5643,8 @@ put_expr_stmt(Tr *t, u32 e)
             }
             break;
         case K_CONDITIONAL:
-            if (is_assert(t, e)) {
-                put_assert(t, child(t, e, 0));
+            if (asserted(t, e) != 0) {
+                put_assert(t, asserted(t, e));
                 return;
             }
             break;
@@ -6323,7 +6356,7 @@ mark_uses(Tr *t, u32 root, u32 *work, u32 *nwork)
             continue;
         }
         u32 def = t->defs[d];
-        if (strcmp(text(t, t->a.names[d]), "__assert_fail") == 0) {
+        if (is_assert_function(t, d)) {
             t->marks[d] |= MARK_EXTERN;
         } else if (def != 0 && project_file(t, t->a.files[def])) {
             t->marks[d] |= MARK_EMIT;
@@ -6418,7 +6451,7 @@ put_params(Tr *t, u32 fn, bool locals)
 static void
 emit_extern(Tr *t, u32 f)
 {
-    if (strcmp(text(t, t->a.names[f]), "__assert_fail") == 0) {
+    if (is_assert_function(t, f)) {
         return;
     }
     putf(&t->out, "extern fn %s", text(t, t->a.names[f]));

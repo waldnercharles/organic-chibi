@@ -4,6 +4,7 @@
 #include "../vendor/pico_unit/pico_unit.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 
 #ifdef __aarch64__
@@ -35,7 +36,8 @@ TEST_SUITE(driver_tests);
 int
 main(void)
 {
-    alarm(30);
+    const char *seconds = getenv("CHIBI_TEST_SECONDS");
+    alarm(seconds ? (unsigned)strtoul(seconds, NULL, 10) : 30);
     pu_display_quiet(true);
 
     RUN_TEST_SUITE(lexer_tests);

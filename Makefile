@@ -44,8 +44,8 @@ test:
 	@build/test-generic
 	@build/test-bulk
 ifeq ($(OS) $(ARCH),Darwin arm64)
-	@arch -x86_64 build/test
-	@arch -x86_64 build/test-bulk
+	@CHIBI_TEST_SECONDS=180 arch -x86_64 build/test
+	@CHIBI_TEST_SECONDS=180 arch -x86_64 build/test-bulk
 endif
 ifneq ($(QEMU),)
 	@$(CC) $(ARM64) -o build/test-arm64 $(TEST_SRC)
@@ -77,7 +77,7 @@ translated:
 	@$(CC) $(SAFE) -o build/chibi-bootstrap build/translated/host/chibi.o $(filter vendor/%, $(SRC))
 	@build/chibi-bootstrap c -o build/translated/host/chibi.2.c build/translated/entry.chibi build/translated/host/*.chibi
 	@cmp build/translated/host/chibi.c build/translated/host/chibi.2.c
-	@echo "bootstrap: passed (x86_64)"
+	@echo "bootstrap: passed ($(ARCH))"
 ifneq ($(QEMU),)
 	@for f in $(BOOTSTRAP); do \
 		$(CC) -std=c23 --target=aarch64-linux-gnu -DCHIBI_SIMD_GENERIC -Xclang -ast-dump=json -fsyntax-only $$f \
