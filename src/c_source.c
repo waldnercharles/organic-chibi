@@ -109,6 +109,9 @@ c_source_prelude(FILE *out)
 static Scalar
 scalar_of(const Checker *c, u32 type)
 {
+    if (check_is_flag_optional(c, type)) {
+        type = c->types.arg0[type];
+    }
     if (c->types.kinds[type] == TYPE_ENUM) {
         type = (u32)c->types.arg1[type];
     }
@@ -161,7 +164,7 @@ is_address(const Checker *c, u32 type)
     u8 kind = c->types.kinds[type];
     return kind == TYPE_POINTER || kind == TYPE_MANY || kind == TYPE_SLICE ||
            kind == TYPE_STRUCT || kind == TYPE_ARRAY || kind == TYPE_FN ||
-           kind == TYPE_OPTIONAL;
+           (kind == TYPE_OPTIONAL && c->types.arg1[type]);
 }
 
 static const char *
@@ -618,6 +621,24 @@ put_struct(Source *s, u32 decl, u8 *done)
 }
 
 static void
+put_flagged_name(Source *s, u32 type)
+{
+    fprintf(s->out, "struct chibi_%sflagged_%u", s->prefix, type);
+}
+
+static void
+put_flagged_type(Source *s, u32 type, u8 *seen)
+{
+    if (!check_is_flag_optional(s->c, type) || seen[type]) {
+        return;
+    }
+    seen[type] = 1;
+    fputs("\n", s->out);
+    put_flagged_name(s, type);
+    fprintf(s->out, "\n{\n    %s value;\n    uint8_t present;\n};\n", value_name(s->c, type));
+}
+
+static void
 put_array_type(Source *s, u32 type, u8 *seen)
 {
     if (s->c->types.kinds[type] != TYPE_ARRAY || seen[type]) {
@@ -717,6 +738,8 @@ put_result(Source *s, u32 type)
 {
     if (type == TYPE_ID_VOID) {
         fputs("void", s->out);
+    } else if (check_is_flag_optional(s->c, type)) {
+        put_flagged_name(s, type);
     } else {
         put_object_type(s, type);
     }
@@ -1196,8 +1219,9 @@ put_call(Source *s, u32 i, u8 kind, u32 type, u32 decl, const u32 *list)
     const u32 *params = c->lists + c->types.arg0[fn];
     u32 n = list[0];
     u8 result = c->types.kinds[type];
+    bool flagged = check_is_flag_optional(c, type);
 
-    bool block = result == TYPE_SLICE || result == TYPE_ARRAY;
+    bool block = result == TYPE_SLICE || result == TYPE_ARRAY || flagged;
     for (u32 p = 0; p < params[0]; p++) {
         u8 k = c->types.kinds[params[1 + p]];
         block |= k == TYPE_STRUCT || k == TYPE_ARRAY;
@@ -1213,12 +1237,15 @@ put_call(Source *s, u32 i, u8 kind, u32 type, u32 decl, const u32 *list)
             put_line(s, "%O a%u;", t, o);
             put_line(s, "__builtin_memcpy(&a%u, %o, sizeof a%u);", o, list[o], o);
         }
-        o += k == TYPE_SLICE ? 2 : 1;
+        o += k == TYPE_SLICE || check_is_flag_optional(c, t) ? 2 : 1;
     }
 
     start_statement(s);
     if (result == TYPE_SLICE) {
         fputs("chibi_slice r = ", s->out);
+    } else if (flagged) {
+        put_flagged_name(s, type);
+        fputs(" r = ", s->out);
     } else if (result == TYPE_ARRAY) {
         put_object_type(s, type);
         fputs(" r = ", s->out);
@@ -1249,6 +1276,10 @@ put_call(Source *s, u32 i, u8 kind, u32 type, u32 decl, const u32 *list)
             fputs(", ", s->out);
             put_operand(s, list[++o]);
             fputs(" }", s->out);
+        } else if (check_is_flag_optional(c, params[1 + p])) {
+            put_operand(s, list[o]);
+            fputs(", ", s->out);
+            put_operand(s, list[++o]);
         } else {
             put_operand(s, list[o]);
         }
@@ -1269,6 +1300,9 @@ put_call(Source *s, u32 i, u8 kind, u32 type, u32 decl, const u32 *list)
     if (result == TYPE_SLICE) {
         put_line(s, "v%u = r.ptr;", i);
         put_line(s, "v%u = r.len;", i + 1);
+    } else if (flagged) {
+        put_line(s, "v%u = r.value;", i);
+        put_line(s, "v%u = r.present;", i + 1);
     } else if (result == TYPE_ARRAY) {
         put_line(s, "__builtin_memcpy(&s%u, &r, sizeof r);", list[n + 1]);
     }
@@ -1294,6 +1328,16 @@ put_return(Source *s, u32 type, u32 a, u32 b)
         put_line(s, "}");
     } else if (kind == TYPE_SLICE) {
         put_line(s, "return (chibi_slice){ %o, %o };", a, b);
+    } else if (check_is_flag_optional(s->c, type)) {
+        start_statement(s);
+        fputs("return (", s->out);
+        put_flagged_name(s, type);
+        fputs("){ ", s->out);
+        put_operand(s, a);
+        fputs(", ", s->out);
+        put_operand(s, b);
+        fputs(" };", s->out);
+        end_statement(s);
     } else {
         put_line(s, "return %o;", a);
     }
@@ -1691,6 +1735,7 @@ c_source_package(FILE *out, const Checker *c, const char *prefix)
         const IrFunc *fn = &ir->funcs[f];
         const IrSlot *slots = ir->code.slots + fn->first_slot;
         put_array_type(&s, (u32)c->types.arg1[c->decls.types[fn->decl]], seen);
+        put_flagged_type(&s, (u32)c->types.arg1[c->decls.types[fn->decl]], seen);
         for (u32 p = 0; p < fn->nparams; p++) {
             put_array_type(&s, slots[p].type, seen);
         }

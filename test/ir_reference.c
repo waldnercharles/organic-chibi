@@ -26,6 +26,9 @@ ty(const Checker *c, u32 type)
     if (kind == TYPE_ENUM) {
         return ty(c, (u32)c->types.arg1[type]);
     }
+    if (check_is_flag_optional(c, type)) {
+        return ty(c, c->types.arg0[type]);
+    }
     if (kind == TYPE_BOOL) {
         return (Ty){ false, false, 8 };
     }
@@ -1022,7 +1025,9 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                     goto done;
                 }
                 result[0] = type == TYPE_ID_VOID ? 0 : OPERAND(a);
-                result[1] = c->types.kinds[type] == TYPE_SLICE ? OPERAND(b) : 0;
+                result[1] = c->types.kinds[type] == TYPE_SLICE || check_is_flag_optional(c, type)
+                              ? OPERAND(b)
+                              : 0;
                 trap = 0;
                 goto done;
             case IR_BLOCK:

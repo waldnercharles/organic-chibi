@@ -601,6 +601,13 @@ typedef struct
     u32 args;
 } Checker;
 
+static inline bool
+check_is_flag_optional(const Checker *c, u32 type)
+{
+    return type >= NFIXED_TYPES && c->types.kinds[type] == TYPE_OPTIONAL &&
+           !c->types.arg1[type];
+}
+
 void check_init(Checker *c, const Names *names, const ParsedFile *files, u32 nfiles);
 
 bool check_target(Checker *c, u32 k, const char *text, u32 len);

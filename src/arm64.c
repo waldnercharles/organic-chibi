@@ -445,6 +445,9 @@ type_info(const Checker *c, u32 type)
         u32 backing = (u32)c->types.arg1[type];
         return backing ? type_info(c, backing) : INFO_UNSUPPORTED;
     }
+    if (check_is_flag_optional(c, type)) {
+        return type_info(c, c->types.arg0[type]);
+    }
     if (kind == TYPE_POINTER || kind == TYPE_MANY || kind == TYPE_FN ||
         kind == TYPE_OPTIONAL) {
         return 3;
@@ -3099,6 +3102,26 @@ c_global_address(Emit *e, u32 i, u32 type, u32 decl, const Native *n)
     put(e, OP_LDRX | (u32)((slot & 0xFFF) >> 3) << 10 | d << 5 | d);
 }
 
+static NOINLINE void
+pair_result(Emit *e, u32 i, u8 t, u8 second)
+{
+    if (is_float(t)) {
+        fmov(e, alloc(e, i, t), 0);
+        mov(e, SF, alloc(e, i + 1, second), 1);
+        return;
+    }
+    u32 d0 = half_result(e, i, 0, t);
+    u32 d1 = half_result(e, i, 1, second);
+    assert(d1 != 0);
+    if (d0 == 1) {
+        mov(e, SF, d1, 1);
+        mov(e, SF, d0, 0);
+    } else {
+        mov(e, SF, d0, 0);
+        mov(e, SF, d1, 1);
+    }
+}
+
 static ALWAYS_INLINE void
 call(Emit *e, u32 i, u32 type, u32 decl, u32 b, const Native *n, u32 ints)
 {
@@ -3132,16 +3155,9 @@ call(Emit *e, u32 i, u32 type, u32 decl, u32 b, const Native *n, u32 ints)
     if (t & INFO_MEMORY) {
         receive_result(e, type, args);
     } else if (t & INFO_PAIR) {
-        u32 d0 = half_result(e, i, 0, t);
-        u32 d1 = half_result(e, i, 1, e->info[TYPE_ID_I64]);
-        assert(d1 != 0);
-        if (d0 == 1) {
-            mov(e, SF, d1, 1);
-            mov(e, SF, d0, 0);
-        } else {
-            mov(e, SF, d0, 0);
-            mov(e, SF, d1, 1);
-        }
+        pair_result(e, i, t, e->info[TYPE_ID_I64]);
+    } else if (check_is_flag_optional(e->c, type)) {
+        pair_result(e, i, t, e->info[TYPE_ID_BOOL]);
     } else if (type != TYPE_ID_VOID) {
         bool fl = is_float(t);
         u32 d = result(e, i, e->info[type]);
@@ -3204,6 +3220,17 @@ return_pair(Emit *e, u32 a, u32 b)
         move_into(e, 0, a, false);
         move_into(e, 1, b, false);
     }
+}
+
+static NOINLINE void
+return_flagged(Emit *e, u32 type, u32 a, u32 b)
+{
+    if (!is_float(e->info[type])) {
+        return_pair(e, a, b);
+        return;
+    }
+    move_into(e, 0, a, true);
+    move_into(e, 1, b, false);
 }
 
 static void
@@ -4834,6 +4861,8 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                 case IR_RET:
                     if (e->info[type] & INFO_PAIR) {
                         return_pair(e, a, b);
+                    } else if (check_is_flag_optional(e->c, type)) {
+                        return_flagged(e, type, a, b);
                     } else if (e->info[type] & INFO_MEMORY) {
                         return_struct(e, type, a);
                     } else if (type != TYPE_ID_VOID) {

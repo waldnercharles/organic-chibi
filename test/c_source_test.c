@@ -507,7 +507,7 @@ TEST_CASE(writes_layouts)
 enum
 {
     MAX_JOBS = 8,
-    GRID_FUNCTIONS = 415,
+    GRID_FUNCTIONS = 436,
 };
 
 typedef struct

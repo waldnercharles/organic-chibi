@@ -43,6 +43,7 @@ extern const char STRING_VIEWS[];
 extern const char TUPLES[];
 extern const char NAMED_RESULTS[];
 extern const char DEFERS[];
+extern const char VALUE_OPTIONALS[];
 
 extern const char *const BACKEND_PROGRAMS[];
 extern const u32 NBACKEND_PROGRAMS;

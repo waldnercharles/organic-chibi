@@ -6215,6 +6215,95 @@ TEST_CASE(defers)
     return true;
 }
 
+static const char *const VALUE_OPTIONAL_FUNCTIONS[] = {
+    "vo_basic", "vo_assign", "vo_calls", "vo_floats", "vo_many", "vo_narrow", "vo_trap",
+    "vo_bools", "vo_enum", "vo_loop", "vo_defer", "vo_nested", "vo_through", "vo_wide",
+    "vo_ufloat", "vo_fl32", "vo_pressure", "vo_loop2", "vo_equal", "vo_params", "vo_mixed",
+};
+
+static const CallCase VALUE_OPTIONAL_CASES[] = {
+    { "vo_basic", 5, 2, 505, 0 },
+    { "vo_basic", -1, 7, 6, 0 },
+    { "vo_assign", 2, 1030, 8, 0 },
+    { "vo_assign", 9, 4, 16, 0 },
+    { "vo_assign", 1, -1, 1024, 0 },
+    { "vo_calls", 4, 5, 90, 0 },
+    { "vo_calls", 4, 1, 40, 0 },
+    { "vo_calls", 0, 7, 70, 0 },
+    { "vo_calls", 0, 0, -1, 0 },
+    { "vo_floats", 3, 8, 6008, 0 },
+    { "vo_floats", -2, 1, -4002, 0 },
+    { "vo_many", 2, 3, -63320302, 0 },
+    { "vo_many", 5, -2, 93678995, 0 },
+    { "vo_narrow", -3, -2, -20000030, 0 },
+    { "vo_narrow", 2, 7, -990000060, 0 },
+    { "vo_narrow", 9, 4, -120000000, 0 },
+    { "vo_trap", 9, 4, 10, 0 },
+    { "vo_bools", 1, 3, 1, 0 },
+    { "vo_bools", 1, 0, 12, 0 },
+    { "vo_bools", 0, 5, 10, 0 },
+    { "vo_enum", 0, 0, 0, 0 },
+    { "vo_enum", 1, 0, 10, 0 },
+    { "vo_enum", 2, 0, 20, 0 },
+    { "vo_enum", 3, 0, 11, 0 },
+    { "vo_loop", 3, 9, 10, 0 },
+    { "vo_loop", 2, 0, -5, 0 },
+    { "vo_defer", 4, 5, 9, 0 },
+    { "vo_defer", 6, -2, 4, 0 },
+    { "vo_nested", 4, 1, 403, 0 },
+    { "vo_nested", 1, 4, 160, 0 },
+    { "vo_nested", 0, 0, 3, 0 },
+    { "vo_through", 5, 9, 5004, 0 },
+    { "vo_through", 0, 2, 100, 0 },
+    { "vo_wide", 3, 4, 1519, 0 },
+    { "vo_wide", -1, 4, 6, 0 },
+    { "vo_wide", -5, 0, -1, 0 },
+    { "vo_ufloat", 1, 2, 20, 0 },
+    { "vo_ufloat", -1, 5, 5, 0 },
+    { "vo_ufloat", -3, 0, -7, 0 },
+    { "vo_fl32", 6, 2, 12004, 0 },
+    { "vo_fl32", 0, -3, -3997, 0 },
+    { "vo_fl32", 1, 1, 4004, 0 },
+    { "vo_pressure", 5, 3, 8632, 0 },
+    { "vo_pressure", -2, 8, 24619, 0 },
+    { "vo_loop2", 2, 7, 330, 0 },
+    { "vo_loop2", -9, 3, -100, 0 },
+    { "vo_equal", 4, 4, 11, 0 },
+    { "vo_equal", 1, 0, 2, 0 },
+    { "vo_equal", 5, 6, 10, 0 },
+    { "vo_equal", 1, 6, 0, 0 },
+    { "vo_params", 5, 2, 530, 0 },
+    { "vo_params", 1, 2, 42, 0 },
+    { "vo_mixed", 5, 2, 28, 0 },
+    { "vo_mixed", 1, 4, 16, 0 },
+    { "vo_trap", 3, 5, 0, TRAP_NIL },
+    { "vo_many", INT64_MIN, 0, 0, TRAP_RANGE },
+    { "vo_narrow", INT64_MIN, 0, 0, TRAP_RANGE },
+    { "vo_floats", INT64_MIN, 0, 0, TRAP_RANGE },
+    { "vo_defer", INT64_MAX, 1, 0, TRAP_OVERFLOW },
+    { "vo_params", INT64_MIN, 0, 0, TRAP_OVERFLOW },
+    { "vo_mixed", INT64_MIN, -1, 0, TRAP_OVERFLOW },
+};
+
+TEST_CASE(value_optionals)
+{
+    catch_traps();
+    Program p;
+    REQUIRE(build(&p, VALUE_OPTIONALS));
+    for (size_t k = 0; k < sizeof VALUE_OPTIONAL_CASES / sizeof VALUE_OPTIONAL_CASES[0]; k++) {
+        CallCase t = VALUE_OPTIONAL_CASES[k];
+        int64_t got = 0;
+        int trap = call_i2((I2 *)fn(&p, t.name), t.a, t.b, &got);
+        if (trap != t.trap || (!trap && got != t.want)) {
+            fprintf(stderr, "arm64 test: %s(%lld, %lld) gave %lld (trap %d)\n", t.name, (long long)t.a, (long long)t.b, (long long)got, trap);
+            REQUIRE(false);
+        }
+    }
+    REQUIRE(agree_on_grid(&p, VALUE_OPTIONAL_FUNCTIONS, sizeof VALUE_OPTIONAL_FUNCTIONS / sizeof VALUE_OPTIONAL_FUNCTIONS[0]));
+    release_program(&p);
+    return true;
+}
+
 TEST_CASE(top_level_code)
 {
     Program p;
@@ -6271,6 +6360,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(tuples);
     RUN_TEST_CASE(named_results);
     RUN_TEST_CASE(defers);
+    RUN_TEST_CASE(value_optionals);
     RUN_TEST_CASE(narrow_parameters);
     RUN_TEST_CASE(constant_division);
     RUN_TEST_CASE(differential);
