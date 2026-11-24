@@ -449,6 +449,9 @@ type_info(const Checker *c, u32 type)
     if (check_is_flag_optional(c, type)) {
         return type_info(c, c->types.arg0[type]);
     }
+    if (kind == TYPE_ERROR_UNION) {
+        return type_info(c, check_error_union_first(c, type));
+    }
     if (kind == TYPE_POINTER || kind == TYPE_MANY || kind == TYPE_FN ||
         kind == TYPE_OPTIONAL) {
         return 3;
@@ -465,7 +468,7 @@ type_info(const Checker *c, u32 type)
     }
     u32 bits = c->types.arg0[type];
     u8 scale = bits == 64 ? 3 : bits == 32 ? 2 : bits == 16 ? 1 : 0;
-    bool integer = kind == TYPE_INT;
+    bool integer = kind == TYPE_INT || kind == TYPE_ERROR;
     if (integer && bits == 128) {
         return INFO_WIDE | (c->types.arg1[type] ? INFO_SIGNED : 0);
     }
@@ -3159,6 +3162,8 @@ call(Emit *e, u32 i, u32 type, u32 decl, u32 b, const Native *n, u32 ints)
         pair_result(e, i, t, e->info[TYPE_ID_I64]);
     } else if (check_is_flag_optional(e->c, type)) {
         pair_result(e, i, t, e->info[TYPE_ID_BOOL]);
+    } else if (check_is_error_pair(e->c, type)) {
+        pair_result(e, i, t, e->info[TYPE_ID_ERROR]);
     } else if (type != TYPE_ID_VOID) {
         bool fl = is_float(t);
         u32 d = result(e, i, e->info[type]);
@@ -3438,7 +3443,8 @@ hand_over(Emit *e, Open *o, u32 type, u32 v)
 static bool
 is_pair(const Emit *e, u32 type)
 {
-    return (e->info[type] & INFO_PAIR) || check_is_flag_optional(e->c, type);
+    return (e->info[type] & INFO_PAIR) || check_is_flag_optional(e->c, type) ||
+           check_is_error_pair(e->c, type);
 }
 
 static u8
@@ -4949,7 +4955,8 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                 case IR_RET:
                     if (e->info[type] & INFO_PAIR) {
                         move_pair(e, 0, 1, a, b);
-                    } else if (check_is_flag_optional(e->c, type)) {
+                    } else if (check_is_flag_optional(e->c, type) ||
+                               check_is_error_pair(e->c, type)) {
                         move_halves(e, type, 0, 1, a, b);
                     } else if (e->info[type] & INFO_MEMORY) {
                         return_struct(e, type, a);

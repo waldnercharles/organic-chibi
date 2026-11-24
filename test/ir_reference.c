@@ -29,6 +29,9 @@ ty(const Checker *c, u32 type)
     if (check_is_flag_optional(c, type)) {
         return ty(c, c->types.arg0[type]);
     }
+    if (kind == TYPE_ERROR_UNION) {
+        return ty(c, check_error_union_first(c, type));
+    }
     if (kind == TYPE_BOOL) {
         return (Ty){ false, false, 8 };
     }
@@ -252,7 +255,8 @@ is_aggregate(const Checker *c, u32 type)
 static bool
 is_pair(const Checker *c, u32 type)
 {
-    return c->types.kinds[type] == TYPE_SLICE || check_is_flag_optional(c, type);
+    return c->types.kinds[type] == TYPE_SLICE || check_is_flag_optional(c, type) ||
+           check_is_error_pair(c, type);
 }
 
 static u64

@@ -46,6 +46,7 @@ extern const char DEFERS[];
 extern const char VALUE_OPTIONALS[];
 extern const char STORED_OPTIONALS[];
 extern const char OPTIONAL_BRANCHES[];
+extern const char ERROR_UNIONS[];
 
 extern const char *const BACKEND_PROGRAMS[];
 extern const u32 NBACKEND_PROGRAMS;

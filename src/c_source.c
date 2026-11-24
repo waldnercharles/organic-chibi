@@ -112,11 +112,15 @@ scalar_of(const Checker *c, u32 type)
     if (check_is_flag_optional(c, type)) {
         type = c->types.arg0[type];
     }
+    if (c->types.kinds[type] == TYPE_ERROR_UNION) {
+        type = check_error_union_first(c, type);
+    }
     if (c->types.kinds[type] == TYPE_ENUM) {
         type = (u32)c->types.arg1[type];
     }
     switch (c->types.kinds[type]) {
         case TYPE_INT:
+        case TYPE_ERROR:
             return (Scalar){ false, c->types.arg1[type] != 0, c->types.arg0[type] };
         case TYPE_FLOAT: return (Scalar){ true, true, c->types.arg0[type] };
         case TYPE_BOOL: return (Scalar){ false, false, 8 };
@@ -172,6 +176,9 @@ value_name(const Checker *c, u32 type)
 {
     if (c->types.kinds[type] == TYPE_VECTOR) {
         return vector_name(c, type, false);
+    }
+    if (c->types.kinds[type] == TYPE_ERROR_UNION) {
+        type = check_error_union_first(c, type);
     }
     return is_address(c, type) ? "uint8_t *" : scalar_name(scalar_of(c, type));
 }
@@ -581,10 +588,18 @@ put_flagged_name(Source *s, u32 type)
 }
 
 static void
+put_failable_name(Source *s, u32 type)
+{
+    fprintf(s->out, "struct chibi_%sfailable_%u", s->prefix, type);
+}
+
+static void
 put_stored_type(Source *s, u32 type)
 {
     if (check_is_flag_optional(s->c, type)) {
         put_flagged_name(s, type);
+    } else if (check_is_error_pair(s->c, type)) {
+        put_failable_name(s, type);
     } else {
         put_object_type(s, type);
     }
@@ -651,6 +666,17 @@ put_flagged_type(Source *s, u32 type, u8 *seen)
     fputs("\n", s->out);
     put_flagged_name(s, type);
     fprintf(s->out, "\n{\n    %s value;\n    uint8_t present;\n};\n", value_name(s->c, type));
+}
+
+static void
+put_failable_type(Source *s, u32 type)
+{
+    if (!check_is_error_pair(s->c, type)) {
+        return;
+    }
+    fputs("\n", s->out);
+    put_failable_name(s, type);
+    fprintf(s->out, "\n{\n    %s value;\n    uint16_t code;\n};\n", value_name(s->c, type));
 }
 
 static void
@@ -1236,8 +1262,9 @@ put_call(Source *s, u32 i, u8 kind, u32 type, u32 decl, const u32 *list)
     u32 n = list[0];
     u8 result = c->types.kinds[type];
     bool flagged = check_is_flag_optional(c, type);
+    bool failable = check_is_error_pair(c, type);
 
-    bool block = result == TYPE_SLICE || result == TYPE_ARRAY || flagged;
+    bool block = result == TYPE_SLICE || result == TYPE_ARRAY || flagged || failable;
     for (u32 p = 0; p < params[0]; p++) {
         u8 k = c->types.kinds[params[1 + p]];
         block |= k == TYPE_STRUCT || k == TYPE_ARRAY;
@@ -1261,6 +1288,9 @@ put_call(Source *s, u32 i, u8 kind, u32 type, u32 decl, const u32 *list)
         fputs("chibi_slice r = ", s->out);
     } else if (flagged) {
         put_flagged_name(s, type);
+        fputs(" r = ", s->out);
+    } else if (failable) {
+        put_failable_name(s, type);
         fputs(" r = ", s->out);
     } else if (result == TYPE_ARRAY) {
         put_object_type(s, type);
@@ -1319,6 +1349,9 @@ put_call(Source *s, u32 i, u8 kind, u32 type, u32 decl, const u32 *list)
     } else if (flagged) {
         put_line(s, "v%u = r.value;", i);
         put_line(s, "v%u = r.present;", i + 1);
+    } else if (failable) {
+        put_line(s, "v%u = r.value;", i);
+        put_line(s, "v%u = r.code;", i + 1);
     } else if (result == TYPE_ARRAY) {
         put_line(s, "__builtin_memcpy(&s%u, &r, sizeof r);", list[n + 1]);
     }
@@ -1344,10 +1377,10 @@ put_return(Source *s, u32 type, u32 a, u32 b)
         put_line(s, "}");
     } else if (kind == TYPE_SLICE) {
         put_line(s, "return (chibi_slice){ %o, %o };", a, b);
-    } else if (check_is_flag_optional(s->c, type)) {
+    } else if (check_is_flag_optional(s->c, type) || check_is_error_pair(s->c, type)) {
         start_statement(s);
         fputs("return (", s->out);
-        put_flagged_name(s, type);
+        put_stored_type(s, type);
         fputs("){ ", s->out);
         put_operand(s, a);
         fputs(", ", s->out);
@@ -1396,7 +1429,8 @@ is_true(const Source *s, u32 x)
 static bool
 is_pair(const Checker *c, u32 type)
 {
-    return c->types.kinds[type] == TYPE_SLICE || check_is_flag_optional(c, type);
+    return c->types.kinds[type] == TYPE_SLICE ||
+           check_is_flag_optional(c, type) || check_is_error_pair(c, type);
 }
 
 static void
@@ -1761,6 +1795,7 @@ c_source_package(FILE *out, const Checker *c, const char *prefix)
     u8 *seen = calloc(c->types.count, 1);
     for (u32 t = NFIXED_TYPES; t < c->types.count; t++) {
         put_flagged_type(&s, t, seen);
+        put_failable_type(&s, t);
     }
     for (u32 d = 1; d < c->decls.count; d++) {
         if (c->decls.kinds[d] == DECL_STRUCT &&

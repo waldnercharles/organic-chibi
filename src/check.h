@@ -37,11 +37,11 @@ typedef enum
     TYPE_ENUM_LITERAL,
     TYPE_POINTER,
     TYPE_OPTIONAL,
+    TYPE_ERROR_UNION,
     TYPE_SLICE,
     TYPE_ARRAY,
     TYPE_STRUCT,
     TYPE_VECTOR,
-    TYPE_ERROR_UNION,
     TYPE_FN,
     TYPE_ENUM,
     TYPE_UNION,
@@ -66,7 +66,7 @@ typedef enum
     X(TYPE_ID_F32, TYPE_FLOAT, 32, 0, "f32")                                   \
     X(TYPE_ID_F64, TYPE_FLOAT, 64, 0, "f64")                                   \
     X(TYPE_ID_UINTPTR, TYPE_UINTPTR, 64, 0, "uintptr")                         \
-    X(TYPE_ID_ERROR, TYPE_ERROR, 0, 0, "error")                                \
+    X(TYPE_ID_ERROR, TYPE_ERROR, 16, 0, "error")                               \
     X(TYPE_ID_TYPE, TYPE_TYPE, 0, 0, "type")                                   \
     X(TYPE_ID_UNTYPED_INT, TYPE_UNTYPED_INT, 0, 0, "untyped integer")          \
     X(TYPE_ID_UNTYPED_FLOAT, TYPE_UNTYPED_FLOAT, 0, 0, "untyped float")        \
@@ -242,6 +242,11 @@ enum
     X(DIAG_MAYBE_NIL, "`%T` may be nil, so it needs `!!`, `?\?` or a check against `nil` first")    \
     X(DIAG_NOT_OPTIONAL, "`%T` is never nil, so `%t` does nothing")                                 \
     X(DIAG_ALWAYS_NIL, "this is always `nil`, so `!!` always traps")                                \
+    X(DIAG_CAN_FAIL, "`%T` can fail, so it needs `try` or `catch` first")                           \
+    X(DIAG_CANT_FAIL, "`%T` can't fail, so `%t` does nothing")                                      \
+    X(DIAG_TRY_RESULT, "the function returns `%U`, which can't fail, so `try` can't pass an error up") \
+    X(DIAG_HANDLER_END, "the handler can reach its end without a value of type `%U`")              \
+    X(DIAG_TOO_MANY_ERRORS, "a program can't have more than 65,535 error names")                   \
     X(DIAG_NOT_INDEXABLE, "`%T` can't be indexed")                                                  \
     X(DIAG_STRING_READ_ONLY, "a `string` is read-only, so its bytes can't be assigned or pointed to") \
     X(DIAG_NOT_INDEX, "an index must be an integer, found `%T`")                                    \
@@ -266,6 +271,7 @@ enum
     X(DIAG_MISSING_FIELD, "`%n` has no zero value, so this literal needs a value for it")          \
     X(DIAG_NO_ZERO_FIELD, "`%U` has no zero value because of its field `%n`, so this needs a value") \
     X(DIAG_NO_ZERO_ELEMENT, "`%U` has no zero value because of its `%T`, so this needs a value")    \
+    X(DIAG_NO_ZERO, "`%U` has no zero value, so this needs a value")                                \
     X(DIAG_UNUSED, "this value is not used; discard it with `_ = ...`")                             \
     X(DIAG_DISCARD, "`_` can only discard a value, as in `_ = f()`")                                \
     X(DIAG_NOT_CALLABLE, "expected a function or a type")                                           \
@@ -460,6 +466,7 @@ typedef struct
     u32 facts;
     u32 tests;
     u32 addressed;
+    u32 code_slot;
     u8 *narrowed;
     u32 narrowed_cap;
     bool reachable;
@@ -599,6 +606,10 @@ typedef struct
     u32 nentry_code;
     u32 entry;
     u32 args;
+    u32 *error_refs;
+    u32 *error_names;
+    u32 nerrors;
+    u32 errors_cap;
 } Checker;
 
 static inline bool
@@ -606,6 +617,20 @@ check_is_flag_optional(const Checker *c, u32 type)
 {
     return type >= NFIXED_TYPES && c->types.kinds[type] == TYPE_OPTIONAL &&
            !c->types.arg1[type];
+}
+
+static inline bool
+check_is_error_pair(const Checker *c, u32 type)
+{
+    return type >= NFIXED_TYPES && c->types.kinds[type] == TYPE_ERROR_UNION &&
+           c->types.arg0[type] != TYPE_ID_VOID;
+}
+
+static inline u32
+check_error_union_first(const Checker *c, u32 type)
+{
+    u32 value = (u32)c->types.arg0[type];
+    return value == TYPE_ID_VOID ? TYPE_ID_ERROR : value;
 }
 
 void check_init(Checker *c, const Names *names, const ParsedFile *files, u32 nfiles);

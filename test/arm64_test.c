@@ -505,7 +505,7 @@ rejects(const char *text)
 
 TEST_CASE(unsupported_types)
 {
-    REQUIRE(rejects("fn b(a: int) -> !void {\n    if a > 0 {\n        return\n    }\n}\n"));
+    REQUIRE(rejects("enum Kind: u8 { circle, none }\nunion Shape: Kind { circle: f32, none }\nfn c(s: Shape) -> int {\n    return 0\n}\n"));
     return true;
 }
 
@@ -6611,6 +6611,119 @@ TEST_CASE(optional_branches)
     return true;
 }
 
+static const char *const ERROR_UNION_FUNCTIONS[] = {
+    "er_basic", "er_propagate", "er_void", "er_floats", "er_small", "er_pointers", "er_ifs",
+    "er_defer", "er_loop", "er_nested", "er_values", "er_argcalls", "er_order", "er_scan",
+    "er_wide",
+};
+
+static const CallCase ERROR_UNION_CASES[] = {
+    { "er_basic", 5, 2, 2000003, 0 },
+    { "er_basic", -1, 7, -1006998, 0 },
+    { "er_basic", 12, 4, 2999800, 0 },
+    { "er_basic", 3, 3, 1001002, 0 },
+    { "er_basic", 7, 0, -1000200, 0 },
+    { "er_propagate", 5, 2, 4, 0 },
+    { "er_propagate", -1, 7, -2, 0 },
+    { "er_propagate", 12, 4, 14, 0 },
+    { "er_propagate", 7, 0, 6, 0 },
+    { "er_propagate", 150, 3, 152, 0 },
+    { "er_void", 5, 2, 0, 0 },
+    { "er_void", -1, 7, 4, 0 },
+    { "er_void", 3, 3, 3, 0 },
+    { "er_void", 150, 3, 111, 0 },
+    { "er_void", -150, 200, 1012, 0 },
+    { "er_floats", 5, 2, 250005000300, 0 },
+    { "er_floats", -1, 7, -99982500200, 0 },
+    { "er_floats", 12, 4, 600010000700, 0 },
+    { "er_floats", 3, 3, 150007500225, 0 },
+    { "er_floats", 7, 0, 350000000350, 0 },
+    { "er_small", 5, 2, 4999811, 0 },
+    { "er_small", -1, 7, 6999302, 0 },
+    { "er_small", 12, 4, 11999611, 0 },
+    { "er_small", 3, 3, 2999701, 0 },
+    { "er_small", 7, 0, 7000310, 0 },
+    { "er_pointers", 5, 2, 1301040011, 0 },
+    { "er_pointers", 12, 4, 1301540011, 0 },
+    { "er_pointers", 3, 3, 5301040111, 0 },
+    { "er_pointers", 1, -1, 311040010, 0 },
+    { "er_pointers", 2, 6, 301140011, 0 },
+    { "er_ifs", 5, 2, 2002005, 0 },
+    { "er_ifs", -1, 7, -5007008, 0 },
+    { "er_ifs", 12, 4, 6003012, 0 },
+    { "er_ifs", 3, 3, 1000993, 0 },
+    { "er_ifs", 7, 0, 2999007, 0 },
+    { "er_defer", 5, 2, 2021, 0 },
+    { "er_defer", -1, 7, -1999, 0 },
+    { "er_defer", 12, 4, 3021, 0 },
+    { "er_defer", 3, 3, 1021, 0 },
+    { "er_defer", 7, 0, -999, 0 },
+    { "er_loop", 5, 2, 279, 0 },
+    { "er_loop", -1, 7, 1, 0 },
+    { "er_loop", 12, 4, 63, 0 },
+    { "er_loop", 150, 3, 6295, 0 },
+    { "er_loop", 1, -1, 7, 0 },
+    { "er_nested", 5, 2, 20002, 0 },
+    { "er_nested", -1, 7, -70001, 0 },
+    { "er_nested", 12, 4, 30003, 0 },
+    { "er_nested", 3, 3, 10001, 0 },
+    { "er_nested", 7, 0, 0, 0 },
+    { "er_values", 5, 2, 1234, 0 },
+    { "er_values", -1, 7, 3334, 0 },
+    { "er_values", 12, 4, 1144, 0 },
+    { "er_values", 3, 3, 3234, 0 },
+    { "er_values", -150, 200, 3344, 0 },
+    { "er_argcalls", 5, 2, 517, 0 },
+    { "er_argcalls", -1, 7, -1, 0 },
+    { "er_argcalls", 12, 4, 1232, 0 },
+    { "er_argcalls", 3, 3, 330, 0 },
+    { "er_argcalls", 7, 0, 693, 0 },
+    { "er_order", 5, 2, 7005, 0 },
+    { "er_order", -1, 7, 99, 0 },
+    { "er_order", 12, 4, 15012, 0 },
+    { "er_order", 3, 3, 4003, 0 },
+    { "er_order", 7, 0, 8107, 0 },
+    { "er_scan", 5, 2, 3003, 0 },
+    { "er_scan", -1, 7, 3007, 0 },
+    { "er_scan", 299, 4, 3005, 0 },
+    { "er_scan", 300, 3, 3003, 0 },
+    { "er_scan", 0, 0, 3001, 0 },
+    { "er_wide", 5, 2, 299997, 0 },
+    { "er_wide", -1, 7, -7400, 0 },
+    { "er_wide", 12, 4, 299992, 0 },
+    { "er_wide", 3, 3, 0, 0 },
+    { "er_wide", 299, 4, 299705, 0 },
+    { "er_basic", INT64_MAX, 1, 0, TRAP_OVERFLOW },
+    { "er_void", INT64_MAX, 1, 0, TRAP_OVERFLOW },
+    { "er_floats", INT64_MAX, 1, 0, TRAP_RANGE },
+    { "er_small", INT64_MIN, 1, 0, TRAP_OVERFLOW },
+    { "er_ifs", INT64_MAX, 1, 0, TRAP_OVERFLOW },
+    { "er_loop", INT64_MAX, 1, 0, TRAP_OVERFLOW },
+    { "er_nested", INT64_MAX, 1, 0, TRAP_OVERFLOW },
+    { "er_argcalls", INT64_MIN, -1, 0, TRAP_OVERFLOW },
+    { "er_order", INT64_MAX, 1, 0, TRAP_OVERFLOW },
+    { "er_wide", INT64_MIN, 1, 0, TRAP_OVERFLOW },
+};
+
+TEST_CASE(error_unions)
+{
+    catch_traps();
+    Program p;
+    REQUIRE(build(&p, ERROR_UNIONS));
+    for (size_t k = 0; k < sizeof ERROR_UNION_CASES / sizeof ERROR_UNION_CASES[0]; k++) {
+        CallCase t = ERROR_UNION_CASES[k];
+        int64_t got = 0;
+        int trap = call_i2((I2 *)fn(&p, t.name), t.a, t.b, &got);
+        if (trap != t.trap || (!trap && got != t.want)) {
+            fprintf(stderr, "arm64 test: %s(%lld, %lld) gave %lld (trap %d)\n", t.name, (long long)t.a, (long long)t.b, (long long)got, trap);
+            REQUIRE(false);
+        }
+    }
+    REQUIRE(agree_on_grid(&p, ERROR_UNION_FUNCTIONS, sizeof ERROR_UNION_FUNCTIONS / sizeof ERROR_UNION_FUNCTIONS[0]));
+    release_program(&p);
+    return true;
+}
+
 TEST_CASE(top_level_code)
 {
     Program p;
@@ -6670,6 +6783,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(value_optionals);
     RUN_TEST_CASE(stored_optionals);
     RUN_TEST_CASE(optional_branches);
+    RUN_TEST_CASE(error_unions);
     RUN_TEST_CASE(narrow_parameters);
     RUN_TEST_CASE(constant_division);
     RUN_TEST_CASE(differential);
