@@ -8,7 +8,7 @@
 3. code generation;
 4. all four together.
 
-`make output` times the generated code against clang. `dump.c` compiles one `.chibi` file and prints each function's machine code as bytes for `llvm-mc --disassemble -triple=aarch64`.
+`make output` times the generated code against clang. `time-switch.sh TREE WORK [PROCESSES] [RUNS]` times the C build of the compiler in TREE against its release-fast translation, as `make translated` builds it, on this corpus: PROCESSES runs of each build (5 by default), interleaved, each taking the median of RUNS rounds (41). It prints the median of those medians and the best, in cycles per line and ms, then IPC and instructions per line. The cycles and instructions come from `proc_pid_rusage` on macOS; on Linux only the ms are measured. `dump.c` compiles one `.chibi` file and prints each function's machine code as bytes for `llvm-mc --disassemble -triple=aarch64`.
 
 ## What the backend does
 
