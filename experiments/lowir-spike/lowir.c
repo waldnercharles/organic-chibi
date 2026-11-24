@@ -899,6 +899,40 @@ spill_address(Lower *l)
     return address_of(l, slot(l->spill));
 }
 
+static bool
+is_pair(const Checker *c, u32 type)
+{
+    return c->types.kinds[type] == TYPE_SLICE || check_is_flag_optional(c, type);
+}
+
+static CppgmType
+second_type(const Checker *c, u32 type)
+{
+    return c->types.kinds[type] == TYPE_SLICE ? CPPGM_TYPE_I64 : CPPGM_TYPE_I1;
+}
+
+static u64
+second_offset(const Checker *c, u32 type)
+{
+    return c->types.kinds[type] == TYPE_SLICE ? 8 : check_type_size(c, c->types.arg0[type]);
+}
+
+static void
+load_pair(Lower *l, u32 i, u32 type, LowirValue p)
+{
+    const Checker *c = l->c;
+    l->values[i] = load(l, scalar_type(c, type), p);
+    l->values[i + 1] = load(l, second_type(c, type), offset(l, p, second_offset(c, type)));
+}
+
+static void
+store_pair(Lower *l, u32 type, LowirValue p, LowirValue first, LowirValue second)
+{
+    const Checker *c = l->c;
+    store(l, scalar_type(c, type), first, p);
+    store(l, second_type(c, type), second, offset(l, p, second_offset(c, type)));
+}
+
 static void
 load_at(Lower *l, u32 i, u32 type, u32 a)
 {
@@ -906,12 +940,8 @@ load_at(Lower *l, u32 i, u32 type, u32 a)
     LowirValue p = operand(l, a);
     if (kind == TYPE_STRUCT || kind == TYPE_ARRAY) {
         l->values[i] = p;
-    } else if (kind == TYPE_SLICE) {
-        l->values[i] = load(l, CPPGM_TYPE_PTR, p);
-        l->values[i + 1] = load(l, CPPGM_TYPE_I64, offset(l, p, 8));
-    } else if (check_is_flag_optional(l->c, type)) {
-        l->values[i] = load(l, scalar_type(l->c, type), p);
-        l->values[i + 1] = load(l, CPPGM_TYPE_I1, offset(l, p, check_type_size(l->c, l->c->types.arg0[type])));
+    } else if (is_pair(l->c, type)) {
+        load_pair(l, i, type, p);
     } else {
         l->values[i] = load(l, scalar_type(l->c, type), p);
     }
@@ -1672,9 +1702,21 @@ end_block(Lower *l, u32 e)
 }
 
 static void
-store_end(Lower *l, u32 e, u32 x)
+store_end(Lower *l, u32 e, u32 x, u32 y)
 {
-    CppgmType t = scalar_type(l->c, l->code->types[l->fn->first + e]);
+    const Checker *c = l->c;
+    u32 type = l->code->types[l->fn->first + e];
+
+    if (is_pair(c, type)) {
+        assert(y != NONE);
+        if (l->end_slots[e] == NONE) {
+            l->end_slots[e] = new_slot(l, c->types.kinds[type] == TYPE_SLICE ? l->slice_record : flagged_record(l, type));
+        }
+        store_pair(l, type, address_of(l, slot(l->end_slots[e])), operand(l, x), operand(l, y));
+        return;
+    }
+
+    CppgmType t = scalar_type(c, type);
     if (l->end_slots[e] == NONE) {
         l->end_slots[e] = new_slot(l, t);
     }
@@ -2157,16 +2199,7 @@ lower_instruction(Lower *l, u32 i)
         }
         case IR_STORE_PAIR: {
             const u32 *x = extra(l, b);
-            LowirValue p = operand(l, a);
-            LowirValue first = operand(l, x[0]);
-            LowirValue second = operand(l, x[1]);
-            if (check_is_flag_optional(c, type)) {
-                store(l, scalar_type(c, type), first, p);
-                store(l, CPPGM_TYPE_I1, second, offset(l, p, check_type_size(c, c->types.arg0[type])));
-                break;
-            }
-            store(l, CPPGM_TYPE_PTR, first, p);
-            store(l, CPPGM_TYPE_I64, second, offset(l, p, 8));
+            store_pair(l, type, operand(l, a), operand(l, x[0]), operand(l, x[1]));
             break;
         }
         case IR_COPY: {
@@ -2197,7 +2230,7 @@ lower_instruction(Lower *l, u32 i)
         }
         case IR_ELSE:
             if (type != TYPE_ID_NONE) {
-                store_end(l, l->ends[i], a);
+                store_end(l, l->ends[i], a, b);
             }
             jump(l, end_block(l, l->ends[i]));
             start(l, l->blocks[i]);
@@ -2205,17 +2238,19 @@ lower_instruction(Lower *l, u32 i)
         case IR_END:
             if (l->code->kinds[l->fn->first + l->opens[i]] == IR_IF &&
                 type != TYPE_ID_NONE) {
-                store_end(l, i, a);
+                store_end(l, i, a, b);
             }
             jump(l, end_block(l, i));
             start(l, l->blocks[i]);
-            if (type != TYPE_ID_NONE) {
+            if (type != TYPE_ID_NONE && is_pair(c, type)) {
+                load_pair(l, i, type, address_of(l, slot(l->end_slots[i])));
+            } else if (type != TYPE_ID_NONE) {
                 l->values[i] = load(l, scalar_type(c, type), slot(l->end_slots[i]));
             }
             break;
         case IR_EXIT:
             if (type != TYPE_ID_NONE) {
-                store_end(l, l->ends[a], b);
+                store_end(l, l->ends[a], b, NONE);
             }
             jump(l, end_block(l, l->ends[a]));
             break;
