@@ -412,6 +412,29 @@ TEST_CASE(lowir_converts_wide_edges)
     return true;
 }
 
+TEST_CASE(lowir_handles_wide_error_codes)
+{
+    char *text = wide_errors_program();
+    Build b;
+    REQUIRE(open_objects(&b));
+    bool ok = add_object(&b, 0, text, 'g') && link_objects(&b);
+
+    u32 tested = 0;
+    if (ok) {
+        Package p;
+        ok = check_source(&p, text) && agree_on_grid(&b, &p, 0, &tested);
+        release(&p);
+    }
+    if (ok && tested != 2) {
+        fprintf(stderr, "lowir test: %u wide error functions take two ints, expected 2\n", tested);
+        ok = false;
+    }
+    close_objects(&b, ok);
+    free(text);
+    REQUIRE(ok);
+    return true;
+}
+
 TEST_CASE(lowir_runs_vectors)
 {
     const char *const programs[] = { VECTOR_RUNS, VECTOR_GRID, VECTOR_BODY,
@@ -464,6 +487,7 @@ main(void)
     RUN_TEST_CASE(lowir_works_with_c);
     RUN_TEST_CASE(lowir_passes_arrays);
     RUN_TEST_CASE(lowir_converts_wide_edges);
+    RUN_TEST_CASE(lowir_handles_wide_error_codes);
     RUN_TEST_CASE(lowir_runs_vectors);
 
     printf("lowir test at -O%u: %s\n", lowir_level, pu_test_failed() ? "FAILED" : "passed");
