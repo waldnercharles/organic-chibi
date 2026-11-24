@@ -253,6 +253,15 @@ report(Checker *c, u32 file, u32 token, u8 kind, u32 arg, u32 arg2)
                                           .kind = kind };
 }
 
+static NOINLINE COLD void
+report_from(Checker *c, u32 file, u32 token, u8 kind, u32 arg, u32 arg2, SetInput origin)
+{
+    report(c, file, token, kind, arg, arg2);
+    Diagnostic *d = &c->diags[c->ndiags - 1];
+    d->origin_file = origin.file;
+    d->origin_token = origin.token;
+}
+
 static void
 reserve_types(Checker *c, u32 cap)
 {
@@ -1973,7 +1982,15 @@ set_type(Checker *c, u32 list)
 static bool
 is_set(const Checker *c, u32 type)
 {
-    return type >= NFIXED_TYPES && c->types.kinds[type] == TYPE_ERROR;
+    return type >= NFIXED_TYPES && c->types.kinds[type] == TYPE_ERROR &&
+           (c->types.arg1[type] & SET_VAR) == 0;
+}
+
+static bool
+is_var(const Checker *c, u32 type)
+{
+    return type >= NFIXED_TYPES && c->types.kinds[type] == TYPE_ERROR &&
+           (c->types.arg1[type] & SET_VAR) != 0;
 }
 
 static u32
@@ -1984,9 +2001,9 @@ error_set_of(const Checker *c, u32 type)
 }
 
 static bool
-set_has(const Checker *c, u32 set, u32 code)
+list_has(const Checker *c, u32 list, u32 code)
 {
-    const u32 *codes = c->lists + c->types.arg1[set];
+    const u32 *codes = c->lists + list;
     u32 lo = 1;
     u32 hi = codes[0] + 1;
     while (lo < hi) {
@@ -1998,6 +2015,12 @@ set_has(const Checker *c, u32 set, u32 code)
         }
     }
     return lo <= codes[0] && codes[lo] == code;
+}
+
+static bool
+set_has(const Checker *c, u32 set, u32 code)
+{
+    return list_has(c, (u32)c->types.arg1[set], code);
 }
 
 static u32
@@ -2023,9 +2046,47 @@ code_of(const Checker *c, Operand o)
     return is_constant(o) ? (u32)exact_bits(&c->exacts, value_of(o)) : 0;
 }
 
+static NOINLINE u32
+add_set_var(Checker *c, u32 decl)
+{
+    if (c->nset_vars == c->set_vars_cap) {
+        c->set_vars_cap = c->set_vars_cap ? c->set_vars_cap * 2 : 16;
+        c->set_vars = resize(c->set_vars, c->set_vars_cap, sizeof *c->set_vars);
+    }
+
+    u32 type = add_type(c, TYPE_ERROR, c->types.arg0[TYPE_ID_ERROR], SET_VAR | c->nset_vars);
+    c->set_vars[c->nset_vars++] = (SetVar){ type, decl, 0 };
+    return type;
+}
+
+static NOINLINE void
+add_input(Checker *c, u32 file, u32 token, u32 var, u32 from, u32 code)
+{
+    if (c->nset_inputs == c->set_inputs_cap) {
+        c->set_inputs_cap = c->set_inputs_cap ? c->set_inputs_cap * 2 : 64;
+        c->set_inputs = resize(c->set_inputs, c->set_inputs_cap, sizeof *c->set_inputs);
+    }
+    SetInput in = { (u32)c->types.arg1[var], from, code, file, token };
+    c->set_inputs[c->nset_inputs++] = in;
+}
+
+static NOINLINE void
+add_check(Checker *c, SetCheck check)
+{
+    if (c->nset_checks == c->set_checks_cap) {
+        c->set_checks_cap = c->set_checks_cap ? c->set_checks_cap * 2 : 16;
+        c->set_checks = resize(c->set_checks, c->set_checks_cap, sizeof *c->set_checks);
+    }
+    c->set_checks[c->nset_checks++] = check;
+}
+
 static NOINLINE bool
 set_fits(Checker *c, u32 file, u32 token, u32 from, u32 to, u32 code)
 {
+    if (is_var(c, to) || (is_var(c, from) && is_set(c, to))) {
+        add_check(c, (SetCheck){ file, token, from, to, code, 0, false });
+        return true;
+    }
     if (!is_set(c, to)) {
         return true;
     }
@@ -2080,11 +2141,57 @@ union_sets(Checker *c, u32 a, u32 b)
     return set_type(c, list);
 }
 
+static bool
+is_inferred_union(const Checker *c, u32 type)
+{
+    return c->types.kinds[type] == TYPE_ERROR_UNION &&
+           is_var(c, (u32)c->types.arg1[type]);
+}
+
+static bool
+pass_set(Checker *c, u32 file, u32 token, u32 from, u32 to, u32 code)
+{
+    if (!is_var(c, to)) {
+        return set_fits(c, file, token, from, to, code);
+    }
+    assert(
+        c->set_vars[(u32)c->types.arg1[to]].decl == c->body.decl ||
+        c->set_vars[(u32)c->types.arg1[to]].decl == 0
+    );
+    add_input(c, file, token, to, from, code);
+    return true;
+}
+
+static NOINLINE u32
+join_vars(Checker *c, u32 file, u32 token, Operand a, Operand b)
+{
+    Operand other = is_var(c, a.type) ? b : a;
+    u32 var = is_var(c, a.type) ? a.type : b.type;
+    if (other.type == var) {
+        return var;
+    }
+    if (other.type == TYPE_ID_ERROR && !is_constant(other)) {
+        return TYPE_ID_ERROR;
+    }
+    if (other.type == TYPE_ID_ERROR) {
+        set_fits(c, file, token, TYPE_ID_ERROR, var, code_of(c, other));
+        return var;
+    }
+
+    u32 joined = add_set_var(c, 0);
+    add_input(c, file, token, joined, a.type, 0);
+    add_input(c, file, token, joined, b.type, 0);
+    return joined;
+}
+
 static u32
 join_sets(Checker *c, u32 file, u32 token, Operand a, Operand b)
 {
     if (is_set(c, a.type) && is_set(c, b.type)) {
         return union_sets(c, a.type, b.type);
+    }
+    if (is_var(c, a.type) || is_var(c, b.type)) {
+        return join_vars(c, file, token, a, b);
     }
     Operand any = is_set(c, a.type) ? b : a;
     u32 set = is_set(c, a.type) ? a.type : b.type;
@@ -2425,7 +2532,7 @@ convert_error(Checker *c, u32 file, u32 token, Operand o, u32 to)
     u32 from = o.type;
     if (t->kinds[from] == TYPE_ERROR_UNION) {
         if (t->kinds[to] == TYPE_ERROR_UNION && t->arg0[to] == t->arg0[from]) {
-            if (!set_fits(c, file, token, error_set_of(c, from), error_set_of(c, to), 0)) {
+            if (!pass_set(c, file, token, error_set_of(c, from), error_set_of(c, to), 0)) {
                 return poison;
             }
             return (Operand){ to, o.ref };
@@ -2440,7 +2547,7 @@ convert_error(Checker *c, u32 file, u32 token, Operand o, u32 to)
 
     u32 value = t->arg0[to];
     if (t->kinds[from] == TYPE_ERROR) {
-        if (!set_fits(c, file, token, from, error_set_of(c, to), code_of(c, o))) {
+        if (!pass_set(c, file, token, from, error_set_of(c, to), code_of(c, o))) {
             return poison;
         }
         if (value == TYPE_ID_VOID) {
@@ -8551,6 +8658,11 @@ settle_peers(Checker *c, u32 file, Peers peers, u32 *operands)
     type = type == TYPE_ID_UNTYPED_INT   ? TYPE_ID_I64
          : type == TYPE_ID_UNTYPED_FLOAT ? TYPE_ID_F32
                                          : type;
+    bool failable = c->types.kinds[type] == TYPE_ERROR_UNION;
+    if (failable) {
+        u32 var = add_set_var(c, c->body.decl);
+        type = intern_type(c, TYPE_ERROR_UNION, c->types.arg0[type], var);
+    }
 
     IrCode *code = c->body.code;
     for (u32 k = peers.first; k != 0; k = c->breaks[k - 1].next) {
@@ -8563,14 +8675,26 @@ settle_peers(Checker *c, u32 file, Peers peers, u32 *operands)
         if (is_constant(b.value)) {
             bool lanes = lane_vector(c, type) != 0;
             Operand x = lanes ? poison : convert(c, file, b.token, b.value, type);
-            if (lanes) {
+            if (lanes || (is_pair(c, x) && code->kinds[at] != IR_RET)) {
                 report(c, file, b.token, DIAG_UNSUPPORTED, 0, 0);
+                x = poison;
             }
             if (x.type == TYPE_ID_NONE) {
                 code->kinds[at] = IR_NOP;
                 continue;
             }
-            operands[at] = operand_ir(c, x);
+            if (is_pair(c, x)) {
+                Pair p = pair_of(c, x);
+                code->as[at] = p.first;
+                code->bs[at] = p.second;
+            } else {
+                operands[at] = operand_ir(c, x);
+            }
+        } else if (failable && c->types.kinds[b.value.type] == TYPE_ERROR_UNION) {
+            if (convert(c, file, b.token, b.value, type).type == TYPE_ID_NONE) {
+                code->kinds[at] = IR_NOP;
+                continue;
+            }
         } else if (b.value.type != type) {
             if (!may_widen(c, b.value) || !widens(c, b.value.type, type)) {
                 report(c, file, b.token, DIAG_MISMATCH, b.value.type, type);
@@ -8863,8 +8987,22 @@ first_missing(const CaseRange *cases, u32 n, u32 *j, u64 lo, u64 hi, bool *missi
 }
 
 static NOINLINE void
+defer_switch(Checker *c, u32 file, const Switch *s, const CaseRange *cases, u32 n)
+{
+    u32 list = reserve_list(c, n);
+    for (u32 k = 0; k < n; k++) {
+        c->lists[list + 1 + k] = (u32)cases[k].lo;
+    }
+    add_check(c, (SetCheck){ file, s->token, s->type, 0, 0, list, true });
+}
+
+static NOINLINE void
 report_missing_error(Checker *c, u32 file, const Switch *s, const CaseRange *cases, u32 n)
 {
+    if (is_var(c, s->type)) {
+        defer_switch(c, file, s, cases, n);
+        return;
+    }
     if (!is_set(c, s->type)) {
         report(c, file, s->token, DIAG_SWITCH_ANY, 0, s->type);
         return;
@@ -9492,6 +9630,11 @@ settle_value_if(Checker *c, u32 file, u32 mode, u32 at, Operand a, u32 a_token, 
         }
         a.type = peer;
     }
+    bool joined = c->types.kinds[peer] == TYPE_ERROR_UNION && a.type != b.type &&
+                  (is_inferred_union(c, a.type) || is_inferred_union(c, b.type));
+    if (joined) {
+        peer = intern_type(c, TYPE_ERROR_UNION, c->types.arg0[peer], add_set_var(c, 0));
+    }
     u32 type = is_vector(c, peer) ? peer
              : peer == a.type
                  ? value_type(c, file, a_token, (Operand){ peer, a.ref })
@@ -9511,6 +9654,10 @@ settle_value_if(Checker *c, u32 file, u32 mode, u32 at, Operand a, u32 a_token, 
         }
         code->as[to] = is_pair(c, x) ? pair_of(c, x).first : operand_ir(c, x);
         code->bs[to] = is_pair(c, x) ? pair_of(c, x).second : 0;
+    } else if (joined && c->types.kinds[a.type] == TYPE_ERROR_UNION) {
+        if (convert(c, file, a_token, a, type).type == TYPE_ID_NONE) {
+            return TYPE_ID_NONE;
+        }
     } else if (a.type != value) {
         if (!may_widen(c, a) || !widens(c, a.type, value)) {
             report(c, file, a_token, DIAG_MISMATCH, a.type, type);
@@ -9748,7 +9895,7 @@ try_value(Checker *c, u32 file, u32 token, Operand o)
         report(c, file, token, DIAG_DEFER_EXIT, 0, 0);
         return poison;
     }
-    if (!set_fits(c, file, token, error_set_of(c, o.type), error_set_of(c, ret), 0)) {
+    if (!pass_set(c, file, token, error_set_of(c, o.type), error_set_of(c, ret), 0)) {
         return poison;
     }
 
@@ -10880,6 +11027,10 @@ finish_signature(Checker *c, u32 decl)
         if (external || exported) {
             refuse_non_c(c, file, c->stack_tokens[end], ret, not_c);
         }
+        if (ret >= NFIXED_TYPES && c->types.kinds[ret] == TYPE_ERROR_UNION &&
+            !external && c->types.arg1[ret] == 0) {
+            ret = intern_type(c, TYPE_ERROR_UNION, c->types.arg0[ret], add_set_var(c, decl));
+        }
     }
     bool variadic = end > m + 1 && c->stack[end - 1].type == OPERAND_VARIADIC;
     end -= variadic;
@@ -11504,6 +11655,295 @@ declare(Checker *c)
     }
 }
 
+typedef struct
+{
+    u32 *first;
+    u32 *order;
+    u32 *seen;
+    u32 *queue;
+    u32 visit;
+} SetGraph;
+
+static u32
+var_of(const Checker *c, u32 type)
+{
+    return (u32)c->types.arg1[type];
+}
+
+static u32
+resolved_type(const Checker *c, u32 type)
+{
+    return is_var(c, type) ? c->set_vars[var_of(c, type)].resolved : type;
+}
+
+static u32
+set_size(const Checker *c, u32 set)
+{
+    return c->lists[c->types.arg1[set]];
+}
+
+static NOINLINE void
+resolve_component(Checker *c, const SetGraph *g, const u32 *members, u32 n, const u32 *components)
+{
+    u32 component = components[members[0]];
+    bool any = false;
+    u32 count = 0;
+    for (u32 k = 0; k < n; k++) {
+        u32 v = members[k];
+        for (u32 e = g->first[v]; e < g->first[v + 1]; e++) {
+            SetInput in = c->set_inputs[g->order[e]];
+            if (in.code != 0) {
+                count++;
+            } else if (is_set(c, in.from)) {
+                count += set_size(c, in.from);
+            } else if (!is_var(c, in.from)) {
+                any = true;
+            } else if (components[var_of(c, in.from)] != component) {
+                u32 r = c->set_vars[var_of(c, in.from)].resolved;
+                if (is_set(c, r)) {
+                    count += set_size(c, r);
+                } else {
+                    any = true;
+                }
+            }
+        }
+    }
+
+    u32 resolved = TYPE_ID_ERROR;
+    if (!any) {
+        u32 list = reserve_list(c, count);
+        u32 *codes = c->lists + list;
+        u32 filled = 0;
+        for (u32 k = 0; k < n; k++) {
+            u32 v = members[k];
+            for (u32 e = g->first[v]; e < g->first[v + 1]; e++) {
+                SetInput in = c->set_inputs[g->order[e]];
+                u32 from = in.from;
+                if (in.code != 0) {
+                    filled++;
+                    codes[filled] = in.code;
+                    continue;
+                }
+                if (is_var(c, from) && components[var_of(c, from)] == component) {
+                    continue;
+                }
+                from = resolved_type(c, from);
+                const u32 *more = c->lists + c->types.arg1[from];
+                for (u32 i = 1; i <= more[0]; i++) {
+                    filled++;
+                    codes[filled] = more[i];
+                }
+            }
+        }
+        qsort(codes + 1, filled, sizeof *codes, compare_codes);
+
+        u32 kept = 0;
+        for (u32 i = 1; i <= filled; i++) {
+            if (kept == 0 || codes[kept] != codes[i]) {
+                kept++;
+                codes[kept] = codes[i];
+            }
+        }
+        codes[0] = kept;
+        c->nlists = list + kept + 1;
+        resolved = set_type(c, list);
+    }
+    for (u32 k = 0; k < n; k++) {
+        c->set_vars[members[k]].resolved = resolved;
+    }
+}
+
+static NOINLINE SetInput
+find_origin(Checker *c, SetGraph *g, u32 var, u32 code)
+{
+    g->visit++;
+    u32 head = 0;
+    u32 tail = 0;
+    g->queue[tail++] = var_of(c, var);
+    g->seen[var_of(c, var)] = g->visit;
+    while (head < tail) {
+        u32 v = g->queue[head++];
+        for (u32 e = g->first[v]; e < g->first[v + 1]; e++) {
+            SetInput in = c->set_inputs[g->order[e]];
+            bool gives = code != 0 ? in.code == code ||
+                                         (in.code == 0 && is_set(c, in.from) &&
+                                          set_has(c, in.from, code))
+                                   : in.code == 0 && in.from == TYPE_ID_ERROR;
+            if (gives) {
+                return in;
+            }
+        }
+        for (u32 e = g->first[v]; e < g->first[v + 1]; e++) {
+            SetInput in = c->set_inputs[g->order[e]];
+            if (in.code != 0 || !is_var(c, in.from)) {
+                continue;
+            }
+            u32 w = var_of(c, in.from);
+            u32 r = c->set_vars[w].resolved;
+            bool holds = code != 0 ? is_set(c, r) && set_has(c, r, code)
+                                   : !is_set(c, r);
+            if (holds && g->seen[w] != g->visit) {
+                g->seen[w] = g->visit;
+                g->queue[tail++] = w;
+            }
+        }
+    }
+    assert(false && "an inferred set holds an error that none of its inputs gives");
+    return c->set_inputs[0];
+}
+
+static NOINLINE void
+check_switch_set(Checker *c, SetGraph *g, SetCheck k)
+{
+    u32 set = resolved_type(c, k.from);
+    if (!is_set(c, set)) {
+        report_from(c, k.file, k.token, DIAG_SWITCH_ANY_FROM, 0, 0, find_origin(c, g, k.from, 0));
+        return;
+    }
+
+    const u32 *codes = c->lists + c->types.arg1[set];
+    for (u32 i = 1; i <= codes[0]; i++) {
+        if (!list_has(c, k.cases, codes[i])) {
+            SetInput origin = find_origin(c, g, k.from, codes[i]);
+            report_from(c, k.file, k.token, DIAG_MISSING_ERROR_FROM, c->error_names[codes[i]], 0, origin);
+            return;
+        }
+    }
+}
+
+static NOINLINE void
+check_set_fit(Checker *c, SetGraph *g, SetCheck k)
+{
+    u32 to = resolved_type(c, k.to);
+    if (!is_set(c, to)) {
+        return;
+    }
+    u32 from = resolved_type(c, k.from);
+    bool inferred = k.code == 0 && is_var(c, k.from);
+    if (k.code == 0 && !is_set(c, from)) {
+        if (inferred) {
+            report_from(c, k.file, k.token, DIAG_ANY_ERROR_FROM, 0, k.to, find_origin(c, g, k.from, 0));
+        } else {
+            report(c, k.file, k.token, DIAG_ANY_ERROR, k.from, k.to);
+        }
+        return;
+    }
+
+    u32 missing = k.code;
+    if (k.code != 0) {
+        missing = set_has(c, to, k.code) ? 0 : k.code;
+    } else {
+        missing = first_outside(c, from, to);
+    }
+    if (missing != 0 && inferred) {
+        SetInput origin = find_origin(c, g, k.from, missing);
+        report_from(c, k.file, k.token, DIAG_NOT_IN_SET_FROM, c->error_names[missing], k.to, origin);
+    } else if (missing != 0) {
+        report(c, k.file, k.token, DIAG_NOT_IN_SET, c->error_names[missing], k.to);
+    }
+}
+
+static NOINLINE void
+solve_sets(Checker *c)
+{
+    u32 n = c->nset_vars;
+    u32 *block = calloc((size_t)9 * n + c->nset_inputs + 2, sizeof *block);
+    u32 *first = block;
+    u32 *next = first + n + 1;
+    u32 *index = next + n + 1;
+    u32 *low = index + n;
+    u32 *components = low + n;
+    u32 *stack = components + n;
+    u32 *path = stack + n;
+    u32 *seen = path + n;
+    u32 *queue = seen + n;
+    u32 *order = queue + n;
+
+    for (u32 i = 0; i < c->nset_inputs; i++) {
+        first[c->set_inputs[i].var + 1]++;
+    }
+    for (u32 v = 0; v < n; v++) {
+        first[v + 1] += first[v];
+    }
+    memcpy(next, first, (n + 1) * sizeof *next);
+    for (u32 i = 0; i < c->nset_inputs; i++) {
+        u32 v = c->set_inputs[i].var;
+        order[next[v]] = i;
+        next[v]++;
+    }
+    SetGraph g = { first, order, seen, queue, 0 };
+
+    u32 counter = 0;
+    u32 top = 0;
+    u32 ncomponents = 0;
+    for (u32 root = 0; root < n; root++) {
+        if (index[root] != 0) {
+            continue;
+        }
+        u32 depth = 0;
+        u32 enter = root;
+        for (;;) {
+            if (enter != NO_SLOT) {
+                counter++;
+                index[enter] = counter;
+                low[enter] = counter;
+                components[enter] = NO_SLOT;
+                stack[top++] = enter;
+                path[depth++] = enter;
+                next[enter] = g.first[enter];
+                enter = NO_SLOT;
+            }
+            if (depth == 0) {
+                break;
+            }
+
+            u32 v = path[depth - 1];
+            if (next[v] < g.first[v + 1]) {
+                SetInput in = c->set_inputs[g.order[next[v]]];
+                next[v]++;
+                if (in.code != 0 || !is_var(c, in.from)) {
+                    continue;
+                }
+                u32 w = var_of(c, in.from);
+                if (index[w] == 0) {
+                    enter = w;
+                } else if (components[w] == NO_SLOT && index[w] < low[v]) {
+                    low[v] = index[w];
+                }
+                continue;
+            }
+
+            depth--;
+            if (depth > 0 && low[v] < low[path[depth - 1]]) {
+                low[path[depth - 1]] = low[v];
+            }
+            if (low[v] == index[v]) {
+                u32 start = top - 1;
+                while (stack[start] != v) {
+                    start--;
+                }
+                for (u32 k = start; k < top; k++) {
+                    components[stack[k]] = ncomponents;
+                }
+                resolve_component(c, &g, stack + start, top - start, components);
+                ncomponents++;
+                top = start;
+            }
+        }
+    }
+
+    for (u32 i = 0; i < c->nset_checks; i++) {
+        SetCheck k = c->set_checks[i];
+        if (k.exhaustive) {
+            check_switch_set(c, &g, k);
+        } else {
+            check_set_fit(c, &g, k);
+        }
+    }
+
+    free(block);
+}
+
 static int
 compare_diagnostics(const void *a, const void *b)
 {
@@ -11696,6 +12136,9 @@ check_package(Checker *c)
             check_body(c, decl);
         }
     }
+    if (c->nset_vars) {
+        solve_sets(c);
+    }
 
     if (c->ndiags > 1) {
         qsort(c->diags, c->ndiags, sizeof *c->diags, compare_diagnostics);
@@ -11751,17 +12194,21 @@ print_type(FILE *out, const Checker *c, u32 type)
             print_type(out, c, t->arg0[type]);
             return;
         case TYPE_ERROR: {
+            if (is_var(c, type)) {
+                print_type(out, c, c->set_vars[var_of(c, type)].resolved);
+                return;
+            }
             const u32 *codes = c->lists + t->arg1[type];
-            fputs("error.{ ", out);
+            fputs(codes[0] ? "error.{ " : "error.{", out);
             for (u32 i = 1; i <= codes[0]; i++) {
                 fputs(i > 1 ? ", " : "", out);
                 print_name(out, c, c->error_names[codes[i]]);
             }
-            fputs(" }", out);
+            fputs(codes[0] ? " }" : "}", out);
             return;
         }
         case TYPE_ERROR_UNION:
-            if (t->arg1[type]) {
+            if (t->arg1[type] && !is_var(c, (u32)t->arg1[type])) {
                 print_type(out, c, (u32)t->arg1[type]);
             }
             fputc('!', out);
@@ -12092,6 +12539,12 @@ check_print_diagnostics(FILE *out, const Checker *c)
                     print_location(out, f, f->nodes.tokens[d.arg2]);
                     break;
                 case 'l': print_location(out, f, d.arg2); break;
+                case 'o': {
+                    const ParsedFile *g = &c->files[d.origin_file];
+                    fprintf(out, "%s:", g->path);
+                    print_location(out, g, d.origin_token);
+                    break;
+                }
                 case 'w': print_constant(out, c, d.arg2, d.arg); break;
                 case 'v': exact_print(out, &c->exacts, d.arg); break;
                 case 'c': fprintf(out, "%u", d.arg); break;
@@ -12193,7 +12646,11 @@ print_decl(FILE *out, const Checker *c, u32 decl)
             fputs(d->member_counts[decl] ? "" : variadic ? "(..)" : "()", out);
             print_members(out, c, decl, "(", variadic ? ", ..)" : ")");
             fputs(" -> ", out);
-            print_type(out, c, (u32)c->types.arg1[type]);
+            u32 ret = (u32)c->types.arg1[type];
+            if (is_inferred_union(c, ret)) {
+                print_type(out, c, (u32)c->types.arg1[ret]);
+            }
+            print_type(out, c, ret);
             break;
         }
         case DECL_VAR:
@@ -12581,6 +13038,9 @@ check_free(Checker *c)
     free(t->map);
     free(c->tuple_map);
     free(c->set_map);
+    free(c->set_vars);
+    free(c->set_inputs);
+    free(c->set_checks);
 
     for (u32 i = 1; i <= c->nbuilders; i++) {
         code_free(&c->builders[i]);

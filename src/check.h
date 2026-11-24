@@ -141,6 +141,11 @@ enum
 
 enum
 {
+    SET_VAR = 1ull << 32,
+};
+
+enum
+{
     PHASE_NONE,
     PHASE_DECLARED,
     PHASE_RESOLVED,
@@ -252,6 +257,8 @@ enum
     X(DIAG_ERROR_TWICE, "`error.%n` is already in this set at %l")                                 \
     X(DIAG_NOT_IN_SET, "`%U` can't hold `error.%n`")                                               \
     X(DIAG_ANY_ERROR, "`%T` can hold any error, and `%U` can't")                                   \
+    X(DIAG_NOT_IN_SET_FROM, "`%U` can't hold `error.%n`, which comes from %o")                     \
+    X(DIAG_ANY_ERROR_FROM, "`%U` can't hold any error, which comes from %o")                       \
     X(DIAG_NOT_INDEXABLE, "`%T` can't be indexed")                                                  \
     X(DIAG_STRING_READ_ONLY, "a `string` is read-only, so its bytes can't be assigned or pointed to") \
     X(DIAG_NOT_INDEX, "an index must be an integer, found `%T`")                                    \
@@ -315,6 +322,8 @@ enum
     X(DIAG_MISSING_MEMBER, "the switch doesn't handle `.%n`; add an arm for it or a `_` arm")     \
     X(DIAG_MISSING_ERROR, "the switch doesn't handle `error.%n`; add an arm for it or a `_` arm") \
     X(DIAG_SWITCH_ANY, "`%U` can hold any error, so the switch needs a `_` arm")                  \
+    X(DIAG_MISSING_ERROR_FROM, "the switch doesn't handle `error.%n`, which comes from %o; add an arm for it or a `_` arm") \
+    X(DIAG_SWITCH_ANY_FROM, "the switch can get any error, which comes from %o, so it needs a `_` arm") \
     X(DIAG_ARM_END, "this arm can reach its end without a value")                                 \
     X(DIAG_UNSUPPORTED, "the checker doesn't support this yet")
 // clang-format on
@@ -331,6 +340,8 @@ typedef struct
     u32 token;
     u32 arg;
     u32 arg2;
+    u32 origin_file;
+    u32 origin_token;
     u8 kind;
 } Diagnostic;
 
@@ -430,6 +441,33 @@ typedef struct
     u32 arm;
     u32 token;
 } CaseRange;
+
+typedef struct
+{
+    u32 type;
+    u32 decl;
+    u32 resolved;
+} SetVar;
+
+typedef struct
+{
+    u32 var;
+    u32 from;
+    u32 code;
+    u32 file;
+    u32 token;
+} SetInput;
+
+typedef struct
+{
+    u32 file;
+    u32 token;
+    u32 from;
+    u32 to;
+    u32 code;
+    u32 cases;
+    bool exhaustive;
+} SetCheck;
 
 typedef struct
 {
@@ -610,6 +648,15 @@ typedef struct
     u32 *set_map;
     u32 set_mask;
     u32 set_count;
+    SetVar *set_vars;
+    u32 nset_vars;
+    u32 set_vars_cap;
+    SetInput *set_inputs;
+    u32 nset_inputs;
+    u32 set_inputs_cap;
+    SetCheck *set_checks;
+    u32 nset_checks;
+    u32 set_checks_cap;
     u32 zeroed;
     u32 zeroed_align;
     u32 *entry_code;
