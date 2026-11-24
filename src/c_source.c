@@ -1393,6 +1393,12 @@ is_true(const Source *s, u32 x)
     return s->code->consts[s->fn->first_const + (x & ~IR_CONST)].bits != 0;
 }
 
+static bool
+is_pair(const Checker *c, u32 type)
+{
+    return c->types.kinds[type] == TYPE_SLICE || check_is_flag_optional(c, type);
+}
+
 static void
 put_instruction(Source *s, u32 i)
 {
@@ -1573,6 +1579,9 @@ put_instruction(Source *s, u32 i)
             }
             if (type != TYPE_ID_NONE) {
                 put_line(s, "v%u = %o;", s->ends[i], a);
+                if (is_pair(s->c, type)) {
+                    put_line(s, "v%u = %o;", s->ends[i] + 1, b);
+                }
             }
             s->depth--;
             put_line(s, "} else {");
@@ -1583,6 +1592,9 @@ put_instruction(Source *s, u32 i)
             if (s->code->kinds[s->fn->first + s->opens[i]] == IR_IF) {
                 if (type != TYPE_ID_NONE) {
                     put_line(s, "v%u = %o;", i, a);
+                    if (is_pair(s->c, type)) {
+                        put_line(s, "v%u = %o;", i + 1, b);
+                    }
                 }
                 assert(s->depth > 1);
                 s->depth--;

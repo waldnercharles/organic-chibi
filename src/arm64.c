@@ -282,6 +282,7 @@ typedef struct
     u64 min;
     u8 kind;
     u8 result;
+    u8 result2;
     bool dead_else;
 } Open;
 
@@ -3241,32 +3242,32 @@ store_pair(Emit *e, u32 a, u32 b)
 }
 
 static void
-return_pair(Emit *e, u32 a, u32 b)
+move_pair(Emit *e, u32 d0, u32 d1, u32 a, u32 b)
 {
-    if (in_register(e, a, 1) && in_register(e, b, 0)) {
-        mov(e, SF, X16, 0);
-        mov(e, SF, 0, 1);
-        mov(e, SF, 1, X16);
+    if (in_register(e, a, d1) && in_register(e, b, d0)) {
+        mov(e, SF, X16, d0);
+        mov(e, SF, d0, d1);
+        mov(e, SF, d1, X16);
         release(e, a);
         release(e, b);
-    } else if (in_register(e, b, 0)) {
-        move_into(e, 1, b, false);
-        move_into(e, 0, a, false);
+    } else if (in_register(e, b, d0)) {
+        move_into(e, d1, b, false);
+        move_into(e, d0, a, false);
     } else {
-        move_into(e, 0, a, false);
-        move_into(e, 1, b, false);
+        move_into(e, d0, a, false);
+        move_into(e, d1, b, false);
     }
 }
 
 static NOINLINE void
-return_flagged(Emit *e, u32 type, u32 a, u32 b)
+move_halves(Emit *e, u32 type, u32 d0, u32 d1, u32 a, u32 b)
 {
     if (!is_float(e->info[type])) {
-        return_pair(e, a, b);
+        move_pair(e, d0, d1, a, b);
         return;
     }
-    move_into(e, 0, a, true);
-    move_into(e, 1, b, false);
+    move_into(e, d0, a, true);
+    move_into(e, d1, b, false);
 }
 
 static void
@@ -3432,6 +3433,47 @@ hand_over(Emit *e, Open *o, u32 type, u32 v)
         }
     }
     move_into(e, o->result, v, fl);
+}
+
+static bool
+is_pair(const Emit *e, u32 type)
+{
+    return (e->info[type] & INFO_PAIR) || check_is_flag_optional(e->c, type);
+}
+
+static u8
+result_reg(Emit *e, u32 v, bool fl)
+{
+    if (!(v & IR_CONST) && in_pool(e->regs[v])) {
+        return e->regs[v] & 31u;
+    }
+    return (u8)take_reg(e, fl);
+}
+
+static NOINLINE void
+hand_over_pair(Emit *e, Open *o, u32 type, u32 a, u32 b)
+{
+    bool fl = is_float(e->info[type]);
+    o->result = result_reg(e, a, fl);
+    o->result2 = result_reg(e, b, false);
+    assert(fl || o->result != o->result2);
+
+    move_halves(e, type, o->result, o->result2, a, b);
+    *(fl ? &e->free_float : &e->free_int) |= 1u << o->result;
+    e->free_int |= 1u << o->result2;
+}
+
+static NOINLINE void
+end_pair(Emit *e, const Open *o, u32 i, u32 type, u32 a, u32 b)
+{
+    move_halves(e, type, o->result, o->result2, a, b);
+
+    u32 r = o->result2;
+    assert(e->free_int & (1u << r));
+    e->free_int &= ~(1u << r);
+    e->holders[r] = i + 1;
+    e->regs[i + 1] = (u8)r;
+    e->vinfo[i + 1] = e->info[e->ir->types[e->fn->first + i + 1]];
 }
 
 static void
@@ -4906,9 +4948,9 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                 case IR_ASSUME: release(e, a); break;
                 case IR_RET:
                     if (e->info[type] & INFO_PAIR) {
-                        return_pair(e, a, b);
+                        move_pair(e, 0, 1, a, b);
                     } else if (check_is_flag_optional(e->c, type)) {
-                        return_flagged(e, type, a, b);
+                        move_halves(e, type, 0, 1, a, b);
                     } else if (e->info[type] & INFO_MEMORY) {
                         return_struct(e, type, a);
                     } else if (type != TYPE_ID_VOID) {
@@ -4974,7 +5016,9 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                         i = arm_end(e, i);
                         break;
                     }
-                    if (type != TYPE_ID_NONE) {
+                    if (type != TYPE_ID_NONE && is_pair(e, type)) {
+                        hand_over_pair(e, o, type, a, b);
+                    } else if (type != TYPE_ID_NONE) {
                         hand_over(e, o, type, a);
                     }
                     add_fixup(e, &o->ends);
@@ -4987,7 +5031,9 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                     Open o = e->open[--e->nopen];
                     if (type != TYPE_ID_NONE) {
                         bool fl = is_float(e->info[type]);
-                        if (o.kind == IR_IF) {
+                        if (o.kind == IR_IF && is_pair(e, type)) {
+                            end_pair(e, &o, i, type, a, b);
+                        } else if (o.kind == IR_IF) {
                             move_into(e, o.result, a, fl);
                         } else if (o.result == NO_REG) {
                             o.result = (u8)take_reg(e, fl);

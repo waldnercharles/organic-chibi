@@ -2554,6 +2554,8 @@ static const char CALLS_INTO_C
          "struct W { a: int, b: int, c: int }\n"
          "struct Mb { a: ?i32, b: ?u8 }\n"
          "struct Mw { a: ?i32, b: ?u8, c: ?f32 }\n"
+         "struct Mf { a: ?f32 }\n"
+         "struct Md { a: ?f64 }\n"
          "\n"
          "const table := W.{ 7, 8, 9 }\n"
          "\n"
@@ -2576,6 +2578,8 @@ static const char CALLS_INTO_C
          "extern fn chibi_c_scribble(w: W) -> int\n"
          "extern fn chibi_c_wide(k: int) -> W\n"
          "extern fn chibi_c_maybes(m: Mb, w: Mw, k: int) -> Mw\n"
+         "extern fn chibi_c_halves(f: Mf, d: Md, k: int) -> Md\n"
+         "extern fn chibi_c_half(d: Md, k: int) -> Mf\n"
          "pub extern fn chibi_c_tick()\n"
          "\n"
          "extern chibi_c_ticks: int\n"
@@ -2735,6 +2739,19 @@ static const char CALLS_INTO_C
          "    }\n"
          "    r := chibi_c_maybes(m, w, x)\n"
          "    return int(r.a ?\? -1) * 10000 + int(r.b ?\? 7) * 100 + int((r.c ?\? 9.0) * 2.0)\n"
+         "}\n"
+         "\n"
+         "fn halves(x: int) -> int {\n"
+         "    f: Mf\n"
+         "    if x % 2 == 0 {\n"
+         "        f.a = f32(x) * 0.5\n"
+         "    }\n"
+         "    d := Md.{ if x > 3 then f64(x) * 0.25 else nil }\n"
+         "    r := chibi_c_halves(f, d, x)\n"
+         "    h := chibi_c_half(r, x)\n"
+         "    h2 := chibi_c_half(r, x + 3)\n"
+         "    t := int((r.a ?\? -1.0) * 4.0) * 1000 + int((h.a ?\? -2.0) * 4.0)\n"
+         "    return t + (if h.a != h2.a then 1000000000 else 0)\n"
          "}\n"
          "\n"
          "fn error_stream() -> ?*u8 {\n"
@@ -2917,6 +2934,46 @@ chibi_c_maybes(CMb m, CMw w, int64_t k)
     return r;
 }
 
+typedef struct
+{
+    struct
+    {
+        float value;
+        bool present;
+    } a;
+} CMf;
+
+typedef struct
+{
+    struct
+    {
+        double value;
+        bool present;
+    } a;
+} CMd;
+
+CMd
+chibi_c_halves(CMf f, CMd d, int64_t k)
+{
+    CMd r = { { 0.0, false } };
+    if (f.a.present || d.a.present) {
+        r.a.value = (f.a.present ? (double)f.a.value : 0.0) + (d.a.present ? d.a.value * 2.0 : 0.0) + (double)k;
+        r.a.present = true;
+    }
+    return r;
+}
+
+CMf
+chibi_c_half(CMd d, int64_t k)
+{
+    CMf r = { { (float)k * 0.75f, false } };
+    if (d.a.present && k % 3 != 0) {
+        r.a.value = (float)(d.a.value * 0.5);
+        r.a.present = true;
+    }
+    return r;
+}
+
 void
 chibi_c_tick(void)
 {
@@ -3002,6 +3059,12 @@ TEST_CASE(calls_into_c)
         int64_t rb = x % 2 == 0 ? (uint8_t)(x * 2) : 3;
         int64_t rc = x > 2 ? 4 * x : 18;
         REQUIRE(((I1 *)fn(&p, "maybes"))(CONTEXT, x) == ra * 10000 + rb * 100 + rc);
+
+        bool present = x % 2 == 0 || x > 3;
+        double sum = (x % 2 == 0 ? (double)x * 0.5 : 0.0) + (x > 3 ? (double)x * 0.5 : 0.0) + (double)x;
+        int64_t whole = present ? (int64_t)(sum * 4.0) : -4;
+        int64_t half = present && x % 3 != 0 ? (int64_t)((float)(sum * 0.5) * 4.0f) : -8;
+        REQUIRE(((I1 *)fn(&p, "halves"))(CONTEXT, x) == whole * 1000 + half);
     }
     REQUIRE(lost_contexts == 0);
     REQUIRE(((R0 *)fn(&p, "error_stream"))(CONTEXT) == (uint64_t)(uintptr_t)stderr);
@@ -6472,6 +6535,82 @@ TEST_CASE(stored_optionals)
     return true;
 }
 
+static const char *const OPTIONAL_BRANCH_FUNCTIONS[] = {
+    "ob_or", "ob_if", "ob_floats", "ob_slices", "ob_strings", "ob_small", "ob_equal",
+    "ob_defer", "ob_store", "ob_constant", "ob_nested", "ob_loop", "ob_spill",
+};
+
+static const CallCase OPTIONAL_BRANCH_CASES[] = {
+    { "ob_or", 5, 2, 555051, 0 },
+    { "ob_or", -1, 7, 777071, 0 },
+    { "ob_or", 12, 4, 1324122, 0 },
+    { "ob_if", 5, 2, 504970500019994, 0 },
+    { "ob_if", 3, 3, 303030600030003, 0 },
+    { "ob_if", -1, 7, 698049600070007, 0 },
+    { "ob_floats", 5, 2, 25025025125, 0 },
+    { "ob_floats", -1, 7, 35035025150, 0 },
+    { "ob_floats", 2, 6, 10030025150, 0 },
+    { "ob_slices", 5, 2, 116486143930102614, 0 },
+    { "ob_slices", -1, 7, 388905321451911, 0 },
+    { "ob_slices", 2, 6, 388422386455532, 0 },
+    { "ob_strings", 5, 2, 454323, 0 },
+    { "ob_strings", 0, 9, 533319, 0 },
+    { "ob_strings", 3, 3, 555333, 0 },
+    { "ob_small", 5, 2, 1315, 0 },
+    { "ob_small", 3, 3, 2413, 0 },
+    { "ob_small", 12, 4, 1332, 0 },
+    { "ob_small", 2, 6, 1412, 0 },
+    { "ob_equal", 5, 2, 10980, 0 },
+    { "ob_equal", 7, 7, 9370, 0 },
+    { "ob_equal", -1, 7, 10260, 0 },
+    { "ob_equal", 3, 3, 9410, 0 },
+    { "ob_defer", 5, 2, 13222, 0 },
+    { "ob_defer", 0, 9, 19322, 0 },
+    { "ob_defer", 12, 4, 5322, 0 },
+    { "ob_store", 5, 2, -7942, 0 },
+    { "ob_store", -1, 7, 74078, 0 },
+    { "ob_store", 12, 4, 124128, 0 },
+    { "ob_constant", 5, 2, -943, 0 },
+    { "ob_constant", -1, 7, -1013, 0 },
+    { "ob_nested", 5, 2, 25, 0 },
+    { "ob_nested", -1, 7, 74, 0 },
+    { "ob_nested", 12, 4, 123, 0 },
+    { "ob_loop", 5, 2, 12, 0 },
+    { "ob_loop", 3, 3, 15, 0 },
+    { "ob_loop", 7, 7, 14, 0 },
+    { "ob_spill", 5, 2, 2412, 0 },
+    { "ob_spill", 0, 0, 1020, 0 },
+    { "ob_spill", 1, -1, 3427, 0 },
+    { "ob_spill", -1, 7, 2327, 0 },
+    { "ob_spill", 7, 7, 317, 0 },
+    { "ob_equal", INT64_MAX, INT64_MAX, 9370, 0 },
+    { "ob_or", INT64_MAX, 0, 0, TRAP_OVERFLOW },
+    { "ob_if", INT64_MAX, INT64_MAX, 0, TRAP_OVERFLOW },
+    { "ob_floats", INT64_MAX, 0, 0, TRAP_RANGE },
+    { "ob_loop", INT64_MAX, 1, 0, TRAP_OVERFLOW },
+    { "ob_defer", 1, INT64_MAX, 0, TRAP_OVERFLOW },
+};
+
+TEST_CASE(optional_branches)
+{
+    catch_traps();
+    Program p;
+    REQUIRE(build(&p, OPTIONAL_BRANCHES));
+    for (size_t k = 0; k < sizeof OPTIONAL_BRANCH_CASES / sizeof OPTIONAL_BRANCH_CASES[0]; k++) {
+        CallCase t = OPTIONAL_BRANCH_CASES[k];
+        int64_t got = 0;
+        int trap = call_i2((I2 *)fn(&p, t.name), t.a, t.b, &got);
+        if (trap != t.trap || (!trap && got != t.want)) {
+            fprintf(stderr, "arm64 test: %s(%lld, %lld) gave %lld (trap %d)\n", t.name, (long long)t.a, (long long)t.b, (long long)got, trap);
+            REQUIRE(false);
+        }
+    }
+    REQUIRE(agree_on_grid(&p, OPTIONAL_BRANCH_FUNCTIONS, sizeof OPTIONAL_BRANCH_FUNCTIONS / sizeof OPTIONAL_BRANCH_FUNCTIONS[0]));
+    REQUIRE(count_words(&p, "ob_pick2", WORD_MOV_X, MOV_REGS) == 4);
+    release_program(&p);
+    return true;
+}
+
 TEST_CASE(top_level_code)
 {
     Program p;
@@ -6530,6 +6669,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(defers);
     RUN_TEST_CASE(value_optionals);
     RUN_TEST_CASE(stored_optionals);
+    RUN_TEST_CASE(optional_branches);
     RUN_TEST_CASE(narrow_parameters);
     RUN_TEST_CASE(constant_division);
     RUN_TEST_CASE(differential);

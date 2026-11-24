@@ -1606,6 +1606,33 @@ drop_pair(Checker *c, Operand v)
     }
 }
 
+static u32
+branch_value(Checker *c, u8 kind, u32 type, Operand v)
+{
+    if (is_pair(c, v)) {
+        Pair p = pair_of(c, v);
+        return emit(c, kind, type, p.first, p.second);
+    }
+    return emit(c, kind, type, operand_ir(c, v), 0);
+}
+
+static Operand
+end_pair(Checker *c, u32 type, Operand v)
+{
+    u32 end = branch_value(c, IR_END, type, v);
+    return make_pair(c, type, end, emit(c, IR_SECOND, second_type(c, type), 0, 0));
+}
+
+static void
+drop_branch(Checker *c, Operand v)
+{
+    if (is_pair(c, v)) {
+        drop_pair(c, v);
+    } else if (!is_constant(v) && !is_place(v)) {
+        emit(c, IR_DROP, 0, value_of(v), 0);
+    }
+}
+
 static Operand
 float_constant(Checker *c, u32 file, u32 token, u32 value, u32 type)
 {
@@ -3067,12 +3094,95 @@ present_test(Checker *c, u8 kind, Operand o)
     return emit_value(c, IR_NOT, TYPE_ID_BOOL, p.second, 0);
 }
 
+static Operand
+flag_half(Checker *c, Operand o)
+{
+    u32 second = is_constant(o) ? 0 : pair_of(c, o).second;
+    if (is_constant(o) || (second & IR_CONST)) {
+        bool present = is_constant(o) ? (o.ref & REF_NONNIL) != 0
+                                      : const_bits(c, second) != 0;
+        return (Operand){ TYPE_ID_BOOL, present ? EXACT_ONE : EXACT_ZERO };
+    }
+    return (Operand){ TYPE_ID_BOOL, REF_VALUE | second };
+}
+
+static Operand
+bool_op(Checker *c, u8 ir, Operand x, Operand y)
+{
+    return emit_value(c, ir, TYPE_ID_BOOL, operand_ir(c, x), operand_ir(c, y));
+}
+
+static Operand
+bool_not(Checker *c, Operand x)
+{
+    return emit_value(c, IR_NOT, TYPE_ID_BOOL, operand_ir(c, x), 0);
+}
+
+static NOINLINE Operand
+flagged_equality(Checker *c, u32 file, u32 token, u8 kind, Operand a, Operand b)
+{
+    if (a.type != b.type) {
+        report(c, file, token, DIAG_MISMATCH, a.type, b.type);
+        return poison;
+    }
+    Operand fa = flag_half(c, a);
+    Operand fb = flag_half(c, b);
+    if (is_constant(fa)) {
+        Operand t = a;
+        a = b;
+        b = t;
+        t = fa;
+        fa = fb;
+        fb = t;
+    }
+    Operand va = present_value(c, a);
+    Operand vb = present_value(c, b);
+    bool ne = kind == NODE_NE;
+
+    if (is_constant(fb) && exact_sign(&c->exacts, value_of(fb)) == 0) {
+        drop_branch(c, va);
+        drop_branch(c, vb);
+        if (is_constant(fa)) {
+            bool equal = exact_sign(&c->exacts, value_of(fa)) == 0;
+            return (Operand){ TYPE_ID_BOOL, equal != ne ? EXACT_ONE : EXACT_ZERO };
+        }
+        return ne ? fa : bool_not(c, fa);
+    }
+    if (is_constant(fa)) {
+        if (exact_sign(&c->exacts, value_of(fa)) != 0) {
+            return binary(c, file, token, kind, va, vb);
+        }
+        drop_branch(c, va);
+        drop_branch(c, vb);
+        return (Operand){ TYPE_ID_BOOL, ne ? EXACT_ONE : EXACT_ZERO };
+    }
+
+    Operand e = binary(c, file, token, kind, va, vb);
+    if (e.type == TYPE_ID_NONE) {
+        return poison;
+    }
+    if (is_constant(fb)) {
+        return ne ? bool_op(c, IR_OR, bool_not(c, fa), e) : bool_op(c, IR_AND, fa, e);
+    }
+    u32 slot = add_slot(c, 0, TYPE_ID_BOOL, c->decls.roots[c->body.decl]);
+    store_local(c, slot, fa);
+    Operand same = binary(c, file, token, kind, load_local(c, slot), fb);
+    Operand again = load_local(c, slot);
+    if (ne) {
+        return bool_op(c, IR_OR, same, bool_op(c, IR_AND, again, e));
+    }
+    return bool_op(c, IR_AND, same, bool_op(c, IR_OR, bool_not(c, again), e));
+}
+
 static NOINLINE Operand
 flagged_binary(Checker *c, u32 file, u32 token, u8 kind, Operand a, Operand b)
 {
     if (operator_classes[kind] == OP_EQUALITY &&
         (a.type == TYPE_ID_NIL || b.type == TYPE_ID_NIL)) {
         return present_test(c, kind, a.type == TYPE_ID_NIL ? b : a);
+    }
+    if (operator_classes[kind] == OP_EQUALITY && is_flagged(c, a) && is_flagged(c, b)) {
+        return flagged_equality(c, file, token, kind, a, b);
     }
     if (is_flagged(c, a)) {
         a = unflag(c, file, token, a);
@@ -5351,11 +5461,6 @@ or_else(Checker *c, u32 file)
         b = present_value(c, b);
     }
     u32 type = b.type == TYPE_ID_NIL || b.type == optional ? optional : inner;
-    if (flagged && type == optional && !known) {
-        report(c, file, b_token, DIAG_UNSUPPORTED, 0, 0);
-        emit(c, IR_END, 0, 0, 0);
-        return poison;
-    }
     Operand v = convert(c, file, b_token, b, type);
     if (mode == SHORT_PASS) {
         return v;
@@ -5375,6 +5480,15 @@ or_else(Checker *c, u32 file)
     if (v.type == TYPE_ID_NONE) {
         emit(c, IR_END, 0, 0, 0);
         return poison;
+    }
+    if (flagged && type == optional) {
+        IrCode *code = c->body.code;
+        u32 at = c->body.first + mode;
+        assert(code->kinds[at + 1] == IR_ELSE);
+        code->types[at] = optional;
+        code->types[at + 1] = optional;
+        code->bs[at + 1] = ir_const(c, TYPE_ID_BOOL, 1);
+        return end_pair(c, optional, v);
     }
     if (type == optional) {
         assert(c->body.code->kinds[c->body.first + mode + 2] == IR_ELSE);
@@ -7716,6 +7830,7 @@ copy_defer(Checker *c, const Defer *d)
             case IR_ELSE:
                 if (type != TYPE_ID_NONE && openers[depth - 1] == IR_IF) {
                     a = moved(d, shift, a);
+                    b = is_pair_type(c, type) ? moved(d, shift, b) : b;
                 }
                 break;
             case IR_END:
@@ -7723,6 +7838,7 @@ copy_defer(Checker *c, const Defer *d)
                 c->body.depth -= openers[depth] == IR_LOOP;
                 if (type != TYPE_ID_NONE && openers[depth] == IR_IF) {
                     a = moved(d, shift, a);
+                    b = is_pair_type(c, type) ? moved(d, shift, b) : b;
                 }
                 break;
             case IR_EXIT:
@@ -8825,16 +8941,15 @@ value_if_branch(Checker *c, u32 file, u32 token, Operand v)
     if (is_place(v) && in_body(c) && is_aggregate(c, place_type(c, v))) {
         return v;
     }
+    if (is_place(v) && in_body(c) && is_pair_type(c, place_type(c, v))) {
+        return read_slice(c, v);
+    }
     if (is_place(v)) {
         report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
         return poison;
     }
     if (!is_value_type(v.type)) {
         report(c, file, token, DIAG_NOT_VALUE, 0, 0);
-        return poison;
-    }
-    if (is_pair(c, v)) {
-        report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
         return poison;
     }
     return v;
@@ -8876,26 +8991,24 @@ value_if_else(Checker *c, u32 file, u32 node, u32 token)
     if (mode == SHORT_SKIP && in_body(c)) {
         emit(c, IR_IF, 0, ir_const(c, TYPE_ID_BOOL, 0), 0);
     } else if (mode == SHORT_PASS && in_body(c)) {
-        if (!is_constant(a) && !is_place(a)) {
-            emit(c, IR_DROP, 0, value_of(a), 0);
-        }
+        drop_branch(c, a);
         emit(c, IR_END, 0, 0, 0);
     } else if (mode < SHORT_TESTED) {
         if (is_place(a) && !is_vector(c, expected)) {
             a = hold_value_if(c, file, node, a_token, a, expected, mode, shared);
             at = emit(c, IR_ELSE, 0, 0, 0);
         } else if (expected != TYPE_ID_NONE) {
-            if (is_pair_type(c, expected) && a.type != TYPE_ID_NONE) {
-                report(c, file, a_token, DIAG_UNSUPPORTED, 0, 0);
-                a = poison;
-            }
             a = convert(c, file, a_token, a, expected);
-            at = emit(c, IR_ELSE, expected, a.type == TYPE_ID_NONE ? 0 : operand_ir(c, a), 0);
+            at = a.type == TYPE_ID_NONE ? emit(c, IR_ELSE, expected, 0, 0)
+                                        : branch_value(c, IR_ELSE, expected, a);
+        } else if (a.type == TYPE_ID_UNTYPED_STRING) {
+            a = convert(c, file, a_token, a, TYPE_ID_STRING);
+            at = branch_value(c, IR_ELSE, TYPE_ID_STRING, a);
         } else if (!is_constant(a)) {
             if (may_widen(c, a)) {
                 emit(c, IR_NOP, 0, 0, 0);
             }
-            at = emit(c, IR_ELSE, a.type, value_of(a), 0);
+            at = branch_value(c, IR_ELSE, a.type, a);
         } else {
             at = emit(c, IR_ELSE, 0, 0, 0);
         }
@@ -8918,28 +9031,30 @@ settle_value_if(Checker *c, u32 file, u32 mode, u32 at, Operand a, u32 a_token, 
     if (type == TYPE_ID_NONE) {
         return TYPE_ID_NONE;
     }
-    if (is_slice(c, type)) {
-        report(c, file, a_token, DIAG_UNSUPPORTED, 0, 0);
-        return TYPE_ID_NONE;
-    }
 
     IrCode *code = c->body.code;
     u32 to = c->body.first + at;
+    u32 value = is_value_optional(c, type) && !is_pair(c, a) ? c->types.arg0[type]
+                                                             : type;
     if (is_constant(a)) {
         Operand x = convert(c, file, a_token, a, type);
         if (x.type == TYPE_ID_NONE) {
             return TYPE_ID_NONE;
         }
-        code->as[to] = operand_ir(c, x);
-    } else if (a.type != type) {
-        if (!may_widen(c, a) || !widens(c, a.type, type)) {
+        code->as[to] = is_pair(c, x) ? pair_of(c, x).first : operand_ir(c, x);
+        code->bs[to] = is_pair(c, x) ? pair_of(c, x).second : 0;
+    } else if (a.type != value) {
+        if (!may_widen(c, a) || !widens(c, a.type, value)) {
             report(c, file, a_token, DIAG_MISMATCH, a.type, type);
             return TYPE_ID_NONE;
         }
         code->kinds[to - 1] = IR_CONVERT;
-        code->types[to - 1] = type;
+        code->types[to - 1] = value;
         code->as[to - 1] = value_of(a);
         code->as[to] = at - 1;
+    }
+    if (value != type && !is_constant(a)) {
+        code->bs[to] = ir_const(c, TYPE_ID_BOOL, 1);
     }
     code->types[to] = type;
     code->types[c->body.first + mode] = type;
@@ -8968,9 +9083,7 @@ value_if(Checker *c, u32 file)
     }
     if (mode == SHORT_SKIP || mode == SHORT_PASS) {
         if (mode == SHORT_SKIP && in_body(c)) {
-            if (!is_constant(b) && !is_place(b)) {
-                emit(c, IR_DROP, 0, value_of(b), 0);
-            }
+            drop_branch(c, b);
             emit(c, IR_END, 0, 0, 0);
         }
         Operand v = mode == SHORT_SKIP ? a : b;
@@ -9013,6 +9126,9 @@ value_if(Checker *c, u32 file)
     if (v.type == TYPE_ID_NONE) {
         emit(c, IR_END, 0, 0, 0);
         return poison;
+    }
+    if (is_pair(c, v)) {
+        return end_pair(c, type, v);
     }
     return emit_value(c, IR_END, type, operand_ir(c, v), 0);
 }
@@ -11650,6 +11766,10 @@ print_function(FILE *out, const Checker *c, const IrFunc *fn)
                     if (openers[depth] == IR_IF) {
                         fputc(' ', out);
                         print_operand(out, c, fn, a);
+                    }
+                    if (openers[depth] == IR_IF && is_pair_type(c, type)) {
+                        fputs(", ", out);
+                        print_operand(out, c, fn, b);
                     }
                 }
                 break;

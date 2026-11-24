@@ -249,6 +249,12 @@ is_aggregate(const Checker *c, u32 type)
     return c->types.kinds[type] == TYPE_STRUCT || c->types.kinds[type] == TYPE_ARRAY;
 }
 
+static bool
+is_pair(const Checker *c, u32 type)
+{
+    return c->types.kinds[type] == TYPE_SLICE || check_is_flag_optional(c, type);
+}
+
 static u64
 replicate(u64 v, u32 bits)
 {
@@ -1033,9 +1039,7 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                     goto done;
                 }
                 result[0] = type == TYPE_ID_VOID ? 0 : OPERAND(a);
-                result[1] = c->types.kinds[type] == TYPE_SLICE || check_is_flag_optional(c, type)
-                              ? OPERAND(b)
-                              : 0;
+                result[1] = is_pair(c, type) ? OPERAND(b) : 0;
                 trap = 0;
                 goto done;
             case IR_BLOCK:
@@ -1051,6 +1055,9 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                 if (type != TYPE_ID_NONE) {
                     vals[r->ends[g] - fn->first] = OPERAND(a);
                     highs[r->ends[g] - fn->first] = check_is_int128(type) ? HIGH(a) : 0;
+                    if (is_pair(c, type)) {
+                        second = OPERAND(b);
+                    }
                 }
                 i = r->ends[g] - fn->first + 1;
                 continue;
@@ -1059,6 +1066,9 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                 if (type != TYPE_ID_NONE) {
                     v = OPERAND(a);
                     highs[i] = check_is_int128(type) ? HIGH(a) : 0;
+                    if (is_pair(c, type)) {
+                        second = OPERAND(b);
+                    }
                 }
                 break;
             case IR_EXIT:

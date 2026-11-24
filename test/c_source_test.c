@@ -507,7 +507,7 @@ TEST_CASE(writes_layouts)
 enum
 {
     MAX_JOBS = 8,
-    GRID_FUNCTIONS = 451,
+    GRID_FUNCTIONS = 464,
 };
 
 typedef struct
@@ -569,6 +569,8 @@ static const char INTEROP[] =
     "struct Hook { f: extern fn(x: int) -> int, n: int }\n"
     "struct Mb { a: ?i32, b: ?u8 }\n"
     "struct Mw { a: ?i32, b: ?u8, c: ?f32 }\n"
+    "struct Mf { a: ?f32 }\n"
+    "struct Md { a: ?f64 }\n"
     "\n"
     "const table := W.{ 7, 8, 9 }\n"
     "const K: int = -7\n"
@@ -593,6 +595,8 @@ static const char INTEROP[] =
     "extern fn chibi_cs_scribble(w: W) -> int\n"
     "extern fn chibi_cs_wide(k: int) -> W\n"
     "extern fn chibi_cs_maybes(m: Mb, w: Mw, k: int) -> Mw\n"
+    "extern fn chibi_cs_halves(f: Mf, d: Md, k: int) -> Md\n"
+    "extern fn chibi_cs_half(d: Md, k: int) -> Mf\n"
     "pub extern fn chibi_cs_tick()\n"
     "extern fn chibi_cs_va(n: int, ..) -> f64\n"
     "extern fn chibi_cs_vpoint(p: P, n: int, ..) -> int\n"
@@ -728,6 +732,19 @@ static const char INTEROP[] =
     "    }\n"
     "    r := chibi_cs_maybes(m, w, x)\n"
     "    return int(r.a ?\? -1) * 10000 + int(r.b ?\? 7) * 100 + int((r.c ?\? 9.0) * 2.0)\n"
+    "}\n"
+    "\n"
+    "fn halves(x: int) -> int {\n"
+    "    f: Mf\n"
+    "    if x % 2 == 0 {\n"
+    "        f.a = f32(x) * 0.5\n"
+    "    }\n"
+    "    d := Md.{ if x > 3 then f64(x) * 0.25 else nil }\n"
+    "    r := chibi_cs_halves(f, d, x)\n"
+    "    h := chibi_cs_half(r, x)\n"
+    "    h2 := chibi_cs_half(r, x + 3)\n"
+    "    t := int((r.a ?\? -1.0) * 4.0) * 1000 + int((h.a ?\? -2.0) * 4.0)\n"
+    "    return t + (if h.a != h2.a then 1000000000 else 0)\n"
     "}\n"
     "\n"
     "fn error_stream() -> ?*u8 {\n"
@@ -1063,6 +1080,46 @@ chibi_cs_maybes(struct i0_Mb m, struct i0_Mw w, int64_t k)
         r.b.present = true;
     }
     r.c.value = w.c.present ? w.c.value * 2.0f : 0.0f;
+    return r;
+}
+
+struct i0_Mf
+{
+    struct
+    {
+        float value;
+        bool present;
+    } a;
+};
+
+struct i0_Md
+{
+    struct
+    {
+        double value;
+        bool present;
+    } a;
+};
+
+struct i0_Md
+chibi_cs_halves(struct i0_Mf f, struct i0_Md d, int64_t k)
+{
+    struct i0_Md r = { { 0.0, false } };
+    if (f.a.present || d.a.present) {
+        r.a.value = (f.a.present ? (double)f.a.value : 0.0) + (d.a.present ? d.a.value * 2.0 : 0.0) + (double)k;
+        r.a.present = true;
+    }
+    return r;
+}
+
+struct i0_Mf
+chibi_cs_half(struct i0_Md d, int64_t k)
+{
+    struct i0_Mf r = { { (float)k * 0.75f, false } };
+    if (d.a.present && k % 3 != 0) {
+        r.a.value = (float)(d.a.value * 0.5);
+        r.a.present = true;
+    }
     return r;
 }
 
@@ -1552,6 +1609,12 @@ calls_c(const Build *b, int64_t x)
     int64_t rb = x % 2 == 0 ? (uint8_t)(x * 2) : 3;
     int64_t rc = x > 2 ? 4 * x : 18;
     ok &= gives("maybes", x, ((I1 *)symbol(b, "i0_maybes"))(CONTEXT, x), ra * 10000 + rb * 100 + rc);
+
+    bool present = x % 2 == 0 || x > 3;
+    double sum = (x % 2 == 0 ? (double)x * 0.5 : 0.0) + (x > 3 ? (double)x * 0.5 : 0.0) + (double)x;
+    int64_t whole = present ? (int64_t)(sum * 4.0) : -4;
+    int64_t half = present && x % 3 != 0 ? (int64_t)((float)(sum * 0.5) * 4.0f) : -8;
+    ok &= gives("halves", x, ((I1 *)symbol(b, "i0_halves"))(CONTEXT, x), whole * 1000 + half);
     return ok;
 }
 
