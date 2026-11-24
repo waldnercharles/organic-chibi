@@ -6614,7 +6614,7 @@ TEST_CASE(optional_branches)
 static const char *const ERROR_UNION_FUNCTIONS[] = {
     "er_basic", "er_propagate", "er_void", "er_floats", "er_small", "er_pointers", "er_ifs",
     "er_defer", "er_loop", "er_nested", "er_values", "er_argcalls", "er_order", "er_scan",
-    "er_wide",
+    "er_wide", "er_sets", "er_union", "er_store", "er_run", "er_any", "er_fwd",
 };
 
 static const CallCase ERROR_UNION_CASES[] = {
@@ -6693,6 +6693,34 @@ static const CallCase ERROR_UNION_CASES[] = {
     { "er_wide", 12, 4, 299992, 0 },
     { "er_wide", 3, 3, 0, 0 },
     { "er_wide", 299, 4, 299705, 0 },
+    { "er_sets", 5, 2, 12, 0 },
+    { "er_sets", -1, 7, -1, 0 },
+    { "er_sets", 12, 4, 28, 0 },
+    { "er_sets", 7, 0, -3, 0 },
+    { "er_sets", 150, 2, -2, 0 },
+    { "er_sets", 50, 1, -4, 0 },
+    { "er_sets", 2, -1, -6, 0 },
+    { "er_sets", 3, 1, -5, 0 },
+    { "er_union", 5, 2, 2010, 0 },
+    { "er_union", -1, 7, 4030, 0 },
+    { "er_union", 3, 3, 3020, 0 },
+    { "er_union", -5, -9, 1011, 0 },
+    { "er_store", 5, 2, 112, 0 },
+    { "er_store", -1, 7, 127, 0 },
+    { "er_store", 12, 4, 124, 0 },
+    { "er_store", 3, 3, 113, 0 },
+    { "er_store", 7, 0, 210, 0 },
+    { "er_run", 5, 2, 12, 0 },
+    { "er_run", -1, 7, -1, 0 },
+    { "er_run", 7, 0, -1, 0 },
+    { "er_run", 60, 2, -40, 0 },
+    { "er_any", 5, 2, 5, 0 },
+    { "er_any", -1, 7, 1, 0 },
+    { "er_any", 7, 0, 3, 0 },
+    { "er_fwd", 5, 2, 12, 0 },
+    { "er_fwd", -1, 7, -93, 0 },
+    { "er_fwd", 7, 0, 14, 0 },
+    { "er_fwd", 150, 1, -199, 0 },
     { "er_basic", INT64_MAX, 1, 0, TRAP_OVERFLOW },
     { "er_void", INT64_MAX, 1, 0, TRAP_OVERFLOW },
     { "er_floats", INT64_MAX, 1, 0, TRAP_RANGE },
@@ -6703,6 +6731,7 @@ static const CallCase ERROR_UNION_CASES[] = {
     { "er_argcalls", INT64_MIN, -1, 0, TRAP_OVERFLOW },
     { "er_order", INT64_MAX, 1, 0, TRAP_OVERFLOW },
     { "er_wide", INT64_MIN, 1, 0, TRAP_OVERFLOW },
+    { "er_sets", 5, INT64_MAX, 0, TRAP_OVERFLOW },
 };
 
 TEST_CASE(error_unions)
@@ -6721,6 +6750,34 @@ TEST_CASE(error_unions)
     }
     REQUIRE(agree_on_grid(&p, ERROR_UNION_FUNCTIONS, sizeof ERROR_UNION_FUNCTIONS / sizeof ERROR_UNION_FUNCTIONS[0]));
     release_program(&p);
+    return true;
+}
+
+static const char *const WIDE_ERROR_FUNCTIONS[] = { "ew_test", "ew_steps" };
+
+static const CallCase WIDE_ERROR_CASES[] = {
+    { "ew_test", 5, 2, 11006, 0 },  { "ew_test", -1, 7, 20100, 0 }, { "ew_test", 12, 4, 11012, 0 },
+    { "ew_test", 7, 0, 11000, 0 },  { "ew_test", 0, -2, 20200, 0 }, { "ew_steps", 5, 2, 3, 0 },
+    { "ew_steps", -1, 7, 0, 0 },    { "ew_steps", 1, 9, 53, 0 },    { "ew_steps", 0, 10, 50, 0 },
+};
+
+TEST_CASE(wide_error_codes)
+{
+    char *text = wide_errors_program();
+    Program p;
+    REQUIRE(build(&p, text));
+    for (size_t k = 0; k < sizeof WIDE_ERROR_CASES / sizeof WIDE_ERROR_CASES[0]; k++) {
+        CallCase t = WIDE_ERROR_CASES[k];
+        int64_t got = 0;
+        int trap = call_i2((I2 *)fn(&p, t.name), t.a, t.b, &got);
+        if (trap != t.trap || (!trap && got != t.want)) {
+            fprintf(stderr, "arm64 test: %s(%lld, %lld) gave %lld (trap %d)\n", t.name, (long long)t.a, (long long)t.b, (long long)got, trap);
+            REQUIRE(false);
+        }
+    }
+    REQUIRE(agree_on_grid(&p, WIDE_ERROR_FUNCTIONS, sizeof WIDE_ERROR_FUNCTIONS / sizeof WIDE_ERROR_FUNCTIONS[0]));
+    release_program(&p);
+    free(text);
     return true;
 }
 
@@ -6784,6 +6841,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(stored_optionals);
     RUN_TEST_CASE(optional_branches);
     RUN_TEST_CASE(error_unions);
+    RUN_TEST_CASE(wide_error_codes);
     RUN_TEST_CASE(narrow_parameters);
     RUN_TEST_CASE(constant_division);
     RUN_TEST_CASE(differential);

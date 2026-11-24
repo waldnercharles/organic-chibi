@@ -211,6 +211,42 @@ parse_slice(Parser *p, int at, bool has_start)
     emit(p, slice_nodes[has_start][inclusive], at);
 }
 
+static bool
+names_error_set(const Parser *p, int period)
+{
+    int last = p->count - 1;
+    return p->out.kinds[last] == NODE_NAME &&
+           p->out.tokens[last] == (u32)(period - 1) &&
+           p->tokens.ids[period - 1] == NAME_ERROR;
+}
+
+static NOINLINE void
+parse_error_set(Parser *p)
+{
+    p->out.kinds[p->count - 1] = NODE_ERROR_SET_START;
+    p->pos += 2;
+    for (;;) {
+        if (!lexer_kind_has_id(p->tokens.kinds[p->pos])) {
+            fail(p, "expected an error name");
+            return;
+        }
+        emit(p, NODE_ERROR_NAME, p->pos++);
+        if (p->tokens.kinds[p->pos] != TK_COMMA) {
+            break;
+        }
+        p->pos++;
+        if (p->tokens.kinds[p->pos] == TK_RBRACE) {
+            break;
+        }
+    }
+
+    if (p->tokens.kinds[p->pos] != TK_RBRACE) {
+        fail(p, "expected `,` or `}`");
+        return;
+    }
+    emit(p, NODE_ERROR_SET, p->pos++);
+}
+
 static_assert(TK_COLON == TK_LPAREN + 5, "the six postfix tokens must be consecutive kinds");
 
 static void
@@ -229,7 +265,11 @@ parse_postfix(Parser *p)
                     return;
                 }
                 if (p->tokens.kinds[at + 1] == TK_LBRACE) {
-                    parse_literal(p, NODE_LITERAL, NODE_LITERAL_START, TK_RBRACE);
+                    if (names_error_set(p, at)) {
+                        parse_error_set(p);
+                    } else {
+                        parse_literal(p, NODE_LITERAL, NODE_LITERAL_START, TK_RBRACE);
+                    }
                     break;
                 }
                 if (p->tokens.kinds[at + 1] == TK_LBRACK) {
@@ -678,6 +718,56 @@ parse_tuple_type(Parser *p)
     emit(p, NODE_TUPLE_TYPE, open);
 }
 
+static bool
+starts_set_union(const Parser *p)
+{
+    int depth = 0;
+    for (int i = p->pos + 1;; i++) {
+        TokenKind k = p->tokens.kinds[i];
+        if (k == TK_LPAREN || k == TK_LBRACK || k == TK_LBRACE) {
+            depth++;
+        } else if (k == TK_RPAREN || k == TK_RBRACK || k == TK_RBRACE) {
+            if (depth == 0) {
+                return false;
+            }
+            depth--;
+        } else if (k == TK_EOF || (depth == 0 && k == TK_COMMA)) {
+            return false;
+        } else if (depth == 0 && k == TK_PIPE) {
+            return true;
+        }
+    }
+}
+
+static NOINLINE void
+parse_set_union(Parser *p)
+{
+    p->pos++;
+    p->brackets++;
+    parse_type(p);
+    while (p->tokens.kinds[p->pos] == TK_PIPE) {
+        int pipe = p->pos++;
+        parse_type(p);
+        emit(p, NODE_BIT_OR, pipe);
+    }
+    p->brackets--;
+
+    if (p->tokens.kinds[p->pos] != TK_RPAREN) {
+        fail(p, "expected `|` or `)`");
+        return;
+    }
+    p->pos++;
+    if (p->tokens.kinds[p->pos] != TK_NOT) {
+        return;
+    }
+
+    int bang = p->pos++;
+    if (expect_value_type(p, bang)) {
+        parse_type(p);
+        emit(p, NODE_ERROR_UNION, bang);
+    }
+}
+
 static void
 parse_composite_type(Parser *p)
 {
@@ -685,6 +775,10 @@ parse_composite_type(Parser *p)
     TokenKind kind = p->tokens.kinds[at];
     if (kind == TK_IDENT) {
         emit(p, NODE_NAME, p->pos++);
+        if (p->tokens.kinds[p->pos] == TK_PERIOD &&
+            p->tokens.kinds[p->pos + 1] == TK_LBRACE && names_error_set(p, p->pos)) {
+            parse_error_set(p);
+        }
         while (p->tokens.kinds[p->pos] == TK_PERIOD &&
                lexer_kind_has_id(p->tokens.kinds[p->pos + 1])) {
             emit(p, NODE_FIELD, p->pos + 1);
@@ -721,6 +815,8 @@ parse_composite_type(Parser *p)
 
     if (kind == TK_FN) {
         parse_fn_type(p);
+    } else if (kind == TK_LPAREN && starts_set_union(p)) {
+        parse_set_union(p);
     } else if (kind == TK_LPAREN) {
         parse_tuple_type(p);
     } else if (kind == TK_EXTERN) {

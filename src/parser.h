@@ -169,6 +169,8 @@
     LIST(NODE_DESTRUCTURE_INIT, NODE_TARGETS_START, 0, ":=")                   \
     LIST(NODE_DESTRUCTURE_ASSIGN, NODE_TARGETS_START, 0, "=")                  \
     LIST(NODE_RESULTS, NODE_TUPLE_START, 0, "results")                         \
+    NODE(NODE_ERROR_NAME, 0, NULL)                                             \
+    LIST(NODE_ERROR_SET, NODE_ERROR_SET_START, 0, "error-set")                 \
     MARKER(NODE_CALL_ARGS)                                                     \
     MARKER(NODE_AND_LEFT)                                                      \
     MARKER(NODE_OR_LEFT)                                                       \
@@ -204,7 +206,8 @@
     MARKER(NODE_TUPLE_START)                                                   \
     MARKER(NODE_TARGETS_START)                                                 \
     MARKER(NODE_DESTRUCTURE_VALUE)                                             \
-    MARKER(NODE_DESTRUCTURE_VALUES)
+    MARKER(NODE_DESTRUCTURE_VALUES)                                            \
+    MARKER(NODE_ERROR_SET_START)
 // clang-format on
 
 #define CHIBI_NODE_NAME(name, ...) name,

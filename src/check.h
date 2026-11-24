@@ -247,6 +247,11 @@ enum
     X(DIAG_TRY_RESULT, "the function returns `%U`, which can't fail, so `try` can't pass an error up") \
     X(DIAG_HANDLER_END, "the handler can reach its end without a value of type `%U`")              \
     X(DIAG_TOO_MANY_ERRORS, "a program can't have more than 65,535 error names")                   \
+    X(DIAG_NOT_SET, "expected an error set before `!`, found `%U`")                                \
+    X(DIAG_SET_UNION, "`|` joins error sets, not `%U`; a `union` holds one of several types")      \
+    X(DIAG_ERROR_TWICE, "`error.%n` is already in this set at %l")                                 \
+    X(DIAG_NOT_IN_SET, "`%U` can't hold `error.%n`")                                               \
+    X(DIAG_ANY_ERROR, "`%T` can hold any error, and `%U` can't")                                   \
     X(DIAG_NOT_INDEXABLE, "`%T` can't be indexed")                                                  \
     X(DIAG_STRING_READ_ONLY, "a `string` is read-only, so its bytes can't be assigned or pointed to") \
     X(DIAG_NOT_INDEX, "an index must be an integer, found `%T`")                                    \
@@ -308,6 +313,8 @@ enum
     X(DIAG_EMPTY_RANGE, "this range is empty")                                                    \
     X(DIAG_MISSING_CASE, "the switch doesn't handle %w; add an arm for it or a `_` arm")          \
     X(DIAG_MISSING_MEMBER, "the switch doesn't handle `.%n`; add an arm for it or a `_` arm")     \
+    X(DIAG_MISSING_ERROR, "the switch doesn't handle `error.%n`; add an arm for it or a `_` arm") \
+    X(DIAG_SWITCH_ANY, "`%U` can hold any error, so the switch needs a `_` arm")                  \
     X(DIAG_ARM_END, "this arm can reach its end without a value")                                 \
     X(DIAG_UNSUPPORTED, "the checker doesn't support this yet")
 // clang-format on
@@ -600,6 +607,9 @@ typedef struct
     u32 *tuple_map;
     u32 tuple_mask;
     u32 tuple_count;
+    u32 *set_map;
+    u32 set_mask;
+    u32 set_count;
     u32 zeroed;
     u32 zeroed_align;
     u32 *entry_code;

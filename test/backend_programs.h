@@ -47,6 +47,14 @@ extern const char VALUE_OPTIONALS[];
 extern const char STORED_OPTIONALS[];
 extern const char OPTIONAL_BRANCHES[];
 extern const char ERROR_UNIONS[];
+extern const char WIDE_ERRORS[];
+
+enum
+{
+    WIDE_ERROR_NAMES = 33000,
+};
+
+char *wide_errors_program(void);
 
 extern const char *const BACKEND_PROGRAMS[];
 extern const u32 NBACKEND_PROGRAMS;

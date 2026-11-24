@@ -477,7 +477,7 @@ type_info(const Checker *c, u32 type)
                      kind == TYPE_UINTPTR || kind == TYPE_FLOAT;
     return (u8)(scale | (kind == TYPE_FLOAT ? INFO_FLOAT : 0) |
                 (supported ? 0 : INFO_UNSUPPORTED) |
-                (integer && c->types.arg1[type] ? INFO_SIGNED : 0) |
+                (kind == TYPE_INT && c->types.arg1[type] ? INFO_SIGNED : 0) |
                 (integer && bits < 32 ? INFO_SMALL : 0));
 }
 

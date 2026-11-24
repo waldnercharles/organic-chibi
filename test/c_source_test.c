@@ -507,7 +507,7 @@ TEST_CASE(writes_layouts)
 enum
 {
     MAX_JOBS = 8,
-    GRID_FUNCTIONS = 479,
+    GRID_FUNCTIONS = 485,
 };
 
 typedef struct
@@ -1741,6 +1741,29 @@ TEST_CASE(passes_arrays)
     return true;
 }
 
+TEST_CASE(handles_wide_error_codes)
+{
+    char *text = wide_errors_program();
+    Build b;
+    REQUIRE(open_build(&b, 1));
+    bool ok = add_package(&b, 0, text, 'g', false) && finish_build(&b, "");
+
+    u32 tested = 0;
+    if (ok) {
+        Package p;
+        ok = check_source(&p, text) && agree_on_grid(&b, &p, 0, &tested);
+        release(&p);
+    }
+    if (ok && tested != 2) {
+        fprintf(stderr, "c_source test: %u wide error functions take two ints, expected 2\n", tested);
+        ok = false;
+    }
+    close_build(&b, ok);
+    free(text);
+    REQUIRE(ok);
+    return true;
+}
+
 TEST_CASE(works_with_c)
 {
     Build b;
@@ -2290,6 +2313,7 @@ TEST_SUITE(c_source_tests)
 #ifdef CHIBI_TEST_CC
     RUN_TEST_CASE(agrees_with_reference);
     RUN_TEST_CASE(passes_arrays);
+    RUN_TEST_CASE(handles_wide_error_codes);
     RUN_TEST_CASE(works_with_c);
     RUN_TEST_CASE(runs_vectors);
     RUN_TEST_CASE(maps_lines);

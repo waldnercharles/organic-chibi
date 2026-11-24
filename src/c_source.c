@@ -120,8 +120,8 @@ scalar_of(const Checker *c, u32 type)
     }
     switch (c->types.kinds[type]) {
         case TYPE_INT:
-        case TYPE_ERROR:
             return (Scalar){ false, c->types.arg1[type] != 0, c->types.arg0[type] };
+        case TYPE_ERROR: return (Scalar){ false, false, c->types.arg0[type] };
         case TYPE_FLOAT: return (Scalar){ true, true, c->types.arg0[type] };
         case TYPE_BOOL: return (Scalar){ false, false, 8 };
         default: return (Scalar){ false, false, 64 };
