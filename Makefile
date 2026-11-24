@@ -59,7 +59,7 @@ translated:
 	@$(CC) $(WARN) -g -O1 -o build/chibi-translated src/main.c $(SRC)
 	@: > build/translated/entry.chibi
 	@for f in $(BOOTSTRAP); do \
-		$(CC) -std=c23 $(HOST) -DCHIBI_SIMD_GENERIC -Xclang -ast-dump=json -fsyntax-only $$f \
+		$(CC) -std=c23 $(HOST) -DCHIBI_SIMD_GENERIC -D_FORTIFY_SOURCE=0 -Xclang -ast-dump=json -fsyntax-only $$f \
 			> build/translated/host/$$(basename $$f .c).json || exit 1; \
 	done
 	@build/translate build/translated/host $(foreach f,$(BOOTSTRAP),build/translated/host/$(notdir $(f:.c=.json)) $(f))
