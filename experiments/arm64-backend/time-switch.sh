@@ -43,7 +43,7 @@ rm -f "$W"/host/*.json
 echo "== benches"
 sed "s/^#define RUNS 11$/#define RUNS $N/" experiments/arm64-backend/bench.c > experiments/arm64-backend/bench-switch.c
 clang $FLAGS -Wall -Wextra -Werror -o "$W/bench-c" experiments/arm64-backend/bench-switch.c $LIBSRC vendor/xxhash/xxhash.c
-clang $FLAGS -w -Dchibi_trap=chibi_trap_translated -Dchibi_context=chibi_context_translated -c -o "$W/lib-f.o" "$W/lib-f.c"
+clang $FLAGS -fno-lto -w -Dchibi_trap=chibi_trap_translated -Dchibi_context=chibi_context_translated -c -o "$W/lib-f.o" "$W/lib-f.c"
 clang $FLAGS -Wall -Wextra -Werror -o "$W/bench-t" experiments/arm64-backend/bench-switch.c "$W/lib-f.o" vendor/xxhash/xxhash.c
 
 echo "== corpus"
