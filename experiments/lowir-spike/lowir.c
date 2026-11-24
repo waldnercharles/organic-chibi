@@ -101,11 +101,15 @@ scalar_of(const Checker *c, u32 type)
     if (check_is_flag_optional(c, type)) {
         type = c->types.arg0[type];
     }
+    if (c->types.kinds[type] == TYPE_ERROR_UNION) {
+        type = check_error_union_first(c, type);
+    }
     if (c->types.kinds[type] == TYPE_ENUM) {
         type = (u32)c->types.arg1[type];
     }
     switch (c->types.kinds[type]) {
         case TYPE_INT:
+        case TYPE_ERROR:
             return (Scalar){ false, c->types.arg1[type] != 0, c->types.arg0[type] };
         case TYPE_FLOAT: return (Scalar){ true, true, c->types.arg0[type] };
         case TYPE_BOOL: return (Scalar){ false, false, 8 };
@@ -131,6 +135,9 @@ scalar_type(const Checker *c, u32 type)
     };
     if (check_is_flag_optional(c, type)) {
         type = c->types.arg0[type];
+    }
+    if (c->types.kinds[type] == TYPE_ERROR_UNION) {
+        type = check_error_union_first(c, type);
     }
     u8 kind = c->types.kinds[type];
     if (is_address(c, type)) {
@@ -159,10 +166,58 @@ flatten(const Checker *c, u32 type, u64 *count)
     return type;
 }
 
+static bool
+is_pair(const Checker *c, u32 type)
+{
+    return c->types.kinds[type] == TYPE_SLICE || check_is_flag_optional(c, type) || check_is_error_pair(c, type);
+}
+
 static CppgmType
-flagged_record(Lower *l, u32 type)
+second_type(const Checker *c, u32 type)
+{
+    if (c->types.kinds[type] == TYPE_SLICE) {
+        return CPPGM_TYPE_I64;
+    }
+    return check_is_error_pair(c, type) ? CPPGM_TYPE_U16 : CPPGM_TYPE_I1;
+}
+
+static u64
+second_offset(const Checker *c, u32 type)
+{
+    if (c->types.kinds[type] == TYPE_SLICE) {
+        return 8;
+    }
+    u64 size = check_type_size(c, c->types.arg0[type]);
+    return check_is_error_pair(c, type) ? (size + 1) & ~(u64)1 : size;
+}
+
+static u32
+pair_align(const Checker *c, u32 type)
+{
+    if (!check_is_error_pair(c, type)) {
+        return check_type_align(c, type);
+    }
+    u32 align = check_type_align(c, c->types.arg0[type]);
+    return align > 2 ? align : 2;
+}
+
+static u64
+pair_size(const Checker *c, u32 type)
+{
+    if (!check_is_error_pair(c, type)) {
+        return check_type_size(c, type);
+    }
+    u64 align = pair_align(c, type);
+    return (second_offset(c, type) + 2 + align - 1) & ~(align - 1);
+}
+
+static CppgmType
+pair_record(Lower *l, u32 type)
 {
     const Checker *c = l->c;
+    if (c->types.kinds[type] == TYPE_SLICE) {
+        return l->slice_record;
+    }
     if (l->records[type]) {
         return l->records[type];
     }
@@ -170,10 +225,10 @@ flagged_record(Lower *l, u32 type)
     u32 v = c->types.arg0[type];
     CppgmField fields[2] = {
         { 0, c->types.kinds[v] == TYPE_BOOL ? CPPGM_TYPE_U8 : scalar_type(c, v), 1 },
-        { check_type_size(c, v), CPPGM_TYPE_U8, 1 },
+        { second_offset(c, type), check_is_error_pair(c, type) ? CPPGM_TYPE_U16 : CPPGM_TYPE_U8, 1 },
     };
 
-    l->records[type] = cppgm_lowir_record(l->m, check_type_size(c, type), check_type_align(c, type), fields, 2);
+    l->records[type] = cppgm_lowir_record(l->m, pair_size(c, type), pair_align(c, type), fields, 2);
     must(l, l->records[type] != 0);
     return l->records[type];
 }
@@ -191,7 +246,7 @@ field_type(Lower *l, u32 type)
         return l->slice_record;
     }
     if (check_is_flag_optional(l->c, type)) {
-        return flagged_record(l, type);
+        return pair_record(l, type);
     }
     if (kind == TYPE_BOOL) {
         return CPPGM_TYPE_U8;
@@ -248,8 +303,8 @@ boundary_type(Lower *l, u32 type)
     if (type == TYPE_ID_VOID) {
         return CPPGM_TYPE_VOID;
     }
-    if (check_is_flag_optional(l->c, type)) {
-        return flagged_record(l, type);
+    if (check_is_flag_optional(l->c, type) || check_is_error_pair(l->c, type)) {
+        return pair_record(l, type);
     }
     if (kind == TYPE_STRUCT || kind == TYPE_ARRAY) {
         return record_of(l, type);
@@ -897,24 +952,6 @@ spill_address(Lower *l)
         l->spill = new_slot(l, l->slice_record);
     }
     return address_of(l, slot(l->spill));
-}
-
-static bool
-is_pair(const Checker *c, u32 type)
-{
-    return c->types.kinds[type] == TYPE_SLICE || check_is_flag_optional(c, type);
-}
-
-static CppgmType
-second_type(const Checker *c, u32 type)
-{
-    return c->types.kinds[type] == TYPE_SLICE ? CPPGM_TYPE_I64 : CPPGM_TYPE_I1;
-}
-
-static u64
-second_offset(const Checker *c, u32 type)
-{
-    return c->types.kinds[type] == TYPE_SLICE ? 8 : check_type_size(c, c->types.arg0[type]);
 }
 
 static void
@@ -1641,17 +1678,10 @@ call_op(Lower *l, u32 i, u8 kind, u32 type, u32 decl, const u32 *list)
     if (rk == TYPE_STRUCT || rk == TYPE_ARRAY) {
         LowirValue to = slot_address(l, list[n + 1]);
         copy_object(l, r, to, check_type_size(c, type), check_type_align(c, type));
-    } else if (rk == TYPE_SLICE) {
+    } else if (is_pair(c, type)) {
         LowirValue p = spill_address(l);
-        copy_object(l, r, p, 16, 8);
-        l->values[i] = load(l, CPPGM_TYPE_PTR, p);
-        l->values[i + 1] = load(l, CPPGM_TYPE_I64, offset(l, p, 8));
-    } else if (check_is_flag_optional(c, type)) {
-        LowirValue p = spill_address(l);
-        u32 v = c->types.arg0[type];
-        copy_object(l, r, p, check_type_size(c, type), check_type_align(c, type));
-        l->values[i] = load(l, scalar_type(c, type), p);
-        l->values[i + 1] = load(l, CPPGM_TYPE_I1, offset(l, p, check_type_size(c, v)));
+        copy_object(l, r, p, pair_size(c, type), pair_align(c, type));
+        load_pair(l, i, type, p);
     } else if (type != TYPE_ID_VOID) {
         l->values[i] = r;
     }
@@ -1668,21 +1698,12 @@ return_op(Lower *l, u32 type, u32 a, u32 b)
         LowirValue address = operand(l, a);
         LowirValue v = load(l, record_of(l, type), address);
         effect(l, CPPGM_OP_RETURN, 0, record_of(l, type), v, nothing(), nothing());
-    } else if (kind == TYPE_SLICE) {
+    } else if (is_pair(c, type)) {
         LowirValue x = operand(l, a);
         LowirValue y = operand(l, b);
         LowirValue p = spill_address(l);
-        store(l, CPPGM_TYPE_PTR, x, p);
-        store(l, CPPGM_TYPE_I64, y, offset(l, p, 8));
-        LowirValue v = load(l, l->slice_record, p);
-        effect(l, CPPGM_OP_RETURN, 0, l->slice_record, v, nothing(), nothing());
-    } else if (check_is_flag_optional(c, type)) {
-        LowirValue x = operand(l, a);
-        LowirValue y = operand(l, b);
-        LowirValue p = spill_address(l);
-        CppgmType record = flagged_record(l, type);
-        store(l, scalar_type(c, type), x, p);
-        store(l, CPPGM_TYPE_I1, y, offset(l, p, check_type_size(c, c->types.arg0[type])));
+        CppgmType record = pair_record(l, type);
+        store_pair(l, type, p, x, y);
         LowirValue v = load(l, record, p);
         effect(l, CPPGM_OP_RETURN, 0, record, v, nothing(), nothing());
     } else {
@@ -1710,7 +1731,7 @@ store_end(Lower *l, u32 e, u32 x, u32 y)
     if (is_pair(c, type)) {
         assert(y != NONE);
         if (l->end_slots[e] == NONE) {
-            l->end_slots[e] = new_slot(l, c->types.kinds[type] == TYPE_SLICE ? l->slice_record : flagged_record(l, type));
+            l->end_slots[e] = new_slot(l, pair_record(l, type));
         }
         store_pair(l, type, address_of(l, slot(l->end_slots[e])), operand(l, x), operand(l, y));
         return;
