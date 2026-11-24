@@ -480,9 +480,11 @@ reserve_stack(Checker *c, u32 n)
 static void
 push(Checker *c, u32 token, u32 type, u32 ref)
 {
-    assert(c->sp < c->stack_cap);
-    c->stack_tokens[c->sp] = token;
-    c->stack[c->sp++] = (Operand){ type, ref };
+    u32 sp = c->sp;
+    assert(sp < c->stack_cap);
+    c->stack_tokens[sp] = token;
+    c->stack[sp] = (Operand){ type, ref };
+    c->sp = sp + 1;
 }
 
 static void
