@@ -507,7 +507,7 @@ TEST_CASE(writes_layouts)
 enum
 {
     MAX_JOBS = 8,
-    GRID_FUNCTIONS = 436,
+    GRID_FUNCTIONS = 451,
 };
 
 typedef struct
@@ -567,6 +567,8 @@ static const char INTEROP[] =
     "struct P { x: int, y: int }\n"
     "struct W { a: int, b: int, c: int }\n"
     "struct Hook { f: extern fn(x: int) -> int, n: int }\n"
+    "struct Mb { a: ?i32, b: ?u8 }\n"
+    "struct Mw { a: ?i32, b: ?u8, c: ?f32 }\n"
     "\n"
     "const table := W.{ 7, 8, 9 }\n"
     "const K: int = -7\n"
@@ -590,6 +592,7 @@ static const char INTEROP[] =
     "extern fn chibi_cs_point(p: P, k: int) -> P\n"
     "extern fn chibi_cs_scribble(w: W) -> int\n"
     "extern fn chibi_cs_wide(k: int) -> W\n"
+    "extern fn chibi_cs_maybes(m: Mb, w: Mw, k: int) -> Mw\n"
     "pub extern fn chibi_cs_tick()\n"
     "extern fn chibi_cs_va(n: int, ..) -> f64\n"
     "extern fn chibi_cs_vpoint(p: P, n: int, ..) -> int\n"
@@ -606,6 +609,7 @@ static const char INTEROP[] =
     "extern chibi_cs_ticks: int\n"
     "extern chibi_cs_origin: P\n"
     "extern chibi_cs_codes: [3]u8\n"
+    "extern chibi_cs_maybe: ?i32\n"
     "extern " STDERR_NAME ": ?*u8\n"
     "\n"
     "fn after_c(x: int) -> int {\n"
@@ -698,6 +702,32 @@ static const char INTEROP[] =
     "    p := &chibi_cs_origin\n"
     "    p.y = p.x * 2\n"
     "    return chibi_cs_origin.y + int(chibi_cs_codes[2])\n"
+    "}\n"
+    "\n"
+    "fn swap_maybe(x: int) -> int {\n"
+    "    v := int(chibi_cs_maybe ?\? -1)\n"
+    "    if x % 3 != 0 {\n"
+    "        chibi_cs_maybe = i32(x)\n"
+    "    } else {\n"
+    "        chibi_cs_maybe = nil\n"
+    "    }\n"
+    "    return v\n"
+    "}\n"
+    "\n"
+    "fn maybes(x: int) -> int {\n"
+    "    m: Mb\n"
+    "    if x % 2 == 0 {\n"
+    "        m.a = i32(x)\n"
+    "    }\n"
+    "    if x % 3 != 0 {\n"
+    "        m.b = u8(x & 127)\n"
+    "    }\n"
+    "    w := Mw.{ .b = 3 }\n"
+    "    if x > 2 {\n"
+    "        w.c = f32(x)\n"
+    "    }\n"
+    "    r := chibi_cs_maybes(m, w, x)\n"
+    "    return int(r.a ?\? -1) * 10000 + int(r.b ?\? 7) * 100 + int((r.c ?\? 9.0) * 2.0)\n"
     "}\n"
     "\n"
     "fn error_stream() -> ?*u8 {\n"
@@ -892,6 +922,11 @@ void *chibi_context = CONTEXT;
 int64_t chibi_cs_ticks;
 struct i0_P chibi_cs_origin = { 1, 2 };
 uint8_t chibi_cs_codes[3] = { 5, 6, 7 };
+struct
+{
+    int32_t value;
+    bool present;
+} chibi_cs_maybe = { 9, true };
 
 NORETURN void
 chibi_trap(int kind)
@@ -982,6 +1017,53 @@ struct i0_W
 chibi_cs_wide(int64_t k)
 {
     return (struct i0_W){ k, k + 1, k + 2 };
+}
+
+struct i0_Mb
+{
+    struct
+    {
+        int32_t value;
+        bool present;
+    } a;
+    struct
+    {
+        uint8_t value;
+        bool present;
+    } b;
+};
+
+struct i0_Mw
+{
+    struct
+    {
+        int32_t value;
+        bool present;
+    } a;
+    struct
+    {
+        uint8_t value;
+        bool present;
+    } b;
+    struct
+    {
+        float value;
+        bool present;
+    } c;
+};
+
+struct i0_Mw
+chibi_cs_maybes(struct i0_Mb m, struct i0_Mw w, int64_t k)
+{
+    struct i0_Mw r = w;
+    r.a.present = m.b.present;
+    r.a.value = m.b.present ? m.b.value + (int32_t)k : 0;
+    if (m.a.present) {
+        r.b.value = (uint8_t)(m.a.value * 2);
+        r.b.present = true;
+    }
+    r.c.value = w.c.present ? w.c.value * 2.0f : 0.0f;
+    return r;
 }
 
 void
@@ -1460,6 +1542,16 @@ calls_c(const Build *b, int64_t x)
     int64_t origin = chibi_cs_origin.x + x;
     ok &= gives("move_origin", x, ((I1 *)symbol(b, "i0_move_origin"))(CONTEXT, x), 2 * origin + 7);
     ok &= gives("chibi_cs_origin", x, chibi_cs_origin.x * 1000 + chibi_cs_origin.y, origin * 1002);
+
+    int64_t maybe = chibi_cs_maybe.present ? chibi_cs_maybe.value : -1;
+    ok &= gives("swap_maybe", x, ((I1 *)symbol(b, "i0_swap_maybe"))(CONTEXT, x), maybe);
+    maybe = chibi_cs_maybe.present ? chibi_cs_maybe.value : -1;
+    ok &= gives("chibi_cs_maybe", x, maybe, x % 3 != 0 ? x : -1);
+
+    int64_t ra = x % 3 != 0 ? (x & 127) + x : -1;
+    int64_t rb = x % 2 == 0 ? (uint8_t)(x * 2) : 3;
+    int64_t rc = x > 2 ? 4 * x : 18;
+    ok &= gives("maybes", x, ((I1 *)symbol(b, "i0_maybes"))(CONTEXT, x), ra * 10000 + rb * 100 + rc);
     return ok;
 }
 

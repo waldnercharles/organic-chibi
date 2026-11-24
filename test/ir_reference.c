@@ -778,6 +778,8 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                 v = canon(raw, t);
                 if (c->types.kinds[type] == TYPE_SLICE) {
                     memcpy(&second, p + 8, sizeof second);
+                } else if (check_is_flag_optional(c, type)) {
+                    second = p[t.bits / 8];
                 }
                 break;
             }
@@ -789,7 +791,13 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
             case IR_STORE_PAIR: {
                 const u32 *x = ir->extra + fn->first_extra + b;
                 u64 words[2] = { OPERAND(x[0]), OPERAND(x[1]) };
-                memcpy((void *)(uintptr_t)OPERAND(a), words, sizeof words);
+                u8 *p = (u8 *)(uintptr_t)OPERAND(a);
+                if (check_is_flag_optional(c, type)) {
+                    memcpy(p, words, t.bits / 8);
+                    p[t.bits / 8] = (u8)words[1];
+                    break;
+                }
+                memcpy(p, words, sizeof words);
                 break;
             }
             case IR_ADD:

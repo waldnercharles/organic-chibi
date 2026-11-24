@@ -2552,6 +2552,8 @@ TEST_CASE(hidden_context)
 static const char CALLS_INTO_C
     [] = "struct P { x: int, y: int }\n"
          "struct W { a: int, b: int, c: int }\n"
+         "struct Mb { a: ?i32, b: ?u8 }\n"
+         "struct Mw { a: ?i32, b: ?u8, c: ?f32 }\n"
          "\n"
          "const table := W.{ 7, 8, 9 }\n"
          "\n"
@@ -2573,11 +2575,13 @@ static const char CALLS_INTO_C
          "extern fn chibi_c_point(p: P, k: int) -> P\n"
          "extern fn chibi_c_scribble(w: W) -> int\n"
          "extern fn chibi_c_wide(k: int) -> W\n"
+         "extern fn chibi_c_maybes(m: Mb, w: Mw, k: int) -> Mw\n"
          "pub extern fn chibi_c_tick()\n"
          "\n"
          "extern chibi_c_ticks: int\n"
          "extern chibi_c_seen: [5]u64\n"
          "extern chibi_c_origin: P\n"
+         "extern chibi_c_maybe: ?i32\n"
          "extern " STDERR_NAME ": ?*u8\n"
          "\n"
          "fn h(x: int) -> int {\n"
@@ -2707,6 +2711,32 @@ static const char CALLS_INTO_C
          "    return chibi_c_origin.y\n"
          "}\n"
          "\n"
+         "fn swap_maybe(x: int) -> int {\n"
+         "    v := int(chibi_c_maybe ?\? -1)\n"
+         "    if x % 3 != 0 {\n"
+         "        chibi_c_maybe = i32(x)\n"
+         "    } else {\n"
+         "        chibi_c_maybe = nil\n"
+         "    }\n"
+         "    return v\n"
+         "}\n"
+         "\n"
+         "fn maybes(x: int) -> int {\n"
+         "    m: Mb\n"
+         "    if x % 2 == 0 {\n"
+         "        m.a = i32(x)\n"
+         "    }\n"
+         "    if x % 3 != 0 {\n"
+         "        m.b = u8(x & 127)\n"
+         "    }\n"
+         "    w := Mw.{ .b = 3 }\n"
+         "    if x > 2 {\n"
+         "        w.c = f32(x)\n"
+         "    }\n"
+         "    r := chibi_c_maybes(m, w, x)\n"
+         "    return int(r.a ?\? -1) * 10000 + int(r.b ?\? 7) * 100 + int((r.c ?\? 9.0) * 2.0)\n"
+         "}\n"
+         "\n"
          "fn error_stream() -> ?*u8 {\n"
          "    return " STDERR_NAME "\n"
          "}\n"
@@ -2747,6 +2777,11 @@ enum
 uint64_t chibi_c_seen[5];
 int64_t chibi_c_ticks;
 CPoint chibi_c_origin = { 1, 2 };
+struct
+{
+    int32_t value;
+    bool present;
+} chibi_c_maybe = { 9, true };
 
 int64_t
 chibi_c_eight(int64_t a, int64_t b, int64_t c, int64_t d, int64_t e, int64_t f, int64_t g, int64_t h)
@@ -2835,6 +2870,53 @@ chibi_c_wide(int64_t k)
     return (CW){ k, k + 1, k + 2 };
 }
 
+typedef struct
+{
+    struct
+    {
+        int32_t value;
+        bool present;
+    } a;
+    struct
+    {
+        uint8_t value;
+        bool present;
+    } b;
+} CMb;
+
+typedef struct
+{
+    struct
+    {
+        int32_t value;
+        bool present;
+    } a;
+    struct
+    {
+        uint8_t value;
+        bool present;
+    } b;
+    struct
+    {
+        float value;
+        bool present;
+    } c;
+} CMw;
+
+CMw
+chibi_c_maybes(CMb m, CMw w, int64_t k)
+{
+    CMw r = w;
+    r.a.present = m.b.present;
+    r.a.value = m.b.present ? m.b.value + (int32_t)k : 0;
+    if (m.a.present) {
+        r.b.value = (uint8_t)(m.a.value * 2);
+        r.b.present = true;
+    }
+    r.c.value = w.c.present ? w.c.value * 2.0f : 0.0f;
+    return r;
+}
+
 void
 chibi_c_tick(void)
 {
@@ -2910,6 +2992,16 @@ TEST_CASE(calls_into_c)
         int64_t origin = chibi_c_origin.x + x;
         REQUIRE(((I1 *)fn(&p, "move_origin"))(CONTEXT, x) == 2 * origin);
         REQUIRE(chibi_c_origin.x == origin && chibi_c_origin.y == 2 * origin);
+
+        int64_t maybe = chibi_c_maybe.present ? chibi_c_maybe.value : -1;
+        REQUIRE(((I1 *)fn(&p, "swap_maybe"))(CONTEXT, x) == maybe);
+        REQUIRE(chibi_c_maybe.present == (x % 3 != 0));
+        REQUIRE(!chibi_c_maybe.present || chibi_c_maybe.value == x);
+
+        int64_t ra = x % 3 != 0 ? (x & 127) + x : -1;
+        int64_t rb = x % 2 == 0 ? (uint8_t)(x * 2) : 3;
+        int64_t rc = x > 2 ? 4 * x : 18;
+        REQUIRE(((I1 *)fn(&p, "maybes"))(CONTEXT, x) == ra * 10000 + rb * 100 + rc);
     }
     REQUIRE(lost_contexts == 0);
     REQUIRE(((R0 *)fn(&p, "error_stream"))(CONTEXT) == (uint64_t)(uintptr_t)stderr);
@@ -6304,6 +6396,82 @@ TEST_CASE(value_optionals)
     return true;
 }
 
+static const char *const STORED_OPTIONAL_FUNCTIONS[] = {
+    "so_fields", "so_copy", "so_small", "so_arrays", "so_pointers", "so_globals",
+    "so_constants", "so_trap", "so_narrow", "so_floats", "so_slices", "so_nested", "so_rest",
+    "so_tuples", "so_fconst",
+};
+
+static const CallCase STORED_OPTIONAL_CASES[] = {
+    { "so_fields", 5, 2, 152190331, 0 },
+    { "so_fields", -1, 7, 1007171203, 0 },
+    { "so_fields", 3, 3, 93232013, 0 },
+    { "so_copy", 5, 2, 5299330, 0 },
+    { "so_copy", -1, 7, -6000600, 0 },
+    { "so_copy", 3, 3, -6590659, 0 },
+    { "so_small", 5, 2, 1056, 0 },
+    { "so_small", -1, 7, -29, 0 },
+    { "so_small", 12, 4, 2446, 0 },
+    { "so_arrays", 5, 2, 365345, 0 },
+    { "so_arrays", -1, 7, 527822, 0 },
+    { "so_arrays", 0, 9, 743511, 0 },
+    { "so_pointers", 5, 2, 253, 0 },
+    { "so_pointers", -1, 7, 683, 0 },
+    { "so_pointers", 0, 0, -117, 0 },
+    { "so_globals", 5, 2, 40766199, 0 },
+    { "so_globals", -1, 7, 40760179, 0 },
+    { "so_globals", 12, 4, 40773193, 0 },
+    { "so_constants", 5, 2, 100710538, 0 },
+    { "so_constants", -1, 7, 100610472, 0 },
+    { "so_constants", 0, 9, 3610483, 0 },
+    { "so_trap", -1, 7, 6, 0 },
+    { "so_trap", 12, 4, 16, 0 },
+    { "so_narrow", 5, 2, 21, 0 },
+    { "so_narrow", 3, 3, -3, 0 },
+    { "so_floats", 5, 2, 137, 0 },
+    { "so_floats", -1, 7, -17, 0 },
+    { "so_floats", 0, 9, -14, 0 },
+    { "so_slices", 5, 2, 20497, 0 },
+    { "so_slices", 0, 9, 103057, 0 },
+    { "so_nested", 5, 2, 5115, 0 },
+    { "so_nested", -1, 7, -4776, 0 },
+    { "so_nested", 12, 4, 12122, 0 },
+    { "so_rest", 5, 2, 53524021, 0 },
+    { "so_rest", -1, 7, 53774071, 0 },
+    { "so_rest", 12, 4, 53444041, 0 },
+    { "so_tuples", 5, 2, 5192, 0 },
+    { "so_tuples", -1, 7, -753, 0 },
+    { "so_tuples", 12, 4, 12184, 0 },
+    { "so_tuples", 0, INT64_MAX, 0, TRAP_OVERFLOW },
+    { "so_fconst", 5, 2, 122, 0 },
+    { "so_fconst", -1, 7, 134, 0 },
+    { "so_fconst", 12, 4, 189, 0 },
+    { "so_trap", 5, 2, 0, TRAP_NIL },
+    { "so_trap", 3, 3, 0, TRAP_NIL },
+    { "so_fields", INT64_MIN, 3, 0, TRAP_OVERFLOW },
+    { "so_nested", INT64_MAX, 0, 0, TRAP_RANGE },
+    { "so_small", INT64_MAX, 0, 0, TRAP_OVERFLOW },
+};
+
+TEST_CASE(stored_optionals)
+{
+    catch_traps();
+    Program p;
+    REQUIRE(build(&p, STORED_OPTIONALS));
+    for (size_t k = 0; k < sizeof STORED_OPTIONAL_CASES / sizeof STORED_OPTIONAL_CASES[0]; k++) {
+        CallCase t = STORED_OPTIONAL_CASES[k];
+        int64_t got = 0;
+        int trap = call_i2((I2 *)fn(&p, t.name), t.a, t.b, &got);
+        if (trap != t.trap || (!trap && got != t.want)) {
+            fprintf(stderr, "arm64 test: %s(%lld, %lld) gave %lld (trap %d)\n", t.name, (long long)t.a, (long long)t.b, (long long)got, trap);
+            REQUIRE(false);
+        }
+    }
+    REQUIRE(agree_on_grid(&p, STORED_OPTIONAL_FUNCTIONS, sizeof STORED_OPTIONAL_FUNCTIONS / sizeof STORED_OPTIONAL_FUNCTIONS[0]));
+    release_program(&p);
+    return true;
+}
+
 TEST_CASE(top_level_code)
 {
     Program p;
@@ -6361,6 +6529,7 @@ TEST_SUITE(arm64_tests)
     RUN_TEST_CASE(named_results);
     RUN_TEST_CASE(defers);
     RUN_TEST_CASE(value_optionals);
+    RUN_TEST_CASE(stored_optionals);
     RUN_TEST_CASE(narrow_parameters);
     RUN_TEST_CASE(constant_division);
     RUN_TEST_CASE(differential);

@@ -713,7 +713,7 @@ is_aggregate(const Checker *c, u32 type)
     return (u8)(c->types.kinds[type] - TYPE_ARRAY) <= 1;
 }
 
-static bool
+static ALWAYS_INLINE bool
 is_storable(const Checker *c, u32 type)
 {
     while (is_array(c, type) || is_slice(c, type)) {
@@ -722,7 +722,7 @@ is_storable(const Checker *c, u32 type)
     if (is_struct(c, type)) {
         return c->decls.flags[c->types.arg0[type]] & DECL_STORED;
     }
-    return is_scalar(c, type) && !is_untyped(type);
+    return (is_scalar(c, type) && !is_untyped(type)) || is_value_optional(c, type);
 }
 
 static bool
@@ -751,11 +751,20 @@ has_slow_store(const Checker *c, u32 type)
     return (u8)(c->types.kinds[type] - TYPE_OPTIONAL) <= 1;
 }
 
-static bool
+static ALWAYS_INLINE bool
 is_held(const Checker *c, u32 type)
 {
     static_assert(TYPE_SLICE == TYPE_OPTIONAL + 1, "optionals must precede the compound kinds");
     return (u8)(c->types.kinds[type] - TYPE_OPTIONAL) > 3 || is_storable(c, type);
+}
+
+static NOINLINE u64
+flagged_size(const Checker *c, u32 type)
+{
+    if (!is_value_optional(c, type)) {
+        return 0;
+    }
+    return 2 * check_type_size(c, c->types.arg0[type]);
 }
 
 u64
@@ -770,7 +779,8 @@ check_type_size(const Checker *c, u32 type)
         case TYPE_POINTER:
         case TYPE_MANY:
         case TYPE_FN: return 8;
-        case TYPE_OPTIONAL: return is_nilable(c, type) ? 8 : 0;
+        case TYPE_OPTIONAL:
+            return is_nilable(c, type) ? 8 : flagged_size(c, type);
         case TYPE_SLICE:
         case TYPE_VECTOR: return 16;
         case TYPE_ENUM: return check_type_size(c, (u32)t->arg1[type]);
@@ -784,6 +794,18 @@ check_type_size(const Checker *c, u32 type)
     }
 }
 
+static NOINLINE u32
+compound_align(const Checker *c, u32 type)
+{
+    if (is_slice(c, type)) {
+        return 8;
+    }
+    if (check_is_flag_optional(c, type)) {
+        type = c->types.arg0[type];
+    }
+    return (u32)check_type_size(c, type);
+}
+
 u32
 check_type_align(const Checker *c, u32 type)
 {
@@ -794,7 +816,10 @@ check_type_align(const Checker *c, u32 type)
         u32 layout = c->decls.values[c->types.arg0[type]];
         return layout ? c->lists[layout + 1] : 1;
     }
-    return is_slice(c, type) ? 8 : (u32)check_type_size(c, type);
+    if (c->types.kinds[type] >= TYPE_OPTIONAL) {
+        return compound_align(c, type);
+    }
+    return (u32)check_type_size(c, type);
 }
 
 u64
@@ -874,9 +899,9 @@ static NOINLINE bool
 is_passed_compound(const Checker *c, u32 type)
 {
     if (!is_storable(c, type)) {
-        return is_value_optional(c, type);
+        return false;
     }
-    return is_slice(c, type) || is_nilable(c, type) ||
+    return is_slice(c, type) || is_nilable(c, type) || is_value_optional(c, type) ||
            (is_aggregate(c, type) && check_struct_regs(c, type));
 }
 
@@ -941,6 +966,13 @@ static u32
 value_of(Operand o)
 {
     return o.ref & REF_INDEX;
+}
+
+static u32
+constant_ref(Operand o)
+{
+    assert(is_constant(o));
+    return o.ref & (REF_NONNIL | REF_INDEX);
 }
 
 static bool
@@ -1709,10 +1741,19 @@ value_half(Checker *c, Operand o)
 }
 
 static Operand
+present_value(Checker *c, Operand o)
+{
+    if (is_constant(o)) {
+        return (Operand){ c->types.arg0[o.type], value_of(o) };
+    }
+    return value_half(c, o);
+}
+
+static Operand
 narrowed_value(Checker *c, Operand o)
 {
     if (!c->types.arg1[o.type]) {
-        return value_half(c, o);
+        return present_value(c, o);
     }
     return (Operand){ c->types.arg0[o.type], o.ref & ~REF_NONNIL };
 }
@@ -1720,8 +1761,8 @@ narrowed_value(Checker *c, Operand o)
 static NOINLINE Operand
 unflag(Checker *c, u32 file, u32 token, Operand o)
 {
-    if (is_nonnil(o)) {
-        return value_half(c, o);
+    if (o.ref & REF_NONNIL) {
+        return present_value(c, o);
     }
     report(c, file, token, DIAG_MAYBE_NIL, o.type, 0);
     return poison;
@@ -2002,14 +2043,23 @@ string_pointer(Checker *c, u32 file, u32 token, Operand o, u32 to)
 }
 
 static NOINLINE Operand
+flagged_constant(Checker *c, Operand o)
+{
+    if (!(o.ref & REF_NONNIL)) {
+        return make_pair(c, o.type, ir_const(c, o.type, 0), ir_const(c, TYPE_ID_BOOL, 0));
+    }
+    u32 first = operand_ir(c, (Operand){ c->types.arg0[o.type], value_of(o) });
+    Operand r = make_pair(c, o.type, first, ir_const(c, TYPE_ID_BOOL, 1));
+    return (Operand){ o.type, r.ref | REF_NONNIL };
+}
+
+static NOINLINE Operand
 wrap_flagged(Checker *c, u32 file, u32 token, Operand o, u32 to)
 {
-    if (!in_body(c)) {
-        report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
-        return poison;
-    }
+    bool body = in_body(c);
     if (o.type == TYPE_ID_NIL) {
-        return make_pair(c, to, ir_const(c, to, 0), ir_const(c, TYPE_ID_BOOL, 0));
+        Operand nil = { to, EXACT_ZERO };
+        return body ? flagged_constant(c, nil) : nil;
     }
     if (c->types.kinds[o.type] == TYPE_OPTIONAL) {
         report(c, file, token, DIAG_MISMATCH, o.type, to);
@@ -2020,6 +2070,9 @@ wrap_flagged(Checker *c, u32 file, u32 token, Operand o, u32 to)
     if (v.type == TYPE_ID_NONE) {
         return poison;
     }
+    if (!body) {
+        return (Operand){ to, constant_ref(v) | REF_NONNIL };
+    }
     Operand r = make_pair(c, to, operand_ir(c, v), ir_const(c, TYPE_ID_BOOL, 1));
     return (Operand){ to, r.ref | REF_NONNIL };
 }
@@ -2029,7 +2082,7 @@ convert_optional(Checker *c, u32 file, u32 token, Operand o, u32 to)
 {
     const Types *t = &c->types;
     u32 from = o.type;
-    if (t->kinds[from] == TYPE_OPTIONAL && is_nonnil(o)) {
+    if (t->kinds[from] == TYPE_OPTIONAL && (o.ref & REF_NONNIL)) {
         return convert(c, file, token, narrowed_value(c, o), to);
     }
     if (is_value_optional(c, to)) {
@@ -2297,7 +2350,7 @@ static ALWAYS_INLINE Operand cast(Checker *c, u32 file, u32 token, Operand o, u3
 static NOINLINE Operand
 cast_flagged(Checker *c, u32 file, u32 token, Operand o, u32 to)
 {
-    if (c->types.kinds[to] == TYPE_OPTIONAL && !is_nonnil(o)) {
+    if (c->types.kinds[to] == TYPE_OPTIONAL && !(o.ref & REF_NONNIL)) {
         return convert(c, file, token, o, to);
     }
     o = unflag(c, file, token, o);
@@ -2994,6 +3047,11 @@ static Operand binary(Checker *c, u32 file, u32 token, u8 kind, Operand a, Opera
 static NOINLINE Operand
 present_test(Checker *c, u8 kind, Operand o)
 {
+    if (is_constant(o)) {
+        bool present = (o.ref & REF_NONNIL) != 0;
+        u32 v = present == (kind == NODE_NE) ? EXACT_ONE : EXACT_ZERO;
+        return (Operand){ TYPE_ID_BOOL, v };
+    }
     Pair p = pair_of(c, o);
     if (!(p.first & IR_CONST)) {
         emit(c, IR_DROP, 0, p.first, 0);
@@ -3258,7 +3316,7 @@ push_member(Checker *c, u32 file, u32 node, u32 type, u32 value)
 static u32
 member_value(Operand o)
 {
-    return o.type == TYPE_ID_NONE ? MEMBER_NONE : value_of(o);
+    return o.type == TYPE_ID_NONE ? MEMBER_NONE : constant_ref(o);
 }
 
 static u32
@@ -3393,7 +3451,7 @@ static bool
 sets_default(const Checker *c, Member m)
 {
     return m.value < MEMBER_NONE
-             ? exact_sign(&c->exacts, m.value) != 0
+             ? (m.value & REF_NONNIL) || exact_sign(&c->exacts, m.value) != 0
              : m.value == MEMBER_NONE && has_defaults(c, m.type);
 }
 
@@ -3851,7 +3909,7 @@ set_const(Checker *c, u32 decl, Operand v)
 {
     assert(v.type != TYPE_ID_UNDEFINED);
     c->decls.types[decl] = v.type;
-    c->decls.values[decl] = value_of(v);
+    c->decls.values[decl] = constant_ref(v);
 }
 
 static void
@@ -3889,7 +3947,7 @@ unbind_to(Checker *c, u32 n)
 static ALWAYS_INLINE u32
 local_type(Checker *c, u32 file, u32 token, u32 type)
 {
-    if (!is_held(c, type) && !is_value_optional(c, type)) {
+    if (!is_held(c, type)) {
         report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
         return TYPE_ID_NONE;
     }
@@ -4212,6 +4270,13 @@ fill_array(Checker *c, u32 file, u32 first, u32 n, u32 slot, u32 elem)
 }
 
 static NOINLINE Operand
+default_arg(Checker *c, u32 type, u32 value)
+{
+    Operand v = { type, value };
+    return check_is_flag_optional(c, type) ? flagged_constant(c, v) : v;
+}
+
+static NOINLINE Operand
 call_general(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg, u32 nargs)
 {
     const Decls *d = &c->decls;
@@ -4248,7 +4313,7 @@ call_general(Checker *c, u32 file, u32 node, u32 token, u32 decl, u32 first_arg,
         }
         Operand v = i < nargs
                       ? convert(c, file, c->stack_tokens[first_arg + i], c->stack[first_arg + i], type)
-                      : (Operand){ type, c->members[d->members[decl] + i].value };
+                      : default_arg(c, type, c->members[d->members[decl] + i].value);
         ok &= v.type != TYPE_ID_NONE;
         if (!ok) {
             continue;
@@ -4631,9 +4696,23 @@ reserve_data(Checker *c, u32 file, u32 token, u32 type)
     return at;
 }
 
+static NOINLINE void
+put_flagged(Checker *c, u8 *to, u32 type, Operand v)
+{
+    u32 inner = c->types.arg0[type];
+    u64 bits = constant_bits(c, (Operand){ inner, value_of(v) });
+    u64 size = check_type_size(c, inner);
+    memcpy(to, &bits, size);
+    to[size] = (v.ref & REF_NONNIL) != 0;
+}
+
 static void
 put_bits(Checker *c, u8 *to, u32 type, Operand v)
 {
+    if (check_is_flag_optional(c, type)) {
+        put_flagged(c, to, type, v);
+        return;
+    }
     u64 bits[2] = { constant_bits(c, v), 0 };
     if (check_is_int128(type)) {
         bits[1] = exact_bits_high(&c->exacts, value_of(v));
@@ -5154,6 +5233,13 @@ logical(Checker *c, u32 file, u8 kind)
 static NOINLINE Operand
 unwrap_flagged(Checker *c, u32 file, u32 token, Operand o)
 {
+    if (is_constant(o) && !(o.ref & REF_NONNIL)) {
+        report(c, file, token, DIAG_ALWAYS_NIL, 0, 0);
+        return poison;
+    }
+    if (is_constant(o)) {
+        return present_value(c, o);
+    }
     Pair p = pair_of(c, o);
     if (!(p.second & IR_CONST)) {
         emit(c, IR_DROP, 0, emit(c, IR_CHECK_NIL, TYPE_ID_BOOL, p.second, 0), 0);
@@ -5198,6 +5284,9 @@ unwrap(Checker *c, u32 file, u32 token, Operand o)
 static NOINLINE u32
 or_else_flagged(Checker *c, Operand a)
 {
+    if (is_constant(a)) {
+        return a.ref & REF_NONNIL ? SHORT_FOLD : SHORT_PASS;
+    }
     Pair p = pair_of(c, a);
     u32 inner = c->types.arg0[a.type];
     if (!(p.second & IR_CONST)) {
@@ -5258,8 +5347,8 @@ or_else(Checker *c, u32 file)
                       : c->body.code->types[c->body.first + mode];
     u32 optional = optional_type(c, inner);
     bool flagged = check_is_flag_optional(c, optional);
-    if (flagged && b.type == optional && is_nonnil(b)) {
-        b = value_half(c, b);
+    if (flagged && b.type == optional && (b.ref & REF_NONNIL)) {
+        b = present_value(c, b);
     }
     u32 type = b.type == TYPE_ID_NIL || b.type == optional ? optional : inner;
     if (flagged && type == optional && !known) {
@@ -5270,6 +5359,9 @@ or_else(Checker *c, u32 file)
     Operand v = convert(c, file, b_token, b, type);
     if (mode == SHORT_PASS) {
         return v;
+    }
+    if (mode == SHORT_FOLD && is_constant(a)) {
+        return type == optional ? a : present_value(c, a);
     }
     if (mode == SHORT_FOLD) {
         if (is_pair(c, v)) {
@@ -5653,7 +5745,8 @@ deref(Checker *c, u32 file, u32 token, Operand p, bool place)
     }
 
     u32 type = c->types.arg0[p.type];
-    if (is_compound(c, type) ? !is_storable(c, type) : !is_scalar(c, type)) {
+    if (is_compound(c, type) ? !is_storable(c, type)
+                             : !is_scalar(c, type) && !is_value_optional(c, type)) {
         report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
         return poison;
     }
@@ -6197,7 +6290,9 @@ fill_defaults(Checker *c, u32 node, u32 base, bool indirect, u32 type)
             base_address(c, base, indirect),
             field_layout(c, decl, k)
         );
-        if (m.value < MEMBER_NONE) {
+        if (m.value < MEMBER_NONE && check_is_flag_optional(c, m.type)) {
+            store_at(c, m.type, at, flagged_constant(c, (Operand){ m.type, m.value }));
+        } else if (m.value < MEMBER_NONE) {
             emit(c, IR_STORE_AT, m.type, at, operand_ir(c, (Operand){ m.type, m.value }));
         } else {
             fill_defaults(c, node, hold_address(c, node, m.type, at), true, m.type);
@@ -8505,8 +8600,8 @@ static u32
 add_local(Checker *c, u32 name, u32 type, u32 node)
 {
     u32 slot = add_slot(c, name, type, node);
-    if (is_slice(c, type)) {
-        add_slot(c, name, TYPE_ID_I64, node);
+    if (is_pair_type(c, type)) {
+        add_slot(c, name, second_type(c, type), node);
     }
     return slot;
 }
@@ -8517,7 +8612,7 @@ take_element(Checker *c, u32 value, u32 elem, u32 at)
     if (is_aggregate(c, elem)) {
         u32 to = place_address(c, (Operand){ OPERAND_LOCAL, value });
         emit(c, IR_COPY, elem, to, at);
-    } else if (is_slice(c, elem)) {
+    } else if (is_pair_type(c, elem)) {
         store_pair(c, value, load_at(c, elem, at));
     } else {
         store_local(c, value, load_at(c, elem, at));
@@ -9362,6 +9457,10 @@ resolve_name(Checker *c, u32 file, u32 node)
             need(c, decl, file, token);
             if (in_body(c) && is_aggregate(c, c->decls.types[decl])) {
                 return data_place(c, decl);
+            }
+            if (in_body(c) && check_is_flag_optional(c, c->decls.types[decl])) {
+                Operand k = { c->decls.types[decl], c->decls.values[decl] };
+                return flagged_constant(c, k);
             }
             return (Operand){ c->decls.types[decl], c->decls.values[decl] };
         case DECL_FN: {
@@ -11058,6 +11157,15 @@ print_data(FILE *out, const Checker *c, bool global, u64 at, u32 type)
         fputs(count ? " }" : "", out);
         return;
     }
+    if (check_is_flag_optional(c, type)) {
+        u32 inner = c->types.arg0[type];
+        if ((global ? c->ir.globals : c->ir.data)[at + check_type_size(c, inner)]) {
+            print_data(out, c, global, at, inner);
+        } else {
+            fputs("nil", out);
+        }
+        return;
+    }
     const IrRelocs *relocs = global ? &c->ir.global_relocs : &c->ir.data_relocs;
     if (is_slice(c, type)) {
         u32 k = first_reloc(relocs, at);
@@ -11110,6 +11218,8 @@ print_constant(FILE *out, const Checker *c, u32 type, u32 value)
         ExactStatus status;
         u32 width = c->types.arg0[type];
         print_float(out, exact_float(&c->exacts, value, width, &status), width);
+    } else if (kind == TYPE_OPTIONAL && (value & REF_NONNIL)) {
+        print_constant(out, c, c->types.arg0[type], value & REF_INDEX);
     } else if (kind == TYPE_OPTIONAL && exact_sign(&c->exacts, value) == 0) {
         fputs("nil", out);
     } else {

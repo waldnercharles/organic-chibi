@@ -575,10 +575,31 @@ put_line(Source *s, const char *format, ...)
 }
 
 static void
+put_flagged_name(Source *s, u32 type)
+{
+    fprintf(s->out, "struct chibi_%sflagged_%u", s->prefix, type);
+}
+
+static void
+put_stored_type(Source *s, u32 type)
+{
+    if (check_is_flag_optional(s->c, type)) {
+        put_flagged_name(s, type);
+    } else {
+        put_object_type(s, type);
+    }
+}
+
+static void
 put_declaration(Source *s, u32 type, char tag, u32 id)
 {
     const Checker *c = s->c;
-    put_object_type(s, element_of(c, type));
+    u32 elem = element_of(c, type);
+    if (tag == 'f' || elem != type) {
+        put_stored_type(s, elem);
+    } else {
+        put_object_type(s, elem);
+    }
     fprintf(s->out, " %c%u", tag, id);
     for (u32 t = type; c->types.kinds[t] == TYPE_ARRAY; t = c->types.arg0[t]) {
         fprintf(s->out, "[%llu]", (unsigned long long)c->types.arg1[t]);
@@ -618,12 +639,6 @@ put_struct(Source *s, u32 decl, u8 *done)
         decl,
         check_type_align(c, type)
     );
-}
-
-static void
-put_flagged_name(Source *s, u32 type)
-{
-    fprintf(s->out, "struct chibi_%sflagged_%u", s->prefix, type);
 }
 
 static void
@@ -738,10 +753,8 @@ put_result(Source *s, u32 type)
 {
     if (type == TYPE_ID_VOID) {
         fputs("void", s->out);
-    } else if (check_is_flag_optional(s->c, type)) {
-        put_flagged_name(s, type);
     } else {
-        put_object_type(s, type);
+        put_stored_type(s, type);
     }
 }
 
@@ -811,7 +824,7 @@ put_c_global(Source *s, u32 decl)
     const Checker *c = s->c;
     u32 type = c->decls.types[decl];
     fputs("extern ", s->out);
-    put_object_type(s, element_of(c, type));
+    put_stored_type(s, element_of(c, type));
     putc(' ', s->out);
     put_c_name(s, decl);
     for (u32 t = type; c->types.kinds[t] == TYPE_ARRAY; t = c->types.arg0[t]) {
@@ -928,6 +941,9 @@ put_load(Source *s, u32 i, u32 type, u32 a)
         put_line(s, "__builtin_memcpy(&v%u, %o + 8, 8);", i + 1, a);
     } else {
         put_line(s, "__builtin_memcpy(&v%u, %o, sizeof v%u);", i, a, i);
+    }
+    if (check_is_flag_optional(s->c, type)) {
+        put_line(s, "v%u = %o[%U];", i + 1, a, check_type_size(s->c, s->c->types.arg0[type]));
     }
 }
 
@@ -1512,6 +1528,12 @@ put_instruction(Source *s, u32 i)
             break;
         case IR_STORE_PAIR: {
             const u32 *x = extra(s, b);
+            if (check_is_flag_optional(c, type)) {
+                u64 size = check_type_size(c, c->types.arg0[type]);
+                put_line(s, "__builtin_memcpy(%o, &(%t){ %o }, %U);", a, type, x[0], size);
+                put_line(s, "%o[%U] = %o;", a, size, x[1]);
+                break;
+            }
             put_line(s, "__builtin_memcpy(%o, &(uint8_t *){ %o }, 8);", a, x[0]);
             put_line(s, "__builtin_memcpy(%o + 8, &(int64_t){ %o }, 8);", a, x[1]);
             break;
@@ -1724,18 +1746,20 @@ c_source_package(FILE *out, const Checker *c, const char *prefix)
     if (needs_vector_helpers(&ir->code)) {
         put_vector_helpers(out);
     }
+    u8 *seen = calloc(c->types.count, 1);
+    for (u32 t = NFIXED_TYPES; t < c->types.count; t++) {
+        put_flagged_type(&s, t, seen);
+    }
     for (u32 d = 1; d < c->decls.count; d++) {
         if (c->decls.kinds[d] == DECL_STRUCT &&
             (c->decls.flags[d] & DECL_STORED) && !done[d]) {
             put_struct(&s, d, done);
         }
     }
-    u8 *seen = calloc(c->types.count, 1);
     for (u32 f = 0; f < ir->nfuncs; f++) {
         const IrFunc *fn = &ir->funcs[f];
         const IrSlot *slots = ir->code.slots + fn->first_slot;
         put_array_type(&s, (u32)c->types.arg1[c->decls.types[fn->decl]], seen);
-        put_flagged_type(&s, (u32)c->types.arg1[c->decls.types[fn->decl]], seen);
         for (u32 p = 0; p < fn->nparams; p++) {
             put_array_type(&s, slots[p].type, seen);
         }

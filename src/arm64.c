@@ -3190,6 +3190,42 @@ load_pair(Emit *e, u32 i, u32 p, u8 t)
 }
 
 static NOINLINE void
+load_flagged(Emit *e, u32 i, u32 p, u32 type)
+{
+    u8 t = e->info[type];
+    u32 d0 = half_result(e, i, 0, t);
+    u32 d1 = half_result(e, i, 1, e->info[TYPE_ID_BOOL]);
+    u32 size = (u32)check_type_size(e->c, e->c->types.arg0[type]);
+    u32 flag = OP_LDRB | size << 10 | p << 5 | d1;
+    if (d1 == p) {
+        put(e, load_op(t) | p << 5 | d0);
+        put(e, flag);
+        return;
+    }
+    put(e, flag);
+    put(e, load_op(t) | p << 5 | d0);
+}
+
+static NOINLINE void
+store_flagged(Emit *e, u32 type, u32 a, u32 b)
+{
+    const u32 *x = e->ir->extra + e->fn->first_extra + b;
+    u8 t = e->info[type];
+    u32 p = fetch(e, a, X16);
+    u32 r0 = (x[0] & IR_CONST) && constant_bits(e, x[0]) == 0
+               ? ZR
+               : fetch(e, x[0], is_float(t) ? V30 : X17);
+    u32 r1 = (x[1] & IR_CONST) && constant_bits(e, x[1]) == 0 ? ZR
+                                                              : fetch(e, x[1], X8);
+    u32 size = (u32)check_type_size(e->c, e->c->types.arg0[type]);
+    put(e, store_op(t, r0) | p << 5 | r0);
+    put(e, OP_STRB | size << 10 | p << 5 | r1);
+    release(e, a);
+    release(e, x[0]);
+    release(e, x[1]);
+}
+
+static NOINLINE void
 store_pair(Emit *e, u32 a, u32 b)
 {
     const u32 *x = e->ir->extra + e->fn->first_extra + b;
@@ -4788,6 +4824,10 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                         load_pair(e, i, p, t);
                         break;
                     }
+                    if (check_is_flag_optional(e->c, type)) {
+                        load_flagged(e, i, p, type);
+                        break;
+                    }
                     u32 d = result(e, i, t);
                     put(e, load_op(t) | p << 5 | d);
                     break;
@@ -4813,7 +4853,13 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
                     release(e, b);
                     break;
                 }
-                case IR_STORE_PAIR: store_pair(e, a, b); break;
+                case IR_STORE_PAIR:
+                    if (check_is_flag_optional(e->c, type)) {
+                        store_flagged(e, type, a, b);
+                        break;
+                    }
+                    store_pair(e, a, b);
+                    break;
                 case IR_ADD:
                 case IR_SUB:
                 case IR_ADD_WRAP:
