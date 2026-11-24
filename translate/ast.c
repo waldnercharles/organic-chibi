@@ -529,6 +529,7 @@ flag_of(const char *k, u32 len)
         { "variadic", AST_VARIADIC },
         { "isPartOfExplicitCast", AST_IN_CAST },
         { "isReferenced", AST_REFERENCED },
+        { "isTagOwned", AST_TAG_OWNED },
     };
     for (u32 f = 0; f < sizeof flags / sizeof flags[0]; f++) {
         if (key_is(k, len, flags[f].key)) {
@@ -584,8 +585,11 @@ parse_node(Reader *r, u32 flags)
         } else if (key_is(k, len, "init")) {
             skip_value(r);
             a->flags[i] |= AST_HAS_INIT;
+        } else if (key_is(k, len, "ownedTagDecl")) {
+            a->refs[i] = parse_ref(r);
+            a->flags[i] |= AST_TAG_OWNED;
         } else if (key_is(k, len, "referencedDecl") || key_is(k, len, "decl") ||
-                   key_is(k, len, "ownedTagDecl") || key_is(k, len, "field")) {
+                   key_is(k, len, "field")) {
             a->refs[i] = parse_ref(r);
         } else if (key_is(k, len, "referencedMemberDecl") ||
                    key_is(k, len, "previousDecl")) {

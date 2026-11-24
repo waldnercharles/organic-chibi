@@ -23,6 +23,7 @@ BOOT="src/arena.c src/str.c src/names.c src/exact.c src/parser.c src/lexer.c src
 SRC=$(ls src/*.c vendor/*/*.c | grep -v '^src/main.c$')
 
 echo "== tools"
+clang --version | head -1
 clang $WARN -g -O2 -o "$W/translate" translate/*.c
 clang $WARN -g -O2 -o "$W/chibi" src/main.c $SRC
 

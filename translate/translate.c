@@ -8,7 +8,6 @@
 #define CLANG_KINDS(X)                                                         \
     X(K_TRANSLATION_UNIT, "TranslationUnitDecl")                               \
     X(K_TYPEDEF, "TypedefDecl")                                                \
-    X(K_ELABORATED_TYPE, "ElaboratedType")                                     \
     X(K_RECORD_TYPE, "RecordType")                                             \
     X(K_RECORD, "RecordDecl")                                                  \
     X(K_FIELD, "FieldDecl")                                                    \
@@ -1048,6 +1047,8 @@ setup_kinds(Tr *t)
     for (u32 k = 0; k < NKINDS - 2; k++) {
         kind_ids[k] = strings_intern(s, kind_names[k], (u32)strlen(kind_names[k]));
     }
+    u32 cleanups = strings_intern(s, "ExprWithCleanups", 16);
+    u32 temporary = strings_intern(s, "MaterializeTemporaryExpr", 24);
 
     t->nstrings = s->count;
     t->kind_of = calloc(t->nstrings, 1);
@@ -1058,6 +1059,8 @@ setup_kinds(Tr *t)
     for (u32 k = 0; k < NKINDS - 2; k++) {
         t->kind_of[kind_ids[k]] = (u8)(k + 2);
     }
+    t->kind_of[cleanups] = K_PAREN;
+    t->kind_of[temporary] = K_PAREN;
     for (u32 k = 0; k < NOPS - 1; k++) {
         t->op_of[ids[k]] = (u8)(k + 1);
     }
@@ -1230,7 +1233,7 @@ setup_decls(Tr *t)
         } else if (t->kinds[i] == K_TYPEDEF) {
             t->typedefs[name] = i;
             for (u32 c = i + 1; c < t->a.ends[i]; c = c + 1) {
-                if (t->kinds[c] == K_ELABORATED_TYPE && t->a.refs[c] != 0) {
+                if (t->a.flags[c] & AST_TAG_OWNED) {
                     u32 r = node_of(t, t->a.refs[c]);
                     if (r != 0 && t->a.names[r] == 0) {
                         t->records[name] = r;
