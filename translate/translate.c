@@ -4552,6 +4552,29 @@ compare(Tr *t, u32 e, Op o)
 }
 
 static bool
+calls(Tr *t, u32 e, const char *name)
+{
+    e = strip(t, e);
+    if (t->kinds[e] != K_CALL) {
+        return false;
+    }
+    u32 f = callee(t, e);
+    return f != 0 && strcmp(text(t, t->a.names[f]), name) == 0;
+}
+
+static u32
+classified(Tr *t, u32 e, const char *name)
+{
+    u32 call = strip(t, child(t, e, 1));
+    if (!calls(t, call, name)) {
+        return 0;
+    }
+    u32 cast = t->a.ends[call + 1];
+    assert(t->kinds[cast] == K_CAST);
+    return strip(t, cast + 1);
+}
+
+static bool
 is_f32(Tr *t, u32 e)
 {
     const CType *c = &t->types[ctype(t, e)];
@@ -4606,6 +4629,17 @@ cond_at(Tr *t, u32 e, bool negate)
             }
             if (strcmp(w, "__builtin_signbit") == 0) {
                 return sign_test(t, t->a.ends[e + 1], negate);
+            }
+            break;
+        }
+        case K_CONDITIONAL: {
+            u32 x = classified(t, e, "__inline_isfinitef");
+            if (x != 0) {
+                return finite_test(t, x, negate);
+            }
+            x = classified(t, e, "__inline_signbitf");
+            if (x != 0) {
+                return sign_test(t, x, negate);
             }
             break;
         }
@@ -5330,21 +5364,12 @@ var_decl(Tr *t, u32 v)
 }
 
 static bool
-is_assert_function(Tr *t, u32 f)
+is_macro_callee(Tr *t, u32 f)
 {
     const char *w = text(t, t->a.names[f]);
-    return strcmp(w, "__assert_fail") == 0 || strcmp(w, "__assert_rtn") == 0;
-}
-
-static bool
-calls(Tr *t, u32 e, const char *name)
-{
-    e = strip(t, e);
-    if (t->kinds[e] != K_CALL) {
-        return false;
-    }
-    u32 f = callee(t, e);
-    return f != 0 && strcmp(text(t, t->a.names[f]), name) == 0;
+    return strcmp(w, "__assert_fail") == 0 || strcmp(w, "__assert_rtn") == 0 ||
+           strncmp(w, "__inline_isfinite", 17) == 0 ||
+           strncmp(w, "__inline_signbit", 16) == 0;
 }
 
 static u32
@@ -6356,7 +6381,7 @@ mark_uses(Tr *t, u32 root, u32 *work, u32 *nwork)
             continue;
         }
         u32 def = t->defs[d];
-        if (is_assert_function(t, d)) {
+        if (is_macro_callee(t, d)) {
             t->marks[d] |= MARK_EXTERN;
         } else if (def != 0 && project_file(t, t->a.files[def])) {
             t->marks[d] |= MARK_EMIT;
@@ -6451,7 +6476,7 @@ put_params(Tr *t, u32 fn, bool locals)
 static void
 emit_extern(Tr *t, u32 f)
 {
-    if (is_assert_function(t, f)) {
+    if (is_macro_callee(t, f)) {
         return;
     }
     putf(&t->out, "extern fn %s", text(t, t->a.names[f]));
