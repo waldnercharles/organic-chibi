@@ -6626,7 +6626,7 @@ static const char *const ERROR_UNION_FUNCTIONS[] = {
     "er_basic", "er_propagate", "er_void", "er_floats", "er_small", "er_pointers", "er_ifs",
     "er_defer", "er_loop", "er_nested", "er_values", "er_argcalls", "er_order", "er_scan",
     "er_wide", "er_sets", "er_union", "er_store", "er_run", "er_any", "er_fwd",
-    "er_inferred", "er_optional",
+    "er_inferred", "er_optional", "er_handled", "er_arms", "er_rally",
 };
 
 static const CallCase ERROR_UNION_CASES[] = {
@@ -6742,6 +6742,18 @@ static const CallCase ERROR_UNION_CASES[] = {
     { "er_optional", 5, 2, 2, 0 },
     { "er_optional", 7, 3, -1, 0 },
     { "er_optional", -1, -9, -9, 0 },
+    { "er_handled", 7, 0, 0, 0 },
+    { "er_handled", -5, 0, 0, 0 },
+    { "er_handled", -5, 2, -2, 0 },
+    { "er_handled", 9, 2, 5, 0 },
+    { "er_arms", -5, 0, 30, 0 },
+    { "er_arms", -5, 2, 40, 0 },
+    { "er_arms", 9, 2, 4, 0 },
+    { "er_rally", 3, 5, -7, 0 },
+    { "er_rally", 3, 100, 106, 0 },
+    { "er_rally", -1, 2, 4, 0 },
+    { "er_rally", 8, 0, -7, 0 },
+    { "er_rally", 6, -2500, -497, 0 },
     { "er_basic", INT64_MAX, 1, 0, TRAP_OVERFLOW },
     { "er_void", INT64_MAX, 1, 0, TRAP_OVERFLOW },
     { "er_floats", INT64_MAX, 1, 0, TRAP_RANGE },

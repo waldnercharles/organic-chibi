@@ -2060,13 +2060,13 @@ add_set_var(Checker *c, u32 decl)
 }
 
 static NOINLINE void
-add_input(Checker *c, u32 file, u32 token, u32 var, u32 from, u32 code)
+add_input(Checker *c, u32 file, u32 token, u32 var, u32 from, u32 code, u32 minus)
 {
     if (c->nset_inputs == c->set_inputs_cap) {
         c->set_inputs_cap = c->set_inputs_cap ? c->set_inputs_cap * 2 : 64;
         c->set_inputs = resize(c->set_inputs, c->set_inputs_cap, sizeof *c->set_inputs);
     }
-    SetInput in = { (u32)c->types.arg1[var], from, code, file, token };
+    SetInput in = { (u32)c->types.arg1[var], from, code, file, token, minus };
     c->set_inputs[c->nset_inputs++] = in;
 }
 
@@ -2158,7 +2158,7 @@ pass_set(Checker *c, u32 file, u32 token, u32 from, u32 to, u32 code)
         c->set_vars[(u32)c->types.arg1[to]].decl == c->body.decl ||
         c->set_vars[(u32)c->types.arg1[to]].decl == 0
     );
-    add_input(c, file, token, to, from, code);
+    add_input(c, file, token, to, from, code, 0);
     return true;
 }
 
@@ -2179,8 +2179,8 @@ join_vars(Checker *c, u32 file, u32 token, Operand a, Operand b)
     }
 
     u32 joined = add_set_var(c, 0);
-    add_input(c, file, token, joined, a.type, 0);
-    add_input(c, file, token, joined, b.type, 0);
+    add_input(c, file, token, joined, a.type, 0, 0);
+    add_input(c, file, token, joined, b.type, 0, 0);
     return joined;
 }
 
@@ -8757,6 +8757,7 @@ begin_switch(Checker *c, u32 file, u32 node, u8 kind, u32 token)
         .label = value ? 0 : pending_label(c, c->sp),
         .loop = NO_SLOT,
         .facts = c->nfacts,
+        .node = node,
         .value = value,
     };
     if (value) {
@@ -8784,6 +8785,35 @@ begin_switch(Checker *c, u32 file, u32 node, u8 kind, u32 token)
 }
 
 static NOINLINE void
+find_subject(Checker *c, u32 file, Switch *s)
+{
+    const ParsedFile *f = &c->files[file];
+    if (f->tokens.kinds[s->token + 1] != TK_IDENT ||
+        f->tokens.kinds[s->token + 2] != TK_LBRACE) {
+        return;
+    }
+    u32 name = f->tokens.ids[s->token + 1];
+    u64 binding = c->bindings[name];
+    u32 slot = (u32)binding;
+    if ((u32)(binding >> 32) != c->body.owner || !narrowable(c, slot)) {
+        return;
+    }
+
+    const u8 *kinds = f->nodes.kinds;
+    u8 start = kinds[s->node];
+    u8 end = start == NODE_SWITCH_START ? NODE_SWITCH : NODE_VALUE_SWITCH;
+    u32 last = closing_node(kinds, s->node, start, end, end);
+    for (u32 i = s->node + 1; i < last; i++) {
+        if (kinds[i] == NODE_NAME && takes_place[kinds[i + 1]] &&
+            f->tokens.ids[f->nodes.tokens[i]] == name) {
+            return;
+        }
+    }
+    s->subject = slot + 1;
+    s->declared = slot_at(c, slot)->type;
+}
+
+static NOINLINE void
 open_switch(Checker *c, u32 file)
 {
     Switch *s = top_switch(c);
@@ -8805,6 +8835,9 @@ open_switch(Checker *c, u32 file)
     }
     v = type ? convert(c, file, token, v, type) : poison;
     s->type = v.type;
+    if (k == TYPE_ERROR && s->type != TYPE_ID_NONE) {
+        find_subject(c, file, s);
+    }
     s->before = c->body.reachable;
     s->at = s->type
               ? emit(c, IR_SWITCH, s->type, operand_ir(c, v), 0)
@@ -8895,6 +8928,48 @@ case_range(Checker *c, u32 file, u32 token, bool inclusive)
 }
 
 static NOINLINE void
+narrow_arm(Checker *c, Switch *s)
+{
+    u32 type = s->declared;
+    if (s->default_arm == s->arms) {
+        if (s->rest == 0 && (is_set(c, type) || is_var(c, type))) {
+            s->rest = add_set_var(c, 0);
+        }
+        slot_at(c, s->subject - 1)->type = s->rest ? s->rest : type;
+        return;
+    }
+
+    u32 count = 0;
+    for (u32 k = s->first_case; k < c->ncases; k++) {
+        count += c->cases[k].arm == s->arms;
+    }
+    if (count == 0) {
+        return;
+    }
+    u32 list = reserve_list(c, count);
+    u32 *codes = c->lists + list;
+    u32 n = 0;
+    for (u32 k = s->first_case; k < c->ncases; k++) {
+        if (c->cases[k].arm == s->arms) {
+            n++;
+            codes[n] = (u32)c->cases[k].lo;
+        }
+    }
+    qsort(codes + 1, n, sizeof *codes, compare_codes);
+
+    u32 kept = 0;
+    for (u32 i = 1; i <= n; i++) {
+        if (kept == 0 || codes[kept] != codes[i]) {
+            kept++;
+            codes[kept] = codes[i];
+        }
+    }
+    codes[0] = kept;
+    c->nlists = list + kept + 1;
+    slot_at(c, s->subject - 1)->type = set_type(c, list);
+}
+
+static NOINLINE void
 case_labels(Checker *c, u32 file)
 {
     Switch *s = top_switch(c);
@@ -8920,6 +8995,9 @@ case_labels(Checker *c, u32 file)
         }
     }
     c->sp = m + 1;
+    if (s->subject) {
+        narrow_arm(c, s);
+    }
 }
 
 static NOINLINE void
@@ -8928,6 +9006,9 @@ close_arm(Checker *c, u32 file, u32 token)
     Switch *s = top_switch(c);
     if (c->nfacts != s->facts) {
         undo_facts(c, s->facts);
+    }
+    if (s->subject) {
+        slot_at(c, s->subject - 1)->type = s->declared;
     }
     u32 m = list_start(c, NODE_CASE_BODY);
     if (c->ndefers != c->body.defers) {
@@ -9066,6 +9147,24 @@ report_missing(Checker *c, u32 file, Switch *s, const CaseRange *cases, u32 n)
 }
 
 static NOINLINE void
+add_rest(Checker *c, u32 file, const Switch *s, const CaseRange *cases, u32 n)
+{
+    u32 list = reserve_list(c, n);
+    u32 *codes = c->lists + list;
+    u32 kept = 0;
+    for (u32 k = 0; k < n; k++) {
+        u32 code = (u32)cases[k].lo;
+        if (cases[k].arm != s->default_arm && (kept == 0 || codes[kept] != code)) {
+            kept++;
+            codes[kept] = code;
+        }
+    }
+    codes[0] = kept;
+    c->nlists = list + kept + 1;
+    add_input(c, file, s->default_token, s->rest, s->declared, 0, list);
+}
+
+static NOINLINE void
 finish_cases(Checker *c, u32 file)
 {
     Switch *s = top_switch(c);
@@ -9092,6 +9191,9 @@ finish_cases(Checker *c, u32 file)
     }
     if (s->type && !s->skipped && s->default_arm == NO_SLOT) {
         report_missing(c, file, s, cases, n);
+    }
+    if (s->rest) {
+        add_rest(c, file, s, cases, n);
     }
 
     IrCode *code = c->body.code;
@@ -11682,11 +11784,171 @@ set_size(const Checker *c, u32 set)
     return c->lists[c->types.arg1[set]];
 }
 
+static bool
+removes(const Checker *c, SetInput in, u32 code)
+{
+    return in.minus != 0 && list_has(c, in.minus, code);
+}
+
+static bool
+is_inside(const Checker *c, SetInput in, const u32 *components, u32 component)
+{
+    return in.code == 0 && is_var(c, in.from) &&
+           components[var_of(c, in.from)] == component;
+}
+
+static u32
+code_index(const u32 *universe, u32 n, u32 code)
+{
+    u32 lo = 0;
+    u32 hi = n;
+    while (lo < hi) {
+        u32 mid = lo + (hi - lo) / 2;
+        if (universe[mid] < code) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+
+static NOINLINE void
+settle_cycle(Checker *c, const SetGraph *g, const u32 *members, u32 n, const u32 *components)
+{
+    u32 component = components[members[0]];
+    u32 total = 0;
+    for (u32 k = 0; k < n; k++) {
+        u32 v = members[k];
+        g->queue[v] = k;
+        for (u32 e = g->first[v]; e < g->first[v + 1]; e++) {
+            SetInput in = c->set_inputs[g->order[e]];
+            u32 from = resolved_type(c, in.from);
+            if (in.code != 0) {
+                total++;
+            } else if (!is_inside(c, in, components, component) && is_set(c, from)) {
+                total += set_size(c, from);
+            }
+        }
+    }
+
+    u32 *universe = malloc(((size_t)total + 1) * sizeof *universe);
+    u32 nu = 0;
+    for (u32 k = 0; k < n; k++) {
+        u32 v = members[k];
+        for (u32 e = g->first[v]; e < g->first[v + 1]; e++) {
+            SetInput in = c->set_inputs[g->order[e]];
+            u32 from = resolved_type(c, in.from);
+            if (in.code != 0) {
+                universe[nu++] = in.code;
+            } else if (!is_inside(c, in, components, component) && is_set(c, from)) {
+                const u32 *more = c->lists + c->types.arg1[from];
+                for (u32 i = 1; i <= more[0]; i++) {
+                    universe[nu++] = more[i];
+                }
+            }
+        }
+    }
+    qsort(universe, nu, sizeof *universe, compare_codes);
+
+    u32 kept = 0;
+    for (u32 i = 0; i < nu; i++) {
+        if (kept == 0 || universe[kept - 1] != universe[i]) {
+            universe[kept++] = universe[i];
+        }
+    }
+    nu = kept;
+    universe[nu] = 0;
+
+    u32 words = nu / 64 + 1;
+    u64 *bits = calloc((size_t)n * words, sizeof *bits);
+    for (u32 k = 0; k < n; k++) {
+        u32 v = members[k];
+        u64 *row = bits + (size_t)k * words;
+        for (u32 e = g->first[v]; e < g->first[v + 1]; e++) {
+            SetInput in = c->set_inputs[g->order[e]];
+            if (in.code != 0) {
+                u32 i = code_index(universe, nu, in.code);
+                row[i / 64] |= 1ull << (i % 64);
+                continue;
+            }
+            if (is_inside(c, in, components, component)) {
+                continue;
+            }
+            assert(in.minus == 0);
+            u32 from = resolved_type(c, in.from);
+            if (!is_set(c, from)) {
+                row[nu / 64] |= 1ull << (nu % 64);
+                continue;
+            }
+            const u32 *more = c->lists + c->types.arg1[from];
+            for (u32 j = 1; j <= more[0]; j++) {
+                u32 i = code_index(universe, nu, more[j]);
+                row[i / 64] |= 1ull << (i % 64);
+            }
+        }
+    }
+
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (u32 k = 0; k < n; k++) {
+            u32 v = members[k];
+            u64 *row = bits + (size_t)k * words;
+            for (u32 e = g->first[v]; e < g->first[v + 1]; e++) {
+                SetInput in = c->set_inputs[g->order[e]];
+                if (!is_inside(c, in, components, component)) {
+                    continue;
+                }
+                const u64 *src = bits + (size_t)g->queue[var_of(c, in.from)] * words;
+                for (u32 w = 0; w < words; w++) {
+                    u64 add = src[w] & ~row[w];
+                    while (add != 0) {
+                        u32 b = (u32)__builtin_ctzll(add);
+                        add &= add - 1;
+                        if (!removes(c, in, universe[w * 64 + b])) {
+                            row[w] |= 1ull << b;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for (u32 k = 0; k < n; k++) {
+        const u64 *row = bits + (size_t)k * words;
+        u32 resolved = TYPE_ID_ERROR;
+        if ((row[nu / 64] >> (nu % 64) & 1) == 0) {
+            u32 count = 0;
+            for (u32 w = 0; w < words; w++) {
+                count += (u32)__builtin_popcountll(row[w]);
+            }
+            u32 list = reserve_list(c, count);
+            u32 *codes = c->lists + list;
+            u32 filled = 0;
+            for (u32 i = 0; i < nu; i++) {
+                if (row[i / 64] >> (i % 64) & 1) {
+                    filled++;
+                    codes[filled] = universe[i];
+                }
+            }
+            codes[0] = filled;
+            c->nlists = list + filled + 1;
+            resolved = set_type(c, list);
+        }
+        c->set_vars[members[k]].resolved = resolved;
+    }
+    free(universe);
+    free(bits);
+}
+
 static NOINLINE void
 resolve_component(Checker *c, const SetGraph *g, const u32 *members, u32 n, const u32 *components)
 {
     u32 component = components[members[0]];
     bool any = false;
+    bool cycle = false;
     u32 count = 0;
     for (u32 k = 0; k < n; k++) {
         u32 v = members[k];
@@ -11705,8 +11967,14 @@ resolve_component(Checker *c, const SetGraph *g, const u32 *members, u32 n, cons
                 } else {
                     any = true;
                 }
+            } else {
+                cycle |= in.minus != 0;
             }
         }
+    }
+    if (cycle) {
+        settle_cycle(c, g, members, n, components);
+        return;
     }
 
     u32 resolved = TYPE_ID_ERROR;
@@ -11730,8 +11998,10 @@ resolve_component(Checker *c, const SetGraph *g, const u32 *members, u32 n, cons
                 from = resolved_type(c, from);
                 const u32 *more = c->lists + c->types.arg1[from];
                 for (u32 i = 1; i <= more[0]; i++) {
-                    filled++;
-                    codes[filled] = more[i];
+                    if (!removes(c, in, more[i])) {
+                        filled++;
+                        codes[filled] = more[i];
+                    }
                 }
             }
         }

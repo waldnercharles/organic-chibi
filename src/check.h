@@ -456,6 +456,7 @@ typedef struct
     u32 code;
     u32 file;
     u32 token;
+    u32 minus;
 } SetInput;
 
 typedef struct
@@ -481,6 +482,10 @@ typedef struct
     u32 label;
     u32 loop;
     u32 facts;
+    u32 node;
+    u32 subject;
+    u32 declared;
+    u32 rest;
     bool value;
     bool before;
     bool reaches;
