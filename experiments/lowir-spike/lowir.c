@@ -159,6 +159,25 @@ flatten(const Checker *c, u32 type, u64 *count)
     return type;
 }
 
+static CppgmType
+flagged_record(Lower *l, u32 type)
+{
+    const Checker *c = l->c;
+    if (l->records[type]) {
+        return l->records[type];
+    }
+
+    u32 v = c->types.arg0[type];
+    CppgmField fields[2] = {
+        { 0, c->types.kinds[v] == TYPE_BOOL ? CPPGM_TYPE_U8 : scalar_type(c, v), 1 },
+        { check_type_size(c, v), CPPGM_TYPE_U8, 1 },
+    };
+
+    l->records[type] = cppgm_lowir_record(l->m, check_type_size(c, type), check_type_align(c, type), fields, 2);
+    must(l, l->records[type] != 0);
+    return l->records[type];
+}
+
 static CppgmType record_of(Lower *l, u32 type);
 
 static CppgmType
@@ -170,6 +189,9 @@ field_type(Lower *l, u32 type)
     }
     if (kind == TYPE_SLICE) {
         return l->slice_record;
+    }
+    if (check_is_flag_optional(l->c, type)) {
+        return flagged_record(l, type);
     }
     if (kind == TYPE_BOOL) {
         return CPPGM_TYPE_U8;
@@ -215,33 +237,6 @@ record_of(Lower *l, u32 type)
 
     u64 size = check_type_size(c, type);
     l->records[type] = cppgm_lowir_record(l->m, size ? size : 1, check_type_align(c, type), l->fields, n);
-    must(l, l->records[type] != 0);
-    return l->records[type];
-}
-
-static u64
-flagged_size(const Checker *c, u32 type)
-{
-    u32 v = c->types.arg0[type];
-    u32 align = check_type_align(c, v);
-    return (check_type_size(c, v) + align) / align * align;
-}
-
-static CppgmType
-flagged_record(Lower *l, u32 type)
-{
-    const Checker *c = l->c;
-    if (l->records[type]) {
-        return l->records[type];
-    }
-
-    u32 v = c->types.arg0[type];
-    CppgmField fields[2] = {
-        { 0, field_type(l, v), 1 },
-        { check_type_size(c, v), CPPGM_TYPE_U8, 1 },
-    };
-
-    l->records[type] = cppgm_lowir_record(l->m, flagged_size(c, type), check_type_align(c, v), fields, 2);
     must(l, l->records[type] != 0);
     return l->records[type];
 }
@@ -914,6 +909,9 @@ load_at(Lower *l, u32 i, u32 type, u32 a)
     } else if (kind == TYPE_SLICE) {
         l->values[i] = load(l, CPPGM_TYPE_PTR, p);
         l->values[i + 1] = load(l, CPPGM_TYPE_I64, offset(l, p, 8));
+    } else if (check_is_flag_optional(l->c, type)) {
+        l->values[i] = load(l, scalar_type(l->c, type), p);
+        l->values[i + 1] = load(l, CPPGM_TYPE_I1, offset(l, p, check_type_size(l->c, l->c->types.arg0[type])));
     } else {
         l->values[i] = load(l, scalar_type(l->c, type), p);
     }
@@ -1621,7 +1619,7 @@ call_op(Lower *l, u32 i, u8 kind, u32 type, u32 decl, const u32 *list)
     } else if (check_is_flag_optional(c, type)) {
         LowirValue p = spill_address(l);
         u32 v = c->types.arg0[type];
-        copy_object(l, r, p, flagged_size(c, type), check_type_align(c, v));
+        copy_object(l, r, p, check_type_size(c, type), check_type_align(c, type));
         l->values[i] = load(l, scalar_type(c, type), p);
         l->values[i + 1] = load(l, CPPGM_TYPE_I1, offset(l, p, check_type_size(c, v)));
     } else if (type != TYPE_ID_VOID) {
@@ -2160,10 +2158,15 @@ lower_instruction(Lower *l, u32 i)
         case IR_STORE_PAIR: {
             const u32 *x = extra(l, b);
             LowirValue p = operand(l, a);
-            LowirValue ptr = operand(l, x[0]);
-            LowirValue len = operand(l, x[1]);
-            store(l, CPPGM_TYPE_PTR, ptr, p);
-            store(l, CPPGM_TYPE_I64, len, offset(l, p, 8));
+            LowirValue first = operand(l, x[0]);
+            LowirValue second = operand(l, x[1]);
+            if (check_is_flag_optional(c, type)) {
+                store(l, scalar_type(c, type), first, p);
+                store(l, CPPGM_TYPE_I1, second, offset(l, p, check_type_size(c, c->types.arg0[type])));
+                break;
+            }
+            store(l, CPPGM_TYPE_PTR, first, p);
+            store(l, CPPGM_TYPE_I64, second, offset(l, p, 8));
             break;
         }
         case IR_COPY: {
