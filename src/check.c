@@ -3892,13 +3892,19 @@ claim_contained(Checker *c, u32 type, u32 file, u32 token)
     }
 }
 
+static bool
+is_union_value(const Checker *c, u32 value)
+{
+    u8 k = c->types.kinds[value];
+    return value == TYPE_ID_VOID || value_elem(c, value) || k == TYPE_POINTER ||
+           k == TYPE_MANY || is_nilable(c, value);
+}
+
 static NOINLINE u32
 error_union_type(Checker *c, u32 file, u32 token, u32 value, u32 set)
 {
     claim_contained(c, value, file, token);
-    u8 k = c->types.kinds[value];
-    if (value != TYPE_ID_VOID && !value_elem(c, value) && k != TYPE_POINTER &&
-        k != TYPE_MANY && !is_nilable(c, value)) {
+    if (!is_union_value(c, value)) {
         report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
         return TYPE_ID_NONE;
     }
@@ -8658,11 +8664,7 @@ settle_peers(Checker *c, u32 file, Peers peers, u32 *operands)
     type = type == TYPE_ID_UNTYPED_INT   ? TYPE_ID_I64
          : type == TYPE_ID_UNTYPED_FLOAT ? TYPE_ID_F32
                                          : type;
-    bool failable = c->types.kinds[type] == TYPE_ERROR_UNION;
-    if (failable) {
-        u32 var = add_set_var(c, c->body.decl);
-        type = intern_type(c, TYPE_ERROR_UNION, c->types.arg0[type], var);
-    }
+    assert(c->types.kinds[type] != TYPE_ERROR_UNION);
 
     IrCode *code = c->body.code;
     for (u32 k = peers.first; k != 0; k = c->breaks[k - 1].next) {
@@ -8689,11 +8691,6 @@ settle_peers(Checker *c, u32 file, Peers peers, u32 *operands)
                 code->bs[at] = p.second;
             } else {
                 operands[at] = operand_ir(c, x);
-            }
-        } else if (failable && c->types.kinds[b.value.type] == TYPE_ERROR_UNION) {
-            if (convert(c, file, b.token, b.value, type).type == TYPE_ID_NONE) {
-                code->kinds[at] = IR_NOP;
-                continue;
             }
         } else if (b.value.type != type) {
             if (!may_widen(c, b.value) || !widens(c, b.value.type, type)) {
@@ -9983,11 +9980,8 @@ try_value(Checker *c, u32 file, u32 token, Operand o)
         refuse_cant_fail(c, file, token, o);
         return poison;
     }
-    if (ret == TYPE_ID_INFERRED) {
-        report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
-        return poison;
-    }
-    if (c->types.kinds[ret] != TYPE_ERROR_UNION) {
+    bool inferred = ret == TYPE_ID_INFERRED;
+    if (!inferred && c->types.kinds[ret] != TYPE_ERROR_UNION) {
         if (ret != TYPE_ID_NONE) {
             report(c, file, token, DIAG_TRY_RESULT, 0, ret);
         }
@@ -9997,7 +9991,8 @@ try_value(Checker *c, u32 file, u32 token, Operand o)
         report(c, file, token, DIAG_DEFER_EXIT, 0, 0);
         return poison;
     }
-    if (!pass_set(c, file, token, error_set_of(c, o.type), error_set_of(c, ret), 0)) {
+    if (!inferred &&
+        !pass_set(c, file, token, error_set_of(c, o.type), error_set_of(c, ret), 0)) {
         return poison;
     }
 
@@ -10013,12 +10008,15 @@ try_value(Checker *c, u32 file, u32 token, Operand o)
         run_defers(c, c->body.defers, token);
     }
     if (c->body.reachable) {
-        u32 result = c->types.arg0[ret];
         u32 again = value_of(load_local(c, slot));
-        if (result == TYPE_ID_VOID) {
+        if (inferred) {
+            u32 at = emit(c, IR_RET, 0, again, 0);
+            Operand passed = { error_set_of(c, o.type), REF_VALUE | again };
+            add_peer(c, &c->body.returns, (Break){ passed, token, at, 0 });
+        } else if (c->types.arg0[ret] == TYPE_ID_VOID) {
             emit(c, IR_RET, ret, again, 0);
         } else {
-            emit(c, IR_RET, ret, ir_const(c, result, 0), again);
+            emit(c, IR_RET, ret, ir_const(c, c->types.arg0[ret], 0), again);
         }
     }
     emit(c, IR_END, 0, 0, 0);
@@ -11413,6 +11411,103 @@ open_body(Checker *c, u32 decl, u32 fn)
     return outer;
 }
 
+static NOINLINE u32
+settle_failure(Checker *c, u32 file, u32 value)
+{
+    u32 type = intern_type(c, TYPE_ERROR_UNION, value, add_set_var(c, c->body.decl));
+    IrCode *code = c->body.code;
+    for (u32 k = c->body.returns.first; k != 0; k = c->breaks[k - 1].next) {
+        Break b = c->breaks[k - 1];
+        u32 at = c->body.first + b.exit;
+        u8 kind = c->types.kinds[b.value.type];
+        if (b.value.type == TYPE_ID_VOID) {
+            if (value != TYPE_ID_VOID) {
+                report(c, file, b.token, DIAG_RETURN_EMPTY, 0, type);
+                continue;
+            }
+            code->as[at] = ir_const(c, type, 0);
+        } else if (is_constant(b.value) || kind == TYPE_ERROR ||
+                   kind == TYPE_ERROR_UNION) {
+            Operand x = convert(c, file, b.token, b.value, type);
+            if (x.type == TYPE_ID_NONE) {
+                code->kinds[at] = IR_NOP;
+                continue;
+            }
+            if (is_pair(c, x)) {
+                Pair p = pair_of(c, x);
+                code->as[at] = p.first;
+                code->bs[at] = p.second;
+            } else {
+                code->as[at] = operand_ir(c, x);
+            }
+        } else {
+            if (b.value.type != value) {
+                if (!may_widen(c, b.value) || !widens(c, b.value.type, value)) {
+                    report(c, file, b.token, DIAG_MISMATCH, b.value.type, type);
+                    code->kinds[at] = IR_NOP;
+                    continue;
+                }
+                code->kinds[at - 1] = IR_CONVERT;
+                code->types[at - 1] = value;
+                code->as[at - 1] = value_of(b.value);
+                code->as[at] = b.exit - 1;
+            }
+            code->bs[at] = ir_const(c, TYPE_ID_ERROR, 0);
+        }
+        code->types[at] = type;
+    }
+    return type;
+}
+
+static NOINLINE void
+settle_returns(Checker *c, u32 file)
+{
+    Peers peers = c->body.returns;
+    bool fails = c->body.code_slot != NO_SLOT;
+    bool empty = c->body.reachable;
+
+    bool codes = false;
+    u32 value = TYPE_ID_NONE;
+    u32 first = 0;
+    for (u32 k = peers.first; k != 0; k = c->breaks[k - 1].next) {
+        Break b = c->breaks[k - 1];
+        u8 kind = c->types.kinds[b.value.type];
+        if (kind == TYPE_ERROR) {
+            codes = true;
+        } else if (b.value.type == TYPE_ID_VOID) {
+            empty = true;
+        } else {
+            fails |= kind == TYPE_ERROR_UNION;
+            u32 type = kind == TYPE_ERROR_UNION ? c->types.arg0[b.value.type]
+                                                : b.value.type;
+            value = value == TYPE_ID_NONE ? type : peer_type(c, value, type);
+            first = first ? first : k;
+        }
+    }
+    if (!fails && (!codes || (!empty && value == TYPE_ID_NONE))) {
+        u32 type = settle_peers(c, file, peers, c->body.code->as);
+        c->body.ret = c->body.returns_value ? type : TYPE_ID_VOID;
+        return;
+    }
+
+    value = value == TYPE_ID_NONE          ? TYPE_ID_VOID
+          : value == TYPE_ID_UNTYPED_INT   ? TYPE_ID_I64
+          : value == TYPE_ID_UNTYPED_FLOAT ? TYPE_ID_F32
+                                           : value;
+    if (value == TYPE_ID_ENUM_LITERAL) {
+        Break b = c->breaks[first - 1];
+        report(c, file, b.token, DIAG_UNKNOWN_ENUM, b.value.ref, 0);
+        c->body.ret = TYPE_ID_NONE;
+        return;
+    }
+    if (!is_union_value(c, value)) {
+        report(c, file, c->breaks[first - 1].token, DIAG_UNSUPPORTED, 0, 0);
+        c->body.ret = TYPE_ID_NONE;
+        return;
+    }
+    c->body.ret = settle_failure(c, file, value);
+}
+
 static ALWAYS_INLINE void
 close_body(Checker *c, u32 decl, const Outer *outer, u32 param_slots)
 {
@@ -11482,8 +11577,7 @@ check_body(Checker *c, u32 decl)
     c->sp = base;
 
     if (c->body.ret == TYPE_ID_INFERRED) {
-        u32 type = settle_peers(c, file, c->body.returns, c->body.code->as);
-        c->body.ret = c->body.returns_value ? type : TYPE_ID_VOID;
+        settle_returns(c, file);
     }
     if (c->body.reachable) {
         if (returns_nothing(c->body.ret)) {
