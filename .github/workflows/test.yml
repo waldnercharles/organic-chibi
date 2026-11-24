@@ -17,14 +17,14 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install tools (x86-64 Linux)
         if: matrix.os == 'ubuntu-24.04'
         run: |
           sudo rm -f /var/lib/man-db/auto-update
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang libclang-rt-18-dev qemu-user-static gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+          sudo apt-get install -y --no-install-recommends clang libclang-rt-18-dev qemu-user-static binutils-aarch64-linux-gnu libgcc-13-dev-arm64-cross libc6-dev-arm64-cross
           sudo sysctl vm.mmap_rnd_bits=28
 
       - name: Install tools (arm64 Linux)
