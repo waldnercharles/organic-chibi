@@ -98,6 +98,9 @@ decl_name(const Lower *l, u32 decl)
 static Scalar
 scalar_of(const Checker *c, u32 type)
 {
+    if (check_is_flag_optional(c, type)) {
+        type = c->types.arg0[type];
+    }
     if (c->types.kinds[type] == TYPE_ENUM) {
         type = (u32)c->types.arg1[type];
     }
@@ -116,7 +119,7 @@ is_address(const Checker *c, u32 type)
     u8 kind = c->types.kinds[type];
     return kind == TYPE_POINTER || kind == TYPE_MANY || kind == TYPE_SLICE ||
            kind == TYPE_STRUCT || kind == TYPE_FN || kind == TYPE_ARRAY ||
-           kind == TYPE_OPTIONAL;
+           (kind == TYPE_OPTIONAL && c->types.arg1[type]);
 }
 
 static CppgmType
@@ -126,6 +129,9 @@ scalar_type(const Checker *c, u32 type)
         { CPPGM_TYPE_U8, CPPGM_TYPE_U16, CPPGM_TYPE_U32, CPPGM_TYPE_I64, CPPGM_TYPE_I128 },
         { CPPGM_TYPE_I8, CPPGM_TYPE_I16, CPPGM_TYPE_I32, CPPGM_TYPE_I64, CPPGM_TYPE_I128 },
     };
+    if (check_is_flag_optional(c, type)) {
+        type = c->types.arg0[type];
+    }
     u8 kind = c->types.kinds[type];
     if (is_address(c, type)) {
         return CPPGM_TYPE_PTR;
@@ -213,12 +219,42 @@ record_of(Lower *l, u32 type)
     return l->records[type];
 }
 
+static u64
+flagged_size(const Checker *c, u32 type)
+{
+    u32 v = c->types.arg0[type];
+    u32 align = check_type_align(c, v);
+    return (check_type_size(c, v) + align) / align * align;
+}
+
+static CppgmType
+flagged_record(Lower *l, u32 type)
+{
+    const Checker *c = l->c;
+    if (l->records[type]) {
+        return l->records[type];
+    }
+
+    u32 v = c->types.arg0[type];
+    CppgmField fields[2] = {
+        { 0, field_type(l, v), 1 },
+        { check_type_size(c, v), CPPGM_TYPE_U8, 1 },
+    };
+
+    l->records[type] = cppgm_lowir_record(l->m, flagged_size(c, type), check_type_align(c, v), fields, 2);
+    must(l, l->records[type] != 0);
+    return l->records[type];
+}
+
 static CppgmType
 boundary_type(Lower *l, u32 type)
 {
     u8 kind = l->c->types.kinds[type];
     if (type == TYPE_ID_VOID) {
         return CPPGM_TYPE_VOID;
+    }
+    if (check_is_flag_optional(l->c, type)) {
+        return flagged_record(l, type);
     }
     if (kind == TYPE_STRUCT || kind == TYPE_ARRAY) {
         return record_of(l, type);
@@ -241,6 +277,10 @@ chibi_signature(Lower *l, const IrFunc *fn)
         if (c->types.kinds[t] == TYPE_SLICE) {
             l->params[n++] = CPPGM_TYPE_PTR;
             l->params[n++] = CPPGM_TYPE_I64;
+            p++;
+        } else if (check_is_flag_optional(c, t)) {
+            l->params[n++] = scalar_type(c, t);
+            l->params[n++] = CPPGM_TYPE_I1;
             p++;
         } else {
             l->params[n++] = boundary_type(l, t);
@@ -1553,7 +1593,7 @@ call_op(Lower *l, u32 i, u8 kind, u32 type, u32 decl, const u32 *list)
         if (k == TYPE_STRUCT || k == TYPE_ARRAY) {
             LowirValue address = operand(l, list[o]);
             l->args[nargs++] = load(l, record_of(l, t), address);
-        } else if (k == TYPE_SLICE) {
+        } else if (k == TYPE_SLICE || check_is_flag_optional(c, t)) {
             l->args[nargs++] = operand(l, list[o]);
             l->args[nargs++] = operand(l, list[++o]);
         } else {
@@ -1578,6 +1618,12 @@ call_op(Lower *l, u32 i, u8 kind, u32 type, u32 decl, const u32 *list)
         copy_object(l, r, p, 16, 8);
         l->values[i] = load(l, CPPGM_TYPE_PTR, p);
         l->values[i + 1] = load(l, CPPGM_TYPE_I64, offset(l, p, 8));
+    } else if (check_is_flag_optional(c, type)) {
+        LowirValue p = spill_address(l);
+        u32 v = c->types.arg0[type];
+        copy_object(l, r, p, flagged_size(c, type), check_type_align(c, v));
+        l->values[i] = load(l, scalar_type(c, type), p);
+        l->values[i + 1] = load(l, CPPGM_TYPE_I1, offset(l, p, check_type_size(c, v)));
     } else if (type != TYPE_ID_VOID) {
         l->values[i] = r;
     }
@@ -1602,6 +1648,15 @@ return_op(Lower *l, u32 type, u32 a, u32 b)
         store(l, CPPGM_TYPE_I64, y, offset(l, p, 8));
         LowirValue v = load(l, l->slice_record, p);
         effect(l, CPPGM_OP_RETURN, 0, l->slice_record, v, nothing(), nothing());
+    } else if (check_is_flag_optional(c, type)) {
+        LowirValue x = operand(l, a);
+        LowirValue y = operand(l, b);
+        LowirValue p = spill_address(l);
+        CppgmType record = flagged_record(l, type);
+        store(l, scalar_type(c, type), x, p);
+        store(l, CPPGM_TYPE_I1, y, offset(l, p, check_type_size(c, c->types.arg0[type])));
+        LowirValue v = load(l, record, p);
+        effect(l, CPPGM_OP_RETURN, 0, record, v, nothing(), nothing());
     } else {
         LowirValue v = operand(l, a);
         effect(l, CPPGM_OP_RETURN, 0, scalar_type(c, type), v, nothing(), nothing());
@@ -2080,7 +2135,7 @@ lower_instruction(Lower *l, u32 i)
         }
         case IR_CHECK_NIL: {
             LowirValue p = operand(l, a);
-            check(l, compare(l, CPPGM_CMP_EQ, CPPGM_TYPE_PTR, p, integer(l, 0)), TRAP_NIL);
+            check(l, compare(l, CPPGM_CMP_EQ, scalar_type(c, type), p, integer(l, 0)), TRAP_NIL);
             l->values[i] = p;
             break;
         }
