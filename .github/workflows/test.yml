@@ -1,0 +1,48 @@
+name: test
+
+on:
+  push:
+    branches: [claude-research]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools (x86-64 Linux)
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang qemu-user-static gcc-aarch64-linux-gnu
+          sudo sysctl vm.mmap_rnd_bits=28
+
+      - name: Install tools (arm64 Linux)
+        if: matrix.os == 'ubuntu-24.04-arm'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang
+          sudo sysctl vm.mmap_rnd_bits=28
+
+      - name: Install Rosetta (macOS)
+        if: runner.os == 'macOS'
+        run: /usr/bin/pgrep -q oahd || sudo softwareupdate --install-rosetta --agree-to-license
+
+      - name: Show compiler
+        run: clang --version
+
+      - name: make test
+        run: make test
+
+      - name: make translated
+        if: ${{ !cancelled() }}
+        run: make translated
