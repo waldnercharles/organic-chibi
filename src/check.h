@@ -310,6 +310,8 @@ enum
     X(DIAG_BLOCK_END, "the block can reach its end without a value; end it with `break` and a value") \
     X(DIAG_DEFER_EXIT, "`%t` can't leave a `defer`")                                                \
     X(DIAG_DEFER_DECLARATION, "a `defer` runs its statement later, so the statement can't declare a name") \
+    X(DIAG_CATCH_NEVER, "the function returns `%U`, which can't fail, so `defer catch` never runs") \
+    X(DIAG_CATCH_IN_DEFER, "no error can leave a `defer`, so a `defer catch` in it never runs")     \
     X(DIAG_NO_MEMBER, "`%U` has no member `%n`")                                                   \
     X(DIAG_NOT_ENUM, "`%U` is not an enum, so `.%n` can't be one of its values")                  \
     X(DIAG_UNKNOWN_ENUM, "the enum of `.%n` isn't known here; write its name, as in `Name.%n`")    \
@@ -429,9 +431,12 @@ typedef struct
     u32 scope;
     u32 lines;
     u32 marked;
+    u32 last;
+    u32 name;
     bool open;
     bool reachable;
     bool ends;
+    bool catches;
 } Defer;
 
 typedef struct
@@ -467,7 +472,7 @@ typedef struct
     u32 to;
     u32 code;
     u32 cases;
-    bool exhaustive;
+    u8 kind;
 } SetCheck;
 
 typedef struct

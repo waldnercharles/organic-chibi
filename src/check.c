@@ -68,6 +68,20 @@ enum
 
 enum
 {
+    LEAVE_OK,
+    LEAVE_FAILED,
+    LEAVE_MAYBE,
+};
+
+enum
+{
+    CHECK_FIT,
+    CHECK_SWITCH,
+    CHECK_CATCH,
+};
+
+enum
+{
     IF_BEFORE = 1,
     IF_ANY = 2,
     IF_ELSE = 4,
@@ -2084,7 +2098,7 @@ static NOINLINE bool
 set_fits(Checker *c, u32 file, u32 token, u32 from, u32 to, u32 code)
 {
     if (is_var(c, to) || (is_var(c, from) && is_set(c, to))) {
-        add_check(c, (SetCheck){ file, token, from, to, code, 0, false });
+        add_check(c, (SetCheck){ file, token, from, to, code, 0, CHECK_FIT });
         return true;
     }
     if (!is_set(c, to)) {
@@ -8203,12 +8217,11 @@ closing_node(const u8 *kinds, u32 node, u8 start, u8 end, u8 item)
     }
 }
 
-static NOINLINE void
-drop_assigned(Checker *c, u32 file, u32 node, u8 start, u8 end)
+static void
+drop_between(Checker *c, u32 file, u32 node, u32 last)
 {
     const ParsedFile *f = &c->files[file];
     const u8 *kinds = f->nodes.kinds;
-    u32 last = closing_node(kinds, node, start, end, end);
     for (u32 i = node + 1; i < last; i++) {
         if (kinds[i] != NODE_NAME || !takes_place[kinds[i + 1]]) {
             continue;
@@ -8220,11 +8233,28 @@ drop_assigned(Checker *c, u32 file, u32 node, u8 start, u8 end)
     }
 }
 
+static NOINLINE void
+drop_assigned(Checker *c, u32 file, u32 node, u8 start, u8 end)
+{
+    drop_between(c, file, node, closing_node(c->files[file].nodes.kinds, node, start, end, end));
+}
+
 static bool
 in_defer(const Checker *c, u32 from)
 {
     for (u32 k = from; k < c->ndefers; k++) {
         if (c->defers[k].open) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool
+catch_pending(const Checker *c, u32 from)
+{
+    for (u32 k = from; k < c->ndefers; k++) {
+        if (c->defers[k].catches) {
             return true;
         }
     }
@@ -8415,22 +8445,58 @@ copy_defer(Checker *c, const Defer *d)
     }
 }
 
+static u32
+code_slot(Checker *c)
+{
+    if (c->body.code_slot == NO_SLOT) {
+        c->body.code_slot = add_slot(c, 0, TYPE_ID_ERROR, c->decls.roots[c->body.decl]);
+    }
+    return c->body.code_slot;
+}
+
+static void
+store_caught(Checker *c, const Defer *d, u32 code)
+{
+    u32 value = code == NO_SLOT ? value_of(load_local(c, c->body.code_slot))
+                                : ir_const(c, TYPE_ID_ERROR, code);
+    weigh(c, d->name);
+    emit(c, IR_STORE, TYPE_ID_ERROR, d->name, value);
+}
+
 static NOINLINE void
-run_defers(Checker *c, u32 from, u32 token)
+run_defers(Checker *c, u32 from, u32 token, u8 leave, u32 code)
 {
     u32 file = c->decls.files[c->body.decl];
     mark_line(c, token);
+    bool guarded = false;
     for (u32 k = c->ndefers; k-- > from;) {
         const Defer *d = &c->defers[k];
         assert(!d->open);
+        if (d->catches && leave == LEAVE_OK) {
+            continue;
+        }
+        bool tested = d->catches && leave == LEAVE_MAYBE;
+        if (tested && !guarded) {
+            u32 again = value_of(load_local(c, c->body.code_slot));
+            emit(c, IR_IF, 0, emit(c, IR_NE, TYPE_ID_ERROR, again, ir_const(c, TYPE_ID_ERROR, 0)), 0);
+        } else if (!tested && guarded) {
+            emit(c, IR_END, 0, 0, 0);
+        }
+        guarded = tested;
+        if (d->catches && d->name != NO_SLOT) {
+            store_caught(c, d, code);
+        }
         copy_defer(c, d);
         if (c->nfacts != c->body.facts) {
-            drop_assigned(c, file, d->node, NODE_DEFER_START, NODE_DEFER);
+            drop_between(c, file, d->node, d->last);
         }
-        if (!d->ends) {
+        if (!d->ends && !tested) {
             c->body.reachable = false;
             return;
         }
+    }
+    if (guarded) {
+        emit(c, IR_END, 0, 0, 0);
     }
 }
 
@@ -8445,13 +8511,52 @@ end_defers(Checker *c, u32 m, u32 token)
         return;
     }
     if (c->body.reachable) {
-        run_defers(c, k, token);
+        run_defers(c, k, token, LEAVE_OK, 0);
     }
     c->ndefers = k;
     c->defer_code.count = k > 0 ? c->defers[k - 1].first + c->defers[k - 1].count : 0;
     c->defer_code.nlines = k > 0
                              ? c->defers[k - 1].first_line + c->defers[k - 1].nlines
                              : 0;
+}
+
+static u8
+leaving(const Checker *c, Operand v)
+{
+    if (!is_value_type(v.type)) {
+        return LEAVE_OK;
+    }
+    u8 kind = c->types.kinds[v.type];
+    return kind == TYPE_ERROR       ? LEAVE_FAILED
+         : kind == TYPE_ERROR_UNION ? LEAVE_MAYBE
+                                    : LEAVE_OK;
+}
+
+static u32
+error_code_of(Checker *c, Operand o)
+{
+    return c->types.arg0[o.type] == TYPE_ID_VOID ? operand_ir(c, o)
+                                                 : pair_of(c, o).second;
+}
+
+static void
+hold_failure(Checker *c, Operand v)
+{
+    u32 code = c->types.kinds[v.type] == TYPE_ERROR_UNION ? error_code_of(c, v)
+                                                          : operand_ir(c, v);
+    u32 slot = code_slot(c);
+    weigh(c, slot);
+    emit(c, IR_STORE, TYPE_ID_ERROR, slot, code);
+}
+
+static Operand
+reload_failure(Checker *c, Operand v)
+{
+    u32 again = value_of(load_local(c, c->body.code_slot));
+    if (is_pair(c, v)) {
+        return make_pair(c, v.type, pair_of(c, v).first, again);
+    }
+    return (Operand){ v.type, REF_VALUE | again };
 }
 
 static NOINLINE COLD void
@@ -8461,6 +8566,9 @@ leave_body(Checker *c, u32 file, u32 token, u32 v_token, Operand v, bool has_val
         report(c, file, token, DIAG_DEFER_EXIT, 0, 0);
         return;
     }
+    u8 leave = has_value && catch_pending(c, c->body.defers) ? leaving(c, v) : LEAVE_OK;
+    u32 code = leave == LEAVE_FAILED && is_constant(v) ? code_of(c, v) : NO_SLOT;
+
     u32 ret = c->body.ret;
     bool typed = ret != TYPE_ID_INFERRED && !returns_nothing(ret);
     if (typed && !has_value) {
@@ -8472,7 +8580,17 @@ leave_body(Checker *c, u32 file, u32 token, u32 v_token, Operand v, bool has_val
         v = convert(c, file, v_token, v, ret);
     }
     v = pin(c, v);
-    run_defers(c, c->body.defers, token);
+    if (v.type == TYPE_ID_NONE) {
+        leave = LEAVE_OK;
+    }
+    bool held = leave != LEAVE_OK && code == NO_SLOT;
+    if (held) {
+        hold_failure(c, v);
+    }
+    run_defers(c, c->body.defers, token, leave, code);
+    if (held) {
+        v = reload_failure(c, v);
+    }
     finish_return(c, file, token, v_token, v, has_value);
 }
 
@@ -8518,7 +8636,7 @@ leave_loops(Checker *c, u32 file, u32 token, const Loop *target, u32 v_token, Op
         v = convert(c, file, v_token, v, target->type);
     }
     v = pin(c, v);
-    run_defers(c, target->defers, token);
+    run_defers(c, target->defers, token, LEAVE_OK, 0);
     return v;
 }
 
@@ -9071,7 +9189,7 @@ defer_switch(Checker *c, u32 file, const Switch *s, const CaseRange *cases, u32 
     for (u32 k = 0; k < n; k++) {
         c->lists[list + 1 + k] = (u32)cases[k].lo;
     }
-    add_check(c, (SetCheck){ file, s->token, s->type, 0, 0, list, true });
+    add_check(c, (SetCheck){ file, s->token, s->type, 0, 0, list, CHECK_SWITCH });
 }
 
 static NOINLINE void
@@ -9883,6 +10001,7 @@ open_defer(Checker *c, u32 node, u32 token)
         .scope = c->nscope,
         .lines = code->nlines,
         .marked = c->body.marked,
+        .name = NO_SLOT,
         .open = true,
         .reachable = c->body.reachable,
     };
@@ -9890,6 +10009,34 @@ open_defer(Checker *c, u32 node, u32 token)
         hide_facts(c);
     }
     push(c, token, OPERAND_MARKER + NODE_DEFER_START, 0);
+}
+
+static bool
+catch_runs(Checker *c, u32 file, u32 token)
+{
+    for (u32 k = c->body.defers; k + 1 < c->ndefers; k++) {
+        if (c->defers[k].open) {
+            report(c, file, token, DIAG_CATCH_IN_DEFER, 0, 0);
+            return false;
+        }
+    }
+
+    u32 ret = c->body.ret;
+    if (ret == TYPE_ID_INFERRED) {
+        code_slot(c);
+        add_check(c, (SetCheck){ file, token, c->body.decl, 0, 0, 0, CHECK_CATCH });
+        return true;
+    }
+    if (c->types.kinds[ret] != TYPE_ERROR_UNION) {
+        if (ret != TYPE_ID_NONE) {
+            report(c, file, token, DIAG_CATCH_NEVER, 0, ret);
+        }
+        return false;
+    }
+    if (is_var(c, error_set_of(c, ret))) {
+        add_check(c, (SetCheck){ file, token, c->body.decl, 0, 0, 0, CHECK_CATCH });
+    }
+    return true;
 }
 
 static NOINLINE COLD void
@@ -9911,22 +10058,22 @@ close_defer(Checker *c, u32 file, u32 node, u32 token, u8 kind)
     u8 root = c->files[file].nodes.kinds[node - 1];
     bool declares = root == NODE_VAR_INIT || root == NODE_VAR_TYPE ||
                     root == NODE_VAR_TYPE_INIT || root == NODE_DESTRUCTURE_INIT;
-    if (kind != NODE_DEFER) {
-        report(c, file, token, DIAG_UNSUPPORTED, 0, 0);
-    } else if (declares) {
+    if (declares) {
         report(c, file, token, DIAG_DEFER_DECLARATION, 0, 0);
     }
 
     IrCode *code = c->body.code;
     u32 begin = c->body.first + d->origin;
-    bool keep = kind == NODE_DEFER && !declares;
+    bool keep = !declares && (kind == NODE_DEFER || catch_runs(c, file, token));
     if (keep) {
         assert(c->defer_code.count == d->first);
         append_code(&c->defer_code, code, begin, code->nextra, code->nslots, code->nconsts, d->lines);
         d->count = code->count - begin;
         d->nlines = code->nlines - d->lines;
+        d->last = node;
         d->open = false;
         d->ends = c->body.reachable;
+        d->catches = kind != NODE_DEFER;
     }
     code->count = begin;
     code->nlines = d->lines;
@@ -9945,13 +10092,6 @@ refuse_cant_fail(Checker *c, u32 file, u32 token, Operand o)
     }
     u32 type = is_place(o) ? place_type(c, o) : o.type;
     report(c, file, token, is_value_type(type) ? DIAG_CANT_FAIL : DIAG_NOT_VALUE, type, 0);
-}
-
-static u32
-error_code_of(Checker *c, Operand o)
-{
-    return c->types.arg0[o.type] == TYPE_ID_VOID ? operand_ir(c, o)
-                                                 : pair_of(c, o).second;
 }
 
 static u32
@@ -9996,16 +10136,13 @@ try_value(Checker *c, u32 file, u32 token, Operand o)
         return poison;
     }
 
-    if (c->body.code_slot == NO_SLOT) {
-        c->body.code_slot = add_slot(c, 0, TYPE_ID_ERROR, c->decls.roots[c->body.decl]);
-    }
-    u32 slot = c->body.code_slot;
+    u32 slot = code_slot(c);
     u32 code = hold_code(c, slot, error_code_of(c, o));
     u32 test = emit(c, IR_NE, TYPE_ID_ERROR, code, ir_const(c, TYPE_ID_ERROR, 0));
     emit(c, IR_IF, 0, test, 0);
     bool reachable = c->body.reachable;
     if (c->ndefers != c->body.defers) {
-        run_defers(c, c->body.defers, token);
+        run_defers(c, c->body.defers, token, LEAVE_FAILED, NO_SLOT);
     }
     if (c->body.reachable) {
         u32 again = value_of(load_local(c, slot));
@@ -10067,6 +10204,22 @@ catch_name(Checker *c, u32 file, u32 node, u32 token)
         declare_local(c, file, node, TYPE_ID_NONE, poison);
     }
     push(c, token, OPERAND_MARKER + NODE_CATCH_NAME, scope);
+}
+
+static NOINLINE COLD void
+defer_name(Checker *c, u32 file, u32 node)
+{
+    if (!in_body(c) || c->stack[c->sp - 1].type != OPERAND_MARKER + NODE_DEFER_START) {
+        unsupported(c, file, node);
+        return;
+    }
+
+    u32 ret = c->body.ret;
+    u32 set = c->types.kinds[ret] == TYPE_ERROR_UNION ? error_set_of(c, ret)
+                                                      : TYPE_ID_ERROR;
+    u32 slot = add_slot(c, 0, set, node);
+    declare_local(c, file, node, set, (Operand){ OPERAND_LOCAL, slot });
+    c->defers[c->ndefers - 1].name = slot;
 }
 
 static NOINLINE Operand
@@ -10696,7 +10849,7 @@ walk(Checker *c, u32 decl, u32 begin, u32 end)
                                   OPERAND_MARKER + NODE_CATCH_LEFT) {
                     catch_name(c, file, i, token);
                 } else {
-                    unsupported(c, file, i);
+                    defer_name(c, file, i);
                 }
                 break;
             case NODE_CATCH:
@@ -12208,6 +12361,20 @@ check_set_fit(Checker *c, SetGraph *g, SetCheck k)
 }
 
 static NOINLINE void
+check_catch_runs(Checker *c, SetCheck k)
+{
+    u32 ret = (u32)c->types.arg1[c->decls.types[k.from]];
+    if (c->types.kinds[ret] != TYPE_ERROR_UNION) {
+        return;
+    }
+    u32 set = resolved_type(c, error_set_of(c, ret));
+    if (is_set(c, set) && set_size(c, set) == 0) {
+        u32 type = intern_type(c, TYPE_ERROR_UNION, c->types.arg0[ret], set);
+        report(c, k.file, k.token, DIAG_CATCH_NEVER, 0, type);
+    }
+}
+
+static NOINLINE void
 solve_sets(Checker *c)
 {
     u32 n = c->nset_vars;
@@ -12298,10 +12465,12 @@ solve_sets(Checker *c)
 
     for (u32 i = 0; i < c->nset_checks; i++) {
         SetCheck k = c->set_checks[i];
-        if (k.exhaustive) {
+        if (k.kind == CHECK_SWITCH) {
             check_switch_set(c, &g, k);
-        } else {
+        } else if (k.kind == CHECK_FIT) {
             check_set_fit(c, &g, k);
+        } else {
+            check_catch_runs(c, k);
         }
     }
 
