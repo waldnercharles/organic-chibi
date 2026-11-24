@@ -5651,7 +5651,9 @@ put_expr_stmt(Tr *t, u32 e)
                 return;
             }
             u32 f = callee(t, e);
-            if (f != 0 && strcmp(text(t, t->a.names[f]), "__builtin_va_start") == 0) {
+            if (f != 0 &&
+                (strcmp(text(t, t->a.names[f]), "__builtin_va_start") == 0 ||
+                 strcmp(text(t, t->a.names[f]), "__builtin_c23_va_start") == 0)) {
                 put_name(t, va_list_decl(t, t->a.ends[e + 1]));
                 put(&t->out, " = 0");
                 return;
