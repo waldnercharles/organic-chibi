@@ -567,6 +567,24 @@ word_is(const char *w, u32 n, const char *s)
 }
 
 static u32
+word_length(const char *p)
+{
+    u32 n = 0;
+    while (is_ident_byte(p[n])) {
+        n++;
+    }
+    return n;
+}
+
+static bool
+is_qualifier(const char *w, u32 n)
+{
+    return word_is(w, n, "const") || word_is(w, n, "volatile") || word_is(w, n, "restrict") ||
+           word_is(w, n, "__restrict") || word_is(w, n, "_Nonnull") || word_is(w, n, "_Nullable") ||
+           word_is(w, n, "_Null_unspecified") || word_is(w, n, "_Nullable_result");
+}
+
+static u32
 intern_type(Tr *t, CType c, const u32 *params)
 {
     for (u32 i = 1; i < t->ntypes; i++) {
@@ -723,8 +741,7 @@ specifiers(Spelling *s)
             break;
         }
 
-        if (word_is(w, n, "const") || word_is(w, n, "volatile") ||
-            word_is(w, n, "restrict") || word_is(w, n, "__restrict")) {
+        if (is_qualifier(w, n)) {
             continue;
         }
         if (word_is(w, n, "unsigned")) {
@@ -878,11 +895,8 @@ declarator(Spelling *s, u32 base)
         if (*s->p == '*') {
             s->p++;
             base = pointer_to(s->t, base);
-        } else if (starts_word(s->p, "const") || starts_word(s->p, "volatile") ||
-                   starts_word(s->p, "restrict") || starts_word(s->p, "__restrict")) {
-            while (is_ident_byte(*s->p)) {
-                s->p++;
-            }
+        } else if (is_ident_byte(*s->p) && is_qualifier(s->p, word_length(s->p))) {
+            s->p += word_length(s->p);
         } else if (starts_word(s->p, "__attribute__")) {
             skip_attribute(s);
         } else {

@@ -3393,6 +3393,31 @@ chibi_calls_agree(Program *p, int64_t x)
            ((I1 *)fn(p, "call_pinned"))(CONTEXT, x) == -296 * x - 9;
 }
 
+static bool
+probes_agree(Program *p, int64_t x, Convention convention)
+{
+    bool ok = ((I1 *)fn(p, "probe"))(CONTEXT, x) == 36;
+    if (convention == CONVENTION_APPLE) {
+        ok &= (int8_t)chibi_c_words[0] == x - 3 && (int16_t)(chibi_c_words[0] >> 16) == x * -100 &&
+              (int32_t)(chibi_c_words[0] >> 32) == x * 100000 && (int8_t)chibi_c_words[1] == x &&
+              (int64_t)chibi_c_words[2] == x * 1000000000000 && (uint8_t)chibi_c_words[3] == x + 200;
+    } else {
+        ok &= (int8_t)chibi_c_words[0] == x - 3 && (int16_t)chibi_c_words[1] == x * -100 &&
+              (int32_t)chibi_c_words[2] == x * 100000 && (int8_t)chibi_c_words[3] == x &&
+              (int64_t)chibi_c_words[4] == x * 1000000000000 && (uint8_t)chibi_c_words[5] == x + 200;
+    }
+
+    ok &= ((I1 *)fn(p, "fprobe"))(CONTEXT, x) == 36;
+    ok &= low_float(chibi_c_words[0]) == (float)x + 0.5f && word_double(chibi_c_words[1]) == (double)x * 0.25 &&
+          low_float(chibi_c_words[2]) == (float)x - 1.5f;
+    if (convention == CONVENTION_APPLE) {
+        ok &= high_float(chibi_c_words[2]) == 2.75f;
+    } else {
+        ok &= low_float(chibi_c_words[3]) == 2.75f;
+    }
+    return ok;
+}
+
 TEST_CASE(stack_arguments)
 {
     Program p;
@@ -3433,19 +3458,7 @@ TEST_CASE(stack_arguments)
 
         REQUIRE(chibi_calls_agree(&p, x));
 
-        REQUIRE(((I1 *)fn(&p, "probe"))(CONTEXT, x) == 36);
-        REQUIRE((int8_t)chibi_c_words[0] == x - 3);
-        REQUIRE((int16_t)chibi_c_words[1] == x * -100);
-        REQUIRE((int32_t)chibi_c_words[2] == x * 100000);
-        REQUIRE((int8_t)chibi_c_words[3] == x);
-        REQUIRE((int64_t)chibi_c_words[4] == x * 1000000000000);
-        REQUIRE((uint8_t)chibi_c_words[5] == x + 200);
-
-        REQUIRE(((I1 *)fn(&p, "fprobe"))(CONTEXT, x) == 36);
-        REQUIRE(low_float(chibi_c_words[0]) == (float)x + 0.5f);
-        REQUIRE(word_double(chibi_c_words[1]) == (double)x * 0.25);
-        REQUIRE(low_float(chibi_c_words[2]) == (float)x - 1.5f);
-        REQUIRE(low_float(chibi_c_words[3]) == 2.75f);
+        REQUIRE(probes_agree(&p, x, CONVENTION_HOST));
     }
     release_program(&p);
 
@@ -3468,19 +3481,7 @@ TEST_CASE(stack_arguments)
         double second = word_double(float_pair(v.z, (float)x * 2.0f));
         REQUIRE(((THA *)fn(&p, "hfa"))(CONTEXT, (double)x, 1.5, 2.0, 3.0, 4.0, 5.0, -1.0, -2.0, first, second, x + 3, 0.125) == hfa);
 
-        REQUIRE(((I1 *)fn(&p, "probe"))(CONTEXT, x) == 36);
-        REQUIRE((int8_t)chibi_c_words[0] == x - 3);
-        REQUIRE((int16_t)(chibi_c_words[0] >> 16) == x * -100);
-        REQUIRE((int32_t)(chibi_c_words[0] >> 32) == x * 100000);
-        REQUIRE((int8_t)chibi_c_words[1] == x);
-        REQUIRE((int64_t)chibi_c_words[2] == x * 1000000000000);
-        REQUIRE((uint8_t)chibi_c_words[3] == x + 200);
-
-        REQUIRE(((I1 *)fn(&p, "fprobe"))(CONTEXT, x) == 36);
-        REQUIRE(low_float(chibi_c_words[0]) == (float)x + 0.5f);
-        REQUIRE(word_double(chibi_c_words[1]) == (double)x * 0.25);
-        REQUIRE(low_float(chibi_c_words[2]) == (float)x - 1.5f);
-        REQUIRE(high_float(chibi_c_words[2]) == 2.75f);
+        REQUIRE(probes_agree(&p, x, CONVENTION_APPLE));
     }
     release_program(&p);
     return true;
@@ -3564,6 +3565,19 @@ named_then_variadic(Program *p, int64_t x)
            (int64_t)chibi_c_words[3] == x * 1000;
 }
 
+static bool
+vprobe_agrees(Program *p, int64_t x, Convention convention)
+{
+    bool ok = ((I1 *)fn(p, "vprobe"))(CONTEXT, x) == x;
+    if (convention == CONVENTION_APPLE) {
+        return ok && (int64_t)chibi_c_words[7] == x + 1 && (int32_t)chibi_c_words[8] == x - 3 &&
+               word_double(chibi_c_words[9]) == (double)((float)x + 0.5f) && word_double(chibi_c_words[10]) == 2.5 &&
+               (int32_t)chibi_c_words[11] == x + 60000 && (int32_t)chibi_c_words[12] == 7;
+    }
+    return ok && (int64_t)chibi_c_words[0] == x + 1 && (int32_t)chibi_c_words[1] == x - 3 &&
+           (int32_t)chibi_c_words[2] == x + 60000 && (int32_t)chibi_c_words[3] == 7;
+}
+
 TEST_CASE(variadic_calls)
 {
     Program p;
@@ -3583,11 +3597,7 @@ TEST_CASE(variadic_calls)
         }
         REQUIRE(((DI *)fn(&p, "pairs"))(CONTEXT, x) == s);
 
-        REQUIRE(((I1 *)fn(&p, "vprobe"))(CONTEXT, x) == x);
-        REQUIRE((int64_t)chibi_c_words[0] == x + 1);
-        REQUIRE((int32_t)chibi_c_words[1] == x - 3);
-        REQUIRE((int32_t)chibi_c_words[2] == x + 60000);
-        REQUIRE((int32_t)chibi_c_words[3] == 7);
+        REQUIRE(vprobe_agrees(&p, x, CONVENTION_HOST));
 
         int64_t point = ((3 * x + 2) * 10 + 2 * x) * 10 + x + 5;
         REQUIRE(((I1 *)fn(&p, "vpoint"))(CONTEXT, x) == point * 10 + x - 9);
@@ -3598,13 +3608,7 @@ TEST_CASE(variadic_calls)
     REQUIRE(check_text(&p, VARIADIC_CALLS, false, false));
     REQUIRE(arm64_compile(&p.n, &p.c, CONVENTION_APPLE));
     for (int64_t x = 0; x < 20; x++) {
-        REQUIRE(((I1 *)fn(&p, "vprobe"))(CONTEXT, x) == x);
-        REQUIRE((int64_t)chibi_c_words[7] == x + 1);
-        REQUIRE((int32_t)chibi_c_words[8] == x - 3);
-        REQUIRE(word_double(chibi_c_words[9]) == (double)((float)x + 0.5f));
-        REQUIRE(word_double(chibi_c_words[10]) == 2.5);
-        REQUIRE((int32_t)chibi_c_words[11] == x + 60000);
-        REQUIRE((int32_t)chibi_c_words[12] == 7);
+        REQUIRE(vprobe_agrees(&p, x, CONVENTION_APPLE));
         REQUIRE(named_then_variadic(&p, x));
     }
     release_program(&p);
@@ -3965,6 +3969,20 @@ mixed_value(int64_t x, int16_t k, int8_t m)
     return (double)n + 0.5 + 2.0 + 3.0 * 0.25 + 4.0 + 5.0 * 1.5 + 6.0 * (double)x + 7.0 + 8.0 * 0.125 + 9.0 * (double)(x - 3);
 }
 
+static bool
+mixed_agrees(Program *p, int64_t x, Convention convention)
+{
+    int16_t k = (int16_t)(x * -300);
+    int8_t m = (int8_t)(x - 11);
+    if (convention == CONVENTION_APPLE) {
+        uint64_t packed = (uint16_t)k | (uint64_t)(uint8_t)m << 16 | JUNK << 24;
+        FNMIXA *mixed = ((GETMIXA *)fn(p, "get_mixed"))(CONTEXT);
+        return mixed(1, 2, 3, 4, 5, 6, x, 0.5, 1.0, 0.25, 1.0, 1.5, (double)x, 1.0, 0.125, (double)(x - 3), 8, packed) == mixed_value(x, k, m);
+    }
+    FNMIX *mixed = ((GETMIX *)fn(p, "get_mixed"))(CONTEXT);
+    return mixed(1, 2, 3, 4, 5, 6, x, 0.5, 1.0, 0.25, 1.0, 1.5, (double)x, 1.0, 0.125, (double)(x - 3), 8, (int64_t)(JUNK << 16 | (uint16_t)k), (int64_t)(JUNK << 8 | (uint8_t)m)) == mixed_value(x, k, m);
+}
+
 TEST_CASE(callbacks)
 {
     Program p;
@@ -3978,10 +3996,7 @@ TEST_CASE(callbacks)
         REQUIRE(((I1 *)fn(&p, "hooks"))(CONTEXT, x % 7) == (3 * (x % 7) + 1) * 1000000 - 10000 + 5701);
         REQUIRE(odd_layouts(&p, x));
 
-        int16_t k = (int16_t)(x * -300);
-        int8_t m = (int8_t)(x - 11);
-        FNMIX *mixed = ((GETMIX *)fn(&p, "get_mixed"))(CONTEXT);
-        REQUIRE(mixed(1, 2, 3, 4, 5, 6, x, 0.5, 1.0, 0.25, 1.0, 1.5, (double)x, 1.0, 0.125, (double)(x - 3), 8, (int64_t)(JUNK << 16 | (uint16_t)k), (int64_t)(JUNK << 8 | (uint8_t)m)) == mixed_value(x, k, m));
+        REQUIRE(mixed_agrees(&p, x, CONVENTION_HOST));
     }
     REQUIRE(!sp_misaligned);
     REQUIRE(((GET1 *)fn(&p, "get_twice"))(CONTEXT) == chibi_c_twice);
@@ -4002,11 +4017,7 @@ TEST_CASE(callbacks)
         REQUIRE(sorts(&p, x));
         REQUIRE(odd_layouts(&p, x));
 
-        int16_t k = (int16_t)(x * -300);
-        int8_t m = (int8_t)(x - 11);
-        uint64_t packed = (uint16_t)k | (uint64_t)(uint8_t)m << 16 | JUNK << 24;
-        FNMIXA *mixed = ((GETMIXA *)fn(&p, "get_mixed"))(CONTEXT);
-        REQUIRE(mixed(1, 2, 3, 4, 5, 6, x, 0.5, 1.0, 0.25, 1.0, 1.5, (double)x, 1.0, 0.125, (double)(x - 3), 8, packed) == mixed_value(x, k, m));
+        REQUIRE(mixed_agrees(&p, x, CONVENTION_APPLE));
     }
     REQUIRE(!sp_misaligned);
     release_program(&p);

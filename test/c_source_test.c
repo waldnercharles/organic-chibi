@@ -964,28 +964,39 @@ chibi_cs_eight(int64_t a, int64_t b, int64_t c, int64_t d, int64_t e, int64_t f,
     return a + 2 * b + 3 * c + 4 * d + 5 * e + 6 * f + 7 * g + 8 * h;
 }
 
+static uint64_t
+narrow_result(uint64_t junk, uint32_t extended)
+{
+#ifdef __APPLE__
+    return (junk & 0xFFFFFFFF00000000u) | extended;
+#else
+    (void)extended;
+    return junk;
+#endif
+}
+
 uint64_t
 chibi_cs_u8(void)
 {
-    return 0xDEADBEEFCAFE0105u;
+    return narrow_result(0xDEADBEEFCAFE0105u, 0x05);
 }
 
 uint64_t
 chibi_cs_i8(void)
 {
-    return 0x123456789ABCDE80u;
+    return narrow_result(0x123456789ABCDE80u, (uint32_t)-128);
 }
 
 uint64_t
 chibi_cs_u16(void)
 {
-    return 0xFFFFFFFFFFFF8001u;
+    return narrow_result(0xFFFFFFFFFFFF8001u, 0x8001);
 }
 
 uint64_t
 chibi_cs_i16(void)
 {
-    return 0x0000000100008000u;
+    return narrow_result(0x0000000100008000u, (uint32_t)-32768);
 }
 
 uint64_t
@@ -1003,7 +1014,7 @@ chibi_cs_i32(void)
 uint64_t
 chibi_cs_bool(int64_t x)
 {
-    return 0xFFFFFFFFFFFFFF00u | (uint64_t)(x & 1);
+    return narrow_result(0xFFFFFFFFFFFFFF00u | (uint64_t)(x & 1), (uint32_t)(x & 1));
 }
 
 float
