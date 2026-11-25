@@ -40,6 +40,7 @@ typedef struct
     u32 *c_symbols;
     CppgmType *records;
     CppgmType slice_record;
+    CppgmType wide_record;
     u32 trap;
     u32 context;
     u32 data;
@@ -59,6 +60,7 @@ typedef struct
     u32 spill;
     u32 traps[NTRAPS];
     LowirValue *values;
+    LowirValue *quarters;
     u8 *truth;
     u32 *blocks;
     u32 *end_slots;
@@ -164,6 +166,18 @@ flatten(const Checker *c, u32 type, u64 *count)
         type = c->types.arg0[type];
     }
     return type;
+}
+
+static bool
+is_wide(const Checker *c, u32 type)
+{
+    return c->types.kinds[type] == TYPE_VECTOR && check_type_size(c, type) == 64;
+}
+
+static u32
+quarters_of(const Checker *c, u32 type)
+{
+    return (u32)(check_type_size(c, type) / 16);
 }
 
 static bool
@@ -814,6 +828,25 @@ operand(Lower *l, u32 x)
 }
 
 static LowirValue
+quarter(Lower *l, u32 x, u32 q)
+{
+    if (x & IR_CONST) {
+        return constant(l, constant_at(l, x));
+    }
+    return q ? l->quarters[3 * x + q - 1] : l->values[x];
+}
+
+static void
+set_quarter(Lower *l, u32 i, u32 q, LowirValue v)
+{
+    if (q) {
+        l->quarters[3 * i + q - 1] = v;
+    } else {
+        l->values[i] = v;
+    }
+}
+
+static LowirValue
 condition(Lower *l, u32 x)
 {
     if (x & IR_CONST) {
@@ -832,7 +865,7 @@ value_type(const Lower *l, u32 i)
         return l->c->types.kinds[type] == TYPE_VECTOR ? type : TYPE_ID_BOOL;
     }
     if (kind == IR_TOP_BITS) {
-        return l->c->types.arg1[type] == 16 ? TYPE_ID_U16 : TYPE_ID_U8;
+        return check_top_bits_type(l->c, type);
     }
     return type;
 }
@@ -971,6 +1004,22 @@ store_pair(Lower *l, u32 type, LowirValue p, LowirValue first, LowirValue second
 }
 
 static void
+load_wide(Lower *l, u32 i, LowirValue p)
+{
+    for (u32 q = 0; q < 4; q++) {
+        set_quarter(l, i, q, load(l, CPPGM_TYPE_V128, offset(l, p, 16 * q)));
+    }
+}
+
+static void
+store_wide(Lower *l, u32 x, LowirValue p)
+{
+    for (u32 q = 0; q < 4; q++) {
+        store(l, CPPGM_TYPE_V128, quarter(l, x, q), offset(l, p, 16 * q));
+    }
+}
+
+static void
 load_at(Lower *l, u32 i, u32 type, u32 a)
 {
     u8 kind = l->c->types.kinds[type];
@@ -979,6 +1028,8 @@ load_at(Lower *l, u32 i, u32 type, u32 a)
         l->values[i] = p;
     } else if (is_pair(l->c, type)) {
         load_pair(l, i, type, p);
+    } else if (is_wide(l->c, type)) {
+        load_wide(l, i, p);
     } else {
         l->values[i] = load(l, scalar_type(l->c, type), p);
     }
@@ -1736,6 +1787,13 @@ store_end(Lower *l, u32 e, u32 x, u32 y)
         store_pair(l, type, address_of(l, slot(l->end_slots[e])), operand(l, x), operand(l, y));
         return;
     }
+    if (is_wide(c, type)) {
+        if (l->end_slots[e] == NONE) {
+            l->end_slots[e] = new_slot(l, l->wide_record);
+        }
+        store_wide(l, x, address_of(l, slot(l->end_slots[e])));
+        return;
+    }
 
     CppgmType t = scalar_type(c, type);
     if (l->end_slots[e] == NONE) {
@@ -1749,6 +1807,13 @@ static void
 bitcast_op(Lower *l, u32 i, u32 type, u32 a)
 {
     const Checker *c = l->c;
+    if (is_wide(c, type)) {
+        for (u32 q = 0; q < 4; q++) {
+            set_quarter(l, i, q, quarter(l, a, q));
+        }
+        return;
+    }
+
     CppgmType to = scalar_type(c, type);
     CppgmType from = scalar_type(c, operand_type(l, a));
     LowirValue x = operand(l, a);
@@ -1875,16 +1940,13 @@ vector_greater(Lower *l, Scalar s, LowirValue x, LowirValue y)
     return vector_immediate(l, CPPGM_VECTOR_PSHUFD, r, 0xF5);
 }
 
-static void
-vector_compare(Lower *l, u32 i, u8 kind, u32 type, u32 a, u32 b)
+static LowirValue
+vector_compare(Lower *l, u8 kind, u32 type, LowirValue x, LowirValue y)
 {
     Scalar s = scalar_of(l->c, l->c->types.arg0[type]);
-    LowirValue x = operand(l, a);
-    LowirValue y = operand(l, b);
     if (kind == IR_EQ || kind == IR_NE) {
         LowirValue e = vector_equal(l, s.bits, x, y);
-        l->values[i] = kind == IR_NE ? vector_not(l, e) : e;
-        return;
+        return kind == IR_NE ? vector_not(l, e) : e;
     }
     if (kind == IR_LT || kind == IR_GE) {
         LowirValue swap = x;
@@ -1896,11 +1958,10 @@ vector_compare(Lower *l, u32 i, u8 kind, u32 type, u32 a, u32 b)
     if (s.bits == 8 && !s.sign) {
         LowirValue low = vector_binary(l, CPPGM_VECTOR_PMINUB, x, y);
         LowirValue le = vector_binary(l, CPPGM_VECTOR_PCMPEQB, low, x);
-        l->values[i] = at_most ? le : vector_not(l, le);
-        return;
+        return at_most ? le : vector_not(l, le);
     }
     LowirValue gt = vector_greater(l, s, x, y);
-    l->values[i] = at_most ? vector_not(l, gt) : gt;
+    return at_most ? vector_not(l, gt) : gt;
 }
 
 typedef struct
@@ -1933,8 +1994,23 @@ shifted_splat(Lower *l, u64 lane, bool right, u32 bits, Count n)
     return splat_word(l, v, bits);
 }
 
-static void
-vector_shift(Lower *l, u32 i, u8 kind, u32 type, u32 a, u32 b)
+static Count
+shift_count(Lower *l, u32 type, u32 b)
+{
+    u32 bits = lane_bits(l->c, type);
+    Count n = { nothing(), nothing(), 0 };
+    if (b & IR_CONST) {
+        n.n = (u32)constant_at(l, b).bits;
+        return n;
+    }
+    n.word = widen(l, b);
+    check(l, compare(l, CPPGM_CMP_UGE, CPPGM_TYPE_I64, n.word, integer(l, bits)), TRAP_SHIFT);
+    n.vector = vector_unary(l, CPPGM_VECTOR_FROMI64, CPPGM_TYPE_V128, n.word);
+    return n;
+}
+
+static LowirValue
+vector_shift(Lower *l, u8 kind, u32 type, LowirValue x, Count n)
 {
     static const u8 left[2][4] = {
         { 0, CPPGM_VECTOR_PSLLWI, CPPGM_VECTOR_PSLLDI, CPPGM_VECTOR_PSLLQI },
@@ -1952,22 +2028,14 @@ vector_shift(Lower *l, u32 i, u8 kind, u32 type, u32 a, u32 b)
     };
     Scalar s = scalar_of(l->c, l->c->types.arg0[type]);
     u32 w = (u32)__builtin_ctz(s.bits) - 3;
-    LowirValue x = operand(l, a);
-    Count n = { nothing(), nothing(), 0 };
-    if (b & IR_CONST) {
-        n.n = (u32)constant_at(l, b).bits;
-    } else {
-        n.word = widen(l, b);
-        check(l, compare(l, CPPGM_CMP_UGE, CPPGM_TYPE_I64, n.word, integer(l, s.bits)), TRAP_SHIFT);
-        n.vector = vector_unary(l, CPPGM_VECTOR_FROMI64, CPPGM_TYPE_V128, n.word);
-    }
-
     if (kind == IR_SHL && s.bits == 8) {
         LowirValue t = shift_by(l, left[0][1], left[1][1], x, n);
-        l->values[i] = vector_binary(l, CPPGM_VECTOR_PAND, t, shifted_splat(l, 0xFF, false, 8, n));
-    } else if (kind == IR_SHL) {
-        l->values[i] = shift_by(l, left[0][w], left[1][w], x, n);
-    } else if (s.bits == 8 || (s.sign && s.bits == 64)) {
+        return vector_binary(l, CPPGM_VECTOR_PAND, t, shifted_splat(l, 0xFF, false, 8, n));
+    }
+    if (kind == IR_SHL) {
+        return shift_by(l, left[0][w], left[1][w], x, n);
+    }
+    if (s.bits == 8 || (s.sign && s.bits == 64)) {
         u64 top = 1ull << (s.bits - 1);
         LowirValue u = s.sign
                          ? vector_binary(l, CPPGM_VECTOR_PXOR, x, splat_constant(l, top, s.bits))
@@ -1977,55 +2045,82 @@ vector_shift(Lower *l, u32 i, u8 kind, u32 type, u32 a, u32 b)
         if (s.bits == 8) {
             t = vector_binary(l, CPPGM_VECTOR_PAND, t, shifted_splat(l, 0xFF, true, 8, n));
         }
-        l->values[i] = s.sign
-                         ? vector_binary(l, lane_subs[w], t, shifted_splat(l, top, true, s.bits, n))
-                         : t;
-    } else {
-        l->values[i] = shift_by(l, right[s.sign][0][w], right[s.sign][1][w], x, n);
+        return s.sign ? vector_binary(l, lane_subs[w], t, shifted_splat(l, top, true, s.bits, n)) : t;
     }
+    return shift_by(l, right[s.sign][0][w], right[s.sign][1][w], x, n);
 }
 
 static void
 splat_op(Lower *l, u32 i, u32 type, u32 a)
 {
     u32 bits = lane_bits(l->c, type);
+    LowirValue v;
     if (a & IR_CONST) {
-        l->values[i] = splat_constant(l, constant_at(l, a).bits, bits);
-        return;
+        v = splat_constant(l, constant_at(l, a).bits, bits);
+    } else {
+        CppgmType t = scalar_type(l->c, value_type(l, a));
+        LowirValue lane = bits == 64
+                            ? l->values[a]
+                            : convert(l, CPPGM_CONVERT_Z_EXT, CPPGM_TYPE_I64, t, l->values[a]);
+        v = splat_word(l, lane, bits);
     }
-    CppgmType t = scalar_type(l->c, value_type(l, a));
-    LowirValue lane = bits == 64
-                        ? l->values[a]
-                        : convert(l, CPPGM_CONVERT_Z_EXT, CPPGM_TYPE_I64, t, l->values[a]);
-    l->values[i] = splat_word(l, lane, bits);
+    for (u32 q = 0; q < quarters_of(l->c, type); q++) {
+        set_quarter(l, i, q, v);
+    }
 }
 
 static void
-lookup_op(Lower *l, u32 i, u32 a, u32 b)
+lookup_op(Lower *l, u32 i, u32 type, u32 a, u32 b)
 {
     LowirValue table = operand(l, a);
-    LowirValue index = operand(l, b);
-    LowirValue clamped = vector_binary(l, CPPGM_VECTOR_PADDUSB, index, splat_constant(l, 0x70, 8));
-    l->values[i] = vector_binary(l, CPPGM_VECTOR_PSHUFB, table, clamped);
+    LowirValue bias = splat_constant(l, 0x70, 8);
+    for (u32 q = 0; q < quarters_of(l->c, type); q++) {
+        LowirValue clamped = vector_binary(l, CPPGM_VECTOR_PADDUSB, quarter(l, b, q), bias);
+        set_quarter(l, i, q, vector_binary(l, CPPGM_VECTOR_PSHUFB, table, clamped));
+    }
+}
+
+static LowirValue
+quarter_bits(Lower *l, u32 bits, LowirValue x, LowirValue y)
+{
+    if (bits == 8) {
+        return vector_unary(l, CPPGM_VECTOR_PMOVMSKB, CPPGM_TYPE_I32, x);
+    }
+    if (bits == 16) {
+        LowirValue packed = vector_binary(l, CPPGM_VECTOR_PACKSSWB, x, y);
+        return vector_unary(l, CPPGM_VECTOR_PMOVMSKB, CPPGM_TYPE_I32, packed);
+    }
+    return vector_unary(l, bits == 32 ? CPPGM_VECTOR_MOVMSKPS : CPPGM_VECTOR_MOVMSKPD, CPPGM_TYPE_I32, x);
 }
 
 static void
 top_bits_op(Lower *l, u32 i, u32 type, u32 a)
 {
-    u32 bits = lane_bits(l->c, type);
-    LowirValue x = operand(l, a);
-    LowirValue m;
-    if (bits == 8) {
-        m = vector_unary(l, CPPGM_VECTOR_PMOVMSKB, CPPGM_TYPE_I32, x);
-    } else if (bits == 16) {
-        LowirValue packed = vector_binary(l, CPPGM_VECTOR_PACKSSWB, x, x);
-        m = vector_unary(l, CPPGM_VECTOR_PMOVMSKB, CPPGM_TYPE_I32, packed);
-    } else {
-        u8 op = bits == 32 ? CPPGM_VECTOR_MOVMSKPS : CPPGM_VECTOR_MOVMSKPD;
-        m = vector_unary(l, op, CPPGM_TYPE_I32, x);
+    const Checker *c = l->c;
+    u32 bits = lane_bits(c, type);
+    CppgmType to = scalar_type(c, check_top_bits_type(c, type));
+    if (!is_wide(c, type)) {
+        LowirValue x = operand(l, a);
+        l->values[i] = convert(l, CPPGM_CONVERT_TRUNC, to, CPPGM_TYPE_I32, quarter_bits(l, bits, x, x));
+        return;
     }
-    CppgmType to = bits == 8 ? CPPGM_TYPE_U16 : CPPGM_TYPE_U8;
-    l->values[i] = convert(l, CPPGM_CONVERT_TRUNC, to, CPPGM_TYPE_I32, m);
+
+    u32 step = bits == 16 ? 2 : 1;
+    u32 width = 128 / bits * step;
+    LowirValue m = nothing();
+    for (u32 q = 0; q < 4; q += step) {
+        LowirValue x = quarter(l, a, q);
+        LowirValue y = quarter(l, a, q + step - 1);
+        LowirValue part = quarter_bits(l, bits, x, y);
+        LowirValue wide = convert(l, CPPGM_CONVERT_Z_EXT, CPPGM_TYPE_I64, CPPGM_TYPE_I32, part);
+        if (q) {
+            wide = binary(l, CPPGM_BINARY_SHL, CPPGM_TYPE_I64, wide, integer(l, width * q / step));
+            m = binary(l, CPPGM_BINARY_OR, CPPGM_TYPE_I64, m, wide);
+        } else {
+            m = wide;
+        }
+    }
+    l->values[i] = to == CPPGM_TYPE_I64 ? m : convert(l, CPPGM_CONVERT_TRUNC, to, CPPGM_TYPE_I64, m);
 }
 
 static void
@@ -2123,33 +2218,41 @@ lower_instruction(Lower *l, u32 i)
         case IR_MUL_WRAP:
         case IR_AND:
         case IR_OR:
-        case IR_XOR: {
-            LowirValue x = operand(l, a);
-            LowirValue y = operand(l, b);
-            l->values[i] = c->types.kinds[type] == TYPE_VECTOR
-                             ? vector_arithmetic(l, kind, type, x, y)
-                             : binary(l, binary_ops[kind], scalar_type(c, type), x, y);
+        case IR_XOR:
+            if (c->types.kinds[type] == TYPE_VECTOR) {
+                for (u32 q = 0; q < quarters_of(c, type); q++) {
+                    LowirValue x = quarter(l, a, q);
+                    LowirValue y = quarter(l, b, q);
+                    set_quarter(l, i, q, vector_arithmetic(l, kind, type, x, y));
+                }
+            } else {
+                LowirValue x = operand(l, a);
+                LowirValue y = operand(l, b);
+                l->values[i] = binary(l, binary_ops[kind], scalar_type(c, type), x, y);
+            }
             break;
-        }
         case IR_SHL:
         case IR_SHR:
             if (c->types.kinds[type] == TYPE_VECTOR) {
-                vector_shift(l, i, kind, type, a, b);
+                Count n = shift_count(l, type, b);
+                for (u32 q = 0; q < quarters_of(c, type); q++) {
+                    set_quarter(l, i, q, vector_shift(l, kind, type, quarter(l, a, q), n));
+                }
             } else {
                 shift(l, i, kind, type, a, b);
             }
             break;
-        case IR_NEG_WRAP: {
-            LowirValue x = operand(l, a);
+        case IR_NEG_WRAP:
             if (c->types.kinds[type] == TYPE_VECTOR) {
                 u32 w = (u32)__builtin_ctz(lane_bits(c, type)) - 3;
                 LowirValue zero = vector_unary(l, CPPGM_VECTOR_PZERO, CPPGM_TYPE_V128, nothing());
-                l->values[i] = vector_binary(l, lane_subs[w], zero, x);
+                for (u32 q = 0; q < quarters_of(c, type); q++) {
+                    set_quarter(l, i, q, vector_binary(l, lane_subs[w], zero, quarter(l, a, q)));
+                }
             } else {
-                l->values[i] = unary(l, CPPGM_UNARY_NEG, scalar_type(c, type), x);
+                l->values[i] = unary(l, CPPGM_UNARY_NEG, scalar_type(c, type), operand(l, a));
             }
             break;
-        }
         case IR_NOT: {
             LowirValue x = condition(l, a);
             CppgmType t = !(a & IR_CONST) && l->truth[a] ? CPPGM_TYPE_I64 : CPPGM_TYPE_I1;
@@ -2157,13 +2260,15 @@ lower_instruction(Lower *l, u32 i)
             l->truth[i] = 1;
             break;
         }
-        case IR_BIT_NOT: {
-            LowirValue x = operand(l, a);
-            l->values[i] = c->types.kinds[type] == TYPE_VECTOR
-                             ? vector_not(l, x)
-                             : unary(l, CPPGM_UNARY_BIT_NOT, scalar_type(c, type), x);
+        case IR_BIT_NOT:
+            if (c->types.kinds[type] == TYPE_VECTOR) {
+                for (u32 q = 0; q < quarters_of(c, type); q++) {
+                    set_quarter(l, i, q, vector_not(l, quarter(l, a, q)));
+                }
+            } else {
+                l->values[i] = unary(l, CPPGM_UNARY_BIT_NOT, scalar_type(c, type), operand(l, a));
+            }
             break;
-        }
         case IR_TRAILING_ZEROS:
         case IR_LEADING_ZEROS:
         case IR_COUNT_ONES: count_bits(l, i, kind, type, a); break;
@@ -2174,7 +2279,11 @@ lower_instruction(Lower *l, u32 i)
         case IR_GT:
         case IR_GE:
             if (c->types.kinds[type] == TYPE_VECTOR) {
-                vector_compare(l, i, kind, type, a, b);
+                for (u32 q = 0; q < quarters_of(c, type); q++) {
+                    LowirValue x = quarter(l, a, q);
+                    LowirValue y = quarter(l, b, q);
+                    set_quarter(l, i, q, vector_compare(l, kind, type, x, y));
+                }
             } else {
                 compare_op(l, i, kind, type, a, b);
             }
@@ -2201,7 +2310,7 @@ lower_instruction(Lower *l, u32 i)
             break;
         }
         case IR_SPLAT: splat_op(l, i, type, a); break;
-        case IR_LOOKUP: lookup_op(l, i, a, b); break;
+        case IR_LOOKUP: lookup_op(l, i, type, a, b); break;
         case IR_TOP_BITS: top_bits_op(l, i, type, a); break;
         case IR_C_GLOBAL:
             l->values[i] = address_of(l, symbol(l->c_symbols[b]));
@@ -2212,12 +2321,15 @@ lower_instruction(Lower *l, u32 i)
         case IR_CALL:
         case IR_CALL_C: call_op(l, i, kind, type, a, extra(l, b)); break;
         case IR_STORE: store_slot(l, a, operand(l, b)); break;
-        case IR_STORE_AT: {
-            LowirValue p = operand(l, a);
-            LowirValue v = operand(l, b);
-            store(l, scalar_type(c, type), v, p);
+        case IR_STORE_AT:
+            if (is_wide(c, type)) {
+                store_wide(l, b, operand(l, a));
+            } else {
+                LowirValue p = operand(l, a);
+                LowirValue v = operand(l, b);
+                store(l, scalar_type(c, type), v, p);
+            }
             break;
-        }
         case IR_STORE_PAIR: {
             const u32 *x = extra(l, b);
             store_pair(l, type, operand(l, a), operand(l, x[0]), operand(l, x[1]));
@@ -2265,6 +2377,8 @@ lower_instruction(Lower *l, u32 i)
             start(l, l->blocks[i]);
             if (type != TYPE_ID_NONE && is_pair(c, type)) {
                 load_pair(l, i, type, address_of(l, slot(l->end_slots[i])));
+            } else if (type != TYPE_ID_NONE && is_wide(c, type)) {
+                load_wide(l, i, address_of(l, slot(l->end_slots[i])));
             } else if (type != TYPE_ID_NONE) {
                 l->values[i] = load(l, scalar_type(c, type), slot(l->end_slots[i]));
             }
@@ -2597,6 +2711,7 @@ lowir_package(CppgmLowir *m, const Checker *c, const char *prefix, u32 flags, co
     l.ranges = malloc(nranges * sizeof *l.ranges);
     l.name = malloc(name_len + strlen(prefix) + strlen(suffix));
     l.values = malloc(count * sizeof *l.values);
+    l.quarters = malloc(3 * (size_t)count * sizeof *l.quarters);
     l.truth = malloc(count);
     u32 *words = malloc(9 * (size_t)count * sizeof *words);
     l.blocks = words;
@@ -2613,6 +2728,9 @@ lowir_package(CppgmLowir *m, const Checker *c, const char *prefix, u32 flags, co
     CppgmField halves[2] = { { 0, CPPGM_TYPE_PTR, 1 }, { 8, CPPGM_TYPE_I64, 1 } };
     l.slice_record = cppgm_lowir_record(m, 16, 8, halves, 2);
     must(&l, l.slice_record != 0);
+    CppgmField quarters = { 0, CPPGM_TYPE_V128, 4 };
+    l.wide_record = cppgm_lowir_record(m, 64, 16, &quarters, 1);
+    must(&l, l.wide_record != 0);
     declare_runtime(&l);
     l.data = ir->ndata
                ? define_memory(&l, "data", ir->data, ir->ndata, ir->ndata, CPPGM_STORAGE_READONLY, ir->data_relocs, NONE)
@@ -2635,6 +2753,7 @@ lowir_package(CppgmLowir *m, const Checker *c, const char *prefix, u32 flags, co
     free(l.slots);
     free(words);
     free(l.truth);
+    free(l.quarters);
     free(l.values);
     free(l.name);
     free(l.ranges);
