@@ -29,6 +29,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Install tools (arm64 Linux)
         if: runner.os == 'Linux'
@@ -70,7 +72,6 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           time_reference() {
-            git fetch --depth=1 origin "$1"
             mkdir "$RUNNER_TEMP/tree-$1"
             git archive "$1" | tar -x -C "$RUNNER_TEMP/tree-$1"
             bash experiments/arm64-backend/time-switch.sh "$RUNNER_TEMP/tree-$1" "$RUNNER_TEMP/time-$1" 15 41 | tee "$RUNNER_TEMP/$1.txt"
