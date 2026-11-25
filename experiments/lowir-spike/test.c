@@ -437,8 +437,8 @@ TEST_CASE(lowir_handles_wide_error_codes)
 
 TEST_CASE(lowir_runs_vectors)
 {
-    const char *const programs[] = { VECTOR_RUNS, VECTOR_GRID, VECTOR_BODY,
-                                     VECTOR_MASK, VECTOR_MASK, VECTOR_PICK };
+    const char *const programs[] = { VECTOR_RUNS, VECTOR_GRID, VECTOR_BODY, VECTOR_MASK,
+                                     VECTOR_MASK, VECTOR_PICK, VECTOR_WIDE_RUNS, VECTOR_WIDE_GRID };
     Build b;
     REQUIRE(open_objects(&b));
     bool ok = true;
@@ -466,8 +466,12 @@ TEST_CASE(lowir_runs_vectors)
                    sizeof VECTOR_PICK_RESULTS / sizeof VECTOR_PICK_RESULTS[0],
                    "lowir"
                );
+    ok = ok && runs_agree(&b, 6, VECTOR_WIDE_RESULTS, NVECTOR_WIDE_RESULTS, "lowir");
     for (size_t f = 0; ok && f < NVECTOR_GRID_FUNCTIONS; f++) {
         ok = grid_agrees(&b, 1, &VECTOR_GRID_FUNCTIONS[f], "lowir");
+    }
+    for (size_t f = 0; ok && f < NVECTOR_WIDE_GRID_FUNCTIONS; f++) {
+        ok = grid_agrees(&b, 7, &VECTOR_WIDE_GRID_FUNCTIONS[f], "lowir");
     }
     close_objects(&b, ok);
     REQUIRE(ok);
