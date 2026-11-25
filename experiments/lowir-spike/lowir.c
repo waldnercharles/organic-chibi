@@ -2632,8 +2632,11 @@ declare_functions(Lower *l)
         if (c->decls.flags[fn->decl] & DECL_INLINE) {
             must(l, cppgm_lowir_symbol_fact(l->m, l->symbols[fn->decl], CPPGM_KEY_FORCE_INLINE, 1));
         }
-        if (c->decls.flags[fn->decl] & DECL_NOINLINE) {
+        if (c->decls.flags[fn->decl] & (DECL_NOINLINE | DECL_COLD)) {
             must(l, cppgm_lowir_symbol_fact(l->m, l->symbols[fn->decl], CPPGM_KEY_NO_INLINE, 1));
+        }
+        if (c->decls.flags[fn->decl] & DECL_COLD) {
+            must(l, cppgm_lowir_symbol_fact(l->m, l->symbols[fn->decl], CPPGM_KEY_COLD, 1));
         }
     }
 
