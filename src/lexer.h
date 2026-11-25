@@ -148,6 +148,7 @@ enum
     OTHER(NAME_TAIL, "tail")                                                   \
     OTHER(NAME_INLINE, "inline")                                               \
     OTHER(NAME_NOINLINE, "noinline")                                           \
+    OTHER(NAME_COLD, "cold")                                                   \
     OTHER(NAME_DISCARD, "_")                                                   \
     OTHER(NAME_LEN, "len")                                                     \
     OTHER(NAME_PTR, "ptr")                                                     \

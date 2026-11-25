@@ -133,6 +133,7 @@ enum
     DECL_NOINLINE = 512,
     DECL_TUPLE = 1024,
     DECL_RESULTS = 2048,
+    DECL_COLD = 4096,
 };
 
 enum

@@ -4178,6 +4178,17 @@ const char INLINE_MARKS[] =
     "@noinline\n"
     "fn inl_calls(a: int, b: int) -> int {\n"
     "    return inl_fact(a & 7) + inl_mix(a, b)\n"
+    "}\n"
+    "\n"
+    "@cold fn inl_rare(a: int, b: int) -> int {\n"
+    "    return a * 1000 - b\n"
+    "}\n"
+    "\n"
+    "fn inl_guard(a: int, b: int) -> int {\n"
+    "    if a > b {\n"
+    "        return inl_rare(a, b)\n"
+    "    }\n"
+    "    return inl_step(a, b)\n"
     "}\n";
 
 const char ASSERTS[] =

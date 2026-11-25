@@ -19,7 +19,7 @@ Measured in `src/` at c657314, before step 3i.1 added one call of each bit count
 | `__builtin_expect` (`LIKELY`, `UNLIKELY`) | 2 macros | common.h | dropped by the translator |
 | `__builtin___clear_cache` | 1 | arm64.c | an `extern fn` for compiler-rt's and libgcc's `__clear_cache` |
 
-`NOINLINE`, `always_inline` and `__builtin_expect` change only speed, so the translator can drop them until the attribute design (adopt-or-settle 3.8) is decided. Since steps 3k.10 and 3t.11, built while the owner decides, `NOINLINE` and `always_inline` become `@noinline` and `@inline`.
+`NOINLINE`, `always_inline` and `__builtin_expect` change only speed, so the translator can drop them until the attribute design (adopt-or-settle 3.8) is decided. Since steps 3k.10 and 3t.11, built while the owner decides, `NOINLINE` and `always_inline` become `@noinline` and `@inline`, and since steps 3k.29 and 3t.18 `NOINLINE` with `COLD` becomes `@cold`; `__builtin_expect` is still dropped.
 
 `exact.c` checks overflow to stay on its fast path for small integers: `if (!__builtin_mul_overflow(u, v, &r)) { return exact_int(e, r); }`. The lexer uses an addition's carry out of 64-bit bitsets, as in `first_on_line`:
 

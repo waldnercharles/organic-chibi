@@ -1798,9 +1798,9 @@ parse_attribute(Parser *p)
 {
     int at = p->pos;
     u32 name = p->tokens.kinds[at + 1] == TK_IDENT ? p->tokens.ids[at + 1] : 0;
-    if (name != NAME_INLINE && name != NAME_NOINLINE) {
+    if (name != NAME_INLINE && name != NAME_NOINLINE && name != NAME_COLD) {
         p->pos++;
-        fail(p, "expected `@inline` or `@noinline`");
+        fail(p, "expected `@inline`, `@noinline` or `@cold`");
         return;
     }
 
@@ -1808,13 +1808,16 @@ parse_attribute(Parser *p)
     fn += p->tokens.kinds[fn] == TK_PUB;
     fn += p->tokens.kinds[fn] == TK_EXPORT;
     if (p->tokens.kinds[fn] != TK_FN || p->tokens.kinds[fn + 1] != TK_IDENT) {
-        fail(p, "`@inline` and `@noinline` must come before a function with a body");
+        fail(p, "`@inline`, `@noinline` and `@cold` must come before a function with a body");
         return;
     }
 
     p->pos += 2;
     parse_statement(p);
-    emit(p, name == NAME_INLINE ? NODE_INLINE : NODE_NOINLINE, at);
+    NodeKind mark = name == NAME_INLINE   ? NODE_INLINE
+                  : name == NAME_NOINLINE ? NODE_NOINLINE
+                                          : NODE_COLD;
+    emit(p, mark, at);
 }
 
 static bool

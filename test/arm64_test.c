@@ -5232,6 +5232,8 @@ static const char *const INLINE_MARK_FUNCTIONS[] = {
     "inl_step",
     "inl_mix",
     "inl_calls",
+    "inl_rare",
+    "inl_guard",
 };
 
 static const CallCase INLINE_MARK_CASES[] = {
@@ -5247,6 +5249,13 @@ static const CallCase INLINE_MARK_CASES[] = {
     { "inl_calls", 1, 300, 6611, 0 },
     { "inl_calls", 7, 1, 5132, 0 },
     { "inl_calls", -1, 0, 5030, 0 },
+    { "inl_rare", 2, 5, 1995, 0 },
+    { "inl_rare", -3, 7, -3007, 0 },
+    { "inl_rare", 9223372036854776, 0, 0, TRAP_OVERFLOW },
+    { "inl_guard", 5, 2, 4998, 0 },
+    { "inl_guard", 2, 5, 9, 0 },
+    { "inl_guard", 3, 3, 9, 0 },
+    { "inl_guard", -1, -4, -996, 0 },
 };
 
 TEST_CASE(inline_marks)

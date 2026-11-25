@@ -140,6 +140,7 @@
     NODE(NODE_EXTERN, 1, "extern")                                             \
     NODE(NODE_INLINE, 1, "@inline")                                            \
     NODE(NODE_NOINLINE, 1, "@noinline")                                        \
+    NODE(NODE_COLD, 1, "@cold")                                                \
     NODE(NODE_VALUE_IF, 5, "if")                                               \
     NODE(NODE_VALUE_IF_ITEM, 5, "if")                                          \
     NODE(NODE_RESULT, 1, ":")                                                  \

@@ -55,6 +55,7 @@
     X(K_VA_ARG, "VAArgExpr")                                                   \
     X(K_NOINLINE, "NoInlineAttr")                                              \
     X(K_ALWAYS_INLINE, "AlwaysInlineAttr")                                     \
+    X(K_COLD, "ColdAttr")                                                      \
     X(K_RETURNS_NONNULL, "ReturnsNonNullAttr")
 
 typedef enum
@@ -6619,7 +6620,12 @@ emit_function(Tr *t, u32 def)
     t->fn_packages = packages_used(t, def);
     mark_assigned_params(t, def);
 
-    const char *mark = child_of_kind(t, def, K_ALWAYS_INLINE) ? "@inline "
+    bool cold = child_of_kind(t, def, K_COLD) != 0;
+    if (cold && !child_of_kind(t, def, K_NOINLINE)) {
+        die(t, def, "a cold function without noinline");
+    }
+    const char *mark = cold                                   ? "@cold "
+                     : child_of_kind(t, def, K_ALWAYS_INLINE) ? "@inline "
                      : child_of_kind(t, def, K_NOINLINE)      ? "@noinline "
                                                               : "";
     putf(&t->out, "\n%s%sfn %s", mark, exported ? "export " : "", text(t, t->names[c]));

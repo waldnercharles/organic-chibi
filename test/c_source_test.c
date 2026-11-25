@@ -148,6 +148,9 @@ TEST_CASE(writes_inline_marks)
         "\nCHIBI_FN __attribute__((noinline)) int64_t m_inl_step(void *ctx, int64_t s0, int64_t s1);\n",
         "\nCHIBI_FN __attribute__((always_inline)) int64_t m_inl_mix(void *ctx, int64_t s0, int64_t s1)\n{",
         "\nCHIBI_FN __attribute__((noinline)) int64_t m_inl_calls(void *ctx, int64_t s0, int64_t s1)\n{",
+        "\nCHIBI_FN __attribute__((noinline, cold)) int64_t m_inl_rare(void *ctx, int64_t s0, int64_t s1);\n",
+        "\nCHIBI_FN __attribute__((noinline, cold)) int64_t m_inl_rare(void *ctx, int64_t s0, int64_t s1)\n{",
+        "\nCHIBI_FN int64_t m_inl_guard(void *ctx, int64_t s0, int64_t s1)\n{",
     };
     for (size_t k = 0; ok && k < sizeof want / sizeof want[0]; k++) {
         if (!strstr(text, want[k])) {
@@ -507,7 +510,7 @@ TEST_CASE(writes_layouts)
 enum
 {
     MAX_JOBS = 8,
-    GRID_FUNCTIONS = 496,
+    GRID_FUNCTIONS = 498,
 };
 
 typedef struct

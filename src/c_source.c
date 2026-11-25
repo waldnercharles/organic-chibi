@@ -882,6 +882,7 @@ put_signature(Source *s, const IrFunc *fn)
     fputs(
         flags & DECL_INLINE     ? "CHIBI_FN __attribute__((always_inline)) "
         : flags & DECL_NOINLINE ? "CHIBI_FN __attribute__((noinline)) "
+        : flags & DECL_COLD     ? "CHIBI_FN __attribute__((noinline, cold)) "
                                 : "CHIBI_FN ",
         s->out
     );

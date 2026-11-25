@@ -330,8 +330,10 @@ static const Case DECLARATIONS[] = {
       "{}\nexport fn tick(dt: f32) {}\n",
       "pub fn load(path: []u8) -> error.{}!void\nfn quiet() -> void\npub fn run() -> "
       "void\nexport fn tick(dt: f32) -> void\n" },
-    { "@inline fn f(x: int) -> int => x\n@noinline pub export fn g() {}\n@noinline\nfn h() {}\nfn k() {}\n",
-      "@inline fn f(x: int) -> int\n@noinline pub export fn g() -> void\n@noinline fn h() -> void\nfn k() -> void\n" },
+    { "@inline fn f(x: int) -> int => x\n@noinline pub export fn g() {}\n@noinline\nfn h() {}\nfn k() {}\n"
+      "@cold pub fn m() {}\n",
+      "@inline fn f(x: int) -> int\n@noinline pub export fn g() -> void\n@noinline fn h() -> void\nfn k() -> void\n"
+      "@cold pub fn m() -> void\n" },
     { "extern fn labs(x: i64) -> i64\npub extern fn quit()\nfn f(x: int) -> int {\n    "
       "return labs(x)\n}\n",
       "extern fn labs(x: int) -> int\npub extern fn quit() -> void\nfn f(x: int) -> int\n" },
@@ -1007,6 +1009,10 @@ static const Case ERRORS[] = {
     { "fn g() {\n    @inline fn h() {}\n}\n",
       "a:2:5: the checker doesn't support this yet\n"
       "a:2:16: the checker doesn't support this yet\n"
+      "fn g() -> void\n" },
+    { "fn g() {\n    @cold fn h() {}\n}\n",
+      "a:2:5: the checker doesn't support this yet\n"
+      "a:2:14: the checker doesn't support this yet\n"
       "fn g() -> void\n" },
     { "const A := B + 1\nconst B := A * 2\nconst C := C\n",
       "a:1:7: `A` depends on itself through `B`\n"

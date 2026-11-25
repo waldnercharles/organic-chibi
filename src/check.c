@@ -1094,10 +1094,14 @@ emit(Checker *c, u8 kind, u32 type, u32 a, u32 b)
     }
 
     u32 i = code->count++;
-    code->kinds[i] = kind;
-    code->types[i] = type;
-    code->as[i] = a;
-    code->bs[i] = b;
+    u8 *kinds = code->kinds;
+    u32 *types = code->types;
+    u32 *as = code->as;
+    u32 *bs = code->bs;
+    kinds[i] = kind;
+    types[i] = type;
+    as[i] = a;
+    bs[i] = b;
     return i - c->body.first;
 }
 
@@ -11939,11 +11943,12 @@ declare(Checker *c)
             bool external = false;
             while (kinds[root] == NODE_PUB || kinds[root] == NODE_EXPORT ||
                    kinds[root] == NODE_EXTERN || kinds[root] == NODE_INLINE ||
-                   kinds[root] == NODE_NOINLINE) {
+                   kinds[root] == NODE_NOINLINE || kinds[root] == NODE_COLD) {
                 flags |= kinds[root] == NODE_PUB      ? DECL_PUB
                        : kinds[root] == NODE_EXPORT   ? DECL_EXPORT
                        : kinds[root] == NODE_INLINE   ? DECL_INLINE
                        : kinds[root] == NODE_NOINLINE ? DECL_NOINLINE
+                       : kinds[root] == NODE_COLD     ? DECL_COLD
                                                       : 0;
                 external |= kinds[root] == NODE_EXTERN;
                 root--;
@@ -13144,6 +13149,7 @@ print_decl(FILE *out, const Checker *c, u32 decl)
     fputs(
         d->flags[decl] & DECL_INLINE     ? "@inline "
         : d->flags[decl] & DECL_NOINLINE ? "@noinline "
+        : d->flags[decl] & DECL_COLD     ? "@cold "
                                          : "",
         out
     );
