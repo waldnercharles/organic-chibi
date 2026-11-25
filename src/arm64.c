@@ -6,12 +6,6 @@
 #include <dlfcn.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mman.h>
-#include <unistd.h>
-#ifdef __APPLE__
-#include <libkern/OSCacheControl.h>
-#include <pthread.h>
-#endif
 
 enum
 {
@@ -5555,22 +5549,10 @@ emit_adapter(Emit *e, u32 decl, const Native *n)
     put(e, OP_RET);
 }
 
-static void
-jit_write(bool enable)
-{
-#if defined(__APPLE__) && defined(__aarch64__)
-    pthread_jit_write_protect_np(enable ? 0 : 1);
-#else
-    (void)enable;
-#endif
-}
-
 bool
 arm64_compile(Native *n, const Checker *c, Convention convention)
 {
-    *n = (Native){ 0 };
     const Ir *ir = &c->ir;
-    size_t page = (size_t)sysconf(_SC_PAGESIZE);
     size_t words = 0;
     for (u32 f = 0; f < ir->nfuncs; f++) {
         const IrFunc *fn = &ir->funcs[f];
@@ -5582,66 +5564,27 @@ arm64_compile(Native *n, const Checker *c, Convention convention)
         u32 nparams = c->lists[c->types.arg0[type]];
         words += WORDS_PER_ADAPTER + (size_t)WORDS_PER_ADAPTER_PARAM * nparams;
     }
-    size_t slots = (size_t)c->decls.count + 1;
-    size_t table = (slots * sizeof(u64) + page - 1) & ~(page - 1);
-    size_t code = table + (((size_t)ir->ndata + page - 1) & ~(page - 1));
-    size_t size = code + ((words * sizeof(u32) + page - 1) & ~(page - 1));
-    if (size == code) {
-        size += page;
-    }
-
 #if defined(__aarch64__)
-    int prot = PROT_READ | PROT_WRITE | PROT_EXEC;
+    bool executable = true;
 #else
-    int prot = PROT_READ | PROT_WRITE;
+    bool executable = false;
 #endif
-    int flags = MAP_PRIVATE | MAP_ANON;
-#if defined(__APPLE__) && defined(__aarch64__)
-    flags |= MAP_JIT;
-#endif
-    void *memory = mmap(NULL, size, prot, flags, -1, 0);
-    if (memory == MAP_FAILED) {
-        n->error = "can't map memory for machine code";
+    if (!native_begin(n, c, words * sizeof(u32), executable)) {
         return false;
     }
-
-    n->memory = memory;
-    n->size = size;
-    n->entries = memory;
-    n->nentries = c->decls.count;
-    u32 *start = (u32 *)(n->memory + code);
-    n->code = start;
-
-    if (ir->globals_size) {
-        size_t globals_size = ((size_t)ir->globals_size + page - 1) & ~(page - 1);
-        void *globals = mmap(NULL, globals_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-        if (globals == MAP_FAILED) {
-            n->error = "can't map memory for globals";
-            return false;
-        }
-        n->globals = globals;
-        n->globals_size = globals_size;
-        if (ir->nglobals) {
-            memcpy(n->globals, ir->globals, ir->nglobals);
-            ir_relocate(n->globals, ir->global_relocs, n->memory + table);
-        }
-    }
+    u32 *start = (u32 *)n->code;
+    size_t used = 0;
 
     u8 *info = malloc(c->types.count);
     for (u32 t = 0; t < c->types.count; t++) {
         info[t] = type_info(c, t);
     }
 
-    jit_write(true);
-    if (ir->ndata) {
-        memcpy(n->memory + table, ir->data, ir->ndata);
-        ir_relocate(n->memory + table, ir->data_relocs, n->memory + table);
-    }
     Emit e = { .c = c,
                .ir = &ir->code,
                .fn = &ir->funcs[0],
                .info = info,
-               .data = n->memory + table,
+               .data = n->data,
                .globals = n->globals,
                .code = start,
                .at = start,
@@ -5681,30 +5624,24 @@ arm64_compile(Native *n, const Checker *c, Convention convention)
         if (c->decls.bodies[decl] == NO_BODY) {
             continue;
         }
-        n->words = (n->words + 3) & ~(size_t)3;
-        e.code = e.at = n->code + n->words;
+        used = (used + 3) & ~(size_t)3;
+        e.code = e.at = start + used;
         emit_adapter(&e, decl, n);
         adapters[k] = (u64)(uintptr_t)e.code;
-        n->words += here(&e);
-        assert(n->words <= words);
+        used += here(&e);
+        assert(used <= words);
     }
     e.adapters = adapters;
     for (u32 f = 0; f < ir->nfuncs && !e.error; f++) {
         const IrFunc *fn = &ir->funcs[f];
-        n->words = (n->words + 3) & ~(size_t)3;
-        u32 *at = n->code + n->words;
+        used = (used + 3) & ~(size_t)3;
+        u32 *at = start + used;
         u32 entry = emit_function(&e, fn, at, n);
         n->entries[fn->decl] = (u64)(uintptr_t)(at + entry);
-        n->words += here(&e);
-        assert(n->words <= words);
+        used += here(&e);
+        assert(used <= words);
     }
-    jit_write(false);
-
-#if defined(__APPLE__) && defined(__aarch64__)
-    sys_icache_invalidate(n->code, n->words * sizeof(u32));
-#elif defined(__aarch64__)
-    __builtin___clear_cache((char *)n->code, (char *)(n->code + n->words));
-#endif
+    native_end(n, used * sizeof(u32));
 
     free(info);
     free(e.regs);
@@ -5730,46 +5667,4 @@ arm64_compile(Native *n, const Checker *c, Convention convention)
     n->nexports = ir->nexports;
     n->error = e.error;
     return e.error == NULL;
-}
-
-void *
-native_entry(const Native *n, u32 decl)
-{
-    return (void *)(uintptr_t)n->entries[decl];
-}
-
-void *
-native_export(const Native *n, u32 i)
-{
-    assert(i < n->nexports);
-    return (void *)(uintptr_t)n->exports[i];
-}
-
-void
-native_replace(Native *n, u32 decl, void *entry)
-{
-    jit_write(true);
-    n->entries[decl] = (u64)(uintptr_t)entry;
-    jit_write(false);
-}
-
-void
-native_set_context(Native *n, void *context)
-{
-    jit_write(true);
-    n->entries[n->nentries] = (u64)(uintptr_t)context;
-    jit_write(false);
-}
-
-void
-native_free(Native *n)
-{
-    if (n->memory) {
-        munmap(n->memory, n->size);
-    }
-    if (n->globals) {
-        munmap(n->globals, n->globals_size);
-    }
-    free(n->exports);
-    *n = (Native){ 0 };
 }

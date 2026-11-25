@@ -41,7 +41,7 @@ main(int argc, char **argv)
     }
     for (u32 k = 0; k < ch.ir.nfuncs; k++) {
         u32 *start = (u32 *)native_entry(&n, ch.ir.funcs[k].decl);
-        u32 *end = k + 1 < ch.ir.nfuncs ? (u32 *)native_entry(&n, ch.ir.funcs[k + 1].decl) : n.code + n.words;
+        u32 *end = k + 1 < ch.ir.nfuncs ? (u32 *)native_entry(&n, ch.ir.funcs[k + 1].decl) : (u32 *)(n.code + n.code_size);
         printf("# function %u\n", k);
         for (u32 *w = start; w < end; w++) {
             printf("0x%02x 0x%02x 0x%02x 0x%02x\n", *w & 0xFF, (*w >> 8) & 0xFF, (*w >> 16) & 0xFF, *w >> 24);

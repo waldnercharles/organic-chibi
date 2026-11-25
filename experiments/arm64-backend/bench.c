@@ -204,7 +204,7 @@ main(int argc, char **argv)
         double t3 = now();
         u64 c3 = cpu_cycles(&i3);
         ir_count = c.ir.code.count;
-        words = native.words;
+        words = native.code_size / sizeof(u32);
 
         native_free(&native);
         check_free(&c);

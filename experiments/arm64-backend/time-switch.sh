@@ -22,6 +22,10 @@ FLAGS="-std=c23 -O3 -flto -falign-functions=64 $HOST -DNDEBUG -pthread"
 LIBSRC="src/arm64.c src/check.c src/exact.c src/lexer.c src/parser.c src/arena.c src/names.c src/str.c"
 BOOT="src/arena.c src/str.c src/names.c src/exact.c src/parser.c src/lexer.c src/check.c src/arm64.c src/driver.c src/c_source.c src/main.c"
 SRC=$(ls src/*.c vendor/*/*.c | grep -v '^src/main.c$')
+if [ -f src/native.c ]; then
+    LIBSRC="src/native.c $LIBSRC"
+    BOOT=$(echo "$BOOT" | sed 's|src/arm64.c|src/native.c src/arm64.c|')
+fi
 
 echo "== tools"
 clang --version | head -1
