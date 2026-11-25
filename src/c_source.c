@@ -155,6 +155,12 @@ is_vector64(const Checker *c, u32 type)
     return c->types.kinds[type] == TYPE_VECTOR && check_type_size(c, type) == 64;
 }
 
+static bool
+is_bytes64(const Checker *c, u32 type)
+{
+    return c->types.kinds[type] == TYPE_VECTOR && c->types.arg1[type] == 64;
+}
+
 static NOINLINE const char *
 vector_name(const Checker *c, u32 type, bool wide)
 {
@@ -229,7 +235,9 @@ static bool
 needs_vector_helpers(const IrCode *code)
 {
     for (u32 g = 0; g < code->count; g++) {
-        if (code->kinds[g] == IR_LOOKUP || code->kinds[g] == IR_TOP_BITS) {
+        u32 type = code->types[g];
+        if (code->kinds[g] == IR_LOOKUP || code->kinds[g] == IR_TOP_BITS ||
+            (type >= TYPE_ID_U8X64 && type <= TYPE_ID_I64X8)) {
             return true;
         }
     }
@@ -271,6 +279,71 @@ put_vector_helpers(FILE *out)
         "    }\n"
         "    return r;\n"
         "#endif\n"
+        "}\n"
+        "\n"
+        "static inline __attribute__((unused)) void\n"
+        "chibi_u8x64_load(void *r, const void *p)\n"
+        "{\n"
+        "#if defined(CHIBI_NEON)\n"
+        "    uint8x16x4_t q = vld4q_u8((const uint8_t *)p);\n"
+        "    __builtin_memcpy(r, &q, 64);\n"
+        "#else\n"
+        "    __builtin_memcpy(r, p, 64);\n"
+        "#endif\n"
+        "}\n"
+        "\n"
+        "static inline __attribute__((unused)) void\n"
+        "chibi_u8x64_store(void *p, const void *r)\n"
+        "{\n"
+        "#if defined(CHIBI_NEON)\n"
+        "    uint8x16x4_t q;\n"
+        "    __builtin_memcpy(&q, r, 64);\n"
+        "    vst4q_u8((uint8_t *)p, q);\n"
+        "#else\n"
+        "    __builtin_memcpy(p, r, 64);\n"
+        "#endif\n"
+        "}\n"
+        "\n"
+        "static inline __attribute__((unused)) void\n"
+        "chibi_u8x64_load_local(void *r, const void *p)\n"
+        "{\n"
+        "    chibi_u8x64 v;\n"
+        "    __builtin_memcpy(&v, p, 64);\n"
+        "#if defined(CHIBI_NEON)\n"
+        "    v = __builtin_shufflevector(\n"
+        "        v, v,\n"
+        "        0, 4, 8, 12, 16, 20, 24, 28,\n"
+        "        32, 36, 40, 44, 48, 52, 56, 60,\n"
+        "        1, 5, 9, 13, 17, 21, 25, 29,\n"
+        "        33, 37, 41, 45, 49, 53, 57, 61,\n"
+        "        2, 6, 10, 14, 18, 22, 26, 30,\n"
+        "        34, 38, 42, 46, 50, 54, 58, 62,\n"
+        "        3, 7, 11, 15, 19, 23, 27, 31,\n"
+        "        35, 39, 43, 47, 51, 55, 59, 63\n"
+        "    );\n"
+        "#endif\n"
+        "    __builtin_memcpy(r, &v, 64);\n"
+        "}\n"
+        "\n"
+        "static inline __attribute__((unused)) void\n"
+        "chibi_u8x64_store_local(void *p, const void *r)\n"
+        "{\n"
+        "    chibi_u8x64 v;\n"
+        "    __builtin_memcpy(&v, r, 64);\n"
+        "#if defined(CHIBI_NEON)\n"
+        "    v = __builtin_shufflevector(\n"
+        "        v, v,\n"
+        "        0, 16, 32, 48, 1, 17, 33, 49,\n"
+        "        2, 18, 34, 50, 3, 19, 35, 51,\n"
+        "        4, 20, 36, 52, 5, 21, 37, 53,\n"
+        "        6, 22, 38, 54, 7, 23, 39, 55,\n"
+        "        8, 24, 40, 56, 9, 25, 41, 57,\n"
+        "        10, 26, 42, 58, 11, 27, 43, 59,\n"
+        "        12, 28, 44, 60, 13, 29, 45, 61,\n"
+        "        14, 30, 46, 62, 15, 31, 47, 63\n"
+        "    );\n"
+        "#endif\n"
+        "    __builtin_memcpy(p, &v, 64);\n"
         "}\n"
         "\n"
         "static inline __attribute__((unused)) void\n"
@@ -368,18 +441,16 @@ put_vector_helpers(FILE *out)
         "    chibi_u8x16 q[4];\n"
         "    __builtin_memcpy(q, v, 64);\n"
         "#if defined(CHIBI_NEON)\n"
-        "    uint8x16_t w = { 1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, "
-        "64, 128 };\n"
-        "    uint8x16_t a = "
-        "vandq_u8(vreinterpretq_u8_s8(vshrq_n_s8((int8x16_t)q[0], 7)), w);\n"
-        "    uint8x16_t b = "
-        "vandq_u8(vreinterpretq_u8_s8(vshrq_n_s8((int8x16_t)q[1], 7)), w);\n"
-        "    uint8x16_t c = "
-        "vandq_u8(vreinterpretq_u8_s8(vshrq_n_s8((int8x16_t)q[2], 7)), w);\n"
-        "    uint8x16_t d = "
-        "vandq_u8(vreinterpretq_u8_s8(vshrq_n_s8((int8x16_t)q[3], 7)), w);\n"
-        "    uint8x16_t s = vpaddq_u8(vpaddq_u8(a, b), vpaddq_u8(c, d));\n"
-        "    return vgetq_lane_u64(vreinterpretq_u64_u8(vpaddq_u8(s, s)), 0);\n"
+        "    uint8x16_t a = (uint8x16_t)vshrq_n_s8((int8x16_t)q[0], 7);\n"
+        "    uint8x16_t b = (uint8x16_t)vshrq_n_s8((int8x16_t)q[1], 7);\n"
+        "    uint8x16_t c = (uint8x16_t)vshrq_n_s8((int8x16_t)q[2], 7);\n"
+        "    uint8x16_t d = (uint8x16_t)vshrq_n_s8((int8x16_t)q[3], 7);\n"
+        "    uint8x16_t ab = vsriq_n_u8(b, a, 1);\n"
+        "    uint8x16_t cd = vsriq_n_u8(d, c, 1);\n"
+        "    uint8x16_t abcd = vsriq_n_u8(cd, ab, 2);\n"
+        "    abcd = vsriq_n_u8(abcd, abcd, 4);\n"
+        "    uint8x8_t n = vshrn_n_u16(vreinterpretq_u16_u8(abcd), 4);\n"
+        "    return vget_lane_u64(vreinterpret_u64_u8(n), 0);\n"
         "#else\n"
         "    return (uint64_t)chibi_u8x16_top_bits(q[0]) | "
         "(uint64_t)chibi_u8x16_top_bits(q[1]) << 16 |\n"
@@ -1047,6 +1118,28 @@ find_ends(Source *s)
     assert(depth == 0);
 }
 
+static bool
+is_local(const Source *s, u32 x)
+{
+    while (!(x & IR_CONST)) {
+        u32 g = s->fn->first + x;
+        u8 kind = s->code->kinds[g];
+        u8 type_kind = s->c->types.kinds[s->code->types[g]];
+        if (kind == IR_ADDR) {
+            return true;
+        }
+        bool aggregate = kind == IR_LOAD_AT &&
+                         (type_kind == TYPE_STRUCT || type_kind == TYPE_ARRAY);
+        bool offset = kind == IR_FIELD ||
+                      (kind == IR_INDEX && (s->code->bs[g] & IR_CONST));
+        if (!aggregate && !offset) {
+            return false;
+        }
+        x = s->code->as[g];
+    }
+    return false;
+}
+
 static void
 put_load(Source *s, u32 i, u32 type, u32 a)
 {
@@ -1056,6 +1149,10 @@ put_load(Source *s, u32 i, u32 type, u32 a)
     } else if (kind == TYPE_SLICE) {
         put_line(s, "__builtin_memcpy(&v%u, %o, 8);", i, a);
         put_line(s, "__builtin_memcpy(&v%u, %o + 8, 8);", i + 1, a);
+    } else if (is_bytes64(s->c, type) && is_local(s, a)) {
+        put_line(s, "chibi_u8x64_load_local(&v%u, %o);", i, a);
+    } else if (is_bytes64(s->c, type)) {
+        put_line(s, "chibi_u8x64_load(&v%u, %o);", i, a);
     } else {
         put_line(s, "__builtin_memcpy(&v%u, %o, sizeof v%u);", i, a, i);
     }
@@ -1324,6 +1421,14 @@ put_bitcast(Source *s, u32 i, u32 type, u32 a)
     u32 from = a & IR_CONST
                  ? s->code->consts[s->fn->first_const + (a & ~IR_CONST)].type
                  : value_type(s, a);
+    if (is_bytes64(s->c, from) && is_vector64(s->c, type) && !is_bytes64(s->c, type)) {
+        put_line(s, "chibi_u8x64_store_local(&v%u, &%o);", i, a);
+        return;
+    }
+    if (is_bytes64(s->c, type) && is_vector64(s->c, from) && !is_bytes64(s->c, from)) {
+        put_line(s, "chibi_u8x64_load_local(&v%u, &%o);", i, a);
+        return;
+    }
     if (s->c->types.kinds[type] == TYPE_VECTOR || s->c->types.kinds[from] == TYPE_VECTOR) {
         put_line(s, "v%u = (%t)%o;", i, type, a);
         return;
@@ -1652,7 +1757,11 @@ put_instruction(Source *s, u32 i)
         case IR_CALL_C: put_call(s, i, kind, type, a, extra(s, b)); break;
         case IR_STORE: put_line(s, "%s = %o;", a, b); break;
         case IR_STORE_AT:
-            if (c->types.kinds[type] == TYPE_VECTOR) {
+            if (is_bytes64(c, type) && is_local(s, a)) {
+                put_line(s, "chibi_u8x64_store_local(%o, &%o);", a, b);
+            } else if (is_bytes64(c, type)) {
+                put_line(s, "chibi_u8x64_store(%o, &%o);", a, b);
+            } else if (c->types.kinds[type] == TYPE_VECTOR) {
                 put_line(s, "__builtin_memcpy(%o, &%o, sizeof(%t));", a, b, type);
             } else {
                 put_line(s, "__builtin_memcpy(%o, &(%t){ %o }, sizeof(%t));", a, type, b, type);
