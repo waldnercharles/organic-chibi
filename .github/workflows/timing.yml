@@ -15,8 +15,9 @@ on:
 permissions:
   contents: read
 
-env:
-  REFERENCE: 28909a4e98fa46c0e136f30a913e8828a1c1c798
+defaults:
+  run:
+    shell: bash
 
 jobs:
   time:
@@ -65,17 +66,21 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Time the commit the owner timed on the M4 Pro
+      - name: Time the commits the owner timed on the M4 Pro
         if: runner.os == 'macOS'
         run: |
-          git fetch --depth=1 origin "$REFERENCE"
-          mkdir "$RUNNER_TEMP/reference-tree"
-          git archive "$REFERENCE" | tar -x -C "$RUNNER_TEMP/reference-tree"
-          bash experiments/arm64-backend/time-switch.sh "$RUNNER_TEMP/reference-tree" "$RUNNER_TEMP/reference" 15 41 | tee "$RUNNER_TEMP/reference.txt"
-          {
-            echo "${REFERENCE::7}, which on the M4 Pro with Apple clang 21 took 5.8% more cycles and 7.6% more instructions translated:"
-            echo
-            echo '```'
-            sed -n '/^== result/,$p' "$RUNNER_TEMP/reference.txt"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          time_reference() {
+            git fetch --depth=1 origin "$1"
+            mkdir "$RUNNER_TEMP/tree-$1"
+            git archive "$1" | tar -x -C "$RUNNER_TEMP/tree-$1"
+            bash experiments/arm64-backend/time-switch.sh "$RUNNER_TEMP/tree-$1" "$RUNNER_TEMP/time-$1" 15 41 | tee "$RUNNER_TEMP/$1.txt"
+            {
+              echo "${1::7}, which on the M4 Pro with Apple clang 21 took $2 translated:"
+              echo
+              echo '```'
+              sed -n '/^== result/,$p' "$RUNNER_TEMP/$1.txt"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          }
+          time_reference 28909a4e98fa46c0e136f30a913e8828a1c1c798 "5.8% more cycles and 7.6% more instructions"
+          time_reference 2b0c6d496077666eb993341daf751dbb96ecead4 "1.5% more cycles and 3.4% more instructions"

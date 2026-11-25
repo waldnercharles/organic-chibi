@@ -94,6 +94,24 @@ median(double *v, int n)
     return v[n / 2];
 }
 
+static void
+wait_turn(int fd)
+{
+    char token;
+    if (read(fd, &token, 1) != 1) {
+        fprintf(stderr, "arm64-backend: the other bench stopped\n");
+        exit(1);
+    }
+}
+
+static void
+pass_turn(int fd)
+{
+    if (write(fd, "t", 1) != 1) {
+        exit(1);
+    }
+}
+
 int
 main(int argc, char **argv)
 {
@@ -102,6 +120,13 @@ main(int argc, char **argv)
 #else
     open_counters();
 #endif
+
+    const char *lockstep = getenv("CHIBI_BENCH_LOCKSTEP");
+    int turn_in = -1;
+    int turn_out = -1;
+    if (lockstep) {
+        sscanf(lockstep, "%d %d", &turn_in, &turn_out);
+    }
 
     int n = argc - 1;
     Arena sources = { 0 };
@@ -133,6 +158,10 @@ main(int argc, char **argv)
     u32 diags = 0;
     ParsedFile *files = calloc((size_t)n, sizeof *files);
     for (int r = 0; r < RUNS; r++) {
+        if (lockstep) {
+            wait_turn(turn_in);
+        }
+
         double t0 = now();
         u64 c0 = cpu_cycles(&i0);
         Arena arena = { 0 };
@@ -180,6 +209,9 @@ main(int argc, char **argv)
         native_free(&native);
         check_free(&c);
         arena_free(&arena);
+        if (lockstep) {
+            pass_turn(turn_out);
+        }
 
         cycles[LEX_PARSE][r] = (double)(c1 - c0);
         cycles[CHECK][r] = (double)(c2 - c1);
@@ -193,6 +225,16 @@ main(int argc, char **argv)
         seconds[CHECK][r] = t2 - t1;
         seconds[EMIT][r] = t3 - t2;
         seconds[TOTAL][r] = t3 - t0;
+    }
+
+    if (lockstep) {
+        for (int r = 0; r < RUNS; r++) {
+            printf("run");
+            for (int k = 0; k < NPHASES; k++) {
+                printf(" %.4f %.0f", seconds[k][r] * 1e3, cycles[k][r]);
+            }
+            printf("\n");
+        }
     }
 
     printf(

@@ -1,5 +1,6 @@
 #!/bin/bash
 set -e
+D=$(cd "$(dirname "$0")" && pwd)
 R=$(cd "$1" && pwd)
 mkdir -p "$2"
 W=$(cd "$2" && pwd)
@@ -41,7 +42,7 @@ done
 rm -f "$W"/host/*.json
 
 echo "== benches"
-sed "s/^#define RUNS 11$/#define RUNS $N/" experiments/arm64-backend/bench.c > experiments/arm64-backend/bench-switch.c
+sed "s/^#define RUNS 11$/#define RUNS $N/" "$D/bench.c" > experiments/arm64-backend/bench-switch.c
 clang $FLAGS -Wall -Wextra -Werror -o "$W/bench-c" experiments/arm64-backend/bench-switch.c $LIBSRC vendor/xxhash/xxhash.c
 clang $FLAGS -fno-lto -w -Dchibi_trap=chibi_trap_translated -Dchibi_context=chibi_context_translated -c -o "$W/lib-f.o" "$W/lib-f.c"
 clang $FLAGS -Wall -Wextra -Werror -o "$W/bench-t" experiments/arm64-backend/bench-switch.c "$W/lib-f.o" vendor/xxhash/xxhash.c
@@ -51,13 +52,24 @@ rm -rf "$W/corpus"
 mkdir -p "$W/corpus"
 python3 experiments/check-bodies/gen.py 200 100 "$W/corpus" > /dev/null
 
-echo "== runs: $P processes per build, $N runs each, interleaved"
-: > "$W/c.txt"
-: > "$W/t.txt"
-for i in $(seq 1 "$P"); do
-    "$W/bench-c" "$W"/corpus/*.chibi >> "$W/c.txt"
-    "$W/bench-t" "$W"/corpus/*.chibi >> "$W/t.txt"
-done
+echo "== runs: $P pairs of processes, $N runs each, the C and translated builds taking turns run by run"
+python3 - "$W" "$P" "$W"/corpus/*.chibi <<'PY'
+import os, subprocess, sys
+w, pairs, files = sys.argv[1], int(sys.argv[2]), sys.argv[3:]
+with open(f"{w}/c.txt", "w") as c_out, open(f"{w}/t.txt", "w") as t_out:
+    for i in range(pairs):
+        to_c = os.pipe()
+        to_t = os.pipe()
+        c = subprocess.Popen([f"{w}/bench-c"] + files, stdout=c_out, pass_fds=(to_c[0], to_t[1]), env=dict(os.environ, CHIBI_BENCH_LOCKSTEP=f"{to_c[0]} {to_t[1]}"))
+        t = subprocess.Popen([f"{w}/bench-t"] + files, stdout=t_out, pass_fds=(to_t[0], to_c[1]), env=dict(os.environ, CHIBI_BENCH_LOCKSTEP=f"{to_t[0]} {to_c[1]}"))
+        os.write(to_c[1] if i % 2 == 0 else to_t[1], b"t")
+        os.close(to_c[1])
+        os.close(to_t[1])
+        if c.wait() or t.wait():
+            sys.exit("time-switch.sh: a bench failed")
+        os.close(to_c[0])
+        os.close(to_t[0])
+PY
 
 python3 - "$W/c.txt" "$W/t.txt" <<'PY'
 import sys, statistics
@@ -75,7 +87,7 @@ def load(path):
     return rows
 c = load(sys.argv[1])
 t = load(sys.argv[2])
-print("== per process: the median ms of " + ", ".join(c) + ", C then translated, in run order")
+print("== per pair of processes: the median ms of " + ", ".join(c) + ", C then translated")
 for i in range(len(c['all four'])):
     cs = " ".join(f"{c[name][i][1]:7.1f}" for name in c)
     ts = " ".join(f"{t[name][i][1]:7.1f}" for name in c)
@@ -102,13 +114,17 @@ for name in c:
     cm = [x[1] for x in c[name]]; tm = [x[1] for x in t[name]]
     print(f"{name:12s} {max(cm) / min(cm):9.3f} {max(tm) / min(tm):9.3f}")
 print()
-print(f"{'phase':12s} {'ms ratio':>8s} {'quartiles':>13s} {'cyc ratio':>9s} {'quartiles':>13s}  (each translated process over the C process just before it)")
-for name in c:
-    pm = [b[1] / a[1] for a, b in zip(c[name], t[name])]
+def runs(path):
+    return [[float(x) for x in line.split()[1:]] for line in open(path) if line.startswith('run ')]
+rc = runs(sys.argv[1])
+rt = runs(sys.argv[2])
+print(f"{'phase':12s} {'ms ratio':>8s} {'quartiles':>13s} {'cyc ratio':>9s} {'quartiles':>13s}  (each translated run over the C run beside it, {len(rc)} pairs)")
+for k, name in enumerate(c):
+    pm = [b[2 * k] / a[2 * k] for a, b in zip(rc, rt)]
     qm = statistics.quantiles(pm, n=4)
     row = f"{name:12s} {statistics.median(pm):8.3f} {qm[0]:6.3f}-{qm[2]:.3f}"
-    if c[name][0][0]:
-        pc = [b[0] / a[0] for a, b in zip(c[name], t[name])]
+    if rc[0][2 * k + 1]:
+        pc = [b[2 * k + 1] / a[2 * k + 1] for a, b in zip(rc, rt)]
         qc = statistics.quantiles(pc, n=4)
         row += f" {statistics.median(pc):9.3f} {qc[0]:6.3f}-{qc[2]:.3f}"
     print(row)
