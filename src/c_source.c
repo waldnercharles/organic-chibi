@@ -43,6 +43,11 @@ typedef struct
     u32 *arms;
     u8 *labels;
     LineStarts *line_starts;
+    u32 *slot_names;
+    u32 *name_marks;
+    u32 *name_counts;
+    u8 *name_kinds;
+    u32 mark;
     u32 depth;
     u32 line;
     u32 skip;
@@ -551,15 +556,34 @@ is_length(const Source *s, u32 slot)
 }
 
 static void
+put_slot_name(Source *s, u32 slot)
+{
+    u32 tag = s->slot_names[slot];
+    if (tag == 0) {
+        fprintf(s->out, "s%u", slot);
+        return;
+    }
+
+    Name n = names_get(s->c->names, s->code->slots[s->fn->first_slot + slot].name);
+    if (tag & 1) {
+        fprintf(s->out, "%.*s_%u_", (int)n.len, n.text, tag >> 1);
+    } else {
+        fprintf(s->out, "%.*s", (int)n.len, n.text);
+    }
+}
+
+static void
 put_slot(Source *s, u32 slot, bool object)
 {
     const IrSlot *slots = s->code->slots + s->fn->first_slot;
     if (is_length(s, slot)) {
-        fprintf(s->out, "s%u.len", slot - 1);
+        put_slot_name(s, slot - 1);
+        fputs(".len", s->out);
     } else if (!object && s->c->types.kinds[slots[slot].type] == TYPE_SLICE) {
-        fprintf(s->out, "s%u.ptr", slot);
+        put_slot_name(s, slot);
+        fputs(".ptr", s->out);
     } else {
-        fprintf(s->out, "s%u", slot);
+        put_slot_name(s, slot);
     }
 }
 
@@ -714,7 +738,12 @@ put_declaration(Source *s, u32 type, char tag, u32 id)
     } else {
         put_object_type(s, elem);
     }
-    fprintf(s->out, " %c%u", tag, id);
+    if (tag == 'n') {
+        putc(' ', s->out);
+        put_slot_name(s, id);
+    } else {
+        fprintf(s->out, " %c%u", tag, id);
+    }
     for (u32 t = type; c->types.kinds[t] == TYPE_ARRAY; t = c->types.arg0[t]) {
         fprintf(s->out, "[%llu]", (unsigned long long)c->types.arg1[t]);
     }
@@ -906,9 +935,10 @@ put_signature(Source *s, const IrFunc *fn)
         fputs(", ", s->out);
         if (c->types.kinds[slots[p].type] == TYPE_ARRAY) {
             put_object_type(s, slots[p].type);
-            fprintf(s->out, " s%u", p);
+            putc(' ', s->out);
+            put_slot_name(s, p);
         } else {
-            put_declaration(s, slots[p].type, 's', p);
+            put_declaration(s, slots[p].type, 'n', p);
         }
     }
     putc(')', s->out);
@@ -1103,10 +1133,10 @@ put_slice(Source *s, u32 i, u8 kind, u32 type, u32 a, const u32 *x)
     u64 size = check_type_size(s->c, s->c->types.arg0[type]);
     put_line(s, "{");
     s->depth++;
-    put_line(s, "int64_t lo = %o, hi = %o;", x[1], kind == IR_SLICE ? x[2] : x[0]);
-    put_line(s, "if (lo < 0 || lo > hi || hi > %o) %T;", x[0], TRAP_BOUNDS);
-    put_line(s, "v%u = lo ? %o + (int64_t)((uint64_t)lo * %U) : %o;", i, a, size, a);
-    put_line(s, "v%u = hi - lo;", i + 1);
+    put_line(s, "int64_t lo_ = %o, hi_ = %o;", x[1], kind == IR_SLICE ? x[2] : x[0]);
+    put_line(s, "if (lo_ < 0 || lo_ > hi_ || hi_ > %o) %T;", x[0], TRAP_BOUNDS);
+    put_line(s, "v%u = lo_ ? %o + (int64_t)((uint64_t)lo_ * %U) : %o;", i, a, size, a);
+    put_line(s, "v%u = hi_ - lo_;", i + 1);
     s->depth--;
     put_line(s, "}");
 }
@@ -1116,16 +1146,16 @@ put_mul_128(Source *s, u32 i, u8 kind, u32 a, u32 b)
 {
     put_line(s, "{");
     s->depth++;
-    put_line(s, "chibi_u128 x = %o < 0 ? -(chibi_u128)%o : (chibi_u128)%o;", a, a, a);
-    put_line(s, "chibi_u128 y = %o < 0 ? -(chibi_u128)%o : (chibi_u128)%o;", b, b, b);
-    put_line(s, "chibi_u128 p;");
-    put_line(s, "int negative = (%o < 0) != (%o < 0);", a, b);
-    put_line(s, "int over = __builtin_mul_overflow(x, y, &p) || p > ((chibi_u128)1 << 127) - !negative;");
+    put_line(s, "chibi_u128 x_ = %o < 0 ? -(chibi_u128)%o : (chibi_u128)%o;", a, a, a);
+    put_line(s, "chibi_u128 y_ = %o < 0 ? -(chibi_u128)%o : (chibi_u128)%o;", b, b, b);
+    put_line(s, "chibi_u128 product_;");
+    put_line(s, "int negative_ = (%o < 0) != (%o < 0);", a, b);
+    put_line(s, "int over_ = __builtin_mul_overflow(x_, y_, &product_) || product_ > ((chibi_u128)1 << 127) - !negative_;");
     if (kind == IR_MUL) {
-        put_line(s, "if (over) %T;", TRAP_OVERFLOW);
-        put_line(s, "v%u = (chibi_i128)(negative ? -p : p);", i);
+        put_line(s, "if (over_) %T;", TRAP_OVERFLOW);
+        put_line(s, "v%u = (chibi_i128)(negative_ ? -product_ : product_);", i);
     } else {
-        put_line(s, "v%u = over;", i);
+        put_line(s, "v%u = over_;", i);
     }
     s->depth--;
     put_line(s, "}");
@@ -1179,13 +1209,13 @@ put_count_128(Source *s, u32 i, u8 kind, u32 type, u32 a)
 {
     put_line(s, "{");
     s->depth++;
-    put_line(s, "uint64_t lo = (uint64_t)%o, hi = (uint64_t)((chibi_u128)%o >> 64);", a, a);
+    put_line(s, "uint64_t lo_ = (uint64_t)%o, hi_ = (uint64_t)((chibi_u128)%o >> 64);", a, a);
     if (kind == IR_COUNT_ONES) {
-        put_line(s, "v%u = (%t)(__builtin_popcountll(lo) + __builtin_popcountll(hi));", i, type);
+        put_line(s, "v%u = (%t)(__builtin_popcountll(lo_) + __builtin_popcountll(hi_));", i, type);
     } else if (kind == IR_TRAILING_ZEROS) {
-        put_line(s, "v%u = (%t)(lo ? __builtin_ctzll(lo) : hi ? 64 + __builtin_ctzll(hi) : 128);", i, type);
+        put_line(s, "v%u = (%t)(lo_ ? __builtin_ctzll(lo_) : hi_ ? 64 + __builtin_ctzll(hi_) : 128);", i, type);
     } else {
-        put_line(s, "v%u = (%t)(hi ? __builtin_clzll(hi) : lo ? 64 + __builtin_clzll(lo) : 128);", i, type);
+        put_line(s, "v%u = (%t)(hi_ ? __builtin_clzll(hi_) : lo_ ? 64 + __builtin_clzll(lo_) : 128);", i, type);
     }
     s->depth--;
     put_line(s, "}");
@@ -1310,9 +1340,9 @@ put_convert(Source *s, u32 i, u8 kind, u32 type, u32 a, u32 b)
         double hi = ldexp(1, (int)(to.sign ? to.bits - 1 : to.bits));
         put_line(s, "{");
         s->depth++;
-        put_line(s, "double d = __builtin_trunc(%o);", a);
-        put_line(s, "if (!(d >= %F && d < %F)) %T;", lo, hi, TRAP_RANGE);
-        put_line(s, "v%u = (%t)d;", i, type);
+        put_line(s, "double d_ = __builtin_trunc(%o);", a);
+        put_line(s, "if (!(d_ >= %F && d_ < %F)) %T;", lo, hi, TRAP_RANGE);
+        put_line(s, "v%u = (%t)d_;", i, type);
         s->depth--;
         put_line(s, "}");
         return;
@@ -1385,18 +1415,19 @@ put_call(Source *s, u32 i, u8 kind, u32 type, u32 decl, const u32 *list)
 
     start_statement(s);
     if (result == TYPE_SLICE) {
-        fputs("chibi_slice r = ", s->out);
+        fputs("chibi_slice r_ = ", s->out);
     } else if (flagged) {
         put_flagged_name(s, type);
-        fputs(" r = ", s->out);
+        fputs(" r_ = ", s->out);
     } else if (failable) {
         put_failable_name(s, type);
-        fputs(" r = ", s->out);
+        fputs(" r_ = ", s->out);
     } else if (result == TYPE_ARRAY) {
         put_object_type(s, type);
-        fputs(" r = ", s->out);
+        fputs(" r_ = ", s->out);
     } else if (result == TYPE_STRUCT) {
-        fprintf(s->out, "s%u = ", list[n + 1]);
+        put_slot_name(s, list[n + 1]);
+        fputs(" = ", s->out);
     } else if (type != TYPE_ID_VOID) {
         fprintf(s->out, "v%u = ", i);
     }
@@ -1444,16 +1475,16 @@ put_call(Source *s, u32 i, u8 kind, u32 type, u32 decl, const u32 *list)
     end_statement(s);
 
     if (result == TYPE_SLICE) {
-        put_line(s, "v%u = r.ptr;", i);
-        put_line(s, "v%u = r.len;", i + 1);
+        put_line(s, "v%u = r_.ptr;", i);
+        put_line(s, "v%u = r_.len;", i + 1);
     } else if (flagged) {
-        put_line(s, "v%u = r.value;", i);
-        put_line(s, "v%u = r.present;", i + 1);
+        put_line(s, "v%u = r_.value;", i);
+        put_line(s, "v%u = r_.present;", i + 1);
     } else if (failable) {
-        put_line(s, "v%u = r.value;", i);
-        put_line(s, "v%u = r.code;", i + 1);
+        put_line(s, "v%u = r_.value;", i);
+        put_line(s, "v%u = r_.code;", i + 1);
     } else if (result == TYPE_ARRAY) {
-        put_line(s, "__builtin_memcpy(&s%u, &r, sizeof r);", list[n + 1]);
+        put_line(s, "__builtin_memcpy(&%S, &r_, sizeof r_);", list[n + 1]);
     }
     if (block) {
         s->depth--;
@@ -1780,12 +1811,111 @@ go_to_line(Source *s, u32 line)
     }
 }
 
+enum
+{
+    SLOT_NAME_UNKNOWN,
+    SLOT_NAME_PLAIN,
+    SLOT_NAME_DECORATED,
+    SLOT_NAME_NONE,
+};
+
+static bool
+is_c_reserved(Name n)
+{
+    static const char *const words[] = {
+        "alignas", "alignof", "asm", "auto", "bool", "break", "case", "char", "const", "constexpr",
+        "continue", "ctx", "default", "do", "double", "else", "enum", "extern", "false", "float",
+        "for", "goto", "i386", "if", "inline", "int", "linux", "long", "nullptr", "register",
+        "restrict", "return", "short", "signed", "sizeof", "static", "static_assert", "struct",
+        "switch", "thread_local", "true", "typedef", "typeof", "typeof_unqual", "union", "unix",
+        "unsigned", "void", "volatile", "while",
+    };
+    for (u32 k = 0; k < sizeof words / sizeof words[0]; k++) {
+        if (strlen(words[k]) == n.len && memcmp(words[k], n.text, n.len) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool
+name_starts_with(Name n, const char *prefix)
+{
+    size_t len = strlen(prefix);
+    return n.len >= len && memcmp(n.text, prefix, len) == 0;
+}
+
+static u8
+slot_name_kind(const Source *s, u32 id)
+{
+    Name n = names_get(s->c->names, id);
+    u8 first = (u8)n.text[0];
+    if ((first | 0x20) < 'a' || (first | 0x20) > 'z') {
+        return SLOT_NAME_NONE;
+    }
+
+    bool lower = false;
+    bool numbered = n.len > 1;
+    for (u32 i = 0; i < n.len; i++) {
+        u8 b = (u8)n.text[i];
+        bool letter = (b | 0x20) >= 'a' && (b | 0x20) <= 'z';
+        bool digit = b >= '0' && b <= '9';
+        if (!letter && !digit && b != '_') {
+            return SLOT_NAME_NONE;
+        }
+        lower |= b >= 'a' && b <= 'z';
+        numbered &= i == 0 || digit;
+    }
+
+    bool generated = numbered && (first == 'a' || first == 's' || first == 'v');
+    char last = n.text[n.len - 1];
+    bool type_like = n.len >= 2 && last == 't' && n.text[n.len - 2] == '_';
+    if (!lower || generated || last == '_' || type_like || is_c_reserved(n) ||
+        name_starts_with(n, "chibi_") || name_starts_with(n, "CHIBI_") ||
+        name_starts_with(n, s->prefix)) {
+        return SLOT_NAME_DECORATED;
+    }
+    return SLOT_NAME_PLAIN;
+}
+
+static void
+name_slots(Source *s)
+{
+    const IrFunc *fn = s->fn;
+    const IrSlot *slots = s->code->slots + fn->first_slot;
+    s->mark++;
+    for (u32 k = 0; k < fn->nslots; k++) {
+        u32 name = slots[k].name;
+        bool second = k > 0 && name == slots[k - 1].name && slots[k].node == slots[k - 1].node;
+        if (name == 0 || second) {
+            s->slot_names[k] = 0;
+            continue;
+        }
+
+        if (s->name_kinds[name] == SLOT_NAME_UNKNOWN) {
+            s->name_kinds[name] = slot_name_kind(s, name);
+        }
+        if (s->name_kinds[name] == SLOT_NAME_NONE) {
+            s->slot_names[k] = 0;
+            continue;
+        }
+
+        if (s->name_marks[name] != s->mark) {
+            s->name_marks[name] = s->mark;
+            s->name_counts[name] = 0;
+        }
+        u32 count = ++s->name_counts[name];
+        s->slot_names[k] = count << 1 | (count > 1 || s->name_kinds[name] == SLOT_NAME_DECORATED);
+    }
+}
+
 static void
 put_function(Source *s, const IrFunc *fn)
 {
     s->fn = fn;
     s->skip = 0;
     find_ends(s);
+    name_slots(s);
     fputs("\n", s->out);
     put_position(s, fn->decl);
     put_signature(s, fn);
@@ -1796,7 +1926,7 @@ put_function(Source *s, const IrFunc *fn)
     for (u32 k = fn->nparams; k < fn->nslots; k++) {
         if (!is_length(s, k)) {
             indent(s);
-            put_declaration(s, slots[k].type, 's', k);
+            put_declaration(s, slots[k].type, 'n', k);
             fputs(";\n", s->out);
         }
     }
@@ -1872,7 +2002,16 @@ c_source_package(FILE *out, const Checker *c, const char *prefix)
     for (u32 f = 0; f < ir->nfuncs; f++) {
         cap = ir->funcs[f].count + 1 > cap ? ir->funcs[f].count + 1 : cap;
     }
+    u32 nslots = 1;
+    for (u32 f = 0; f < ir->nfuncs; f++) {
+        nslots = ir->funcs[f].nslots > nslots ? ir->funcs[f].nslots : nslots;
+    }
+    u32 nnames = c->names->count;
     u32 *words = malloc(6 * (size_t)cap * sizeof *words);
+    u32 *slot_names = malloc((size_t)nslots * sizeof *slot_names);
+    u32 *name_marks = calloc(nnames, sizeof *name_marks);
+    u32 *name_counts = malloc((size_t)nnames * sizeof *name_counts);
+    u8 *name_kinds = calloc(nnames, 1);
     u8 *labels = malloc(cap);
     u8 *done = calloc(c->decls.count, 1);
     LineStarts *line_starts = calloc(c->nfiles, sizeof *line_starts);
@@ -1887,7 +2026,11 @@ c_source_package(FILE *out, const Checker *c, const char *prefix)
                  .last = words + 4 * cap,
                  .arms = words + 5 * cap,
                  .labels = labels,
-                 .line_starts = line_starts };
+                 .line_starts = line_starts,
+                 .slot_names = slot_names,
+                 .name_marks = name_marks,
+                 .name_counts = name_counts,
+                 .name_kinds = name_kinds };
 
     put_target_guards(out, c);
     if (needs_vector_helpers(&ir->code)) {
@@ -1922,6 +2065,8 @@ c_source_package(FILE *out, const Checker *c, const char *prefix)
 
     fputs("\n", out);
     for (u32 f = 0; f < ir->nfuncs; f++) {
+        s.fn = &ir->funcs[f];
+        name_slots(&s);
         put_signature(&s, &ir->funcs[f]);
         fputs(";\n", out);
     }
@@ -1953,6 +2098,10 @@ c_source_package(FILE *out, const Checker *c, const char *prefix)
     free(line_starts);
     free(done);
     free(labels);
+    free(name_kinds);
+    free(name_counts);
+    free(name_marks);
+    free(slot_names);
     free(words);
     return NULL;
 }

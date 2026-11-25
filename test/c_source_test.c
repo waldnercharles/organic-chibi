@@ -144,13 +144,13 @@ TEST_CASE(writes_inline_marks)
     fclose(out);
 
     static const char *const want[] = {
-        "\nCHIBI_FN __attribute__((always_inline)) int64_t m_inl_twice(void *ctx, int64_t s0);\n",
-        "\nCHIBI_FN __attribute__((noinline)) int64_t m_inl_step(void *ctx, int64_t s0, int64_t s1);\n",
-        "\nCHIBI_FN __attribute__((always_inline)) int64_t m_inl_mix(void *ctx, int64_t s0, int64_t s1)\n{",
-        "\nCHIBI_FN __attribute__((noinline)) int64_t m_inl_calls(void *ctx, int64_t s0, int64_t s1)\n{",
-        "\nCHIBI_FN __attribute__((noinline, cold)) int64_t m_inl_rare(void *ctx, int64_t s0, int64_t s1);\n",
-        "\nCHIBI_FN __attribute__((noinline, cold)) int64_t m_inl_rare(void *ctx, int64_t s0, int64_t s1)\n{",
-        "\nCHIBI_FN int64_t m_inl_guard(void *ctx, int64_t s0, int64_t s1)\n{",
+        "\nCHIBI_FN __attribute__((always_inline)) int64_t m_inl_twice(void *ctx, int64_t x);\n",
+        "\nCHIBI_FN __attribute__((noinline)) int64_t m_inl_step(void *ctx, int64_t a, int64_t b);\n",
+        "\nCHIBI_FN __attribute__((always_inline)) int64_t m_inl_mix(void *ctx, int64_t a, int64_t b)\n{",
+        "\nCHIBI_FN __attribute__((noinline)) int64_t m_inl_calls(void *ctx, int64_t a, int64_t b)\n{",
+        "\nCHIBI_FN __attribute__((noinline, cold)) int64_t m_inl_rare(void *ctx, int64_t a, int64_t b);\n",
+        "\nCHIBI_FN __attribute__((noinline, cold)) int64_t m_inl_rare(void *ctx, int64_t a, int64_t b)\n{",
+        "\nCHIBI_FN int64_t m_inl_guard(void *ctx, int64_t a, int64_t b)\n{",
     };
     for (size_t k = 0; ok && k < sizeof want / sizeof want[0]; k++) {
         if (!strstr(text, want[k])) {
@@ -176,7 +176,7 @@ static const char ARCH_GUARD[] =
     "#endif\n";
 
 static const char TARGET_TG_ARCH_C[] =
-    "CHIBI_FN int64_t t_tg_arch(void *ctx, int64_t s0, int64_t s1)\n"
+    "CHIBI_FN int64_t t_tg_arch(void *ctx, int64_t a, int64_t b)\n"
     "{\n"
     "    int64_t v1;\n"
     "    int64_t v2;\n"
@@ -188,13 +188,13 @@ static const char TARGET_TG_ARCH_C[] =
     "\n"
     "\n"
     "\n"
-    "    v6 = s0; v7 = s1; if (__builtin_sub_overflow(v6, v7, &v8)) chibi_trap(1); return v8; chibi_trap(5);\n"
+    "    v6 = a; v7 = b; if (__builtin_sub_overflow(v6, v7, &v8)) chibi_trap(1); return v8; chibi_trap(5);\n"
     "}\n";
 
 static const char TARGET_TG_OS_C[] =
-    "CHIBI_FN int64_t t_tg_os(void *ctx, int64_t s0, int64_t s1)\n"
+    "CHIBI_FN int64_t t_tg_os(void *ctx, int64_t a, int64_t b)\n"
     "{\n"
-    "    int64_t s2;\n"
+    "    int64_t x;\n"
     "    int64_t v0;\n"
     "    int64_t v4;\n"
     "    int64_t v5;\n"
@@ -213,7 +213,7 @@ static const char TARGET_TG_OS_C[] =
     "    int64_t v27;\n"
     "    int64_t v31;\n"
     "#line 11\n"
-    "    v0 = s0; s2 = v0;\n"
+    "    v0 = a; x = v0;\n"
     "    {\n"
     "\n"
     "\n"
@@ -221,9 +221,9 @@ static const char TARGET_TG_OS_C[] =
     "        {\n"
     "\n"
     "\n"
-    "            v24 = s2; if (__builtin_mul_overflow(v24, 3, &v25)) chibi_trap(1); v26 = s1; if (__builtin_add_overflow(v25, v26, &v27)) chibi_trap(1); s2 = v27;\n"
+    "            v24 = x; if (__builtin_mul_overflow(v24, 3, &v25)) chibi_trap(1); v26 = b; if (__builtin_add_overflow(v25, v26, &v27)) chibi_trap(1); x = v27;\n"
     "\n"
-    "        } } v31 = s2; return v31; chibi_trap(5);\n"
+    "        } } v31 = x; return v31; chibi_trap(5);\n"
     "}\n";
 
 static char *
@@ -316,7 +316,7 @@ TEST_CASE(writes_128_bit_forms)
 
     ok = ok && count_text(text, " = (chibi_u128)v1;") == 1 && count_text(text, " = (chibi_u64x2)v0;") == 1 &&
          count_text(text, " = (chibi_i64x2)v0;") == 1 && count_text(text, "__builtin_memcpy") == 5;
-    ok = ok && count_text(text, "__builtin_mul_overflow(x, y, &p)") == 2 &&
+    ok = ok && count_text(text, "__builtin_mul_overflow(x_, y_, &product_)") == 2 &&
          count_text(text, "__builtin_mul_overflow(v") == 1;
     free(text);
     REQUIRE(ok);
@@ -510,7 +510,7 @@ TEST_CASE(writes_layouts)
 enum
 {
     MAX_JOBS = 8,
-    GRID_FUNCTIONS = 498,
+    GRID_FUNCTIONS = 500,
 };
 
 typedef struct
@@ -557,6 +557,51 @@ static const char *const C_PROGRAMS[] = {
     "        return a + t.len + u.len\n"
     "    }\n"
     "    return b\n"
+    "}\n",
+    "fn nm_pair(n: int) -> [2]int {\n"
+    "    return int.[n, n + 1]\n"
+    "}\n"
+    "\n"
+    "fn nm_wide(a: int, b: int) -> int {\n"
+    "    x := i128(a)\n"
+    "    y := i128(b)\n"
+    "    p := x * y\n"
+    "    negative := p < 0\n"
+    "    over := u8(b & 7)\n"
+    "    if negative {\n"
+    "        return int(p % 1000) + int(over)\n"
+    "    }\n"
+    "    return int(p % 1000) - int(over)\n"
+    "}\n"
+    "\n"
+    "fn nm_locals(a: int, b: int) -> int {\n"
+    "    ctx := a & 4095\n"
+    "    s0 := b\n"
+    "    v1 := ctx + 1\n"
+    "    a1 := s0 & 255\n"
+    "    case := v1 - a1\n"
+    "    linux := 2\n"
+    "    size_t := 3\n"
+    "    INT64_MAX := 5\n"
+    "    x_ := 7\n"
+    "    chibi_k := 11\n"
+    "    r := nm_pair(case & 1023)\n"
+    "    d := f64(a1) / 4.0\n"
+    "    lo := a & 15\n"
+    "    hi := lo + (b & 15)\n"
+    "    s := u8.[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]\n"
+    "    t := s[lo..hi]\n"
+    "    total := 0\n"
+    "    for i in 0..3 {\n"
+    "        total += i\n"
+    "    }\n"
+    "    for i in 0..4 {\n"
+    "        total += i * linux\n"
+    "    }\n"
+    "    for i in 0..5 {\n"
+    "        total += i * size_t\n"
+    "    }\n"
+    "    return case + r[1] + int(d) + t.len + total + INT64_MAX * x_ + chibi_k\n"
     "}\n",
 };
 

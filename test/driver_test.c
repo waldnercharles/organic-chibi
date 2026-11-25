@@ -411,7 +411,7 @@ TEST_CASE(builds_top_level_code)
     bool ok = write_file(dir, "top.chibi", TOP_MAIN) && write_file(dir, "library.chibi", TOP_LIBRARY);
 
     char line[128];
-    snprintf(line, sizeof line, "#line 4 \"%s\"\nCHIBI_FN int32_t p_main(void *ctx, int32_t s0, uint8_t * s1)\n", a);
+    snprintf(line, sizeof line, "#line 4 \"%s\"\nCHIBI_FN int32_t p_main(void *ctx, int32_t argc, uint8_t * argv)\n", a);
     Drive d = drive((char *[]){ "chibi", "c", a, b, NULL });
     ok = ok && d.status == 0 && strstr(d.out, line) != NULL;
     release(&d);
@@ -419,7 +419,7 @@ TEST_CASE(builds_top_level_code)
     char assign[64];
     snprintf(assign, sizeof assign, "%s/assign.chibi", dir);
     ok = ok && write_file(dir, "assign.chibi", "import \"std/os\"\nos.args[\n    0] = os.args[0]\n");
-    snprintf(line, sizeof line, "#line 2 \"%s\"\nCHIBI_FN int32_t p_main(void *ctx, int32_t s0, uint8_t * s1)\n", assign);
+    snprintf(line, sizeof line, "#line 2 \"%s\"\nCHIBI_FN int32_t p_main(void *ctx, int32_t argc, uint8_t * argv)\n", assign);
     d = drive((char *[]){ "chibi", "c", assign, NULL });
     ok = ok && d.status == 0 && strstr(d.out, line) != NULL;
     release(&d);
@@ -690,7 +690,7 @@ TEST_CASE(writes_c)
     );
     ok = ok && d.status == 0 && d.err_len == 0 &&
          strncmp(d.out, "#include <stdint.h>\n", 20) == 0 &&
-         strstr(d.out, "\nCHIBI_FN int64_t p_fib(void *ctx, int64_t s0)\n") &&
+         strstr(d.out, "\nCHIBI_FN int64_t p_fib(void *ctx, int64_t n)\n") &&
          runtime && lines && runtime < lines && strstr(d.out, adapter);
     ok = ok && drives_to((char *[]){ "chibi", "c", "-o", c, a, b, NULL }, 0, "", "");
 
