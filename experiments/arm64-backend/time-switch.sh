@@ -59,7 +59,6 @@ for i in $(seq 1 "$P"); do
     "$W/bench-t" "$W"/corpus/*.chibi >> "$W/t.txt"
 done
 
-echo "== result: the median of each process's medians, and the best"
 python3 - "$W/c.txt" "$W/t.txt" <<'PY'
 import sys, statistics
 def load(path):
@@ -76,6 +75,13 @@ def load(path):
     return rows
 c = load(sys.argv[1])
 t = load(sys.argv[2])
+print("== per process: the median ms of " + ", ".join(c) + ", C then translated, in run order")
+for i in range(len(c['all four'])):
+    cs = " ".join(f"{c[name][i][1]:7.1f}" for name in c)
+    ts = " ".join(f"{t[name][i][1]:7.1f}" for name in c)
+    print(f"{i + 1:3d}  {cs}    {ts}")
+print()
+print("== result: the median of each process's medians, and the best")
 print(f"{'phase':12s} {'C cyc/line':>11s} {'tr cyc/line':>11s} {'ratio':>6s} {'C ms':>8s} {'tr ms':>8s} {'ratio':>6s}  (best: cyc ratio, ms ratio)")
 for name in c:
     cc = [x[0] for x in c[name]]; tc = [x[0] for x in t[name]]
@@ -95,4 +101,15 @@ print(f"{'phase':12s} {'C spread':>9s} {'tr spread':>9s}  (the slowest process's
 for name in c:
     cm = [x[1] for x in c[name]]; tm = [x[1] for x in t[name]]
     print(f"{name:12s} {max(cm) / min(cm):9.3f} {max(tm) / min(tm):9.3f}")
+print()
+print(f"{'phase':12s} {'ms ratio':>8s} {'quartiles':>13s} {'cyc ratio':>9s} {'quartiles':>13s}  (each translated process over the C process just before it)")
+for name in c:
+    pm = [b[1] / a[1] for a, b in zip(c[name], t[name])]
+    qm = statistics.quantiles(pm, n=4)
+    row = f"{name:12s} {statistics.median(pm):8.3f} {qm[0]:6.3f}-{qm[2]:.3f}"
+    if c[name][0][0]:
+        pc = [b[0] / a[0] for a, b in zip(c[name], t[name])]
+        qc = statistics.quantiles(pc, n=4)
+        row += f" {statistics.median(pc):9.3f} {qc[0]:6.3f}-{qc[2]:.3f}"
+    print(row)
 PY
