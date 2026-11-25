@@ -10,6 +10,7 @@ on:
       - "experiments/arm64-backend/**"
       - "experiments/check-bodies/gen.py"
       - ".github/workflows/timing.yml"
+      - "!**/*.md"
   workflow_dispatch:
 
 permissions:
