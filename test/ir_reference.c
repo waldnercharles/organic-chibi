@@ -328,7 +328,7 @@ value_type(const Checker *c, u32 g)
     u8 kind = c->ir.code.kinds[g];
     u32 type = c->ir.code.types[g];
     if (kind == IR_TOP_BITS) {
-        return c->types.arg1[type] == 16 ? TYPE_ID_U16 : TYPE_ID_U8;
+        return check_top_bits_type(c, type);
     }
     return kind >= IR_EQ && kind <= IR_MUL_OVERFLOWS ? TYPE_ID_BOOL : type;
 }
@@ -423,6 +423,7 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
     const IrFunc *fn = &c->ir.funcs[f];
     u64 *vals = calloc(fn->count + 1, sizeof *vals);
     u64 *highs = calloc(fn->count + 1, sizeof *highs);
+    u64(*rest)[6] = calloc(fn->count + 1, sizeof *rest);
     u8 *frame = calloc(r->frames[f] + 8, 1);
     const u32 *offsets = r->offsets + fn->first_slot;
     for (u32 p = 0; p < fn->nparams; p++) {
@@ -456,6 +457,26 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
             (w)[1] = highs[(x)];                                               \
         }                                                                      \
     } while (0)
+#define LANES(x, w)                                                            \
+    do {                                                                       \
+        if ((x) & IR_CONST) {                                                  \
+            const IrConst *k_ = &ir->consts[fn->first_const + ((x) & ~IR_CONST)]; \
+            u32 bits_ = ty(c, c->types.arg0[k_->type]).bits;                   \
+            for (u32 j_ = 0; j_ < 8; j_++) {                                   \
+                (w)[j_] = replicate(k_->bits, bits_);                          \
+            }                                                                  \
+        } else {                                                               \
+            (w)[0] = vals[(x)];                                                \
+            (w)[1] = highs[(x)];                                               \
+            memcpy((w) + 2, rest[(x)], sizeof rest[(x)]);                      \
+        }                                                                      \
+    } while (0)
+#define SET_LANES(i, w)                                                        \
+    do {                                                                       \
+        vals[(i)] = (w)[0];                                                    \
+        highs[(i)] = (w)[1];                                                   \
+        memcpy(rest[(i)], (w) + 2, sizeof rest[(i)]);                          \
+    } while (0)
 #define HIGH(x)                                                                \
     (((x) & IR_CONST) ? ir->consts[fn->first_const + ((x) & ~IR_CONST) + 1].bits \
                       : highs[(x)])
@@ -476,28 +497,31 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
         Ty t = ty(c, type);
         u64 x = 0, y = 0;
         if (is_vector(c, type)) {
-            u64 w[2] = { 0, 0 }, z[2] = { 0, 0 }, out[2] = { 0, 0 };
+            u64 w[8] = { 0 }, z[8] = { 0 }, out[8] = { 0 };
+            u64 size = check_type_size(c, type);
             int fail = 0;
             switch (kind) {
-                case IR_LOAD: memcpy(out, frame + offsets[a], sizeof out); break;
+                case IR_LOAD: memcpy(out, frame + offsets[a], size); break;
                 case IR_STORE:
-                    WIDE(b, w);
-                    memcpy(frame + offsets[a], w, sizeof w);
+                    LANES(b, w);
+                    memcpy(frame + offsets[a], w, size);
                     break;
-                case IR_LOAD_AT: memcpy(out, (const void *)(uintptr_t)OPERAND(a), sizeof out); break;
+                case IR_LOAD_AT: memcpy(out, (const void *)(uintptr_t)OPERAND(a), size); break;
                 case IR_SPLAT:
-                    out[0] = out[1] = replicate(OPERAND(a), ty(c, c->types.arg0[type]).bits);
+                    for (u32 j = 0; j < 8; j++) {
+                        out[j] = replicate(OPERAND(a), ty(c, c->types.arg0[type]).bits);
+                    }
                     break;
                 case IR_SHL:
                 case IR_SHR: {
-                    WIDE(a, w);
+                    LANES(a, w);
                     u64 n = check_is_int128(OPERAND_TYPE(b)) && HIGH(b) != 0 ? ~0ull : OPERAND(b);
                     fail = lanewise(c, kind, type, w, w, n, out);
                     break;
                 }
                 case IR_NEG_WRAP:
                 case IR_BIT_NOT:
-                    WIDE(a, w);
+                    LANES(a, w);
                     fail = lanewise(c, kind, type, w, w, 0, out);
                     break;
                 case IR_IF:
@@ -508,16 +532,14 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                     }
                     break;
                 case IR_ELSE:
-                    WIDE(a, w);
-                    vals[r->ends[g] - fn->first] = w[0];
-                    highs[r->ends[g] - fn->first] = w[1];
+                    LANES(a, w);
+                    SET_LANES(r->ends[g] - fn->first, w);
                     i = r->ends[g] - fn->first + 1;
                     continue;
-                case IR_END: WIDE(a, out); break;
+                case IR_END: LANES(a, out); break;
                 case IR_EXIT:
-                    WIDE(b, w);
-                    vals[r->ends[fn->first + a] - fn->first] = w[0];
-                    highs[r->ends[fn->first + a] - fn->first] = w[1];
+                    LANES(b, w);
+                    SET_LANES(r->ends[fn->first + a] - fn->first, w);
                     i = r->ends[fn->first + a] - fn->first + 1;
                     continue;
                 case IR_ADD_WRAP:
@@ -532,36 +554,39 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                 case IR_LE:
                 case IR_GT:
                 case IR_GE:
-                    WIDE(a, w);
-                    WIDE(b, z);
+                    LANES(a, w);
+                    LANES(b, z);
                     fail = lanewise(c, kind, type, w, z, 0, out);
                     break;
                 case IR_LOOKUP: {
-                    WIDE(a, w);
-                    WIDE(b, z);
+                    LANES(a, w);
+                    LANES(b, z);
                     Ty byte = ty(c, TYPE_ID_U8);
-                    for (u32 k = 0; k < 16; k++) {
+                    for (u32 k = 0; k < c->types.arg1[type]; k++) {
                         u64 index = get_lane(z, k, byte);
                         put_lane(out, k, 8, index < 16 ? get_lane(w, (u32)index, byte) : 0);
                     }
                     break;
                 }
                 case IR_STORE_AT:
-                    WIDE(b, w);
-                    memcpy((void *)(uintptr_t)OPERAND(a), w, sizeof w);
+                    LANES(b, w);
+                    memcpy((void *)(uintptr_t)OPERAND(a), w, size);
                     break;
                 case IR_BITCAST:
-                    WIDE(a, w);
-                    out[0] = w[0];
-                    out[1] = w[1];
+                    if (check_is_int128(OPERAND_TYPE(a))) {
+                        WIDE(a, out);
+                    } else {
+                        LANES(a, out);
+                    }
                     break;
                 case IR_TOP_BITS: {
-                    WIDE(a, w);
+                    LANES(a, w);
                     u32 bits = ty(c, c->types.arg0[type]).bits;
                     for (u32 k = 0; k < c->types.arg1[type]; k++) {
                         u32 top = k * bits + bits - 1;
                         out[0] |= (w[top / 64] >> (top % 64) & 1) << k;
                     }
+                    out[1] = 0;
                     break;
                 }
                 default: assert(false && "unknown vector instruction");
@@ -570,8 +595,7 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
                 trap = fail;
                 break;
             }
-            vals[i] = out[0];
-            highs[i] = out[1];
+            SET_LANES(i, out);
             i++;
             continue;
         }
@@ -1119,11 +1143,14 @@ run(IrReference *r, u32 f, const u64 *args, u64 *result)
 done:
     free(vals);
     free(highs);
+    free(rest);
     free(frame);
     return trap;
 #undef OPERAND
 #undef OPERAND_TYPE
 #undef WIDE
+#undef LANES
+#undef SET_LANES
 #undef HIGH
 #undef WIDE128
 }

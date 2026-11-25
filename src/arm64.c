@@ -247,6 +247,7 @@ enum
     INFO_PAIR = 0x80,
     INFO_VECTOR = INFO_UNSUPPORTED | INFO_MEMORY,
     INFO_WIDE = INFO_VECTOR | INFO_PAIR | 3,
+    INFO_VECTOR64 = INFO_VECTOR | INFO_SMALL,
 };
 
 typedef struct
@@ -362,6 +363,10 @@ typedef struct
     u32 *homes;
     u32 nhomes;
     u32 homes_cap;
+    u32 *homes64;
+    u32 nhomes64;
+    u32 homes64_cap;
+    u32 transfer64;
 } Emit;
 
 static void *
@@ -438,6 +443,12 @@ is_wide(u8 info)
     return (info & (INFO_VECTOR | INFO_PAIR)) == (INFO_VECTOR | INFO_PAIR);
 }
 
+static bool
+is_vector64(u8 info)
+{
+    return (info & INFO_VECTOR64) == INFO_VECTOR64;
+}
+
 static u8
 type_info(const Checker *c, u32 type)
 {
@@ -463,7 +474,7 @@ type_info(const Checker *c, u32 type)
         return INFO_MEMORY;
     }
     if (kind == TYPE_VECTOR) {
-        return INFO_VECTOR |
+        return (check_type_size(c, type) == 64 ? INFO_VECTOR64 : INFO_VECTOR) |
                (type_info(c, c->types.arg0[type]) & (INFO_SCALE | INFO_SIGNED));
     }
     u32 bits = c->types.arg0[type];
@@ -3674,7 +3685,7 @@ frame_align(const Checker *c, u32 type)
 {
     bool lanes = c->types.kinds[type] == TYPE_ARRAY &&
                  c->types.kinds[c->types.arg0[type]] == TYPE_INT &&
-                 check_type_size(c, type) == 16;
+                 (check_type_size(c, type) == 16 || check_type_size(c, type) == 64);
     return lanes ? 16 : check_type_align(c, type);
 }
 
@@ -3955,17 +3966,23 @@ reads_lanes_next(const Emit *e, u32 v)
 }
 
 static u32
+carve_home(Emit *e, u32 bytes)
+{
+    u32 offset = (e->locals + e->spill_top + 15) & ~15u;
+    e->spill_top = offset + bytes - e->locals;
+    if (e->spill_top > e->spill_max) {
+        e->spill_max = e->spill_top;
+    }
+    return offset;
+}
+
+static u32
 new_home(Emit *e)
 {
     if (e->nhomes) {
         return e->homes[--e->nhomes];
     }
-    u32 offset = (e->locals + e->spill_top + 15) & ~15u;
-    e->spill_top = offset + 16 - e->locals;
-    if (e->spill_top > e->spill_max) {
-        e->spill_max = e->spill_top;
-    }
-    return offset;
+    return carve_home(e, 16);
 }
 
 static void
@@ -3980,21 +3997,17 @@ keep_lanes(Emit *e, u32 v)
     e->spills[v] = home;
 }
 
-static void
-shift_lanes(Emit *e, u8 kind, u8 t, u32 a, u32 b)
+static u32
+lane_shift(Emit *e, u8 kind, u8 t, u32 b)
 {
     u32 scale = t & INFO_SCALE;
     u32 bits = 8u << scale;
     if (b & IR_CONST) {
         u32 count = (u32)constant_bits(e, b);
-        u32 r = fetch_lanes(e, a, V30);
         if (kind == IR_SHL || count == 0) {
-            put(e, OP_SHL_IMM | (bits + count) << 16 | r << 5 | V29);
-        } else {
-            u32 op = is_signed(t) ? OP_SSHR_IMM : OP_USHR_IMM;
-            put(e, op | (2 * bits - count) << 16 | r << 5 | V29);
+            return OP_SHL_IMM | (bits + count) << 16;
         }
-        return;
+        return (is_signed(t) ? OP_SSHR_IMM : OP_USHR_IMM) | (2 * bits - count) << 16;
     }
 
     u8 count_info = operand_info(e, b);
@@ -4012,19 +4025,21 @@ shift_lanes(Emit *e, u8 kind, u8 t, u32 a, u32 b)
         rb = X16;
     }
     put(e, OP_DUP | (1u << scale) << 16 | rb << 5 | V31);
-
-    u32 r = fetch_lanes(e, a, V30);
-    put(e, (is_signed(t) ? OP_SSHL : OP_USHL) | scale << 22 | V31 << 16 | r << 5 | V29);
+    return (is_signed(t) ? OP_SSHL : OP_USHL) | scale << 22 | V31 << 16;
 }
 
 static void
-gather_top_bits(Emit *e, u32 i, u8 t, u32 a)
+shift_lanes(Emit *e, u8 kind, u8 t, u32 a, u32 b)
 {
-    u32 scale = t & INFO_SCALE;
-    u32 bits = 8u << scale;
-    u32 d = result(e, i, e->info[scale ? TYPE_ID_U8 : TYPE_ID_U16]);
+    u32 op = lane_shift(e, kind, t, b);
     u32 r = fetch_lanes(e, a, V30);
+    put(e, op | r << 5 | V29);
+}
 
+static void
+gather_bits(Emit *e, u32 scale, u32 r, u32 d)
+{
+    u32 bits = 8u << scale;
     put(e, OP_USHR_IMM | (bits + 1) << 16 | r << 5 | V29);
     for (u32 n = 1, w = bits; w < 64; n *= 2, w *= 2) {
         put(e, OP_USRA | (3 * w + n) << 16 | V29 << 5 | V29);
@@ -4032,6 +4047,14 @@ gather_top_bits(Emit *e, u32 i, u8 t, u32 a)
     put(e, OP_UMOV_B | V29 << 5 | X16);
     put(e, OP_UMOV_B | 8u << 17 | V29 << 5 | X17);
     put(e, OP_ORR | X17 << 16 | (8u >> scale) << 10 | X16 << 5 | d);
+}
+
+static void
+gather_top_bits(Emit *e, u32 i, u8 t, u32 a)
+{
+    u32 scale = t & INFO_SCALE;
+    u32 d = result(e, i, e->info[scale ? TYPE_ID_U8 : TYPE_ID_U16]);
+    gather_bits(e, scale, fetch_lanes(e, a, V30), d);
 }
 
 static u32
@@ -4459,6 +4482,248 @@ wide_int(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
     }
 }
 
+static u32
+new_home64(Emit *e)
+{
+    if (e->nhomes64) {
+        return e->homes64[--e->nhomes64];
+    }
+    return carve_home(e, 64);
+}
+
+static void
+release_quarters(Emit *e, u32 x)
+{
+    if (x & IR_CONST) {
+        return;
+    }
+    e->homes64 = grow(e->homes64, &e->homes64_cap, e->nhomes64 + 1, sizeof *e->homes64);
+    e->homes64[e->nhomes64++] = e->spills[x];
+}
+
+static void
+constant_quarter(Emit *e, u32 x, u32 r)
+{
+    if (x & IR_CONST) {
+        lane_constant(e, r, operand_info(e, x), constant_bits(e, x));
+    }
+}
+
+static u32
+quarter(Emit *e, u32 x, u32 q, u32 r)
+{
+    if (!(x & IR_CONST)) {
+        memory(e, OP_LDR_Q, 4, r, e->spills[x] + 16 * q, X8);
+    }
+    return r;
+}
+
+static void
+put_quarter(Emit *e, u32 r, u32 home, u32 q)
+{
+    memory(e, OP_STR_Q, 4, r, home + 16 * q, X8);
+}
+
+static u32
+transfer_home(Emit *e)
+{
+    if (e->transfer64 == NO_VALUE) {
+        e->transfer64 = carve_home(e, 64);
+    }
+    return e->transfer64;
+}
+
+static void
+copy_quarters(Emit *e, u32 home, u32 x)
+{
+    constant_quarter(e, x, V30);
+    for (u32 q = 0; q < 4; q++) {
+        put_quarter(e, quarter(e, x, q, V30), home, q);
+    }
+    release_quarters(e, x);
+}
+
+static void
+top_bits64(Emit *e, u32 i, u8 t, u32 type, u32 a)
+{
+    u32 scale = t & INFO_SCALE;
+    u32 d = result(e, i, e->info[check_top_bits_type(e->c, type)]);
+    constant_quarter(e, a, V30);
+    for (u32 q = 0; q < 4; q++) {
+        gather_bits(e, scale, quarter(e, a, q, V30), q ? X16 : d);
+        if (q) {
+            put(e, OP_ORR | SF | X16 << 16 | (q * (16u >> scale)) << 10 | d << 5 | d);
+        }
+    }
+    release_quarters(e, a);
+}
+
+static void
+store_at64(Emit *e, u32 a, u32 b)
+{
+    constant_quarter(e, b, V30);
+    if (a == e->framed) {
+        for (u32 q = 0; q < 4; q++) {
+            put_quarter(e, quarter(e, b, q, V30), e->framed_offset, q);
+        }
+        e->framed = NO_VALUE;
+    } else {
+        u32 p = fetch(e, a, X16);
+        for (u32 q = 0; q < 4; q++) {
+            put(e, OP_STR_Q | q << 10 | p << 5 | quarter(e, b, q, V30));
+        }
+        release(e, a);
+    }
+    release_quarters(e, b);
+}
+
+static void
+load_at64(Emit *e, u32 a, u32 home)
+{
+    if (a == e->framed) {
+        for (u32 q = 0; q < 4; q++) {
+            memory(e, OP_LDR_Q, 4, V29, e->framed_offset + 16 * q, X8);
+            put_quarter(e, V29, home, q);
+        }
+        e->framed = NO_VALUE;
+        return;
+    }
+    u32 p = fetch(e, a, X16);
+    release(e, a);
+    for (u32 q = 0; q < 4; q++) {
+        put(e, OP_LDR_Q | q << 10 | p << 5 | V29);
+        put_quarter(e, V29, home, q);
+    }
+}
+
+static void
+unary_quarters(Emit *e, u32 op, u32 a, u32 home)
+{
+    constant_quarter(e, a, V30);
+    for (u32 q = 0; q < 4; q++) {
+        put(e, op | quarter(e, a, q, V30) << 5 | V29);
+        put_quarter(e, V29, home, q);
+    }
+    release_quarters(e, a);
+}
+
+static void
+lookup64(Emit *e, u32 a, u32 b, u32 home)
+{
+    u32 r = fetch_lanes(e, a, V31);
+    if (r != V31) {
+        put(e, OP_VORR | r << 16 | r << 5 | V31);
+    }
+    constant_quarter(e, b, V30);
+    for (u32 q = 0; q < 4; q++) {
+        put(e, OP_TBL | quarter(e, b, q, V30) << 16 | V31 << 5 | V29);
+        put_quarter(e, V29, home, q);
+    }
+    release_quarters(e, b);
+}
+
+static void
+binary_quarters(Emit *e, u8 kind, u8 t, u32 a, u32 b, u32 home)
+{
+    assert(a != b || (a & IR_CONST));
+    constant_quarter(e, a, V30);
+    constant_quarter(e, b, V31);
+    for (u32 q = 0; q < 4; q++) {
+        u32 ra = quarter(e, a, q, V30);
+        u32 rb = quarter(e, b, q, V31);
+        if (kind == IR_MUL_WRAP && (t & INFO_SCALE) == 3) {
+            multiply_wide_lanes(e, ra, rb);
+        } else {
+            if (kind == IR_LT || kind == IR_LE) {
+                swap(&ra, &rb);
+            }
+            put(e, lane_op(kind, t) | rb << 16 | ra << 5 | V29);
+            if (kind == IR_NE) {
+                put(e, OP_VNOT | V29 << 5 | V29);
+            }
+        }
+        put_quarter(e, V29, home, q);
+    }
+    release_quarters(e, a);
+    release_quarters(e, b);
+}
+
+static NOINLINE void
+lanes64(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
+{
+    u8 t = e->info[type];
+    switch (kind) {
+        case IR_TOP_BITS: top_bits64(e, i, t, type, a); return;
+        case IR_STORE_AT: store_at64(e, a, b); return;
+        case IR_ELSE: {
+            Open *o = &e->open[e->nopen - 1];
+            copy_quarters(e, transfer_home(e), a);
+            add_fixup(e, &o->ends);
+            put(e, OP_B);
+            patch(e, o->skip, here(e));
+            o->skip = 0;
+            return;
+        }
+        case IR_EXIT: {
+            Open *o = find_open(e, a);
+            copy_quarters(e, transfer_home(e), b);
+            bool falls = i + 1 < e->fn->count &&
+                         e->ir->kinds[e->fn->first + i + 1] == IR_END &&
+                         o == &e->open[e->nopen - 1];
+            if (!falls) {
+                add_fixup(e, &o->ends);
+                put(e, OP_B);
+            }
+            return;
+        }
+        case IR_BITCAST:
+            assert(!(a & IR_CONST));
+            e->spills[i] = e->spills[a];
+            e->vinfo[i] = t;
+            return;
+        default: break;
+    }
+
+    u32 home = new_home64(e);
+    switch (kind) {
+        case IR_LOAD_AT: load_at64(e, a, home); break;
+        case IR_SPLAT: {
+            u32 r = fetch(e, a, X16);
+            release(e, a);
+            put(e, OP_DUP | (1u << (t & INFO_SCALE)) << 16 | r << 5 | V29);
+            for (u32 q = 0; q < 4; q++) {
+                put_quarter(e, V29, home, q);
+            }
+            break;
+        }
+        case IR_SHL:
+        case IR_SHR:
+            unary_quarters(e, lane_shift(e, kind, t, b), a, home);
+            break;
+        case IR_NEG_WRAP:
+            unary_quarters(e, OP_VNEG | (u32)(t & INFO_SCALE) << 22, a, home);
+            break;
+        case IR_BIT_NOT: unary_quarters(e, OP_VNOT, a, home); break;
+        case IR_LOOKUP: lookup64(e, a, b, home); break;
+        case IR_END: {
+            Open o = e->open[--e->nopen];
+            assert(o.kind == IR_BLOCK || o.kind == IR_IF);
+            if (o.kind == IR_IF) {
+                copy_quarters(e, transfer_home(e), a);
+            }
+            patch(e, o.ends, here(e));
+            for (u32 q = 0; q < 4; q++) {
+                memory(e, OP_LDR_Q, 4, V29, transfer_home(e) + 16 * q, X8);
+                put_quarter(e, V29, home, q);
+            }
+            break;
+        }
+        default: binary_quarters(e, kind, t, a, b, home); break;
+    }
+    e->spills[i] = home;
+    e->vinfo[i] = t;
+}
+
 static NOINLINE void
 lanes(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b, const Native *n)
 {
@@ -4466,6 +4731,10 @@ lanes(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b, const Native *n)
     if (is_wide(t) && kind >= IR_ADD && kind <= IR_TRUNCATE && kind != IR_AND &&
         kind != IR_OR && kind != IR_XOR && kind != IR_BIT_NOT) {
         wide_int(e, i, kind, type, a, b);
+        return;
+    }
+    if (is_vector64(t) && kind != IR_IF) {
+        lanes64(e, i, kind, type, a, b);
         return;
     }
     switch (kind) {
@@ -4742,6 +5011,8 @@ emit_function(Emit *e, const IrFunc *fn, u32 *code, const Native *n)
     e->nfixups = 1;
     e->nspill_free = 0;
     e->nhomes = 0;
+    e->nhomes64 = 0;
+    e->transfer64 = NO_VALUE;
     e->spill_top = 0;
     e->spill_max = 0;
     e->naliases = 0;
@@ -5401,7 +5672,9 @@ arm64_compile(Native *n, const Checker *c, Convention convention)
                .ranges = malloc(16 * sizeof *e.ranges),
                .ranges_cap = 16,
                .homes = malloc(16 * sizeof *e.homes),
-               .homes_cap = 16 };
+               .homes_cap = 16,
+               .homes64 = malloc(16 * sizeof *e.homes64),
+               .homes64_cap = 16 };
     u64 *adapters = malloc(ir->ncallbacks * sizeof *adapters);
     for (u32 k = 0; k < ir->ncallbacks && !e.error; k++) {
         u32 decl = ir->callbacks[k];
@@ -5439,6 +5712,7 @@ arm64_compile(Native *n, const Checker *c, Convention convention)
     free(e.spills);
     free(e.spill_free);
     free(e.homes);
+    free(e.homes64);
     free(e.slot_offsets);
     free(e.slot_regs);
     free(e.retyped);

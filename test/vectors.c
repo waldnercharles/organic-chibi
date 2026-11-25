@@ -554,6 +554,172 @@ const char VECTOR_RUNS[] =
     "    return int(w[b & 3]) + int(x[a & 7]) * 3 + int(y[b & 15])\n"
     "}\n";
 
+const char VECTOR_WIDE_RUNS[] =
+    "import \"std/mem\"\n"
+    "import \"std/simd\"\n"
+    "\n"
+    "fn wide_load(off: int, k: int) -> int {\n"
+    "    s: [160]u8\n"
+    "    for i in 0..160 {\n"
+    "        s[i] = u8(i) *% 13 +% 5\n"
+    "    }\n"
+    "    p: [*]u8 = &s\n"
+    "    v := mem.unaligned_load([64]u8, p + off)\n"
+    "    return int(v[k])\n"
+    "}\n"
+    "\n"
+    "fn wide_store(off: int, k: int) -> int {\n"
+    "    s: [160]u8\n"
+    "    v: [64]u8\n"
+    "    for i in 0..64 {\n"
+    "        v[i] = u8(i) +% 100\n"
+    "    }\n"
+    "    p: [*]u8 = &s\n"
+    "    mem.unaligned_store(p + off, v ^ 0x80)\n"
+    "    return int(s[k])\n"
+    "}\n"
+    "\n"
+    "fn wide_words(k: int) -> int {\n"
+    "    a: [20]u32\n"
+    "    for i in 0..20 {\n"
+    "        a[i] = u32(i) *% 0x01010101 +% 0x03020100\n"
+    "    }\n"
+    "    q: [*]u32 = &a\n"
+    "    v := mem.unaligned_load([16]u32, q + 1)\n"
+    "    mem.unaligned_store(q + 3, v +% 1)\n"
+    "    return int(v[k & 15]) + int(a[k]) * 3\n"
+    "}\n"
+    "\n"
+    "fn wide_lookups(a: u8, k: int) -> int {\n"
+    "    t := u8.[200, 7, 33, 1, 0, 99, 254, 255, 128, 127, 64, 3, 2, 18, 45, 90]\n"
+    "    v: [64]u8\n"
+    "    for i in 0..64 {\n"
+    "        v[i] = a +% u8(i)\n"
+    "    }\n"
+    "    w := simd.lookup(t, v)\n"
+    "    s := simd.lookup(bitcast([16]i8, t), bitcast([64]i8, v))\n"
+    "    return int(w[k]) + int(s[k]) * 1000\n"
+    "}\n"
+    "\n"
+    "fn wide_top_bits(a: int, w: int) -> int {\n"
+    "    s: [64]u8\n"
+    "    for i in 0..64 {\n"
+    "        if ((a >> i) & 1) != 0 {\n"
+    "            s[i] = u8(i) | 128\n"
+    "        } else {\n"
+    "            s[i] = u8(i) & 127\n"
+    "        }\n"
+    "    }\n"
+    "    p: [*]u8 = &s\n"
+    "    return switch w {\n"
+    "        0 => bitcast(int, simd.top_bits(mem.unaligned_load([64]u8, p)))\n"
+    "        1 => int(simd.top_bits(mem.unaligned_load([32]i16, p)))\n"
+    "        2 => int(simd.top_bits(mem.unaligned_load([16]u32, p)))\n"
+    "        _ => int(simd.top_bits(mem.unaligned_load([8]i64, p)))\n"
+    "    }\n"
+    "}\n"
+    "\n"
+    "fn wide_pick(c: bool, a: u8, k: int) -> int {\n"
+    "    x: [64]u8 = a\n"
+    "    x[5] = 77\n"
+    "    r := if c then x +% 1 else x -% 1\n"
+    "    s: [64]u8 = p: {\n"
+    "        if c {\n"
+    "            break p r ^ 3\n"
+    "        }\n"
+    "        break p x\n"
+    "    }\n"
+    "    t := switch k & 3 {\n"
+    "        0 => r\n"
+    "        1 => s +% 2\n"
+    "        _ => 9\n"
+    "    }\n"
+    "    return int(r[k]) + int(s[k]) * 256 + int(t[k]) * 65536\n"
+    "}\n"
+    "\n"
+    "fn wadd(a: [64]u8, b: [64]u8) -> [64]u8 {\n"
+    "    return a +% b\n"
+    "}\n"
+    "\n"
+    "fn wfill(x: u8) -> [64]u8 {\n"
+    "    v: [64]u8 = x\n"
+    "    return v\n"
+    "}\n"
+    "\n"
+    "fn wide_calls(x: u8, y: u8, k: int) -> int {\n"
+    "    a: [64]u8 = x\n"
+    "    b: [64]u8\n"
+    "    for i in 0..64 {\n"
+    "        b[i] = u8(i)\n"
+    "    }\n"
+    "    r := wadd(wadd(a, b *% 3), wfill(y))\n"
+    "    return int(r[k])\n"
+    "}\n"
+    "\n"
+    "struct Wide { n: int, v: [64]u8 }\n"
+    "\n"
+    "fn wide_rows(a: u8, k: int) -> int {\n"
+    "    r: [2][64]u8\n"
+    "    x: [64]u8 = 3\n"
+    "    r[k & 1] +%= a\n"
+    "    r[1] ^= x\n"
+    "    w := Wide.{ .n = 5, .v = r[1] +% 1 }\n"
+    "    w.v[k] = 200\n"
+    "    return int(r[0][k]) + int(r[1][k]) * 256 + int(w.v[(k + 1) & 63]) * 65536 + w.n\n"
+    "}\n"
+    "\n"
+    "fn wide_casts(a: int, b: int) -> int {\n"
+    "    v: [64]u8\n"
+    "    for i in 0..64 {\n"
+    "        v[i] = u8(i) +% u8(a & 255)\n"
+    "    }\n"
+    "    w := bitcast([16]u32, v)\n"
+    "    x := bitcast([32]i16, w +% 1)\n"
+    "    y := bitcast([8]i64, x)\n"
+    "    z := bitcast([64]u8, y)\n"
+    "    return int(w[b & 15]) + int(x[a & 31]) * 3 + int(y[b & 7] & 0xFFFF) + int(z[b & 63])\n"
+    "}\n"
+    "\n"
+    "fn wide_shifts(b: i16, s: u32, k: int) -> int {\n"
+    "    x: [32]i16 = b\n"
+    "    y := x >> s\n"
+    "    z := (x << 2) ^ ~y\n"
+    "    return int(z[k]) * 100000 + int(y[k])\n"
+    "}\n"
+    "\n"
+    "fn wide_mul(a: int, k: int) -> int {\n"
+    "    x: [8]i64\n"
+    "    for i in 0..8 {\n"
+    "        x[i] = a *% i64(i) -% 3\n"
+    "    }\n"
+    "    y := x *% x\n"
+    "    s := simd.lt(x, 0)\n"
+    "    return y[k] +% s[k]\n"
+    "}\n"
+    "\n"
+    "fn bump_wide(p: *[64]u8) -> [64]u8 {\n"
+    "    old := p.*\n"
+    "    p.*[0] +%= 100\n"
+    "    return old\n"
+    "}\n"
+    "\n"
+    "fn wide_early(a: u8, k: int) -> int {\n"
+    "    v: [64]u8 = a\n"
+    "    w := v +% bump_wide(&v)[1]\n"
+    "    m := simd.eq(v, bump_wide(&v))\n"
+    "    return int(w[k]) + int(m[k]) * 256\n"
+    "}\n"
+    "\n"
+    "fn wide_lookup_late(a: u8, k: int) -> int {\n"
+    "    t := u8.[200, 7, 33, 1, 0, 99, 254, 255, 128, 127, 64, 3, 2, 18, 45, 90]\n"
+    "    v: [64]u8\n"
+    "    for i in 0..64 {\n"
+    "        v[i] = a +% u8(i) *% 5\n"
+    "    }\n"
+    "    w := simd.lookup(t, v ^ 3)\n"
+    "    return int(w[k]) + int(w[(k + 52) & 63]) * 256\n"
+    "}\n";
+
 const VectorRun VECTOR_BODY_RESULTS[] = {
     { "lanes", { 65, 1, 3 }, 31, 0 },
     { "lanes", { 9, 3, 0 }, 32, 0 },
@@ -748,6 +914,82 @@ const VectorRun VECTOR_RESULTS[] = {
 };
 
 const size_t NVECTOR_RESULTS = sizeof VECTOR_RESULTS / sizeof VECTOR_RESULTS[0];
+
+const VectorRun VECTOR_WIDE_RESULTS[] = {
+    { "wide_load", { 0, 0 }, 5, 0 },
+    { "wide_load", { 1, 63 }, 69, 0 },
+    { "wide_load", { 7, 3 }, 135, 0 },
+    { "wide_load", { 96, 63 }, 24, 0 },
+    { "wide_load", { 3, 64 }, 0, TRAP_BOUNDS },
+    { "wide_store", { 1, 0 }, 0, 0 },
+    { "wide_store", { 1, 1 }, 228, 0 },
+    { "wide_store", { 1, 64 }, 35, 0 },
+    { "wide_store", { 1, 65 }, 0, 0 },
+    { "wide_store", { 96, 159 }, 35, 0 },
+    { "wide_store", { 5, 160 }, 0, TRAP_BOUNDS },
+    { "wide_words", { 0 }, 218694913, 0 },
+    { "wide_words", { 2 }, 353438985, 0 },
+    { "wide_words", { 5 }, 454497042, 0 },
+    { "wide_words", { 19 }, 1229275453, 0 },
+    { "wide_words", { 20 }, 0, TRAP_BOUNDS },
+    { "wide_lookups", { 0, 0 }, -55800, 0 },
+    { "wide_lookups", { 0, 15 }, 90090, 0 },
+    { "wide_lookups", { 0, 16 }, 0, 0 },
+    { "wide_lookups", { 250, 5 }, 0, 0 },
+    { "wide_lookups", { 250, 6 }, -55800, 0 },
+    { "wide_lookups", { 3, 63 }, 0, 0 },
+    { "wide_lookups", { 200, 63 }, -745, 0 },
+    { "wide_lookups", { 0, 64 }, 0, TRAP_BOUNDS },
+    { "wide_top_bits", { 81985529216486895, 0 }, 81985529216486895, 0 },
+    { "wide_top_bits", { 81985529216486895, 1 }, 84258735, 0 },
+    { "wide_top_bits", { 81985529216486895, 2 }, 255, 0 },
+    { "wide_top_bits", { 81985529216486895, 3 }, 15, 0 },
+    { "wide_top_bits", { -2, 0 }, -2, 0 },
+    { "wide_top_bits", { -2, 1 }, 4294967295, 0 },
+    { "wide_top_bits", { -2, 2 }, 65535, 0 },
+    { "wide_top_bits", { -2, 3 }, 255, 0 },
+    { "wide_top_bits", { INT64_MIN, 0 }, INT64_MIN, 0 },
+    { "wide_top_bits", { INT64_MIN, 3 }, 128, 0 },
+    { "wide_top_bits", { 0, 0 }, 0, 0 },
+    { "wide_pick", { 1, 5, 0 }, 394502, 0 },
+    { "wide_pick", { 1, 5, 5 }, 5197134, 0 },
+    { "wide_pick", { 0, 5, 1 }, 460036, 0 },
+    { "wide_pick", { 0, 0, 2 }, 590079, 0 },
+    { "wide_pick", { 1, 255, 63 }, 590592, 0 },
+    { "wide_pick", { 0, 77, 64 }, 0, TRAP_BOUNDS },
+    { "wide_calls", { 3, 4, 5 }, 22, 0 },
+    { "wide_calls", { 200, 100, 63 }, 233, 0 },
+    { "wide_calls", { 1, 2, 64 }, 0, TRAP_BOUNDS },
+    { "wide_rows", { 5, 0 }, 262922, 0 },
+    { "wide_rows", { 5, 1 }, 460293, 0 },
+    { "wide_rows", { 250, 63 }, 16447749, 0 },
+    { "wide_rows", { 250, 64 }, 0, TRAP_BOUNDS },
+    { "wide_casts", { 0, 0 }, 50464005, 0 },
+    { "wide_casts", { 250, 3 }, 151562403, 0 },
+    { "wide_casts", { 9, 13 }, 1077920982, 0 },
+    { "wide_casts", { 255, 63 }, 1044262760, 0 },
+    { "wide_shifts", { -100, 2, 3 }, -40800025, 0 },
+    { "wide_shifts", { 100, 15, 31 }, -40100000, 0 },
+    { "wide_shifts", { -7, 1, 30 }, -2500004, 0 },
+    { "wide_shifts", { 5, 16, 0 }, 0, TRAP_SHIFT },
+    { "wide_shifts", { 7, 0, 32 }, 0, TRAP_BOUNDS },
+    { "wide_mul", { 5, 0 }, 8, 0 },
+    { "wide_mul", { 5, 7 }, 1024, 0 },
+    { "wide_mul", { -3, 3 }, 143, 0 },
+    { "wide_mul", { 4294967296, 7 }, -180388626423, 0 },
+    { "wide_mul", { 1, 8 }, 0, TRAP_BOUNDS },
+    { "wide_early", { 5, 0 }, 65290, 0 },
+    { "wide_early", { 5, 1 }, 65290, 0 },
+    { "wide_early", { 200, 63 }, 65424, 0 },
+    { "wide_early", { 1, 64 }, 0, TRAP_BOUNDS },
+    { "wide_lookup_late", { 0, 0 }, 65281, 0 },
+    { "wide_lookup_late", { 0, 2 }, 4735, 0 },
+    { "wide_lookup_late", { 0, 5 }, 0, 0 },
+    { "wide_lookup_late", { 13, 63 }, 23040, 0 },
+    { "wide_lookup_late", { 0, 64 }, 0, TRAP_BOUNDS },
+};
+
+const size_t NVECTOR_WIDE_RESULTS = sizeof VECTOR_WIDE_RESULTS / sizeof VECTOR_WIDE_RESULTS[0];
 
 const char VECTOR_GRID[] =
     "import \"std/simd\"\n"
@@ -1044,6 +1286,301 @@ const char VECTOR_GRID[] =
     "    return r[k]\n"
     "}\n";
 
+const char VECTOR_WIDE_GRID[] =
+    "import \"std/simd\"\n"
+    "fn g_u8x64(a: int, b: int, op: int, k: int) -> u8 {\n"
+    "    e := u8.[0, 1, 2, 3, 7, 8, 15, 16, 31, 63, 64, 100, 127, 128, 200, 255]\n"
+    "    x: [64]u8\n"
+    "    y: [64]u8\n"
+    "    for i in 0..64 {\n"
+    "        x[i] = e[(a + i) & 15]\n"
+    "        y[i] = e[(b + 3 * i) & 15]\n"
+    "    }\n"
+    "    s := u32((a * 7 + b) & 7)\n"
+    "    w := e[b & 15]\n"
+    "    r := switch op {\n"
+    "        0 => x +% y\n"
+    "        1 => x -% y\n"
+    "        2 => x *% y\n"
+    "        3 => x & y\n"
+    "        4 => x | y\n"
+    "        5 => x ^ y\n"
+    "        6 => ~x\n"
+    "        7 => -%x\n"
+    "        8 => simd.eq(x, y)\n"
+    "        9 => simd.ne(x, y)\n"
+    "        10 => simd.lt(x, y)\n"
+    "        11 => simd.le(x, y)\n"
+    "        12 => simd.gt(x, y)\n"
+    "        13 => simd.ge(x, y)\n"
+    "        14 => x << s\n"
+    "        15 => x >> s\n"
+    "        16 => x >> 3\n"
+    "        17 => x +% 5\n"
+    "        18 => x | w\n"
+    "        _ => w -% x\n"
+    "    }\n"
+    "    return r[k]\n"
+    "}\n"
+    "fn g_i8x64(a: int, b: int, op: int, k: int) -> i8 {\n"
+    "    e := i8.[-128, -127, -100, -64, -16, -2, -1, 0, 1, 2, 7, 15, 16, 64, 100, 127]\n"
+    "    x: [64]i8\n"
+    "    y: [64]i8\n"
+    "    for i in 0..64 {\n"
+    "        x[i] = e[(a + i) & 15]\n"
+    "        y[i] = e[(b + 3 * i) & 15]\n"
+    "    }\n"
+    "    s := u32((a * 7 + b) & 7)\n"
+    "    w := e[b & 15]\n"
+    "    r := switch op {\n"
+    "        0 => x +% y\n"
+    "        1 => x -% y\n"
+    "        2 => x *% y\n"
+    "        3 => x & y\n"
+    "        4 => x | y\n"
+    "        5 => x ^ y\n"
+    "        6 => ~x\n"
+    "        7 => -%x\n"
+    "        8 => simd.eq(x, y)\n"
+    "        9 => simd.ne(x, y)\n"
+    "        10 => simd.lt(x, y)\n"
+    "        11 => simd.le(x, y)\n"
+    "        12 => simd.gt(x, y)\n"
+    "        13 => simd.ge(x, y)\n"
+    "        14 => x << s\n"
+    "        15 => x >> s\n"
+    "        16 => x >> 3\n"
+    "        17 => x +% 5\n"
+    "        18 => x | w\n"
+    "        _ => w -% x\n"
+    "    }\n"
+    "    return r[k]\n"
+    "}\n"
+    "fn g_u16x32(a: int, b: int, op: int, k: int) -> u16 {\n"
+    "    e := u16.[\n"
+    "        0, 1, 2, 3, 255, 256, 1000, 4095, 12345, 32767, 32768, 32769, 40000, 65000, 65534,\n"
+    "        65535,\n"
+    "    ]\n"
+    "    x: [32]u16\n"
+    "    y: [32]u16\n"
+    "    for i in 0..32 {\n"
+    "        x[i] = e[(a + i) & 15]\n"
+    "        y[i] = e[(b + 3 * i) & 15]\n"
+    "    }\n"
+    "    s := u32((a * 7 + b) & 15)\n"
+    "    w := e[b & 15]\n"
+    "    r := switch op {\n"
+    "        0 => x +% y\n"
+    "        1 => x -% y\n"
+    "        2 => x *% y\n"
+    "        3 => x & y\n"
+    "        4 => x | y\n"
+    "        5 => x ^ y\n"
+    "        6 => ~x\n"
+    "        7 => -%x\n"
+    "        8 => simd.eq(x, y)\n"
+    "        9 => simd.ne(x, y)\n"
+    "        10 => simd.lt(x, y)\n"
+    "        11 => simd.le(x, y)\n"
+    "        12 => simd.gt(x, y)\n"
+    "        13 => simd.ge(x, y)\n"
+    "        14 => x << s\n"
+    "        15 => x >> s\n"
+    "        16 => x >> 3\n"
+    "        17 => x +% 5\n"
+    "        18 => x | w\n"
+    "        _ => w -% x\n"
+    "    }\n"
+    "    return r[k]\n"
+    "}\n"
+    "fn g_i16x32(a: int, b: int, op: int, k: int) -> i16 {\n"
+    "    e := i16.[\n"
+    "        -32768, -32767, -1000, -256, -255, -2, -1, 0, 1, 2, 255, 256, 1000, 30000, 32766,\n"
+    "        32767,\n"
+    "    ]\n"
+    "    x: [32]i16\n"
+    "    y: [32]i16\n"
+    "    for i in 0..32 {\n"
+    "        x[i] = e[(a + i) & 15]\n"
+    "        y[i] = e[(b + 3 * i) & 15]\n"
+    "    }\n"
+    "    s := u32((a * 7 + b) & 15)\n"
+    "    w := e[b & 15]\n"
+    "    r := switch op {\n"
+    "        0 => x +% y\n"
+    "        1 => x -% y\n"
+    "        2 => x *% y\n"
+    "        3 => x & y\n"
+    "        4 => x | y\n"
+    "        5 => x ^ y\n"
+    "        6 => ~x\n"
+    "        7 => -%x\n"
+    "        8 => simd.eq(x, y)\n"
+    "        9 => simd.ne(x, y)\n"
+    "        10 => simd.lt(x, y)\n"
+    "        11 => simd.le(x, y)\n"
+    "        12 => simd.gt(x, y)\n"
+    "        13 => simd.ge(x, y)\n"
+    "        14 => x << s\n"
+    "        15 => x >> s\n"
+    "        16 => x >> 3\n"
+    "        17 => x +% 5\n"
+    "        18 => x | w\n"
+    "        _ => w -% x\n"
+    "    }\n"
+    "    return r[k]\n"
+    "}\n"
+    "fn g_u32x16(a: int, b: int, op: int, k: int) -> u32 {\n"
+    "    e := u32.[\n"
+    "        0, 1, 2, 3, 7, 65535, 65536, 1000000, 0x1000000, 0x75BCD15, 0x7FFFFFFF, 0x80000000,\n"
+    "        0x80000001, 0xEE6B2800, 0xFFFFFFFE, 0xFFFFFFFF,\n"
+    "    ]\n"
+    "    x: [16]u32\n"
+    "    y: [16]u32\n"
+    "    for i in 0..16 {\n"
+    "        x[i] = e[(a + i) & 15]\n"
+    "        y[i] = e[(b + 3 * i) & 15]\n"
+    "    }\n"
+    "    s := u32((a * 7 + b) & 31)\n"
+    "    w := e[b & 15]\n"
+    "    r := switch op {\n"
+    "        0 => x +% y\n"
+    "        1 => x -% y\n"
+    "        2 => x *% y\n"
+    "        3 => x & y\n"
+    "        4 => x | y\n"
+    "        5 => x ^ y\n"
+    "        6 => ~x\n"
+    "        7 => -%x\n"
+    "        8 => simd.eq(x, y)\n"
+    "        9 => simd.ne(x, y)\n"
+    "        10 => simd.lt(x, y)\n"
+    "        11 => simd.le(x, y)\n"
+    "        12 => simd.gt(x, y)\n"
+    "        13 => simd.ge(x, y)\n"
+    "        14 => x << s\n"
+    "        15 => x >> s\n"
+    "        16 => x >> 3\n"
+    "        17 => x +% 5\n"
+    "        18 => x | w\n"
+    "        _ => w -% x\n"
+    "    }\n"
+    "    return r[k]\n"
+    "}\n"
+    "fn g_i32x16(a: int, b: int, op: int, k: int) -> i32 {\n"
+    "    e := i32.[\n"
+    "        -0x80000000, -0x7FFFFFFF, -1000000, -65536, -7, -2, -1, 0, 1, 2, 7, 65535, 65536,\n"
+    "        1000000, 0x7FFFFFFE, 0x7FFFFFFF,\n"
+    "    ]\n"
+    "    x: [16]i32\n"
+    "    y: [16]i32\n"
+    "    for i in 0..16 {\n"
+    "        x[i] = e[(a + i) & 15]\n"
+    "        y[i] = e[(b + 3 * i) & 15]\n"
+    "    }\n"
+    "    s := u32((a * 7 + b) & 31)\n"
+    "    w := e[b & 15]\n"
+    "    r := switch op {\n"
+    "        0 => x +% y\n"
+    "        1 => x -% y\n"
+    "        2 => x *% y\n"
+    "        3 => x & y\n"
+    "        4 => x | y\n"
+    "        5 => x ^ y\n"
+    "        6 => ~x\n"
+    "        7 => -%x\n"
+    "        8 => simd.eq(x, y)\n"
+    "        9 => simd.ne(x, y)\n"
+    "        10 => simd.lt(x, y)\n"
+    "        11 => simd.le(x, y)\n"
+    "        12 => simd.gt(x, y)\n"
+    "        13 => simd.ge(x, y)\n"
+    "        14 => x << s\n"
+    "        15 => x >> s\n"
+    "        16 => x >> 3\n"
+    "        17 => x +% 5\n"
+    "        18 => x | w\n"
+    "        _ => w -% x\n"
+    "    }\n"
+    "    return r[k]\n"
+    "}\n"
+    "fn g_u64x8(a: int, b: int, op: int, k: int) -> u64 {\n"
+    "    e := u64.[\n"
+    "        0, 1, 2, 3, 7, 255, 65536, 0xFFFFFFFF, 0x100000000, 0x3B9ACA07, 0x123456789ABCDEF0,\n"
+    "        0x7FFFFFFFFFFFFFFF, 0x8000000000000000, 0x8000000000000001, 0xFFFFFFFFFFFFFFFE,\n"
+    "        0xFFFFFFFFFFFFFFFF,\n"
+    "    ]\n"
+    "    x: [8]u64\n"
+    "    y: [8]u64\n"
+    "    for i in 0..8 {\n"
+    "        x[i] = e[(a + i) & 15]\n"
+    "        y[i] = e[(b + 3 * i) & 15]\n"
+    "    }\n"
+    "    s := u32((a * 7 + b) & 63)\n"
+    "    w := e[b & 15]\n"
+    "    r := switch op {\n"
+    "        0 => x +% y\n"
+    "        1 => x -% y\n"
+    "        2 => x *% y\n"
+    "        3 => x & y\n"
+    "        4 => x | y\n"
+    "        5 => x ^ y\n"
+    "        6 => ~x\n"
+    "        7 => -%x\n"
+    "        8 => simd.eq(x, y)\n"
+    "        9 => simd.ne(x, y)\n"
+    "        10 => simd.lt(x, y)\n"
+    "        11 => simd.le(x, y)\n"
+    "        12 => simd.gt(x, y)\n"
+    "        13 => simd.ge(x, y)\n"
+    "        14 => x << s\n"
+    "        15 => x >> s\n"
+    "        16 => x >> 3\n"
+    "        17 => x +% 5\n"
+    "        18 => x | w\n"
+    "        _ => w -% x\n"
+    "    }\n"
+    "    return r[k]\n"
+    "}\n"
+    "fn g_i64x8(a: int, b: int, op: int, k: int) -> i64 {\n"
+    "    e := i64.[\n"
+    "        -0x8000000000000000, -0x7FFFFFFFFFFFFFFF, -0x100000000, -0x3B9ACA07, -7, -2, -1, 0,\n"
+    "        1, 2, 7, 0xFFFFFFFF, 0x100000000, 0x3B9ACA07, 0x7FFFFFFFFFFFFFFE,\n"
+    "        0x7FFFFFFFFFFFFFFF,\n"
+    "    ]\n"
+    "    x: [8]i64\n"
+    "    y: [8]i64\n"
+    "    for i in 0..8 {\n"
+    "        x[i] = e[(a + i) & 15]\n"
+    "        y[i] = e[(b + 3 * i) & 15]\n"
+    "    }\n"
+    "    s := u32((a * 7 + b) & 63)\n"
+    "    w := e[b & 15]\n"
+    "    r := switch op {\n"
+    "        0 => x +% y\n"
+    "        1 => x -% y\n"
+    "        2 => x *% y\n"
+    "        3 => x & y\n"
+    "        4 => x | y\n"
+    "        5 => x ^ y\n"
+    "        6 => ~x\n"
+    "        7 => -%x\n"
+    "        8 => simd.eq(x, y)\n"
+    "        9 => simd.ne(x, y)\n"
+    "        10 => simd.lt(x, y)\n"
+    "        11 => simd.le(x, y)\n"
+    "        12 => simd.gt(x, y)\n"
+    "        13 => simd.ge(x, y)\n"
+    "        14 => x << s\n"
+    "        15 => x >> s\n"
+    "        16 => x >> 3\n"
+    "        17 => x +% 5\n"
+    "        18 => x | w\n"
+    "        _ => w -% x\n"
+    "    }\n"
+    "    return r[k]\n"
+    "}\n";
+
 static const uint8_t EDGE_U8[16] = {
     0, 1, 2, 3, 7, 8, 15, 16, 31, 63, 64, 100, 127, 128, 200, 255,
 };
@@ -1077,8 +1614,8 @@ static const int64_t EDGE_I64[16] = {
 #define VECTOR_ORACLE(name, S, U, N, edge)                                                          \
     static u64 name(int64_t a, int64_t b, int64_t op, int64_t k)                                    \
     {                                                                                               \
-        typedef S SV __attribute__((vector_size(16)));                                              \
-        typedef U UV __attribute__((vector_size(16)));                                              \
+        typedef S SV __attribute__((vector_size(N * sizeof(S))));                                   \
+        typedef U UV __attribute__((vector_size(N * sizeof(S))));                                   \
         SV x;                                                                                       \
         SV y;                                                                                       \
         for (int64_t i = 0; i < N; i++) {                                                           \
@@ -1107,19 +1644,40 @@ VECTOR_ORACLE(oracle_u32, uint32_t, uint32_t, 4, EDGE_U32)
 VECTOR_ORACLE(oracle_i32, int32_t, uint32_t, 4, EDGE_I32)
 VECTOR_ORACLE(oracle_u64, uint64_t, uint64_t, 2, EDGE_U64)
 VECTOR_ORACLE(oracle_i64, int64_t, uint64_t, 2, EDGE_I64)
+VECTOR_ORACLE(oracle_u8x64, uint8_t, uint8_t, 64, EDGE_U8)
+VECTOR_ORACLE(oracle_i8x64, int8_t, uint8_t, 64, EDGE_I8)
+VECTOR_ORACLE(oracle_u16x32, uint16_t, uint16_t, 32, EDGE_U16)
+VECTOR_ORACLE(oracle_i16x32, int16_t, uint16_t, 32, EDGE_I16)
+VECTOR_ORACLE(oracle_u32x16, uint32_t, uint32_t, 16, EDGE_U32)
+VECTOR_ORACLE(oracle_i32x16, int32_t, uint32_t, 16, EDGE_I32)
+VECTOR_ORACLE(oracle_u64x8, uint64_t, uint64_t, 8, EDGE_U64)
+VECTOR_ORACLE(oracle_i64x8, int64_t, uint64_t, 8, EDGE_I64)
 
 const GridFunction VECTOR_GRID_FUNCTIONS[] = {
-    { "g_u8", 16, oracle_u8 },
-    { "g_i8", 16, oracle_i8 },
-    { "g_u16", 8, oracle_u16 },
-    { "g_i16", 8, oracle_i16 },
-    { "g_u32", 4, oracle_u32 },
-    { "g_i32", 4, oracle_i32 },
-    { "g_u64", 2, oracle_u64 },
-    { "g_i64", 2, oracle_i64 },
+    { "g_u8", 16, 8, oracle_u8 },
+    { "g_i8", 16, 8, oracle_i8 },
+    { "g_u16", 8, 16, oracle_u16 },
+    { "g_i16", 8, 16, oracle_i16 },
+    { "g_u32", 4, 32, oracle_u32 },
+    { "g_i32", 4, 32, oracle_i32 },
+    { "g_u64", 2, 64, oracle_u64 },
+    { "g_i64", 2, 64, oracle_i64 },
 };
 
 const size_t NVECTOR_GRID_FUNCTIONS = sizeof VECTOR_GRID_FUNCTIONS / sizeof VECTOR_GRID_FUNCTIONS[0];
+
+const GridFunction VECTOR_WIDE_GRID_FUNCTIONS[] = {
+    { "g_u8x64", 64, 8, oracle_u8x64 },
+    { "g_i8x64", 64, 8, oracle_i8x64 },
+    { "g_u16x32", 32, 16, oracle_u16x32 },
+    { "g_i16x32", 32, 16, oracle_i16x32 },
+    { "g_u32x16", 16, 32, oracle_u32x16 },
+    { "g_i32x16", 16, 32, oracle_i32x16 },
+    { "g_u64x8", 8, 64, oracle_u64x8 },
+    { "g_i64x8", 8, 64, oracle_i64x8 },
+};
+
+const size_t NVECTOR_WIDE_GRID_FUNCTIONS = sizeof VECTOR_WIDE_GRID_FUNCTIONS / sizeof VECTOR_WIDE_GRID_FUNCTIONS[0];
 
 const char INT128_PROGRAM[] =
     "import \"std/bits\"\n"

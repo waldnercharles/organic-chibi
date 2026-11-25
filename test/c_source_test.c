@@ -1887,9 +1887,10 @@ grid_agrees(const Build *b, u32 k, const GridFunction *g, const char *flags)
     char name[64];
     snprintf(name, sizeof name, "wv%u_%s", k, g->name);
     I4 *f = (I4 *)symbol(b, name);
-    u64 mask = g->lanes == 2 ? ~0ull : (1ull << (128 / g->lanes)) - 1;
+    u64 mask = g->bits == 64 ? ~0ull : (1ull << g->bits) - 1;
+    int64_t step = g->lanes * g->bits / 128;
     for (int64_t a = 0; a < 16; a++) {
-        for (int64_t x = 0; x < 16; x++) {
+        for (int64_t x = a % step; x < 16; x += step) {
             for (int64_t op = 0; op < 20; op++) {
                 int64_t args[4] = { a, x, op, (a * 3 + x + op) & (g->lanes - 1) };
                 int64_t got = 0;
@@ -1931,6 +1932,7 @@ TEST_CASE(runs_vectors)
         ok = add_package(&b, 0, VECTOR_RUNS, 'v', true) && add_package(&b, 1, VECTOR_GRID, 'v', true) &&
              add_package(&b, 2, VECTOR_BODY, 'v', true) && add_package(&b, 3, VECTOR_MASK, 'v', true) &&
              add_package(&b, 4, VECTOR_MASK, 'v', true) && add_package(&b, 5, VECTOR_PICK, 'v', true) &&
+             add_package(&b, 6, VECTOR_WIDE_RUNS, 'v', true) && add_package(&b, 7, VECTOR_WIDE_GRID, 'v', true) &&
              finish_build(&b, variants[v]);
         ok = ok && runs_agree(&b, 0, VECTOR_RESULTS, NVECTOR_RESULTS, variants[v]);
         ok = ok && runs_agree(&b, 2, VECTOR_BODY_RESULTS, NVECTOR_BODY_RESULTS, variants[v]);
@@ -1938,8 +1940,12 @@ TEST_CASE(runs_vectors)
             ok = runs_agree(&b, k, VECTOR_MASK_RESULTS, sizeof VECTOR_MASK_RESULTS / sizeof VECTOR_MASK_RESULTS[0], variants[v]);
         }
         ok = ok && runs_agree(&b, 5, VECTOR_PICK_RESULTS, sizeof VECTOR_PICK_RESULTS / sizeof VECTOR_PICK_RESULTS[0], variants[v]);
+        ok = ok && runs_agree(&b, 6, VECTOR_WIDE_RESULTS, NVECTOR_WIDE_RESULTS, variants[v]);
         for (size_t f = 0; ok && f < NVECTOR_GRID_FUNCTIONS; f++) {
             ok = grid_agrees(&b, 1, &VECTOR_GRID_FUNCTIONS[f], variants[v]);
+        }
+        for (size_t f = 0; ok && f < NVECTOR_WIDE_GRID_FUNCTIONS; f++) {
+            ok = grid_agrees(&b, 7, &VECTOR_WIDE_GRID_FUNCTIONS[f], variants[v]);
         }
         close_build(&b, ok);
     }

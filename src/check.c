@@ -717,12 +717,21 @@ is_vector(const Checker *c, u32 type)
 static u32
 lane_vector(const Checker *c, u32 type)
 {
+    static_assert(
+        TYPE_ID_I64X8 - TYPE_ID_I64X2 == TYPE_ID_U8X64 - TYPE_ID_U8X16,
+        "the 64-byte vectors must follow the 16-byte ones in the same order"
+    );
     if (!is_array(c, type)) {
         return 0;
     }
     u32 elem = c->types.arg0[type];
     u32 vector = elem < NFIXED_TYPES ? lane_vectors[elem] : 0;
-    return vector && c->types.arg1[type] == c->types.arg1[vector] ? vector : 0;
+    u64 lanes = c->types.arg1[type];
+    if (!vector || lanes == c->types.arg1[vector]) {
+        return vector;
+    }
+    return lanes == 4 * c->types.arg1[vector] ? vector + TYPE_ID_U8X64 - TYPE_ID_U8X16
+                                              : 0;
 }
 
 static NOINLINE u32
@@ -807,8 +816,9 @@ check_type_size(const Checker *c, u32 type)
         case TYPE_FN: return 8;
         case TYPE_OPTIONAL:
             return is_nilable(c, type) ? 8 : flagged_size(c, type);
-        case TYPE_SLICE:
-        case TYPE_VECTOR: return 16;
+        case TYPE_SLICE: return 16;
+        case TYPE_VECTOR:
+            return t->arg1[type] * check_type_size(c, t->arg0[type]);
         case TYPE_ENUM: return check_type_size(c, (u32)t->arg1[type]);
         case TYPE_ARRAY: {
             u64 n = t->arg1[type];
@@ -5233,13 +5243,15 @@ call_lookup(Checker *c, u32 file, u32 token, u32 first_arg, u32 nargs)
         return poison;
     }
     bool bytes = table.type == TYPE_ID_U8X16 || table.type == TYPE_ID_I8X16;
-    if (!bytes || index.type != table.type) {
+    bool lanes = index.type == table.type ||
+                 index.type == table.type + TYPE_ID_U8X64 - TYPE_ID_U8X16;
+    if (!bytes || !lanes) {
         u32 a = is_place(table) ? place_type(c, table) : table.type;
         u32 b = is_place(index) ? place_type(c, index) : index.type;
         report(c, file, token, DIAG_LOOKUP_TYPES, a, b);
         return poison;
     }
-    return emit_value(c, IR_LOOKUP, table.type, operand_ir(c, table), operand_ir(c, index));
+    return emit_value(c, IR_LOOKUP, index.type, operand_ir(c, table), operand_ir(c, index));
 }
 
 static NOINLINE Operand
@@ -5263,9 +5275,8 @@ call_top_bits(Checker *c, u32 file, u32 token, u32 first_arg, u32 nargs)
         report(c, file, v_token, DIAG_BUILTIN_VECTOR, NAME_TOP_BITS, type);
         return poison;
     }
-    u32 type = c->types.arg1[v.type] == 16 ? TYPE_ID_U16 : TYPE_ID_U8;
     u32 i = emit(c, IR_TOP_BITS, v.type, operand_ir(c, v), 0);
-    return (Operand){ type, REF_VALUE | i };
+    return (Operand){ check_top_bits_type(c, v.type), REF_VALUE | i };
 }
 
 static NOINLINE Operand

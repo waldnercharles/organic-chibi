@@ -1816,13 +1816,31 @@ static const Case ERRORS[] = {
         "    mem.unaligned_load([16]u8, p)\n"
         "    t8 := simd.lookup\n"
         "    e9 := simd.eq\n"
+        "    y := mem.unaligned_load([64]u8, p)\n"
+        "    yi := mem.unaligned_load([64]i8, p)\n"
+        "    l5 := simd.lookup(y, y)\n"
+        "    l6 := simd.lookup(v, yi)\n"
+        "    l7: [64]u8 = simd.lookup(v, y)\n"
+        "    l8: [64]i8 = simd.lookup(i, yi)\n"
+        "    t11: u64 = simd.top_bits(y)\n"
+        "    t12: u16 = simd.top_bits(mem.unaligned_load([16]u32, p))\n"
+        "    t13: u8 = simd.top_bits(y)\n"
+        "    t14: u8 = simd.top_bits(mem.unaligned_load([8]i64, p))\n"
+        "    t15: u32 = simd.top_bits(bitcast([32]u16, y))\n"
+        "    mid := mem.unaligned_load([32]u8, p)\n"
+        "    e10 := simd.eq(y, v)\n"
+        "    e11: [32]u16 = simd.lt(bitcast([32]u16, y), 7)\n"
+        "    b1 := bitcast([16]u8, y)\n"
+        "    sm: [32]u8\n"
+        "    e12 := sm +% 1\n"
+        "    e13 := simd.eq(sm, sm)\n"
         "}\n",
         "a:7:14: wrong number of arguments: expected 2, found 1\n"
         "a:8:14: wrong number of arguments: expected 2, found 3\n"
         "a:9:29: `mem.unaligned_load` takes a type first, as in `mem.unaligned_load([16]u8, p)`\n"
         "a:10:29: `mem.unaligned_load` takes a type first, as in `mem.unaligned_load([16]u8, p)`\n"
-        "a:11:29: `mem.unaligned_load` reads and writes numbers and 16-byte arrays of integers, found `S`\n"
-        "a:12:29: `mem.unaligned_load` reads and writes numbers and 16-byte arrays of integers, found `bool`\n"
+        "a:11:29: `mem.unaligned_load` reads and writes numbers and 16-byte and 64-byte arrays of integers, found `S`\n"
+        "a:12:29: `mem.unaligned_load` reads and writes numbers and 16-byte and 64-byte arrays of integers, found `bool`\n"
         "a:13:37: `mem.unaligned_load` takes a `[*]` pointer, found `*u8`\n"
         "a:14:37: `mem.unaligned_load` takes a `[*]` pointer, found `[]u8`\n"
         "a:15:37: `mem.unaligned_load` takes a `[*]` pointer, found `untyped integer`\n"
@@ -1831,37 +1849,45 @@ static const Case ERRORS[] = {
         "a:18:28: `mem.unaligned_store` needs a typed value, as in `u32(0)`\n"
         "a:19:28: `mem.unaligned_store` needs a typed value, as in `u32(0)`\n"
         "a:20:25: `mem.unaligned_store` takes a `[*]` pointer, found `*u8`\n"
-        "a:21:28: `mem.unaligned_store` reads and writes numbers and 16-byte arrays of integers, found `bool`\n"
-        "a:22:28: `mem.unaligned_store` reads and writes numbers and 16-byte arrays of integers, found `S`\n"
-        "a:23:28: `mem.unaligned_store` reads and writes numbers and 16-byte arrays of integers, found `[]u8`\n"
+        "a:21:28: `mem.unaligned_store` reads and writes numbers and 16-byte and 64-byte arrays of integers, found `bool`\n"
+        "a:22:28: `mem.unaligned_store` reads and writes numbers and 16-byte and 64-byte arrays of integers, found `S`\n"
+        "a:23:28: `mem.unaligned_store` reads and writes numbers and 16-byte and 64-byte arrays of integers, found `[]u8`\n"
         "a:24:28: expected a value\n"
         "a:25:14: expected a value\n"
         "a:27:16: wrong number of arguments: expected 2, found 1\n"
-        "a:28:16: `simd.lookup` takes two `[16]u8` or two `[16]i8`, found `[8]u16` and `[8]u16`\n"
-        "a:29:16: `simd.lookup` takes two `[16]u8` or two `[16]i8`, found `[16]u8` and `untyped integer`\n"
-        "a:30:16: `simd.lookup` takes two `[16]u8` or two `[16]i8`, found `[16]u8` and `[16]i8`\n"
+        "a:28:16: `simd.lookup` takes a `[16]u8` table and `[16]u8` or `[64]u8` indexes, or the same in `i8`, found `[8]u16` and `[8]u16`\n"
+        "a:29:16: `simd.lookup` takes a `[16]u8` table and `[16]u8` or `[64]u8` indexes, or the same in `i8`, found `[16]u8` and `untyped integer`\n"
+        "a:30:16: `simd.lookup` takes a `[16]u8` table and `[16]u8` or `[64]u8` indexes, or the same in `i8`, found `[16]u8` and `[16]i8`\n"
         "a:31:16: wrong number of arguments: expected 1, found 0\n"
         "a:32:16: wrong number of arguments: expected 1, found 2\n"
-        "a:33:25: `simd.top_bits` takes a 16-byte array of integers, found `u32`\n"
-        "a:34:25: `simd.top_bits` takes a 16-byte array of integers, found `untyped integer`\n"
+        "a:33:25: `simd.top_bits` takes a 16-byte or 64-byte array of integers, found `u32`\n"
+        "a:34:25: `simd.top_bits` takes a 16-byte or 64-byte array of integers, found `untyped integer`\n"
         "a:35:25: expected a value\n"
         "a:36:19: `u16` and `u8` don't mix without a conversion\n"
-        "a:37:25: `simd.top_bits` takes a 16-byte array of integers, found `S`\n"
-        "a:40:31: `mem.unaligned_load` reads and writes numbers and 16-byte arrays of integers, found `[3]u8`\n"
-        "a:41:32: `mem.unaligned_load` reads and writes numbers and 16-byte arrays of integers, found `[2]u128`\n"
-        "a:42:28: `mem.unaligned_store` reads and writes numbers and 16-byte arrays of integers, found `[3]u8`\n"
-        "a:43:26: `simd.top_bits` takes a 16-byte array of integers, found `[3]u8`\n"
+        "a:37:25: `simd.top_bits` takes a 16-byte or 64-byte array of integers, found `S`\n"
+        "a:40:31: `mem.unaligned_load` reads and writes numbers and 16-byte and 64-byte arrays of integers, found `[3]u8`\n"
+        "a:41:32: `mem.unaligned_load` reads and writes numbers and 16-byte and 64-byte arrays of integers, found `[2]u128`\n"
+        "a:42:28: `mem.unaligned_store` reads and writes numbers and 16-byte and 64-byte arrays of integers, found `[3]u8`\n"
+        "a:43:26: `simd.top_bits` takes a 16-byte or 64-byte array of integers, found `[3]u8`\n"
         "a:44:16: wrong number of arguments: expected 2, found 1\n"
         "a:45:16: `[16]u8` and `[8]u16` don't mix without a conversion\n"
-        "a:46:19: `simd.gt` takes a 16-byte array of integers, found `u32`\n"
-        "a:47:19: `simd.ge` takes a 16-byte array of integers, found `[3]u8`\n"
+        "a:46:19: `simd.gt` takes a 16-byte or 64-byte array of integers, found `u32`\n"
+        "a:47:19: `simd.ge` takes a 16-byte or 64-byte array of integers, found `[3]u8`\n"
         "a:48:16: 300 does not fit in `u8`\n"
         "a:49:23: `[16]u8` and `[8]u16` don't mix without a conversion\n"
-        "a:50:22: `simd.eq` takes a 16-byte array of integers, found `S`\n"
-        "a:51:19: `simd.lt` takes a 16-byte array of integers, found `untyped integer`\n"
+        "a:50:22: `simd.eq` takes a 16-byte or 64-byte array of integers, found `S`\n"
+        "a:51:19: `simd.lt` takes a 16-byte or 64-byte array of integers, found `untyped integer`\n"
         "a:52:9: this value is not used; discard it with `_ = ...`\n"
         "a:53:16: `lookup` is a function, so it can't be used here\n"
         "a:54:16: `eq` is a function, so it can't be used here\n"
+        "a:57:16: `simd.lookup` takes a `[16]u8` table and `[16]u8` or `[64]u8` indexes, or the same in `i8`, found `[64]u8` and `[64]u8`\n"
+        "a:58:16: `simd.lookup` takes a `[16]u8` table and `[16]u8` or `[64]u8` indexes, or the same in `i8`, found `[16]u8` and `[64]i8`\n"
+        "a:63:20: `u64` and `u8` don't mix without a conversion\n"
+        "a:66:31: `mem.unaligned_load` reads and writes numbers and 16-byte and 64-byte arrays of integers, found `[32]u8`\n"
+        "a:67:17: `[64]u8` and `[16]u8` don't mix without a conversion\n"
+        "a:69:11: `[64]u8` and `[16]u8` differ in size, so `bitcast` can't change one into the other\n"
+        "a:71:15: the checker doesn't support this yet\n"
+        "a:72:20: `simd.eq` takes a 16-byte or 64-byte array of integers, found `[32]u8`\n"
         "struct S { a: int }\n"
         "fn f(p: [*]u8, q: *u8, s: []u8, x: u32, b: bool, st: S) -> void\n",
     },
@@ -1964,17 +1990,17 @@ static const Case ERRORS[] = {
         "a:6:22: `bitcast` needs a typed value, as in `u64(1)`\n"
         "a:7:23: `bitcast` needs a typed value, as in `u64(1)`\n"
         "a:8:24: `bitcast` can't change a slice, because its length would need rescaling\n"
-        "a:9:21: `bitcast` changes numbers, pointers and 16-byte arrays of integers, not `bool`\n"
-        "a:10:17: `bitcast` changes numbers, pointers and 16-byte arrays of integers, not `bool`\n"
+        "a:9:21: `bitcast` changes numbers, pointers and 16-byte and 64-byte arrays of integers, not `bool`\n"
+        "a:10:17: `bitcast` changes numbers, pointers and 16-byte and 64-byte arrays of integers, not `bool`\n"
         "a:11:22: the checker doesn't support this yet\n"
         "a:12:17: expected a type\n"
         "a:13:23: address 2 isn't aligned for `*u32`\n"
         "a:14:23: `*u32` is never nil, so this needs a value\n"
         "a:15:25: `[*]u32` is never nil, so this needs a value\n"
         "a:17:22: expected a value\n"
-        "a:19:17: `bitcast` changes numbers, pointers and 16-byte arrays of integers, not `Color`\n"
+        "a:19:17: `bitcast` changes numbers, pointers and 16-byte and 64-byte arrays of integers, not `Color`\n"
         "a:20:22: the checker doesn't support this yet\n"
-        "a:21:27: `bitcast` changes numbers, pointers and 16-byte arrays of integers, not `Color`\n"
+        "a:21:27: `bitcast` changes numbers, pointers and 16-byte and 64-byte arrays of integers, not `Color`\n"
         "a:22:22: `bitcast` can't change a slice, because its length would need rescaling\n"
         "a:23:22: `bitcast` needs a typed value, as in `u64(1)`\n"
         "a:25:22: `f` is a function, so it can't be used here\n"
@@ -2513,7 +2539,7 @@ static const Case ERRORS[] = {
         "a:15:8: expected `bool`, found `untyped string`\n"
         "a:16:15: `untyped string` is never nil, so `!!` does nothing\n"
         "a:17:16: `untyped string` is never nil, so `?\?` does nothing\n"
-        "a:18:25: `bitcast` changes numbers, pointers and 16-byte arrays of integers, not `untyped string`\n"
+        "a:18:25: `bitcast` changes numbers, pointers and 16-byte and 64-byte arrays of integers, not `untyped string`\n"
         "a:19:15: `untyped string` and `*u16` don't mix without a conversion\n"
         "a:20:5: this value is not used; discard it with `_ = ...`\n"
         "a:21:14: `untyped string` and `u8` don't mix without a conversion\n"
@@ -2673,7 +2699,7 @@ static const Case ERRORS[] = {
         "a:17:10: `i32` and `?extern fn(i32) -> void` differ in size, so `bitcast` can't change one into the other\n"
         "a:18:12: `extern fn(i32) -> void` is never nil, so `??` does nothing\n"
         "a:19:7: `extern fn(i32) -> void` is never nil, so `?\?=` does nothing\n"
-        "a:20:20: `bitcast` changes numbers, pointers and 16-byte arrays of integers, not `fn(i32) -> void`\n"
+        "a:20:20: `bitcast` changes numbers, pointers and 16-byte and 64-byte arrays of integers, not `fn(i32) -> void`\n"
         "extern fn take(h: extern fn(i32) -> void) -> void\n"
         "extern fn give() -> ?extern fn(i32) -> void\n"
         "fn on(sig: i32) -> void\n"
@@ -8462,6 +8488,64 @@ static const Case BODIES[] = {
         "    ret u64 %46\n",
     },
     {
+        "import \"std/mem\"\n"
+        "import \"std/simd\"\n"
+        "fn block_bits(p: [*]u8, c: u8, k: int) -> u64 {\n"
+        "    v := mem.unaligned_load([64]u8, p)\n"
+        "    t := u8.[32, 0, 0, 0, 0, 0, 0, 0, 0, 9, 10, 0, 0, 13, 0, 0]\n"
+        "    w := simd.lookup(t, v & 15)\n"
+        "    h := bitcast([16]u32, w) +% 1\n"
+        "    mem.unaligned_store(p + 64, h)\n"
+        "    return simd.top_bits(simd.eq(w, v) | simd.eq(v, c)) + u64(simd.top_bits(h))\n"
+        "}\n",
+        "fn block_bits(p: [*]u8, c: u8, k: int) -> u64\n"
+        "    slots: p: [*]u8, c: u8, k: int, v: [64]u8, t: [16]u8, w: [64]u8, h: [16]u32\n"
+        "    %0 = load [*]u8 p\n"
+        "    %1 = load-at u8x64 %0\n"
+        "    %2 = addr *[64]u8 v\n"
+        "    store-at u8x64 %2, %1\n"
+        "    %4 = data *[16]u8 .[32, 0, 0, 0, 0, 0, 0, 0, 0, 9, 10, 0, 0, 13, 0, 0]\n"
+        "    %5 = addr *[16]u8 t\n"
+        "    copy [16]u8 %5, %4\n"
+        "    %7 = addr *[64]u8 v\n"
+        "    %8 = load-at u8x64 %7\n"
+        "    %9 = and u8x64 %8, 15\n"
+        "    %10 = addr *[16]u8 t\n"
+        "    %11 = load-at u8x16 %10\n"
+        "    %12 = lookup u8x64 %11, %9\n"
+        "    %13 = addr *[64]u8 w\n"
+        "    store-at u8x64 %13, %12\n"
+        "    %15 = addr *[64]u8 w\n"
+        "    %16 = load-at u8x64 %15\n"
+        "    %17 = bitcast u32x16 %16\n"
+        "    %18 = add-wrap u32x16 %17, 1\n"
+        "    %19 = addr *[16]u32 h\n"
+        "    store-at u32x16 %19, %18\n"
+        "    %21 = load [*]u8 p\n"
+        "    %22 = index [*]u8 %21, 64\n"
+        "    %23 = addr *[16]u32 h\n"
+        "    %24 = load-at u32x16 %23\n"
+        "    store-at u32x16 %22, %24\n"
+        "    %26 = addr *[64]u8 w\n"
+        "    %27 = load-at u8x64 %26\n"
+        "    %28 = addr *[64]u8 v\n"
+        "    %29 = load-at u8x64 %28\n"
+        "    %30 = eq u8x64 %27, %29\n"
+        "    %31 = load u8 c\n"
+        "    %32 = addr *[64]u8 v\n"
+        "    %33 = load-at u8x64 %32\n"
+        "    %34 = splat u8x64 %31\n"
+        "    %35 = eq u8x64 %33, %34\n"
+        "    %36 = or u8x64 %30, %35\n"
+        "    %37 = top-bits u8x64 %36\n"
+        "    %38 = addr *[16]u32 h\n"
+        "    %39 = load-at u32x16 %38\n"
+        "    %40 = top-bits u32x16 %39\n"
+        "    %41 = convert u64 %40\n"
+        "    %42 = add u64 %37, %41\n"
+        "    ret u64 %42\n",
+    },
+    {
         "struct S { v: [16]u8, n: int }\n"
         "\n"
         "fn assign(a: u8, k: int) -> u8 {\n"
@@ -13681,8 +13765,9 @@ static bool
 grid_agrees(Program *p, const GridFunction *g)
 {
     u32 decl = decl_named(p, g->name);
+    int64_t step = g->lanes * g->bits / 128;
     for (int64_t a = 0; a < 16; a++) {
-        for (int64_t b = 0; b < 16; b++) {
+        for (int64_t b = a % step; b < 16; b += step) {
             for (int64_t op = 0; op < 20; op++) {
                 int64_t k = (a * 3 + b + op) & (g->lanes - 1);
                 u64 args[4] = { (u64)a, (u64)b, (u64)op, (u64)k };
@@ -13710,18 +13795,25 @@ grid_agrees(Program *p, const GridFunction *g)
     return true;
 }
 
+static bool
+grid_program_agrees(const char *text, const GridFunction *fns, size_t n)
+{
+    Program p;
+    bool ok = load_program(&p, text, false);
+    for (size_t f = 0; ok && f < n; f++) {
+        ok = grid_agrees(&p, &fns[f]);
+    }
+    release_program(&p);
+    return ok;
+}
+
 TEST_CASE(vectors)
 {
     REQUIRE(runs_to(VECTOR_BODY, VECTOR_BODY_RESULTS, NVECTOR_BODY_RESULTS, false));
     REQUIRE(runs_to(VECTOR_RUNS, VECTOR_RESULTS, NVECTOR_RESULTS, false));
-
-    Program p;
-    bool ok = load_program(&p, VECTOR_GRID, false);
-    for (size_t f = 0; ok && f < NVECTOR_GRID_FUNCTIONS; f++) {
-        ok = grid_agrees(&p, &VECTOR_GRID_FUNCTIONS[f]);
-    }
-    release_program(&p);
-    REQUIRE(ok);
+    REQUIRE(runs_to(VECTOR_WIDE_RUNS, VECTOR_WIDE_RESULTS, NVECTOR_WIDE_RESULTS, false));
+    REQUIRE(grid_program_agrees(VECTOR_GRID, VECTOR_GRID_FUNCTIONS, NVECTOR_GRID_FUNCTIONS));
+    REQUIRE(grid_program_agrees(VECTOR_WIDE_GRID, VECTOR_WIDE_GRID_FUNCTIONS, NVECTOR_WIDE_GRID_FUNCTIONS));
     return true;
 }
 

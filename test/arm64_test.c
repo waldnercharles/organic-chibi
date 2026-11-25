@@ -5450,9 +5450,10 @@ static bool
 vector_grid_agrees(Program *p, const GridFunction *g)
 {
     I4 *f = (I4 *)fn(p, g->name);
-    u64 mask = g->lanes == 2 ? ~0ull : (1ull << (128 / g->lanes)) - 1;
+    u64 mask = g->bits == 64 ? ~0ull : (1ull << g->bits) - 1;
+    int64_t step = g->lanes * g->bits / 128;
     for (int64_t a = 0; a < 16; a++) {
-        for (int64_t b = 0; b < 16; b++) {
+        for (int64_t b = a % step; b < 16; b += step) {
             for (int64_t op = 0; op < 20; op++) {
                 int64_t args[4] = { a, b, op, (a * 3 + b + op) & (g->lanes - 1) };
                 int64_t got = 0;
@@ -5790,12 +5791,19 @@ TEST_CASE(vectors)
     catch_traps();
     REQUIRE(vector_runs_agree(VECTOR_BODY, VECTOR_BODY_RESULTS, NVECTOR_BODY_RESULTS, false));
     REQUIRE(vector_runs_agree(VECTOR_RUNS, VECTOR_RESULTS, NVECTOR_RESULTS, false));
+    REQUIRE(vector_runs_agree(VECTOR_WIDE_RUNS, VECTOR_WIDE_RESULTS, NVECTOR_WIDE_RESULTS, false));
     REQUIRE(vector_calls_agree());
 
     Program p;
     REQUIRE(build(&p, VECTOR_GRID));
     for (size_t f = 0; f < NVECTOR_GRID_FUNCTIONS; f++) {
         REQUIRE(vector_grid_agrees(&p, &VECTOR_GRID_FUNCTIONS[f]));
+    }
+    release_program(&p);
+
+    REQUIRE(build(&p, VECTOR_WIDE_GRID));
+    for (size_t f = 0; f < NVECTOR_WIDE_GRID_FUNCTIONS; f++) {
+        REQUIRE(vector_grid_agrees(&p, &VECTOR_WIDE_GRID_FUNCTIONS[f]));
     }
     release_program(&p);
 

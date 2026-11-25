@@ -83,6 +83,14 @@ typedef enum
     X(TYPE_ID_I32X4, TYPE_VECTOR, TYPE_ID_I32, 4, "i32x4")                     \
     X(TYPE_ID_U64X2, TYPE_VECTOR, TYPE_ID_U64, 2, "u64x2")                     \
     X(TYPE_ID_I64X2, TYPE_VECTOR, TYPE_ID_I64, 2, "i64x2")                     \
+    X(TYPE_ID_U8X64, TYPE_VECTOR, TYPE_ID_U8, 64, "u8x64")                     \
+    X(TYPE_ID_I8X64, TYPE_VECTOR, TYPE_ID_I8, 64, "i8x64")                     \
+    X(TYPE_ID_U16X32, TYPE_VECTOR, TYPE_ID_U16, 32, "u16x32")                  \
+    X(TYPE_ID_I16X32, TYPE_VECTOR, TYPE_ID_I16, 32, "i16x32")                  \
+    X(TYPE_ID_U32X16, TYPE_VECTOR, TYPE_ID_U32, 16, "u32x16")                  \
+    X(TYPE_ID_I32X16, TYPE_VECTOR, TYPE_ID_I32, 16, "i32x16")                  \
+    X(TYPE_ID_U64X8, TYPE_VECTOR, TYPE_ID_U64, 8, "u64x8")                     \
+    X(TYPE_ID_I64X8, TYPE_VECTOR, TYPE_ID_I64, 8, "i64x8")                     \
     X(TYPE_ID_STRING, TYPE_SLICE, TYPE_ID_U8, 1, "string")                     \
     X(TYPE_ID_CSTRING, TYPE_MANY, TYPE_ID_U8, 1, "cstring")
 // clang-format on
@@ -212,7 +220,7 @@ enum
     X(DIAG_MISMATCH, "`%T` and `%U` don't mix without a conversion")                                \
     X(DIAG_BITCAST_UNTYPED, "`bitcast` needs a typed value, as in `u64(1)`")                        \
     X(DIAG_BITCAST_SLICE, "`bitcast` can't change a slice, because its length would need rescaling") \
-    X(DIAG_BITCAST_TYPE, "`bitcast` changes numbers, pointers and 16-byte arrays of integers, not `%U`") \
+    X(DIAG_BITCAST_TYPE, "`bitcast` changes numbers, pointers and 16-byte and 64-byte arrays of integers, not `%U`") \
     X(DIAG_BITCAST_SIZE, "`%T` and `%U` differ in size, so `bitcast` can't change one into the other") \
     X(DIAG_MISALIGNED, "address %v isn't aligned for `%U`")                                         \
     X(DIAG_DIVIDE_BY_ZERO, "division by zero")                                                      \
@@ -290,14 +298,14 @@ enum
     X(DIAG_ARG_COUNT, "wrong number of arguments: expected %c, found %C")                           \
     X(DIAG_ARG_COUNT_VARIADIC, "wrong number of arguments: expected at least %c, found %C")         \
     X(DIAG_BUILTIN_INT, "`%b` takes an integer, found `%U`")                                        \
-    X(DIAG_BUILTIN_VECTOR, "`%b` takes a 16-byte array of integers, found `%U`")                    \
+    X(DIAG_BUILTIN_VECTOR, "`%b` takes a 16-byte or 64-byte array of integers, found `%U`")         \
     X(DIAG_BUILTIN_MANY, "`%b` takes a `[*]` pointer, found `%U`")                                  \
-    X(DIAG_UNALIGNED_TYPE, "`%b` reads and writes numbers and 16-byte arrays of integers, found `%U`") \
+    X(DIAG_UNALIGNED_TYPE, "`%b` reads and writes numbers and 16-byte and 64-byte arrays of integers, found `%U`") \
     X(DIAG_LOAD_TYPE, "`mem.unaligned_load` takes a type first, as in `mem.unaligned_load([16]u8, p)`") \
     X(DIAG_SIZE_TYPE, "`%b` takes a type, as in `%b(u32)`")                                         \
     X(DIAG_SIZE_TOO_LARGE, "the size of `%T` doesn't fit in `int`")                                 \
     X(DIAG_STORE_UNTYPED, "`mem.unaligned_store` needs a typed value, as in `u32(0)`")              \
-    X(DIAG_LOOKUP_TYPES, "`simd.lookup` takes two `[16]u8` or two `[16]i8`, found `%T` and `%U`")   \
+    X(DIAG_LOOKUP_TYPES, "`simd.lookup` takes a `[16]u8` table and `[16]u8` or `[64]u8` indexes, or the same in `i8`, found `%T` and `%U`") \
     X(DIAG_RETURN_VALUE, "this function returns nothing, so `return` takes no value")               \
     X(DIAG_RETURN_EMPTY, "`return` needs a value of type `%U`")                                     \
     X(DIAG_MISSING_RETURN, "the function can reach its end without returning a value of type `%U`") \
@@ -698,6 +706,16 @@ check_error_union_first(const Checker *c, u32 type)
 {
     u32 value = (u32)c->types.arg0[type];
     return value == TYPE_ID_VOID ? TYPE_ID_ERROR : value;
+}
+
+static inline u32
+check_top_bits_type(const Checker *c, u32 vector)
+{
+    u64 lanes = c->types.arg1[vector];
+    return lanes <= 8  ? TYPE_ID_U8
+         : lanes == 16 ? TYPE_ID_U16
+         : lanes == 32 ? TYPE_ID_U32
+                       : TYPE_ID_U64;
 }
 
 void check_init(Checker *c, const Names *names, const ParsedFile *files, u32 nfiles);

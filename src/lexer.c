@@ -76,25 +76,25 @@ lexer_init(Lexer *lx, Arena *arena, size_t total_source_bytes)
     }
 }
 
-static inline u8x16
-is_ident(u8x16 v)
+static inline u8x64
+is_ident(u8x64 v)
 {
-    u8x16 letter = simd_in_range(v | 0x20, 'a', 'z');
-    u8x16 digit = simd_in_range(v, '0', '9');
+    u8x64 letter = simd_in_range(v | 0x20, 'a', 'z');
+    u8x64 digit = simd_in_range(v, '0', '9');
 
-    return letter | digit | simd_eq(v, '_');
+    return letter | simd_eq(v, '_') | digit;
 }
 
-static inline u8x16
-is_ws(u8x16 v)
+static inline u8x64
+is_ws(u8x64 v)
 {
     const u8x16 ws_char = { ' ', 0,    0,    0, 0, 0,    0, 0,
                             0,   '\t', '\n', 0, 0, '\r', 0, 0 };
-    return simd_eq(simd_lookup16(ws_char, v & 15), v);
+    return simd_eq(simd_lookup64(ws_char, v & 15), v);
 }
 
-static inline u8x16
-pair_firsts(u8x16 v, u8x16 next)
+static inline u8x64
+pair_firsts(u8x64 v, u8x64 next)
 {
     enum
     {
@@ -110,7 +110,7 @@ pair_firsts(u8x16 v, u8x16 next)
                             0, 0,    0x83, 0x81, 0x0A, 0xA3, 0x56, 0x03 };
     const u8x16 hi_sets = { 0, 0, 0xF1, 0x22, 0, 0x04, 0, 0x08,
                             0, 0, 0,    0,    0, 0,    0, 0 };
-    u8x16 sets_of_v = simd_lookup16(lo_sets, v & 15) & simd_lookup16(hi_sets, v >> 4);
+    u8x64 sets_of_v = simd_lookup64(lo_sets, v & 15) & simd_lookup64(hi_sets, v >> 4);
 
     // clang-format off
     const u8x16 lo_allowed = { 0, 0, 0,           0, 0, BEFORE_PERCENT, 0,         0,
@@ -120,8 +120,8 @@ pair_firsts(u8x16 v, u8x16 next)
                                0, 0, 0,                            0,
                                0, 0, 0,                            0 };
     // clang-format on
-    u8x16 sets_allowed = (simd_lookup16(lo_allowed, next & 15) &
-                          simd_lookup16(hi_allowed, next >> 4)) |
+    u8x64 sets_allowed = (simd_lookup64(lo_allowed, next & 15) &
+                          simd_lookup64(hi_allowed, next >> 4)) |
                          (simd_eq(next, v) & BEFORE_SAME);
 
     return simd_any_bits(sets_of_v, sets_allowed);
@@ -142,41 +142,25 @@ typedef struct
     u64 line_end;
 } BlockMasks;
 
-static inline u8x16
-is_rare(u8x16 v)
+static inline u8x64
+is_rare(u8x64 v)
 {
     const u8x16 rare_char = { 0, 0, 0, 0, 0,    0, 0, '\'',
                               0, 0, 0, 0, '\\', 0, 0, 0 };
-    return simd_eq(simd_lookup16(rare_char, v & 15), v);
+    return simd_eq(simd_lookup64(rare_char, v & 15), v);
 }
 
-static inline u8x16
-is_comment_start(u8x16 v, u8x16 next)
+static inline u8x64
+is_comment_start(u8x64 v, u8x64 next)
 {
     return simd_eq(v, '/') & simd_eq(next, '/');
 }
 
-static inline u8x16
-is_line_end(u8x16 v)
+static inline u8x64
+is_line_end(u8x64 v)
 {
     return simd_eq(v, '\n') | simd_eq(v, 0);
 }
-
-#define MASK64(f, v, ...)                                                      \
-    simd_mask64(                                                               \
-        f((v).v[0] __VA_OPT__(, ) __VA_ARGS__),                                \
-        f((v).v[1] __VA_OPT__(, ) __VA_ARGS__),                                \
-        f((v).v[2] __VA_OPT__(, ) __VA_ARGS__),                                \
-        f((v).v[3] __VA_OPT__(, ) __VA_ARGS__)                                 \
-    )
-
-#define MASK64_PAIR(f, v, n)                                                   \
-    simd_mask64(                                                               \
-        f((v).v[0], (n).v[0]),                                                 \
-        f((v).v[1], (n).v[1]),                                                 \
-        f((v).v[2], (n).v[2]),                                                 \
-        f((v).v[3], (n).v[3])                                                  \
-    )
 
 static inline ALWAYS_INLINE BlockMasks
 block_masks(const u8 *p)
@@ -185,15 +169,15 @@ block_masks(const u8 *p)
     u8x64 next = simd_next64(v, p);
 
     return (BlockMasks){
-        .ident = MASK64(is_ident, v),
-        .ws = MASK64(is_ws, v),
-        .pairs = MASK64_PAIR(pair_firsts, v, next),
-        .digit = MASK64(simd_in_range, v, '0', '9'),
-        .dot = MASK64(simd_eq, v, '.'),
-        .quote = MASK64(simd_eq, v, '"'),
-        .rare = MASK64(is_rare, v),
-        .comment = MASK64_PAIR(is_comment_start, v, next),
-        .line_end = MASK64(is_line_end, v),
+        .ident = simd_mask64(is_ident(v)),
+        .ws = simd_mask64(is_ws(v)),
+        .pairs = simd_mask64(pair_firsts(v, next)),
+        .digit = simd_mask64(simd_in_range(v, '0', '9')),
+        .dot = simd_mask64(simd_eq(v, '.')),
+        .quote = simd_mask64(simd_eq(v, '"')),
+        .rare = simd_mask64(is_rare(v)),
+        .comment = simd_mask64(is_comment_start(v, next)),
+        .line_end = simd_mask64(is_line_end(v)),
     };
 }
 
@@ -353,9 +337,9 @@ literals_in(BlockMasks m, LiteralState in, const char *p, u64 active, u64 backsl
 static NOINLINE Literals
 rare_literals(BlockMasks m, LiteralState in, const char *p, u64 active)
 {
-    u8x64 v = simd_load64((const u8 *)p);
-    u64 backslash = MASK64(simd_eq, v, '\\') & active;
-    u64 squote = MASK64(simd_eq, v, '\'') & active;
+    u8x64 v = simd_load64(p);
+    u64 backslash = simd_mask64(simd_eq(v, '\\')) & active;
+    u64 squote = simd_mask64(simd_eq(v, '\'')) & active;
     return literals_in(m, in, p, active, backslash, squote);
 }
 
@@ -834,11 +818,11 @@ ident_run_len(const char *p)
 {
     const char *s = p;
     for (;;) {
-        u64 stop = simd_mask16(~is_ident(simd_load(p)));
+        u64 stop = simd_mask64(~is_ident(simd_load64(p)));
         if (stop) {
-            return (u32)(p - s) + simd_first16(stop);
+            return (u32)(p - s) + (u32)__builtin_ctzll(stop);
         }
-        p += 16;
+        p += BLOCK_BYTES;
     }
 }
 

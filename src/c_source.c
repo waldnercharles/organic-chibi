@@ -97,6 +97,14 @@ c_source_prelude(FILE *out)
         "typedef int32_t chibi_i32x4 __attribute__((vector_size(16)));\n"
         "typedef uint64_t chibi_u64x2 __attribute__((vector_size(16)));\n"
         "typedef int64_t chibi_i64x2 __attribute__((vector_size(16)));\n"
+        "typedef uint8_t chibi_u8x64 __attribute__((vector_size(64)));\n"
+        "typedef int8_t chibi_i8x64 __attribute__((vector_size(64)));\n"
+        "typedef uint16_t chibi_u16x32 __attribute__((vector_size(64)));\n"
+        "typedef int16_t chibi_i16x32 __attribute__((vector_size(64)));\n"
+        "typedef uint32_t chibi_u32x16 __attribute__((vector_size(64)));\n"
+        "typedef int32_t chibi_i32x16 __attribute__((vector_size(64)));\n"
+        "typedef uint64_t chibi_u64x8 __attribute__((vector_size(64)));\n"
+        "typedef int64_t chibi_i64x8 __attribute__((vector_size(64)));\n"
         "__extension__ typedef unsigned __int128 chibi_u128;\n"
         "__extension__ typedef __int128 chibi_i128;\n"
         "\n"
@@ -141,15 +149,27 @@ scalar_name(Scalar t)
     return ints[t.sign][__builtin_ctz(t.bits) - 3];
 }
 
+static bool
+is_vector64(const Checker *c, u32 type)
+{
+    return c->types.kinds[type] == TYPE_VECTOR && check_type_size(c, type) == 64;
+}
+
 static NOINLINE const char *
 vector_name(const Checker *c, u32 type, bool wide)
 {
-    static const char *const vectors[2][4] = {
-        { "chibi_u8x16", "chibi_u16x8", "chibi_u32x4", "chibi_u64x2" },
-        { "chibi_i8x16", "chibi_i16x8", "chibi_i32x4", "chibi_i64x2" },
+    static const char *const vectors[2][2][4] = {
+        {
+            { "chibi_u8x16", "chibi_u16x8", "chibi_u32x4", "chibi_u64x2" },
+            { "chibi_i8x16", "chibi_i16x8", "chibi_i32x4", "chibi_i64x2" },
+        },
+        {
+            { "chibi_u8x64", "chibi_u16x32", "chibi_u32x16", "chibi_u64x8" },
+            { "chibi_i8x64", "chibi_i16x32", "chibi_i32x16", "chibi_i64x8" },
+        },
     };
     Scalar lane = scalar_of(c, c->types.arg0[type]);
-    return vectors[lane.sign && !wide][__builtin_ctz(lane.bits) - 3];
+    return vectors[is_vector64(c, type)][lane.sign && !wide][__builtin_ctz(lane.bits) - 3];
 }
 
 static const char *
@@ -237,7 +257,7 @@ put_vector_helpers(FILE *out)
         "#endif\n"
         "\n"
         "static inline __attribute__((unused)) chibi_u8x16\n"
-        "chibi_lookup(chibi_u8x16 t, chibi_u8x16 i)\n"
+        "chibi_u8x16_lookup(chibi_u8x16 t, chibi_u8x16 i)\n"
         "{\n"
         "#if defined(CHIBI_NEON)\n"
         "    return (chibi_u8x16)vqtbl1q_u8((uint8x16_t)t, (uint8x16_t)i);\n"
@@ -253,8 +273,19 @@ put_vector_helpers(FILE *out)
         "#endif\n"
         "}\n"
         "\n"
+        "static inline __attribute__((unused)) void\n"
+        "chibi_u8x64_lookup(void *r, chibi_u8x16 t, const void *i)\n"
+        "{\n"
+        "    chibi_u8x16 q[4];\n"
+        "    __builtin_memcpy(q, i, 64);\n"
+        "    for (int k = 0; k < 4; k++) {\n"
+        "        q[k] = chibi_u8x16_lookup(t, q[k]);\n"
+        "    }\n"
+        "    __builtin_memcpy(r, q, 64);\n"
+        "}\n"
+        "\n"
         "static inline __attribute__((unused)) uint16_t\n"
-        "chibi_top_bits_x16(chibi_u8x16 v)\n"
+        "chibi_u8x16_top_bits(chibi_u8x16 v)\n"
         "{\n"
         "#if defined(CHIBI_NEON)\n"
         "    uint16x8_t a = "
@@ -276,7 +307,7 @@ put_vector_helpers(FILE *out)
         "}\n"
         "\n"
         "static inline __attribute__((unused)) uint8_t\n"
-        "chibi_top_bits_x8(chibi_u16x8 v)\n"
+        "chibi_u16x8_top_bits(chibi_u16x8 v)\n"
         "{\n"
         "#if defined(CHIBI_NEON)\n"
         "    uint32x4_t a = "
@@ -298,7 +329,7 @@ put_vector_helpers(FILE *out)
         "}\n"
         "\n"
         "static inline __attribute__((unused)) uint8_t\n"
-        "chibi_top_bits_x4(chibi_u32x4 v)\n"
+        "chibi_u32x4_top_bits(chibi_u32x4 v)\n"
         "{\n"
         "#if defined(CHIBI_NEON)\n"
         "    uint64x2_t a = "
@@ -318,7 +349,7 @@ put_vector_helpers(FILE *out)
         "}\n"
         "\n"
         "static inline __attribute__((unused)) uint8_t\n"
-        "chibi_top_bits_x2(chibi_u64x2 v)\n"
+        "chibi_u64x2_top_bits(chibi_u64x2 v)\n"
         "{\n"
         "#if defined(CHIBI_NEON)\n"
         "    uint64x2_t a = vshrq_n_u64((uint64x2_t)v, 63);\n"
@@ -329,6 +360,65 @@ put_vector_helpers(FILE *out)
         "#else\n"
         "    return (uint8_t)(v[0] >> 63 | v[1] >> 63 << 1);\n"
         "#endif\n"
+        "}\n"
+        "\n"
+        "static inline __attribute__((unused)) uint64_t\n"
+        "chibi_u8x64_top_bits(const void *v)\n"
+        "{\n"
+        "    chibi_u8x16 q[4];\n"
+        "    __builtin_memcpy(q, v, 64);\n"
+        "#if defined(CHIBI_NEON)\n"
+        "    uint8x16_t w = { 1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, "
+        "64, 128 };\n"
+        "    uint8x16_t a = "
+        "vandq_u8(vreinterpretq_u8_s8(vshrq_n_s8((int8x16_t)q[0], 7)), w);\n"
+        "    uint8x16_t b = "
+        "vandq_u8(vreinterpretq_u8_s8(vshrq_n_s8((int8x16_t)q[1], 7)), w);\n"
+        "    uint8x16_t c = "
+        "vandq_u8(vreinterpretq_u8_s8(vshrq_n_s8((int8x16_t)q[2], 7)), w);\n"
+        "    uint8x16_t d = "
+        "vandq_u8(vreinterpretq_u8_s8(vshrq_n_s8((int8x16_t)q[3], 7)), w);\n"
+        "    uint8x16_t s = vpaddq_u8(vpaddq_u8(a, b), vpaddq_u8(c, d));\n"
+        "    return vgetq_lane_u64(vreinterpretq_u64_u8(vpaddq_u8(s, s)), 0);\n"
+        "#else\n"
+        "    return (uint64_t)chibi_u8x16_top_bits(q[0]) | "
+        "(uint64_t)chibi_u8x16_top_bits(q[1]) << 16 |\n"
+        "           (uint64_t)chibi_u8x16_top_bits(q[2]) << 32 | "
+        "(uint64_t)chibi_u8x16_top_bits(q[3]) << 48;\n"
+        "#endif\n"
+        "}\n"
+        "\n"
+        "static inline __attribute__((unused)) uint32_t\n"
+        "chibi_u16x32_top_bits(const void *v)\n"
+        "{\n"
+        "    chibi_u16x8 q[4];\n"
+        "    __builtin_memcpy(q, v, 64);\n"
+        "    return (uint32_t)chibi_u16x8_top_bits(q[0]) | "
+        "(uint32_t)chibi_u16x8_top_bits(q[1]) << 8 |\n"
+        "           (uint32_t)chibi_u16x8_top_bits(q[2]) << 16 | "
+        "(uint32_t)chibi_u16x8_top_bits(q[3]) << 24;\n"
+        "}\n"
+        "\n"
+        "static inline __attribute__((unused)) uint16_t\n"
+        "chibi_u32x16_top_bits(const void *v)\n"
+        "{\n"
+        "    chibi_u32x4 q[4];\n"
+        "    __builtin_memcpy(q, v, 64);\n"
+        "    return (uint16_t)(chibi_u32x4_top_bits(q[0]) | "
+        "chibi_u32x4_top_bits(q[1]) << 4 |\n"
+        "                      chibi_u32x4_top_bits(q[2]) << 8 | "
+        "chibi_u32x4_top_bits(q[3]) << 12);\n"
+        "}\n"
+        "\n"
+        "static inline __attribute__((unused)) uint8_t\n"
+        "chibi_u64x8_top_bits(const void *v)\n"
+        "{\n"
+        "    chibi_u64x2 q[4];\n"
+        "    __builtin_memcpy(q, v, 64);\n"
+        "    return (uint8_t)(chibi_u64x2_top_bits(q[0]) | "
+        "chibi_u64x2_top_bits(q[1]) << 2 |\n"
+        "                     chibi_u64x2_top_bits(q[2]) << 4 | "
+        "chibi_u64x2_top_bits(q[3]) << 6);\n"
         "}\n"
         "\n"
         "#endif\n",
@@ -346,7 +436,7 @@ value_type(const Source *s, u32 i)
         return s->c->types.kinds[type] == TYPE_VECTOR ? type : TYPE_ID_BOOL;
     }
     if (kind == IR_TOP_BITS) {
-        return s->c->types.arg1[type] == 16 ? TYPE_ID_U16 : TYPE_ID_U8;
+        return check_top_bits_type(s->c, type);
     }
     return type;
 }
@@ -1543,17 +1633,18 @@ put_instruction(Source *s, u32 i)
             break;
         case IR_SPLAT: put_splat(s, i, type, a); break;
         case IR_LOOKUP:
-            put_line(s, "v%u = (%t)chibi_lookup((chibi_u8x16)%o, (chibi_u8x16)%o);", i, type, a, b);
+            if (is_vector64(c, type)) {
+                put_line(s, "chibi_u8x64_lookup(&v%u, (chibi_u8x16)%o, &%o);", i, a, b);
+            } else {
+                put_line(s, "v%u = (%t)chibi_u8x16_lookup((chibi_u8x16)%o, (chibi_u8x16)%o);", i, type, a, b);
+            }
             break;
         case IR_TOP_BITS:
-            put_line(
-                s,
-                "v%u = chibi_top_bits_x%u((%c)%o);",
-                i,
-                (u32)c->types.arg1[type],
-                wide_name(c, type),
-                a
-            );
+            if (is_vector64(c, type)) {
+                put_line(s, "v%u = %c_top_bits(&%o);", i, wide_name(c, type), a);
+            } else {
+                put_line(s, "v%u = %c_top_bits((%c)%o);", i, wide_name(c, type), wide_name(c, type), a);
+            }
             break;
         case IR_CALLBACK: put_line(s, "v%u = (uint8_t *)%e;", i, b); break;
         case IR_CALL:

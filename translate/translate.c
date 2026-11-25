@@ -3273,9 +3273,10 @@ static const char *
 chibi_builtin(const Tr *t, u32 f)
 {
     const char *w = text(t, t->a.names[f]);
-    return strcmp(w, "simd_lookup16") == 0 ? "lookup"
-         : strcmp(w, "simd_mask16") == 0   ? "top_bits"
-                                           : NULL;
+    return strcmp(w, "simd_lookup64") == 0 ? "lookup"
+         : strcmp(w, "simd_mask16") == 0 || strcmp(w, "simd_mask64") == 0
+             ? "top_bits"
+             : NULL;
 }
 
 static const char *

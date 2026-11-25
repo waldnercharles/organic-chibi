@@ -17,18 +17,25 @@ typedef struct
 {
     const char *name;
     int64_t lanes;
+    int64_t bits;
     VectorOracle *oracle;
 } GridFunction;
 
 extern const char VECTOR_BODY[];
 extern const char VECTOR_RUNS[];
+extern const char VECTOR_WIDE_RUNS[];
 extern const VectorRun VECTOR_BODY_RESULTS[];
 extern const size_t NVECTOR_BODY_RESULTS;
 extern const VectorRun VECTOR_RESULTS[];
 extern const size_t NVECTOR_RESULTS;
+extern const VectorRun VECTOR_WIDE_RESULTS[];
+extern const size_t NVECTOR_WIDE_RESULTS;
 extern const char VECTOR_GRID[];
 extern const GridFunction VECTOR_GRID_FUNCTIONS[];
 extern const size_t NVECTOR_GRID_FUNCTIONS;
+extern const char VECTOR_WIDE_GRID[];
+extern const GridFunction VECTOR_WIDE_GRID_FUNCTIONS[];
+extern const size_t NVECTOR_WIDE_GRID_FUNCTIONS;
 extern const char INT128_PROGRAM[];
 extern const VectorRun INT128_RUNS[];
 extern const size_t NINT128_RUNS;
