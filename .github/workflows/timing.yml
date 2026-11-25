@@ -1,0 +1,79 @@
+name: timing
+
+on:
+  push:
+    branches: [claude-research]
+    paths:
+      - "src/**"
+      - "translate/**"
+      - "vendor/**"
+      - "experiments/arm64-backend/**"
+      - "experiments/check-bodies/gen.py"
+      - ".github/workflows/timing.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  REFERENCE: 28909a4e98fa46c0e136f30a913e8828a1c1c798
+
+jobs:
+  time:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [xcode-27, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install tools (arm64 Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -f /var/lib/man-db/auto-update
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang
+          sudo sysctl kernel.perf_event_paranoid=2
+
+      - name: Show the machine
+        run: |
+          {
+            echo "### ${{ matrix.os }}"
+            echo
+            echo '```'
+            clang --version | head -1
+            if [ "$RUNNER_OS" = macOS ]; then
+              sw_vers -productVersion
+              sysctl -n machdep.cpu.brand_string hw.ncpu hw.memsize
+            else
+              lscpu | grep -E '^(Model name|CPU\(s\))'
+            fi
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Time this commit
+        run: |
+          bash experiments/arm64-backend/time-switch.sh . "$RUNNER_TEMP/head" 15 41 | tee "$RUNNER_TEMP/head.txt"
+          {
+            echo "${GITHUB_SHA::7}:"
+            echo
+            echo '```'
+            sed -n '/^== result/,$p' "$RUNNER_TEMP/head.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Time the commit the owner timed on the M4 Pro
+        run: |
+          git fetch --depth=1 origin "$REFERENCE"
+          mkdir "$RUNNER_TEMP/reference-tree"
+          git archive "$REFERENCE" | tar -x -C "$RUNNER_TEMP/reference-tree"
+          bash experiments/arm64-backend/time-switch.sh "$RUNNER_TEMP/reference-tree" "$RUNNER_TEMP/reference" 15 41 | tee "$RUNNER_TEMP/reference.txt"
+          {
+            echo "${REFERENCE::7}, which on the M4 Pro with Apple clang 21 took 5.8% more cycles and 7.6% more instructions translated:"
+            echo
+            echo '```'
+            sed -n '/^== result/,$p' "$RUNNER_TEMP/reference.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

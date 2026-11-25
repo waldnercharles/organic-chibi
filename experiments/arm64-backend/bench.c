@@ -11,6 +11,9 @@
 #include <libproc.h>
 #include <pthread.h>
 #include <sys/resource.h>
+#else
+#include <linux/perf_event.h>
+#include <sys/syscall.h>
 #endif
 
 #define RUNS 11
@@ -26,6 +29,30 @@ enum
 
 static const char *const phase_names[NPHASES] = { "lex + parse", "check", "arm64", "all four" };
 
+#ifndef __APPLE__
+static int perf_group = -1;
+
+static void
+open_counters(void)
+{
+    struct perf_event_attr a = {
+        .type = PERF_TYPE_HARDWARE,
+        .size = sizeof a,
+        .config = PERF_COUNT_HW_CPU_CYCLES,
+        .read_format = PERF_FORMAT_GROUP,
+        .exclude_kernel = 1,
+        .exclude_hv = 1,
+    };
+    perf_group = (int)syscall(SYS_perf_event_open, &a, 0, -1, -1, 0);
+    if (perf_group < 0) {
+        return;
+    }
+
+    a.config = PERF_COUNT_HW_INSTRUCTIONS;
+    syscall(SYS_perf_event_open, &a, 0, -1, perf_group, 0);
+}
+#endif
+
 static u64
 cpu_cycles(u64 *instructions)
 {
@@ -35,8 +62,13 @@ cpu_cycles(u64 *instructions)
     *instructions = ri.ri_instructions;
     return ri.ri_cycles;
 #else
-    *instructions = 0;
-    return 0;
+    u64 v[3] = { 0, 0, 0 };
+    if (perf_group < 0 || read(perf_group, v, sizeof v) < 0) {
+        *instructions = 0;
+        return 0;
+    }
+    *instructions = v[2];
+    return v[1];
 #endif
 }
 
@@ -67,6 +99,8 @@ main(int argc, char **argv)
 {
 #ifdef __APPLE__
     pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#else
+    open_counters();
 #endif
 
     int n = argc - 1;

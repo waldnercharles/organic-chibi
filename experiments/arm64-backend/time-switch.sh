@@ -90,4 +90,9 @@ for name in c:
     ci = statistics.median([x[2] for x in c[name]]); ti = statistics.median([x[2] for x in t[name]])
     cn = statistics.median([x[0] * x[2] for x in c[name]]); tn = statistics.median([x[0] * x[2] for x in t[name]])
     print(f"{name:12s} {ci:6.2f} {ti:6.2f} {cn:11.1f} {tn:11.1f} {tn / cn if cn else float('nan'):6.3f}")
+print()
+print(f"{'phase':12s} {'C spread':>9s} {'tr spread':>9s}  (the slowest process's median ms over the fastest's)")
+for name in c:
+    cm = [x[1] for x in c[name]]; tm = [x[1] for x in t[name]]
+    print(f"{name:12s} {max(cm) / min(cm):9.3f} {max(tm) / min(tm):9.3f}")
 PY
