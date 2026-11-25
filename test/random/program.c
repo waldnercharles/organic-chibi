@@ -48,8 +48,12 @@ enum
     MAX_TABLES = 8,
     PATH_LEN = 64,
     ANY = 0xFFFF,
-    NO_ENUM = 0xFFFFFFFFu,
     NO_RECORD = 0xFF,
+};
+
+enum
+{
+    NO_ENUM = 0xFFFFFFFFu,
 };
 
 typedef struct

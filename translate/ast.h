@@ -36,6 +36,8 @@ enum
     AST_IN_CAST = 1 << 13,
     AST_REFERENCED = 1 << 14,
     AST_TAG_OWNED = 1 << 15,
+    AST_SELECTED = 1 << 16,
+    AST_UNEVALUATED = 1 << 17,
 };
 
 typedef struct

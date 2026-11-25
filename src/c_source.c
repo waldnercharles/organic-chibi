@@ -83,6 +83,15 @@ c_source_prelude(FILE *out)
         "#define CHIBI_SYMBOL(name) "
         "__asm__(CHIBI_EXPAND(__USER_LABEL_PREFIX__) name)\n"
         "\n"
+        "#if defined(__has_attribute)\n"
+        "#if __has_attribute(nonstring)\n"
+        "#define CHIBI_NONSTRING __attribute__((nonstring))\n"
+        "#endif\n"
+        "#endif\n"
+        "#ifndef CHIBI_NONSTRING\n"
+        "#define CHIBI_NONSTRING\n"
+        "#endif\n"
+        "\n"
         "typedef struct\n"
         "{\n"
         "    uint8_t *ptr;\n"
@@ -815,7 +824,7 @@ put_memory(Source *s, const char *qualifier, const char *what, const u8 *bytes, 
     if (!relocs.count) {
         fprintf(
             out,
-            "\nstatic %suint8_t chibi_%s%s[%u] __attribute__((aligned(16)))",
+            "\nstatic %suint8_t chibi_%s%s[%u] CHIBI_NONSTRING __attribute__((aligned(16)))",
             qualifier,
             s->prefix,
             what,
@@ -835,13 +844,13 @@ put_memory(Source *s, const char *qualifier, const char *what, const u8 *bytes, 
         u32 slot = relocs.offsets[k];
         assert(slot % 8 == 0 && slot >= at);
         if (slot > at) {
-            fprintf(out, "    uint8_t b%u[%u];\n", at, slot - at);
+            fprintf(out, "    uint8_t b%u[%u] CHIBI_NONSTRING;\n", at, slot - at);
         }
         fprintf(out, "    const uint8_t *p%u;\n", slot);
         at = slot + 8;
     }
     if (size > at) {
-        fprintf(out, "    uint8_t b%u[%u];\n", at, size - at);
+        fprintf(out, "    uint8_t b%u[%u] CHIBI_NONSTRING;\n", at, size - at);
     }
 
     fprintf(out, "} chibi_%s%s __attribute__((aligned(16))) = {", s->prefix, what);

@@ -766,6 +766,10 @@ specifiers(Spelling *s)
             base = simple_type(t, CT_FLOAT, longs ? 128 : 64, true);
         } else if (word_is(w, n, "__int128")) {
             base = simple_type(t, CT_INT, 128, !is_unsigned);
+        } else if (word_is(w, n, "__size_t")) {
+            base = simple_type(t, CT_INT, 64, false);
+        } else if (word_is(w, n, "__signed_size_t") || word_is(w, n, "__ptrdiff_t")) {
+            base = simple_type(t, CT_INT, 64, true);
         } else if (word_is(w, n, "typeof") || word_is(w, n, "__typeof__")) {
             skip_spaces(s);
             int depth = 0;
@@ -788,6 +792,12 @@ specifiers(Spelling *s)
             base = record_type(s, tag, (u32)(s->p - tag));
         } else if (word_is(w, n, "enum")) {
             skip_spaces(s);
+            if (*s->p == '(') {
+                while (*s->p != ')') {
+                    s->p++;
+                }
+                s->p++;
+            }
             while (is_ident_byte(*s->p)) {
                 s->p++;
             }
@@ -5394,6 +5404,10 @@ asserted(Tr *t, u32 e)
         return 0;
     }
     if (calls(t, child(t, e, 2), "__assert_fail")) {
+        u32 c = strip_casts(t, child(t, e, 0));
+        if (t->kinds[c] == K_BINARY && op(t, c) == OP_COMMA) {
+            return child(t, c, 1);
+        }
         return child(t, e, 0);
     }
     if (!calls(t, child(t, e, 1), "__assert_rtn")) {
@@ -6393,7 +6407,7 @@ mark_uses(Tr *t, u32 root, u32 *work, u32 *nwork)
         } else if (def != 0 && project_file(t, t->a.files[def])) {
             t->marks[d] |= MARK_EMIT;
             work[(*nwork)++] = def;
-        } else {
+        } else if (!(t->a.flags[i] & AST_UNEVALUATED)) {
             t->marks[d] |= MARK_EXTERN;
             mark_type(t, i, ctype(t, d));
         }

@@ -30,6 +30,7 @@ typedef struct
     u32 last_file;
     u32 last_line;
     u64 tag;
+    u32 generic_kind;
     FILE *err;
 } Reader;
 
@@ -530,6 +531,7 @@ flag_of(const char *k, u32 len)
         { "isPartOfExplicitCast", AST_IN_CAST },
         { "isReferenced", AST_REFERENCED },
         { "isTagOwned", AST_TAG_OWNED },
+        { "selected", AST_SELECTED },
     };
     for (u32 f = 0; f < sizeof flags / sizeof flags[0]; f++) {
         if (key_is(k, len, flags[f].key)) {
@@ -537,6 +539,54 @@ flag_of(const char *k, u32 len)
         }
     }
     return 0;
+}
+
+static void
+move_node(Ast *a, u32 to, u32 from)
+{
+    a->kinds[to] = a->kinds[from];
+    a->ends[to] = a->ends[from];
+    a->ids[to] = a->ids[from];
+    a->files[to] = a->files[from];
+    a->offsets[to] = a->offsets[from];
+    a->lines[to] = a->lines[from];
+    a->spellings[to] = a->spellings[from];
+    a->range_begins[to] = a->range_begins[from];
+    a->range_ends[to] = a->range_ends[from];
+    a->names[to] = a->names[from];
+    a->types[to] = a->types[from];
+    a->desugared[to] = a->desugared[from];
+    a->details[to] = a->details[from];
+    a->arg_types[to] = a->arg_types[from];
+    a->result_types[to] = a->result_types[from];
+    a->refs[to] = a->refs[from];
+    a->flags[to] = a->flags[from];
+}
+
+static void
+select_generic(Ast *a, u32 i, u32 flags)
+{
+    u32 chosen = 0;
+    for (u32 c = i + 1; c < a->ends[i]; c = a->ends[c]) {
+        if (a->flags[c] & AST_SELECTED) {
+            chosen = c;
+        }
+    }
+    assert(chosen != 0);
+
+    u32 e = chosen + 1;
+    while (a->ends[e] < a->ends[chosen]) {
+        e = a->ends[e];
+    }
+
+    u32 shift = e - i;
+    u32 end = a->ends[e];
+    for (u32 k = e; k < end; k++) {
+        move_node(a, k - shift, k);
+        a->ends[k - shift] -= shift;
+    }
+    a->flags[i] |= flags;
+    a->count = end - shift;
 }
 
 static void
@@ -585,6 +635,10 @@ parse_node(Reader *r, u32 flags)
         } else if (key_is(k, len, "init")) {
             skip_value(r);
             a->flags[i] |= AST_HAS_INIT;
+        } else if (key_is(k, len, "nonOdrUseReason")) {
+            u32 n;
+            const char *s = read_string(r, &n);
+            a->flags[i] |= n == 11 && memcmp(s, "unevaluated", 11) == 0 ? AST_UNEVALUATED : 0;
         } else if (key_is(k, len, "ownedTagDecl")) {
             a->refs[i] = parse_ref(r);
             a->flags[i] |= AST_TAG_OWNED;
@@ -607,6 +661,10 @@ parse_node(Reader *r, u32 flags)
         }
     }
     a->ends[i] = a->count;
+
+    if (a->kinds[i] == r->generic_kind) {
+        select_generic(a, i, flags);
+    }
 }
 
 bool
@@ -642,7 +700,9 @@ ast_load(Ast *ast, const char *path, FILE *err)
         strings_intern(&ast->strings, "", 0);
     }
     assert(ast->units < 256);
-    Reader r = { .p = text, .base = text, .ast = ast, .tag = (u64)ast->units << 56, .err = err };
+    u32 generic_kind = strings_intern(&ast->strings, "GenericSelectionExpr", 20);
+    Reader r = { .p = text, .base = text, .ast = ast, .tag = (u64)ast->units << 56,
+                 .generic_kind = generic_kind, .err = err };
     parse_node(&r, 0);
     ast->units++;
     skip_ws(&r);
