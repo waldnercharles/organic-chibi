@@ -18,4 +18,12 @@ output:
 	@$(CC) -std=c23 -O2 -DNDEBUG -o $(BUILD)/arm64-output output.c $(BUILD)/reference_o0.o $(BUILD)/reference_o2.o $(SRC)
 	@$(BUILD)/arm64-output
 
-.PHONY: run output
+codehash:
+	@mkdir -p $(BUILD) $(CORPUS)
+	@python3 ../check-bodies/gen.py 200 100 $(CORPUS) > /dev/null
+	@python3 extract.py $(BUILD)/extracted.bin ../../test/arm64_test.c ../../test/c_source_test.c ../../test/driver_test.c
+	@clang -std=c23 -w -O2 -o $(BUILD)/codehash codehash.c $(SRC) ../../test/backend_programs.c ../../test/random/program.c ../../test/random/code.c
+	@setarch -R $(BUILD)/codehash 3000 $(BUILD)/extracted.bin $(CORPUS)/*.chibi > $(BUILD)/codehash.txt
+	@echo "codehash: $(BUILD)/codehash.txt"
+
+.PHONY: run output codehash
