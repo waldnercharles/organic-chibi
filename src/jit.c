@@ -14,7 +14,11 @@ enum
     ALIAS = 64,
 };
 
+#if defined(CHIBI_JIT_X64)
+#include "jit/x64_target.h"
+#else
 #include "jit/arm64_target.h"
+#endif
 
 enum
 {
@@ -294,11 +298,11 @@ slot_type(const Emit *e, u32 slot)
     return e->ir->slots[e->fn->first_slot + slot].type;
 }
 
-static const char UNSUPPORTED_TYPE[] = "the arm64 backend supports only "
-                                       "integers, floats, bool, pointers, "
-                                       "arrays, slices and vectors so far";
-
+#if defined(CHIBI_JIT_X64)
+#include "jit/x64_encode.h"
+#else
 #include "jit/arm64_encode.h"
+#endif
 
 static void
 patch(Assembler *as, u32 list, u32 target)
@@ -478,10 +482,10 @@ result(Emit *e, u32 v, u8 info)
                 add_alias(e, v, h, info);
                 return h & 31;
             }
-        } else if (kind == IR_RET && e->ir->as[at] == v && e->ir->types[at] != TYPE_ID_VOID) {
+        } else if (ALIAS_ARGUMENTS && kind == IR_RET && e->ir->as[at] == v && e->ir->types[at] != TYPE_ID_VOID) {
             add_alias(e, v, is_float(info) ? 32 : 0, info);
             return 0;
-        } else if (kind == IR_CALL || kind == IR_CALL_C) {
+        } else if (ALIAS_ARGUMENTS && (kind == IR_CALL || kind == IR_CALL_C)) {
             const u32 *args = e->ir->extra + e->fn->first_extra + e->ir->bs[at];
             u32 ints = kind == IR_CALL ? FIRST_INT_ARG : 0;
             bool fl = is_float(info);
@@ -767,7 +771,11 @@ unsigned_magic(u64 d, u64 *magic, bool *add, u32 *shift)
     *shift = p - 64;
 }
 
+#if defined(CHIBI_JIT_X64)
+#include "jit/x64_select.h"
+#else
 #include "jit/arm64_select.h"
+#endif
 
 static void
 start_arm(Emit *e, u32 i)
@@ -867,7 +875,7 @@ lay_out_frame(Emit *e)
         }
     }
     u32 bases[4];
-    u32 offset = fn->stack_args;
+    u32 offset = outgoing_bytes(e);
     for (u32 k = 0; k < 4; k++) {
         offset = (offset + (1u << k) - 1) & ~((1u << k) - 1);
         bases[k] = offset;

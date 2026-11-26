@@ -26,6 +26,7 @@ enum
     CODE_PER_ADAPTER_PARAM = 8,
     FUNCTION_ALIGN = 4,
     ADAPTER_STACK_LIMIT = 4064,
+    ALIAS_ARGUMENTS = 1,
 };
 
 typedef u32 Code;
@@ -35,3 +36,7 @@ typedef u32 Code;
 #else
 #define HOST_RUNS_CODE false
 #endif
+
+static const char UNSUPPORTED_TYPE[] = "the arm64 backend supports only "
+                                       "integers, floats, bool, pointers, "
+                                       "arrays, slices and vectors so far";

@@ -2333,6 +2333,12 @@ retype_params(Emit *e, const IrSlot *slots)
     return e->retyped;
 }
 
+static u32
+outgoing_bytes(const Emit *e)
+{
+    return e->fn->stack_args;
+}
+
 static void
 pin_locals(Emit *e)
 {
