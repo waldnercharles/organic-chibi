@@ -1,6 +1,6 @@
 # The first arm64 backend
 
-`src/arm64.c` compiles the step-2 IR to arm64 machine code in one pass, writing straight into executable memory. The owner moved this ahead of checker step 3 on 2026-11-14 ([decisions.md](../../docs/decisions.md), Compiler). This experiment measures what it costs, from source text to machine code, on the corpus from [check-bodies](../check-bodies/README.md).
+`src/jit.c`, with the arm64 parts in `src/jit/arm64_*.h` (`src/arm64.c` until step 3x.1), compiles the step-2 IR to arm64 machine code in one pass, writing straight into executable memory. The owner moved this ahead of checker step 3 on 2026-11-14 ([decisions.md](../../docs/decisions.md), Compiler). This experiment measures what it costs, from source text to machine code, on the corpus from [check-bodies](../check-bodies/README.md).
 
 `make run` generates the corpus, then runs the four phases 11 times and reports the median of each:
 1. lexing and parsing;

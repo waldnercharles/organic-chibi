@@ -26,7 +26,7 @@ TEST_SRC  := test/*.c test/random/*.c $(SRC)
 BENCH_SRC := bench/*.c test/random/*.c $(SRC)
 
 TRANSLATED     := src/arena.c src/str.c src/names.c src/exact.c src/parser.c src/lexer.c \
-                  src/check.c src/native.c src/arm64.c src/driver.c src/c_source.c
+                  src/check.c src/native.c src/jit.c src/driver.c src/c_source.c
 TRANSLATED_SRC := test/*.c test/random/*.c $(filter-out $(TRANSLATED), $(SRC))
 BOOTSTRAP      := $(TRANSLATED) src/main.c
 

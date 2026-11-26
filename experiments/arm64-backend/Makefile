@@ -1,6 +1,6 @@
 CC     ?= cc
 BUILD  := ../../build
-SRC    := ../../src/native.c ../../src/arm64.c ../../src/check.c ../../src/exact.c ../../src/lexer.c ../../src/parser.c ../../src/arena.c ../../src/names.c ../../src/str.c ../../vendor/xxhash/xxhash.c
+SRC    := ../../src/native.c ../../src/jit.c ../../src/check.c ../../src/exact.c ../../src/lexer.c ../../src/parser.c ../../src/arena.c ../../src/names.c ../../src/str.c ../../vendor/xxhash/xxhash.c
 CORPUS := /tmp/check-bodies-corpus
 
 run:

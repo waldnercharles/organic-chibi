@@ -26,6 +26,10 @@ if [ -f src/native.c ]; then
     LIBSRC="src/native.c $LIBSRC"
     BOOT=$(echo "$BOOT" | sed 's|src/arm64.c|src/native.c src/arm64.c|')
 fi
+if [ -f src/jit.c ]; then
+    LIBSRC=$(echo "$LIBSRC" | sed 's|src/arm64.c|src/jit.c|')
+    BOOT=$(echo "$BOOT" | sed 's|src/arm64.c|src/jit.c|')
+fi
 
 echo "== tools"
 clang --version | head -1
