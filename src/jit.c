@@ -38,6 +38,16 @@ typedef struct
 
 typedef struct
 {
+    Code *code;
+    Code *at;
+    Fixup *fixups;
+    u32 nfixups;
+    u32 fixups_cap;
+    const char *error;
+} Assembler;
+
+typedef struct
+{
     u32 at;
     u32 target;
 } Branch;
@@ -69,14 +79,13 @@ typedef struct
 
 typedef struct
 {
+    Assembler as;
     const Checker *c;
     const IrCode *ir;
     const IrFunc *fn;
     const u8 *info;
     const u8 *data;
     u8 *globals;
-    Code *code;
-    Code *at;
     u8 *regs;
     u8 *vinfo;
     u32 *spills;
@@ -119,9 +128,6 @@ typedef struct
     Open *open;
     u32 nopen;
     u32 open_cap;
-    Fixup *fixups;
-    u32 nfixups;
-    u32 fixups_cap;
     Branch *branches;
     u32 nbranches;
     u32 branches_cap;
@@ -138,7 +144,6 @@ typedef struct
     u32 framed;
     u32 framed_offset;
     u32 tested;
-    const char *error;
     const u64 *adapters;
     u32 *homes;
     u32 nhomes;
@@ -164,9 +169,9 @@ grow(void *p, u32 *cap, u32 need, size_t size)
 }
 
 static u32
-here(const Emit *e)
+here(const Assembler *as)
 {
-    return (u32)(e->at - e->code);
+    return (u32)(as->at - as->code);
 }
 
 static bool
@@ -276,11 +281,11 @@ constant_high(const Emit *e, u32 x)
 }
 
 static void
-add_fixup(Emit *e, u32 *list)
+add_fixup(Assembler *as, u32 *list)
 {
-    e->fixups = grow(e->fixups, &e->fixups_cap, e->nfixups + 1, sizeof *e->fixups);
-    e->fixups[e->nfixups] = (Fixup){ here(e), *list };
-    *list = e->nfixups++;
+    as->fixups = grow(as->fixups, &as->fixups_cap, as->nfixups + 1, sizeof *as->fixups);
+    as->fixups[as->nfixups] = (Fixup){ here(as), *list };
+    *list = as->nfixups++;
 }
 
 static u32
@@ -296,10 +301,10 @@ static const char UNSUPPORTED_TYPE[] = "the arm64 backend supports only "
 #include "jit/arm64_encode.h"
 
 static void
-patch(Emit *e, u32 list, u32 target)
+patch(Assembler *as, u32 list, u32 target)
 {
-    for (u32 f = list; f; f = e->fixups[f].next) {
-        patch_one(e, e->fixups[f].at, target);
+    for (u32 f = list; f; f = as->fixups[f].next) {
+        patch_one(as, as->fixups[f].at, target);
     }
 }
 
@@ -335,7 +340,7 @@ spill_reg(Emit *e, u32 h)
 {
     u32 v = e->holders[h];
     u32 offset = new_spill(e);
-    store_spill(e, h, offset);
+    store_spill(&e->as, h, offset);
     free_holder(e, h);
     e->regs[v] = NO_REG;
     e->spills[v] = offset;
@@ -368,7 +373,7 @@ spill_all(Emit *e)
         u32 v = e->aliases[k];
         u32 h = e->regs[v] - ALIAS;
         u32 offset = new_spill(e);
-        store_spill(e, h, offset);
+        store_spill(&e->as, h, offset);
         e->regs[v] = NO_REG;
         e->spills[v] = offset;
     }
@@ -501,14 +506,14 @@ static u32
 fetch(Emit *e, u32 x, u32 scratch)
 {
     if (x & IR_CONST) {
-        load_immediate(e, scratch, constant_bits(e, x), operand_info(e, x));
+        load_immediate(&e->as, scratch, constant_bits(e, x), operand_info(e, x));
         return scratch;
     }
     u8 h = e->regs[x];
     if (h != NO_REG) {
         return h & 31;
     }
-    load_spill(e, scratch, e->spills[x], is_float(e->vinfo[x]));
+    load_spill(&e->as, scratch, e->spills[x], is_float(e->vinfo[x]));
     return scratch;
 }
 
@@ -572,7 +577,7 @@ save_for_call(Emit *e, u32 used, bool fl)
         u32 to = (u32)__builtin_ctz(*callee);
         *callee &= *callee - 1;
         *(fl ? &e->saved_float : &e->saved_int) |= 1u << to;
-        move_reg(e, to, reg, fl);
+        move_reg(&e->as, to, reg, fl);
         free_holder(e, base + reg);
         e->holders[base + to] = v;
         e->regs[v] = (u8)(base + to);
@@ -586,7 +591,7 @@ materialize(Emit *e, u32 k)
     u32 h = e->regs[v] - ALIAS;
     drop_alias(e, k);
     u32 r = alloc(e, v, e->vinfo[v]);
-    move_reg(e, r, h & 31, h >= 32);
+    move_reg(&e->as, r, h & 31, h >= 32);
 }
 
 static Open *
@@ -770,10 +775,10 @@ start_arm(Emit *e, u32 i)
     Open *o = &e->open[e->nopen - 1];
     u8 before = e->ir->kinds[e->fn->first + i - 1];
     if (before != IR_RET && before != IR_EXIT && before != IR_REPEAT) {
-        jump_later(e, &o->ends);
+        jump_later(&e->as, &o->ends);
     }
     e->arm_at = grow(e->arm_at, &e->arms_cap, e->narms + 1, sizeof *e->arm_at);
-    e->arm_at[e->narms++] = here(e);
+    e->arm_at[e->narms++] = here(&e->as);
 }
 
 static void
@@ -830,7 +835,7 @@ store_pinned(Emit *e, u8 h, u32 type, u32 b)
     u32 r = h & 31u;
     u8 t = e->info[type];
     if (b & IR_CONST) {
-        load_immediate(e, r, constant_bits(e, b), t);
+        load_immediate(&e->as, r, constant_bits(e, b), t);
     } else if (e->regs[b] == ALIAS + h) {
         release(e, b);
     } else {
@@ -854,7 +859,7 @@ lay_out_frame(Emit *e)
     for (u32 s = 0; s < fn->nslots; s++) {
         u8 info = e->info[slots[s].type];
         if ((info & INFO_UNSUPPORTED) && !is_vector(info)) {
-            e->error = UNSUPPORTED_TYPE;
+            e->as.error = UNSUPPORTED_TYPE;
         }
         if (e->slot_regs[s] == NO_REG && slots[s].weight) {
             memory += (info & INFO_MEMORY) != 0;
@@ -888,7 +893,7 @@ lay_out_frame(Emit *e)
             offset = (offset + align - 1) & ~(align - 1);
             u64 size = check_type_size(e->c, type);
             if (size >= FRAME_LIMIT - offset) {
-                e->error = "a function's frame is larger than 16 MB";
+                e->as.error = "a function's frame is larger than 16 MB";
                 return;
             }
             e->slot_offsets[s] = offset;
@@ -899,7 +904,7 @@ lay_out_frame(Emit *e)
 
     offset = (offset + 7) & ~7u;
     if (fn->copies >= FRAME_LIMIT - offset) {
-        e->error = "a function's frame is larger than 16 MB";
+        e->as.error = "a function's frame is larger than 16 MB";
         return;
     }
     e->copies_at = offset;
@@ -919,9 +924,9 @@ emit_function(Emit *e, const IrFunc *fn, Code *code, const Native *n)
 {
     const IrCode *ir = e->ir;
     e->fn = fn;
-    e->code = code;
+    e->as.code = code;
     e->nopen = 0;
-    e->nfixups = 1;
+    e->as.nfixups = 1;
     e->nspill_free = 0;
     e->nhomes = 0;
     e->nhomes64 = 0;
@@ -958,8 +963,8 @@ emit_function(Emit *e, const IrFunc *fn, Code *code, const Native *n)
     u32 i = 0;
     u32 count = fn->count;
     u32 first = fn->first;
-    while (i < count && !e->error) {
-        for (; i < count && !e->error; i++) {
+    while (i < count && !e->as.error) {
+        for (; i < count && !e->as.error; i++) {
             u32 at = first + i;
             u8 kind = ir->kinds[at];
             u32 type = ir->types[at];
@@ -976,7 +981,7 @@ emit_function(Emit *e, const IrFunc *fn, Code *code, const Native *n)
                         break;
                     }
                     u32 d = result(e, i, e->info[st]);
-                    load_typed(e, st, d, e->slot_offsets[a]);
+                    load_typed(&e->as, e->info[st], d, e->slot_offsets[a]);
                     break;
                 }
                 case IR_STORE: {
@@ -1000,7 +1005,7 @@ emit_function(Emit *e, const IrFunc *fn, Code *code, const Native *n)
                         e->framed_offset = e->slot_offsets[a];
                         break;
                     }
-                    sp_address(e, result(e, i, e->info[type]), e->slot_offsets[a]);
+                    sp_address(&e->as, result(e, i, e->info[type]), e->slot_offsets[a]);
                     break;
                 case IR_DATA: data_address(e, i, type, a); break;
                 case IR_GLOBAL: global_address(e, i, type, a); break;
@@ -1072,7 +1077,7 @@ emit_function(Emit *e, const IrFunc *fn, Code *code, const Native *n)
                 case IR_RET:
                     return_value(e, type, a, b);
                     if (i + 1 < count) {
-                        jump_later(e, &e->epilogue);
+                        jump_later(&e->as, &e->epilogue);
                     }
                     break;
                 case IR_BLOCK:
@@ -1104,18 +1109,21 @@ emit_function(Emit *e, const IrFunc *fn, Code *code, const Native *n)
                         release(e, a);
                         spill_all(e);
                         Open o = { .target = i, .kind = kind, .result = NO_REG };
-                        skip_if_zero(e, &o.skip, r);
+                        skip_if_zero(&e->as, &o.skip, r);
                         e->open[e->nopen++] = o;
                         break;
                     }
 
                     spill_all(e);
                     if (kind == IR_LOOP) {
-                        align_loop(e);
+                        align_loop(&e->as);
                     }
-                    Open o = { .target = i, .start = here(e), .kind = kind, .result = NO_REG };
+                    Open o = { .target = i,
+                               .start = here(&e->as),
+                               .kind = kind,
+                               .result = NO_REG };
                     if (kind == IR_IF) {
-                        skip_unless_flags(e, &o.skip);
+                        skip_unless_flags(&e->as, &o.skip, e->fused_cond);
                         e->fused = NO_VALUE;
                     }
                     e->open[e->nopen++] = o;
@@ -1133,8 +1141,8 @@ emit_function(Emit *e, const IrFunc *fn, Code *code, const Native *n)
                     } else if (type != TYPE_ID_NONE) {
                         hand_over(e, o, type, a);
                     }
-                    jump_later(e, &o->ends);
-                    patch(e, o->skip, here(e));
+                    jump_later(&e->as, &o->ends);
+                    patch(&e->as, o->skip, here(&e->as));
                     o->skip = 0;
                     break;
                 }
@@ -1158,8 +1166,8 @@ emit_function(Emit *e, const IrFunc *fn, Code *code, const Native *n)
                         e->regs[i] = (u8)h;
                         e->vinfo[i] = e->info[type];
                     }
-                    patch(e, o.skip, here(e));
-                    patch(e, o.ends, here(e));
+                    patch(&e->as, o.skip, here(&e->as));
+                    patch(&e->as, o.ends, here(&e->as));
                     if (o.kind == IR_SWITCH) {
                         finish_switch(e, &o);
                     }
@@ -1173,12 +1181,12 @@ emit_function(Emit *e, const IrFunc *fn, Code *code, const Native *n)
                     bool falls = i + 1 < count && ir->kinds[first + i + 1] == IR_END &&
                                  o == &e->open[e->nopen - 1];
                     if (!falls) {
-                        jump_later(e, &o->ends);
+                        jump_later(&e->as, &o->ends);
                     }
                     break;
                 }
                 case IR_REPEAT: {
-                    jump_back(e, find_open(e, a)->start);
+                    jump_back(&e->as, find_open(e, a)->start);
                     break;
                 }
                 case IR_NOP: break;
@@ -1187,10 +1195,10 @@ emit_function(Emit *e, const IrFunc *fn, Code *code, const Native *n)
                 default: assert(false && "unknown IR instruction");
             }
         }
-        if (i < count && !e->error) {
+        if (i < count && !e->as.error) {
             u32 at = first + i;
             if (!is_vector(e->info[ir->types[at]])) {
-                e->error = UNSUPPORTED_TYPE;
+                e->as.error = UNSUPPORTED_TYPE;
                 break;
             }
             lanes(e, i, ir->kinds[at], ir->types[at], ir->as[at], ir->bs[at], n);
@@ -1199,7 +1207,7 @@ emit_function(Emit *e, const IrFunc *fn, Code *code, const Native *n)
     }
 
     if (fn->count == 0 || ir->kinds[fn->first + fn->count - 1] != IR_RET) {
-        jump_later(e, &e->traps[TRAP_UNREACHABLE]);
+        jump_later(&e->as, &e->traps[TRAP_UNREACHABLE]);
     }
     return finish_function(e, code);
 }
@@ -1230,14 +1238,16 @@ arm64_compile(Native *n, const Checker *c, Convention convention)
         info[t] = type_info(c, t);
     }
 
-    Emit e = { .c = c,
+    Emit e = { .as = { .code = start,
+                       .at = start,
+                       .fixups = malloc(16 * sizeof *e.as.fixups),
+                       .fixups_cap = 16 },
+               .c = c,
                .ir = &ir->code,
                .fn = &ir->funcs[0],
                .info = info,
                .data = n->data,
                .globals = n->globals,
-               .code = start,
-               .at = start,
                .regs = malloc(16 * sizeof *e.regs),
                .vinfo = malloc(16 * sizeof *e.vinfo),
                .spills = malloc(16 * sizeof *e.spills),
@@ -1256,8 +1266,6 @@ arm64_compile(Native *n, const Checker *c, Convention convention)
                .place = convention == CONVENTION_APPLE ? PLACE_APPLE : 0,
                .open = malloc(16 * sizeof *e.open),
                .open_cap = 16,
-               .fixups = malloc(16 * sizeof *e.fixups),
-               .fixups_cap = 16,
                .branches = malloc(16 * sizeof *e.branches),
                .branches_cap = 16,
                .arm_at = malloc(16 * sizeof *e.arm_at),
@@ -1269,26 +1277,26 @@ arm64_compile(Native *n, const Checker *c, Convention convention)
                .homes64 = malloc(16 * sizeof *e.homes64),
                .homes64_cap = 16 };
     u64 *adapters = malloc(ir->ncallbacks * sizeof *adapters);
-    for (u32 k = 0; k < ir->ncallbacks && !e.error; k++) {
+    for (u32 k = 0; k < ir->ncallbacks && !e.as.error; k++) {
         u32 decl = ir->callbacks[k];
         if (c->decls.bodies[decl] == NO_BODY) {
             continue;
         }
         used = (used + FUNCTION_ALIGN - 1) & ~(size_t)(FUNCTION_ALIGN - 1);
-        e.code = e.at = start + used;
+        e.as.code = e.as.at = start + used;
         emit_adapter(&e, decl, n);
-        adapters[k] = (u64)(uintptr_t)e.code;
-        used += here(&e);
+        adapters[k] = (u64)(uintptr_t)e.as.code;
+        used += here(&e.as);
         assert(used <= units);
     }
     e.adapters = adapters;
-    for (u32 f = 0; f < ir->nfuncs && !e.error; f++) {
+    for (u32 f = 0; f < ir->nfuncs && !e.as.error; f++) {
         const IrFunc *fn = &ir->funcs[f];
         used = (used + FUNCTION_ALIGN - 1) & ~(size_t)(FUNCTION_ALIGN - 1);
         Code *at = start + used;
         u32 entry = emit_function(&e, fn, at, n);
         n->entries[fn->decl] = (u64)(uintptr_t)(at + entry);
-        used += here(&e);
+        used += here(&e.as);
         assert(used <= units);
     }
     native_end(n, used * sizeof(Code));
@@ -1306,7 +1314,7 @@ arm64_compile(Native *n, const Checker *c, Convention convention)
     free(e.aliases);
     free(e.alias_at);
     free(e.open);
-    free(e.fixups);
+    free(e.as.fixups);
     free(e.branches);
     free(e.arm_at);
     free(e.ranges);
@@ -1315,6 +1323,6 @@ arm64_compile(Native *n, const Checker *c, Convention convention)
     }
     n->exports = adapters;
     n->nexports = ir->nexports;
-    n->error = e.error;
-    return e.error == NULL;
+    n->error = e.as.error;
+    return e.as.error == NULL;
 }

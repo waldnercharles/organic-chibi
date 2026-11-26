@@ -1,12 +1,33 @@
+static void
+trap_if(Emit *e, u8 cond, u8 kind)
+{
+    add_fixup(&e->as, &e->traps[kind]);
+    put(&e->as, OP_B_COND | cond);
+}
+
+static void
+trap_unless_zero(Emit *e, u32 reg, u32 sf, u8 kind)
+{
+    add_fixup(&e->as, &e->traps[kind]);
+    put(&e->as, OP_CBNZ | sf | reg);
+}
+
+static void
+trap_if_zero(Emit *e, u32 reg, u32 sf, u8 kind)
+{
+    add_fixup(&e->as, &e->traps[kind]);
+    put(&e->as, OP_CBZ | sf | reg);
+}
+
 static NOINLINE void
 data_address(Emit *e, u32 i, u32 type, u32 offset)
 {
     u32 d = result(e, i, e->info[type]);
     u64 to = (u64)(uintptr_t)(e->data + offset);
 
-    adrp(e, d, to);
+    adrp(&e->as, d, to);
     if (to & 0xFFF) {
-        put(e, SF | OP_ADD_IMM | (u32)(to & 0xFFF) << 10 | d << 5 | d);
+        put(&e->as, SF | OP_ADD_IMM | (u32)(to & 0xFFF) << 10 | d << 5 | d);
     }
 }
 
@@ -14,7 +35,7 @@ static NOINLINE void
 global_address(Emit *e, u32 i, u32 type, u32 offset)
 {
     u32 d = result(e, i, e->info[type]);
-    mov_imm(e, d, (u64)(uintptr_t)(e->globals + offset), SF);
+    mov_imm(&e->as, d, (u64)(uintptr_t)(e->globals + offset), SF);
 }
 
 static bool
@@ -70,9 +91,9 @@ static void
 normalize(Emit *e, u8 t, u32 d, u32 n)
 {
     if (is_small(t)) {
-        put(e, extend_op(t) | n << 5 | d);
+        put(&e->as, extend_op(t) | n << 5 | d);
     } else {
-        mov(e, width(t), d, n);
+        mov(&e->as, width(t), d, n);
     }
 }
 
@@ -86,18 +107,19 @@ static void
 take_from_c(Emit *e, u8 info, u32 d, u32 r)
 {
     if (bits_of(info) < 32) {
-        put(e, extend_op(info) | r << 5 | d);
+        put(&e->as, extend_op(info) | r << 5 | d);
     } else if (bits_of(info) == 32) {
-        put(e, OP_ORR | r << 16 | ZR << 5 | d);
+        put(&e->as, OP_ORR | r << 16 | ZR << 5 | d);
     } else {
-        mov(e, SF, d, r);
+        mov(&e->as, SF, d, r);
     }
 }
 
 static void
 check_small(Emit *e, u8 t, u32 d)
 {
-    put(e, OP_SUBS_EXT | d << 16 | extension(bits_of(t), is_signed(t)) << 13 | d << 5 | ZR);
+    put(&e->as,
+        OP_SUBS_EXT | d << 16 | extension(bits_of(t), is_signed(t)) << 13 | d << 5 | ZR);
     trap_if(e, COND_NE, TRAP_OVERFLOW);
 }
 
@@ -111,7 +133,7 @@ add_sub(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
         release(e, a);
         release(e, b);
         u32 d = result(e, i, t);
-        put(e, (sub ? OP_FSUB : OP_FADD) | precision(t) | rb << 16 | ra << 5 | d);
+        put(&e->as, (sub ? OP_FSUB : OP_FADD) | precision(t) | rb << 16 | ra << 5 | d);
         return;
     }
 
@@ -135,7 +157,7 @@ add_sub(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
                              : (flags ? OP_ADDS_IMM : OP_ADD_IMM))
                  : (sub ? (flags ? OP_SUBS : OP_SUB) : (flags ? OP_ADDS : OP_ADD));
     u32 operand = imm ? field : rb << 16;
-    put(e, op | sf | operand | ra << 5 | d);
+    put(&e->as, op | sf | operand | ra << 5 | d);
     if (flags) {
         trap_if(e, is_signed(t) ? COND_VS : (sub ? COND_LO : COND_HS), TRAP_OVERFLOW);
     } else if (small) {
@@ -156,7 +178,7 @@ multiply(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
         release(e, a);
         release(e, b);
         u32 d = result(e, i, t);
-        put(e, OP_FMUL | precision(t) | rb << 16 | ra << 5 | d);
+        put(&e->as, OP_FMUL | precision(t) | rb << 16 | ra << 5 | d);
         return;
     }
 
@@ -167,22 +189,22 @@ multiply(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
     u32 sf = width(t);
     bool s = is_signed(t);
     if (kind == IR_MUL_WRAP || is_small(t)) {
-        put(e, OP_MUL | sf | rb << 16 | ra << 5 | d);
+        put(&e->as, OP_MUL | sf | rb << 16 | ra << 5 | d);
         if (kind == IR_MUL_WRAP) {
             normalize(e, t, d, d);
         } else {
             check_small(e, t, d);
         }
     } else if (!sf) {
-        put(e, (s ? OP_SMULL : OP_UMULL) | rb << 16 | ra << 5 | X8);
-        put(e, 0xEB20001Fu | (s ? 0xC000u : 0x4000u) | X8 << 16 | X8 << 5);
+        put(&e->as, (s ? OP_SMULL : OP_UMULL) | rb << 16 | ra << 5 | X8);
+        put(&e->as, 0xEB20001Fu | (s ? 0xC000u : 0x4000u) | X8 << 16 | X8 << 5);
         trap_if(e, COND_NE, TRAP_OVERFLOW);
-        mov(e, 0, d, X8);
+        mov(&e->as, 0, d, X8);
     } else {
-        put(e, (s ? OP_SMULH : OP_UMULH) | rb << 16 | ra << 5 | X8);
-        put(e, OP_MUL | SF | rb << 16 | ra << 5 | d);
+        put(&e->as, (s ? OP_SMULH : OP_UMULH) | rb << 16 | ra << 5 | X8);
+        put(&e->as, OP_MUL | SF | rb << 16 | ra << 5 | d);
         if (s) {
-            put(e, 0xEB80FC1Fu | d << 16 | X8 << 5);
+            put(&e->as, 0xEB80FC1Fu | d << 16 | X8 << 5);
             trap_if(e, COND_NE, TRAP_OVERFLOW);
         } else {
             trap_unless_zero(e, X8, SF, TRAP_OVERFLOW);
@@ -241,13 +263,14 @@ logical_imm(u64 value, u32 sf, u32 *field)
 static void
 shift_imm(Emit *e, u32 op, u32 sf, u32 d, u32 n, u32 count)
 {
-    put(e, op | sf | (sf ? 0x00408000u : 0) | count << 16 | n << 5 | d);
+    put(&e->as, op | sf | (sf ? 0x00408000u : 0) | count << 16 | n << 5 | d);
 }
 
 static void
 lsl_imm(Emit *e, u32 d, u32 n, u32 count)
 {
-    put(e, OP_LSL_IMM | ((64 - count) & 63) << 16 | (63 - count) << 10 | n << 5 | d);
+    put(&e->as,
+        OP_LSL_IMM | ((64 - count) & 63) << 16 | (63 - count) << 10 | n << 5 | d);
 }
 
 static bool
@@ -278,7 +301,7 @@ divide_constant(Emit *e, u32 i, u8 kind, u8 t, u32 a, u64 divisor)
         release(e, a);
         [[maybe_unused]] bool mask = logical_imm(divisor - 1, sf, &field);
         assert(mask);
-        put(e, OP_ANDS_IMM | sf | field | ra << 5 | ZR);
+        put(&e->as, OP_ANDS_IMM | sf | field | ra << 5 | ZR);
         e->tested = i + 1;
         return;
     }
@@ -287,14 +310,14 @@ divide_constant(Emit *e, u32 i, u8 kind, u8 t, u32 a, u64 divisor)
     release(e, a);
     u32 d = result(e, i, t);
     if (pow2 && k == 0) {
-        mov(e, sf, d, rem ? ZR : ra);
+        mov(&e->as, sf, d, rem ? ZR : ra);
         return;
     }
     if (pow2 && !s) {
         if (rem) {
             [[maybe_unused]] bool mask = logical_imm(divisor - 1, sf, &field);
             assert(mask);
-            put(e, OP_AND_IMM | sf | field | ra << 5 | d);
+            put(&e->as, OP_AND_IMM | sf | field | ra << 5 | d);
         } else {
             shift_imm(e, OP_LSR_IMM, sf, d, ra, k);
         }
@@ -304,17 +327,19 @@ divide_constant(Emit *e, u32 i, u8 kind, u8 t, u32 a, u64 divisor)
         [[maybe_unused]] bool mask = logical_imm(divisor - 1, sf, &field);
         assert(mask);
         if (rem) {
-            put(e, OP_SUBS | sf | ra << 16 | ZR << 5 | X8);
-            put(e, OP_AND_IMM | sf | field | ra << 5 | X17);
-            put(e, OP_AND_IMM | sf | field | X8 << 5 | X8);
-            put(e, OP_CSNEG | sf | X8 << 16 | (u32)COND_MI << 12 | X17 << 5 | d);
+            put(&e->as, OP_SUBS | sf | ra << 16 | ZR << 5 | X8);
+            put(&e->as, OP_AND_IMM | sf | field | ra << 5 | X17);
+            put(&e->as, OP_AND_IMM | sf | field | X8 << 5 | X8);
+            put(&e->as, OP_CSNEG | sf | X8 << 16 | (u32)COND_MI << 12 | X17 << 5 | d);
             return;
         }
         if (k == 1) {
-            put(e, OP_ADD | sf | SHIFT_LSR | ra << 16 | (w - 1) << 10 | ra << 5 | X8);
+            put(&e->as,
+                OP_ADD | sf | SHIFT_LSR | ra << 16 | (w - 1) << 10 | ra << 5 | X8);
         } else {
             shift_imm(e, OP_ASR_IMM, sf, X8, ra, w - 1);
-            put(e, OP_ADD | sf | SHIFT_LSR | X8 << 16 | (w - k) << 10 | ra << 5 | X8);
+            put(&e->as,
+                OP_ADD | sf | SHIFT_LSR | X8 << 16 | (w - k) << 10 | ra << 5 | X8);
         }
         shift_imm(e, OP_ASR_IMM, sf, d, X8, k);
         return;
@@ -324,44 +349,44 @@ divide_constant(Emit *e, u32 i, u8 kind, u8 t, u32 a, u64 divisor)
         int64_t magic;
         u32 shift;
         signed_magic((int64_t)divisor, w, &magic, &shift);
-        mov_imm(e, X17, (u64)magic, sf);
+        mov_imm(&e->as, X17, (u64)magic, sf);
         if (sf) {
-            put(e, OP_SMULH | X17 << 16 | ra << 5 | X8);
+            put(&e->as, OP_SMULH | X17 << 16 | ra << 5 | X8);
         } else {
-            put(e, OP_SMULL | X17 << 16 | ra << 5 | X8);
+            put(&e->as, OP_SMULL | X17 << 16 | ra << 5 | X8);
             shift_imm(e, OP_ASR_IMM, SF, X8, X8, 32);
         }
         if ((int64_t)divisor > 0 && magic < 0) {
-            put(e, OP_ADD | sf | ra << 16 | X8 << 5 | X8);
+            put(&e->as, OP_ADD | sf | ra << 16 | X8 << 5 | X8);
         } else if ((int64_t)divisor < 0 && magic > 0) {
-            put(e, OP_SUB | sf | ra << 16 | X8 << 5 | X8);
+            put(&e->as, OP_SUB | sf | ra << 16 | X8 << 5 | X8);
         }
         if (shift) {
             shift_imm(e, OP_ASR_IMM, sf, X8, X8, shift);
         }
         u32 q = rem ? X8 : d;
-        put(e, OP_ADD | sf | SHIFT_LSR | X8 << 16 | (w - 1) << 10 | X8 << 5 | q);
+        put(&e->as, OP_ADD | sf | SHIFT_LSR | X8 << 16 | (w - 1) << 10 | X8 << 5 | q);
     } else {
         u64 magic;
         bool add;
         u32 shift;
         unsigned_magic(divisor, &magic, &add, &shift);
-        mov_imm(e, X17, magic, SF);
-        put(e, OP_UMULH | X17 << 16 | ra << 5 | X8);
+        mov_imm(&e->as, X17, magic, SF);
+        put(&e->as, OP_UMULH | X17 << 16 | ra << 5 | X8);
         u32 q = rem ? X8 : d;
         if (add) {
-            put(e, OP_SUB | SF | X8 << 16 | ra << 5 | X17);
-            put(e, OP_ADD | SF | SHIFT_LSR | X17 << 16 | 1u << 10 | X8 << 5 | X8);
+            put(&e->as, OP_SUB | SF | X8 << 16 | ra << 5 | X17);
+            put(&e->as, OP_ADD | SF | SHIFT_LSR | X17 << 16 | 1u << 10 | X8 << 5 | X8);
             shift_imm(e, OP_LSR_IMM, SF, q, X8, shift - 1);
         } else if (shift) {
             shift_imm(e, OP_LSR_IMM, SF, q, X8, shift);
         } else {
-            mov(e, SF, q, X8);
+            mov(&e->as, SF, q, X8);
         }
     }
     if (rem) {
-        mov_imm(e, X17, divisor, sf);
-        put(e, OP_MSUB | sf | X17 << 16 | ra << 10 | X8 << 5 | d);
+        mov_imm(&e->as, X17, divisor, sf);
+        put(&e->as, OP_MSUB | sf | X17 << 16 | ra << 10 | X8 << 5 | d);
     }
 }
 
@@ -374,7 +399,7 @@ divide(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
         release(e, a);
         release(e, b);
         u32 d = result(e, i, t);
-        put(e, OP_FDIV | precision(t) | rb << 16 | ra << 5 | d);
+        put(&e->as, OP_FDIV | precision(t) | rb << 16 | ra << 5 | d);
         return;
     }
     if (b & IR_CONST) {
@@ -407,24 +432,24 @@ divide(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
     }
     bool full = bits_of(t) >= 32;
     if (s && kind == IR_DIV && full && (!known || divisor == minus_one)) {
-        put(e, OP_ADDS_IMM | sf | 1 << 10 | rb << 5 | ZR);
-        u32 skip = here(e);
-        put(e, OP_B_COND | COND_NE);
-        mov_imm(e, X8, sf ? 0x8000000000000000ull : 0x80000000ull, sf);
-        put(e, OP_SUBS | sf | X8 << 16 | ra << 5 | ZR);
+        put(&e->as, OP_ADDS_IMM | sf | 1 << 10 | rb << 5 | ZR);
+        u32 skip = here(&e->as);
+        put(&e->as, OP_B_COND | COND_NE);
+        mov_imm(&e->as, X8, sf ? 0x8000000000000000ull : 0x80000000ull, sf);
+        put(&e->as, OP_SUBS | sf | X8 << 16 | ra << 5 | ZR);
         trap_if(e, COND_EQ, TRAP_OVERFLOW);
-        e->code[skip] |= ((here(e) - skip) & 0x7FFFFu) << 5;
+        e->as.code[skip] |= ((here(&e->as) - skip) & 0x7FFFFu) << 5;
     }
 
     u32 op = s ? OP_SDIV : OP_UDIV;
     if (kind == IR_DIV) {
-        put(e, op | sf | rb << 16 | ra << 5 | d);
+        put(&e->as, op | sf | rb << 16 | ra << 5 | d);
         if (s && !full) {
             check_small(e, t, d);
         }
     } else {
-        put(e, op | sf | rb << 16 | ra << 5 | X8);
-        put(e, OP_MSUB | sf | rb << 16 | ra << 10 | X8 << 5 | d);
+        put(&e->as, op | sf | rb << 16 | ra << 5 | X8);
+        put(&e->as, OP_MSUB | sf | rb << 16 | ra << 10 | X8 << 5 | d);
     }
 }
 
@@ -443,7 +468,8 @@ bitwise(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
     release(e, a);
     release(e, b);
     if (kind == IR_AND && tests_zero(e, i)) {
-        put(e, (imm ? OP_ANDS_IMM | field : OP_ANDS | rb << 16) | sf | ra << 5 | ZR);
+        put(&e->as,
+            (imm ? OP_ANDS_IMM | field : OP_ANDS | rb << 16) | sf | ra << 5 | ZR);
         e->tested = i + 1;
         return;
     }
@@ -452,10 +478,10 @@ bitwise(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
         u32 op = kind == IR_AND ? OP_AND_IMM
                : kind == IR_OR  ? OP_ORR_IMM
                                 : OP_EOR_IMM;
-        put(e, op | sf | field | ra << 5 | d);
+        put(&e->as, op | sf | field | ra << 5 | d);
     } else {
         u32 op = kind == IR_AND ? OP_AND : kind == IR_OR ? OP_ORR : OP_EOR;
-        put(e, op | sf | rb << 16 | ra << 5 | d);
+        put(&e->as, op | sf | rb << 16 | ra << 5 | d);
     }
 }
 
@@ -470,25 +496,25 @@ static void
 pair_at(Emit *e, u32 op, u32 lo, u32 hi, u32 home)
 {
     if (home < 512) {
-        put(e, op | (home >> 3) << 15 | hi << 10 | SP << 5 | lo);
+        put(&e->as, op | (home >> 3) << 15 | hi << 10 | SP << 5 | lo);
         return;
     }
-    sp_address(e, X8, home);
-    put(e, op | hi << 10 | X8 << 5 | lo);
+    sp_address(&e->as, X8, home);
+    put(&e->as, op | hi << 10 | X8 << 5 | lo);
 }
 
 static void
 fetch_wide(Emit *e, u32 x, u32 lo, u32 hi)
 {
     if (x & IR_CONST) {
-        mov_imm(e, lo, constant_bits(e, x), SF);
-        mov_imm(e, hi, constant_high(e, x), SF);
+        mov_imm(&e->as, lo, constant_bits(e, x), SF);
+        mov_imm(&e->as, hi, constant_high(e, x), SF);
         return;
     }
     u32 home = e->spills[x];
     if (home == NO_VALUE) {
-        put(e, OP_FMOV_TO_X | V29 << 5 | lo);
-        put(e, OP_UMOV_D | 1u << 20 | V29 << 5 | hi);
+        put(&e->as, OP_FMOV_TO_X | V29 << 5 | lo);
+        put(&e->as, OP_UMOV_D | 1u << 20 | V29 << 5 | hi);
         return;
     }
     pair_at(e, OP_LDP_X, lo, hi, home);
@@ -500,7 +526,7 @@ check_wide_count(Emit *e, u32 b, u32 bits, u32 d)
 {
     fetch_wide(e, b, d, X8);
     trap_unless_zero(e, X8, SF, TRAP_SHIFT);
-    put(e, OP_SUBS_IMM | SF | bits << 10 | d << 5 | ZR);
+    put(&e->as, OP_SUBS_IMM | SF | bits << 10 | d << 5 | ZR);
     trap_if(e, COND_HS, TRAP_SHIFT);
 }
 
@@ -508,7 +534,7 @@ static void
 shift_by(Emit *e, u8 kind, u8 t, u32 d, u32 n, u32 count)
 {
     u32 op = kind == IR_SHL ? OP_LSLV : is_signed(t) ? OP_ASRV : OP_LSRV;
-    put(e, op | width(t) | count << 16 | n << 5 | d);
+    put(&e->as, op | width(t) | count << 16 | n << 5 | d);
     if (kind == IR_SHL && is_small(t)) {
         normalize(e, t, d, d);
     }
@@ -528,12 +554,12 @@ shift(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
         u32 d = result(e, i, t);
         u32 base = sf ? 0xD3400000u : 0x53000000u;
         if (kind == IR_SHL) {
-            put(e,
+            put(&e->as,
                 base | ((bits - count) & (bits - 1)) << 16 |
                     (bits - 1 - count) << 10 | ra << 5 | d);
         } else {
             u32 op = s ? (sf ? 0x93400000u : 0x13000000u) : base;
-            put(e, op | count << 16 | (bits - 1) << 10 | ra << 5 | d);
+            put(&e->as, op | count << 16 | (bits - 1) << 10 | ra << 5 | d);
         }
         if (kind == IR_SHL && is_small(t)) {
             normalize(e, t, d, d);
@@ -552,7 +578,7 @@ shift(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
     release(e, a);
     release(e, b);
     u32 d = result(e, i, t);
-    put(e, OP_SUBS_IMM | width(count_info) | bits_of(t) << 10 | rb << 5 | ZR);
+    put(&e->as, OP_SUBS_IMM | width(count_info) | bits_of(t) << 10 | rb << 5 | ZR);
     trap_if(e, COND_HS, TRAP_SHIFT);
     shift_by(e, kind, t, d, ra, rb);
 }
@@ -589,7 +615,7 @@ flag_result(Emit *e, u32 i, u8 cond)
         return;
     }
     u32 d = result(e, i, e->info[TYPE_ID_BOOL]);
-    put(e, OP_CSET | (u32)(cond ^ 1) << 12 | d);
+    put(&e->as, OP_CSET | (u32)(cond ^ 1) << 12 | d);
 }
 
 static void
@@ -602,7 +628,7 @@ compare(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
         u32 ra = fetch(e, a, V30), rb = fetch(e, b, V31);
         release(e, a);
         release(e, b);
-        put(e, OP_FCMP | precision(t) | rb << 16 | ra << 5);
+        put(&e->as, OP_FCMP | precision(t) | rb << 16 | ra << 5);
     } else {
         if ((a & IR_CONST) && !(b & IR_CONST)) {
             swap(&a, &b);
@@ -618,9 +644,9 @@ compare(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
         release(e, b);
         u32 sf = width(t);
         if (imm) {
-            put(e, (flip ? OP_ADDS_IMM : OP_SUBS_IMM) | sf | field | ra << 5 | ZR);
+            put(&e->as, (flip ? OP_ADDS_IMM : OP_SUBS_IMM) | sf | field | ra << 5 | ZR);
         } else {
-            put(e, OP_SUBS | sf | rb << 16 | ra << 5 | ZR);
+            put(&e->as, OP_SUBS | sf | rb << 16 | ra << 5 | ZR);
         }
     }
 
@@ -635,7 +661,7 @@ unary(Emit *e, u32 i, u8 kind, u32 type, u32 a)
         u32 ra = fetch(e, a, V30);
         release(e, a);
         u32 d = result(e, i, t);
-        put(e, OP_FNEG | precision(t) | ra << 5 | d);
+        put(&e->as, OP_FNEG | precision(t) | ra << 5 | d);
         return;
     }
 
@@ -645,15 +671,15 @@ unary(Emit *e, u32 i, u8 kind, u32 type, u32 a)
     u32 sf = width(t);
     bool small = is_small(t);
     switch (kind) {
-        case IR_NOT: put(e, OP_EOR_ONE | ra << 5 | d); break;
+        case IR_NOT: put(&e->as, OP_EOR_ONE | ra << 5 | d); break;
         case IR_BIT_NOT:
-            put(e, OP_ORN | sf | ra << 16 | ZR << 5 | d);
+            put(&e->as, OP_ORN | sf | ra << 16 | ZR << 5 | d);
             if (small && !is_signed(t)) {
                 normalize(e, t, d, d);
             }
             break;
         case IR_NEG_WRAP:
-            put(e, OP_SUB | sf | ra << 16 | ZR << 5 | d);
+            put(&e->as, OP_SUB | sf | ra << 16 | ZR << 5 | d);
             if (small) {
                 normalize(e, t, d, d);
             }
@@ -661,12 +687,12 @@ unary(Emit *e, u32 i, u8 kind, u32 type, u32 a)
         case IR_NEG:
             if (!is_signed(t)) {
                 trap_unless_zero(e, ra, sf, TRAP_OVERFLOW);
-                mov(e, sf, d, ZR);
+                mov(&e->as, sf, d, ZR);
             } else if (small) {
-                put(e, OP_SUB | ra << 16 | ZR << 5 | d);
+                put(&e->as, OP_SUB | ra << 16 | ZR << 5 | d);
                 check_small(e, t, d);
             } else {
-                put(e, OP_SUBS | sf | ra << 16 | ZR << 5 | d);
+                put(&e->as, OP_SUBS | sf | ra << 16 | ZR << 5 | d);
                 trap_if(e, COND_VS, TRAP_OVERFLOW);
             }
             break;
@@ -682,27 +708,27 @@ count_wide(Emit *e, u32 i, u8 kind, u32 type, u32 a)
 
     switch (kind) {
         case IR_TRAILING_ZEROS:
-            put(e, OP_RBIT | SF | X16 << 5 | X8);
-            put(e, OP_CLZ | SF | X8 << 5 | X8);
-            put(e, OP_RBIT | SF | X17 << 5 | d);
-            put(e, OP_CLZ | SF | d << 5 | d);
-            put(e, OP_ADD_IMM | SF | 64u << 10 | d << 5 | d);
-            put(e, OP_SUBS_IMM | SF | X16 << 5 | ZR);
-            put(e, OP_CSEL | SF | d << 16 | (u32)COND_NE << 12 | X8 << 5 | d);
+            put(&e->as, OP_RBIT | SF | X16 << 5 | X8);
+            put(&e->as, OP_CLZ | SF | X8 << 5 | X8);
+            put(&e->as, OP_RBIT | SF | X17 << 5 | d);
+            put(&e->as, OP_CLZ | SF | d << 5 | d);
+            put(&e->as, OP_ADD_IMM | SF | 64u << 10 | d << 5 | d);
+            put(&e->as, OP_SUBS_IMM | SF | X16 << 5 | ZR);
+            put(&e->as, OP_CSEL | SF | d << 16 | (u32)COND_NE << 12 | X8 << 5 | d);
             break;
         case IR_LEADING_ZEROS:
-            put(e, OP_CLZ | SF | X17 << 5 | X8);
-            put(e, OP_CLZ | SF | X16 << 5 | d);
-            put(e, OP_ADD_IMM | SF | 64u << 10 | d << 5 | d);
-            put(e, OP_SUBS_IMM | SF | X17 << 5 | ZR);
-            put(e, OP_CSEL | SF | d << 16 | (u32)COND_NE << 12 | X8 << 5 | d);
+            put(&e->as, OP_CLZ | SF | X17 << 5 | X8);
+            put(&e->as, OP_CLZ | SF | X16 << 5 | d);
+            put(&e->as, OP_ADD_IMM | SF | 64u << 10 | d << 5 | d);
+            put(&e->as, OP_SUBS_IMM | SF | X17 << 5 | ZR);
+            put(&e->as, OP_CSEL | SF | d << 16 | (u32)COND_NE << 12 | X8 << 5 | d);
             break;
         case IR_COUNT_ONES:
-            put(e, OP_FMOV_FROM_X | X16 << 5 | V31);
-            put(e, OP_INS_D1 | X17 << 5 | V31);
-            put(e, OP_CNT_8B | 1u << 30 | V31 << 5 | V31);
-            put(e, OP_ADDV_8B | 1u << 30 | V31 << 5 | V31);
-            put(e, OP_FMOV_TO_W | V31 << 5 | d);
+            put(&e->as, OP_FMOV_FROM_X | X16 << 5 | V31);
+            put(&e->as, OP_INS_D1 | X17 << 5 | V31);
+            put(&e->as, OP_CNT_8B | 1u << 30 | V31 << 5 | V31);
+            put(&e->as, OP_ADDV_8B | 1u << 30 | V31 << 5 | V31);
+            put(&e->as, OP_FMOV_TO_W | V31 << 5 | d);
             break;
         default: assert(false && "not a bit count");
     }
@@ -723,29 +749,29 @@ count_bits(Emit *e, u32 i, u8 kind, u32 type, u32 a)
     u32 d = result(e, i, e->info[type]);
 
     if (kind != IR_TRAILING_ZEROS && is_small(from) && is_signed(from)) {
-        put(e, (bits == 8 ? OP_UXTB : OP_UXTH) | ra << 5 | d);
+        put(&e->as, (bits == 8 ? OP_UXTB : OP_UXTH) | ra << 5 | d);
         ra = d;
     }
     switch (kind) {
         case IR_TRAILING_ZEROS:
             if (bits < 32) {
-                put(e, OP_ORR_IMM | (32 - bits) << 16 | ra << 5 | d);
+                put(&e->as, OP_ORR_IMM | (32 - bits) << 16 | ra << 5 | d);
                 ra = d;
             }
-            put(e, OP_RBIT | sf | ra << 5 | d);
-            put(e, OP_CLZ | sf | d << 5 | d);
+            put(&e->as, OP_RBIT | sf | ra << 5 | d);
+            put(&e->as, OP_CLZ | sf | d << 5 | d);
             break;
         case IR_LEADING_ZEROS:
-            put(e, OP_CLZ | sf | ra << 5 | d);
+            put(&e->as, OP_CLZ | sf | ra << 5 | d);
             if (bits < 32) {
-                put(e, OP_SUB_IMM | (32 - bits) << 10 | d << 5 | d);
+                put(&e->as, OP_SUB_IMM | (32 - bits) << 10 | d << 5 | d);
             }
             break;
         case IR_COUNT_ONES:
-            put(e, (sf ? OP_FMOV_FROM_X : OP_FMOV_FROM_W) | ra << 5 | V31);
-            put(e, OP_CNT_8B | V31 << 5 | V31);
-            put(e, OP_ADDV_8B | V31 << 5 | V31);
-            put(e, OP_FMOV_TO_W | V31 << 5 | d);
+            put(&e->as, (sf ? OP_FMOV_FROM_X : OP_FMOV_FROM_W) | ra << 5 | V31);
+            put(&e->as, OP_CNT_8B | V31 << 5 | V31);
+            put(&e->as, OP_ADDV_8B | V31 << 5 | V31);
+            put(&e->as, OP_FMOV_TO_W | V31 << 5 | d);
             break;
         default: assert(false && "not a bit count");
     }
@@ -774,23 +800,23 @@ test_overflow(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
     u32 extend = extension(bits_of(t), s) << 13;
     u8 cond = COND_NE;
     if (kind == IR_MUL_OVERFLOWS && !sf) {
-        put(e, (s ? OP_SMULL : OP_UMULL) | rb << 16 | ra << 5 | X16);
-        put(e, OP_SUBS_EXT | SF | X16 << 16 | extend | X16 << 5 | ZR);
+        put(&e->as, (s ? OP_SMULL : OP_UMULL) | rb << 16 | ra << 5 | X16);
+        put(&e->as, OP_SUBS_EXT | SF | X16 << 16 | extend | X16 << 5 | ZR);
     } else if (kind == IR_MUL_OVERFLOWS && s) {
-        put(e, OP_SMULH | rb << 16 | ra << 5 | X8);
-        put(e, OP_MUL | SF | rb << 16 | ra << 5 | X16);
-        put(e, OP_SUBS | SF | SHIFT_ASR | X16 << 16 | 63u << 10 | X8 << 5 | ZR);
+        put(&e->as, OP_SMULH | rb << 16 | ra << 5 | X8);
+        put(&e->as, OP_MUL | SF | rb << 16 | ra << 5 | X16);
+        put(&e->as, OP_SUBS | SF | SHIFT_ASR | X16 << 16 | 63u << 10 | X8 << 5 | ZR);
     } else if (kind == IR_MUL_OVERFLOWS) {
-        put(e, OP_UMULH | rb << 16 | ra << 5 | X16);
-        put(e, OP_SUBS_IMM | SF | X16 << 5 | ZR);
+        put(&e->as, OP_UMULH | rb << 16 | ra << 5 | X16);
+        put(&e->as, OP_SUBS_IMM | SF | X16 << 5 | ZR);
     } else if (is_small(t)) {
         u32 op = imm ? (negative ? OP_SUB_IMM : OP_ADD_IMM) : (sub ? OP_SUB : OP_ADD);
-        put(e, op | operand | ra << 5 | X16);
-        put(e, OP_SUBS_EXT | X16 << 16 | extend | X16 << 5 | ZR);
+        put(&e->as, op | operand | ra << 5 | X16);
+        put(&e->as, OP_SUBS_EXT | X16 << 16 | extend | X16 << 5 | ZR);
     } else {
         u32 op = imm ? (negative ? OP_SUBS_IMM : OP_ADDS_IMM)
                      : (sub ? OP_SUBS : OP_ADDS);
-        put(e, op | sf | operand | ra << 5 | ZR);
+        put(&e->as, op | sf | operand | ra << 5 | ZR);
         cond = s ? COND_VS : sub ? COND_LO : COND_HS;
     }
     flag_result(e, i, cond);
@@ -799,10 +825,10 @@ test_overflow(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
 static void
 negate_if(Emit *e, u32 lo, u32 hi, u32 mask)
 {
-    put(e, OP_EOR | SF | mask << 16 | lo << 5 | lo);
-    put(e, OP_EOR | SF | mask << 16 | hi << 5 | hi);
-    put(e, OP_SUBS | SF | mask << 16 | lo << 5 | lo);
-    put(e, OP_SBC | SF | mask << 16 | hi << 5 | hi);
+    put(&e->as, OP_EOR | SF | mask << 16 | lo << 5 | lo);
+    put(&e->as, OP_EOR | SF | mask << 16 | hi << 5 | hi);
+    put(&e->as, OP_SUBS | SF | mask << 16 | lo << 5 | lo);
+    put(&e->as, OP_SBC | SF | mask << 16 | hi << 5 | hi);
 }
 
 static NOINLINE void
@@ -820,36 +846,37 @@ float_from_wide(Emit *e, u32 i, u8 tt, u8 from, u32 a)
         shift_imm(e, OP_ASR_IMM, SF, sign, X17, 63);
         negate_if(e, X16, X17, sign);
     }
-    u32 big = here(e);
-    put(e, OP_CBNZ | SF | X17);
-    put(e, OP_UCVTF | SF | precision(tt) | X16 << 5 | d);
-    u32 done = here(e);
-    put(e, OP_B);
-    patch_one(e, big, here(e));
+    u32 big = here(&e->as);
+    put(&e->as, OP_CBNZ | SF | X17);
+    put(&e->as, OP_UCVTF | SF | precision(tt) | X16 << 5 | d);
+    u32 done = here(&e->as);
+    put(&e->as, OP_B);
+    patch_one(&e->as, big, here(&e->as));
 
-    put(e, OP_CLZ | SF | X17 << 5 | X8);
-    put(e, OP_LSLV | SF | X8 << 16 | X17 << 5 | X17);
-    put(e, OP_ORN | SF | X8 << 16 | ZR << 5 | t0);
+    put(&e->as, OP_CLZ | SF | X17 << 5 | X8);
+    put(&e->as, OP_LSLV | SF | X8 << 16 | X17 << 5 | X17);
+    put(&e->as, OP_ORN | SF | X8 << 16 | ZR << 5 | t0);
     shift_imm(e, OP_LSR_IMM, SF, t1, X16, 1);
-    put(e, OP_LSRV | SF | t0 << 16 | t1 << 5 | t1);
-    put(e, OP_ORR | SF | t1 << 16 | X17 << 5 | X17);
-    put(e, OP_LSLV | SF | X8 << 16 | X16 << 5 | X16);
-    put(e, OP_SUBS_IMM | SF | X16 << 5 | ZR);
-    put(e, OP_CSET | (u32)(COND_NE ^ 1) << 12 | t1);
-    put(e, OP_ORR | SF | t1 << 16 | X17 << 5 | X17);
-    put(e, OP_UCVTF | SF | precision(tt) | X17 << 5 | d);
+    put(&e->as, OP_LSRV | SF | t0 << 16 | t1 << 5 | t1);
+    put(&e->as, OP_ORR | SF | t1 << 16 | X17 << 5 | X17);
+    put(&e->as, OP_LSLV | SF | X8 << 16 | X16 << 5 | X16);
+    put(&e->as, OP_SUBS_IMM | SF | X16 << 5 | ZR);
+    put(&e->as, OP_CSET | (u32)(COND_NE ^ 1) << 12 | t1);
+    put(&e->as, OP_ORR | SF | t1 << 16 | X17 << 5 | X17);
+    put(&e->as, OP_UCVTF | SF | precision(tt) | X17 << 5 | d);
 
-    mov_imm(e, t0, dbl ? 1087 : 191, 0);
-    put(e, OP_SUB | X8 << 16 | t0 << 5 | t0);
+    mov_imm(&e->as, t0, dbl ? 1087 : 191, 0);
+    put(&e->as, OP_SUB | X8 << 16 | t0 << 5 | t0);
     lsl_imm(e, t0, t0, dbl ? 52 : 23);
-    put(e, (dbl ? OP_FMOV_FROM_X : OP_FMOV_FROM_W) | t0 << 5 | V31);
-    put(e, OP_FMUL | precision(tt) | V31 << 16 | d << 5 | d);
-    patch_one(e, done, here(e));
+    put(&e->as, (dbl ? OP_FMOV_FROM_X : OP_FMOV_FROM_W) | t0 << 5 | V31);
+    put(&e->as, OP_FMUL | precision(tt) | V31 << 16 | d << 5 | d);
+    patch_one(&e->as, done, here(&e->as));
 
     if (s) {
-        put(e, OP_SUBS_IMM | SF | sign << 5 | ZR);
-        put(e, OP_FNEG | precision(tt) | d << 5 | V31);
-        put(e, OP_FCSEL | precision(tt) | d << 16 | (u32)COND_NE << 12 | V31 << 5 | d);
+        put(&e->as, OP_SUBS_IMM | SF | sign << 5 | ZR);
+        put(&e->as, OP_FNEG | precision(tt) | d << 5 | V31);
+        put(&e->as,
+            OP_FCSEL | precision(tt) | d << 16 | (u32)COND_NE << 12 | V31 << 5 | d);
         e->free_int |= 1u << sign;
     }
     e->free_int |= 1u << t0 | 1u << t1;
@@ -871,27 +898,27 @@ convert(Emit *e, u32 i, u32 to, u32 a)
         release(e, a);
         u32 d = result(e, i, tt);
         if (width(tt) && !width(from)) {
-            put(e,
+            put(&e->as,
                 is_signed(from) ? OP_SXTW | ra << 5 | d
                                 : OP_ORR | ra << 16 | ZR << 5 | d);
         } else {
-            mov(e, width(tt), d, ra);
+            mov(&e->as, width(tt), d, ra);
         }
     } else if (!float_from) {
         u32 ra = fetch(e, a, X16);
         release(e, a);
         u32 d = result(e, i, tt);
         u32 op = is_signed(from) ? OP_SCVTF : OP_UCVTF;
-        put(e, op | width(from) | precision(tt) | ra << 5 | d);
+        put(&e->as, op | width(from) | precision(tt) | ra << 5 | d);
     } else {
         assert(float_to);
         u32 ra = fetch(e, a, V30);
         release(e, a);
         u32 d = result(e, i, tt);
         if (bits_of(from) == bits_of(tt)) {
-            fmov(e, d, ra);
+            fmov(&e->as, d, ra);
         } else {
-            put(e,
+            put(&e->as,
                 (float_to && bits_of(tt) == 64 ? OP_FCVT_TO_D : OP_FCVT_TO_S) |
                     ra << 5 | d);
         }
@@ -910,12 +937,12 @@ float_bound(Emit *e, u32 reg, u8 t, double value)
     if (bits_of(t) == 64) {
         u64 bits;
         memcpy(&bits, &value, sizeof bits);
-        float_imm(e, reg, bits, true);
+        float_imm(&e->as, reg, bits, true);
     } else {
         float f = (float)value;
         u32 bits;
         memcpy(&bits, &f, sizeof bits);
-        float_imm(e, reg, bits, false);
+        float_imm(&e->as, reg, bits, false);
     }
 }
 
@@ -925,21 +952,21 @@ check_float_range(Emit *e, u32 ra, u8 from, u32 to_bits, bool to_signed)
     u32 fp = precision(from);
     bool dbl = bits_of(from) == 64;
     u32 mantissa = dbl ? 53 : 24;
-    float_imm(e, V29, power_bits(from, (int32_t)(to_signed ? to_bits - 1 : to_bits)), dbl);
-    put(e, OP_FCMP | fp | V29 << 16 | ra << 5);
+    float_imm(&e->as, V29, power_bits(from, (int32_t)(to_signed ? to_bits - 1 : to_bits)), dbl);
+    put(&e->as, OP_FCMP | fp | V29 << 16 | ra << 5);
     trap_if(e, COND_PL, TRAP_RANGE);
     if (!to_signed) {
         float_bound(e, V29, from, -1.0);
-        put(e, OP_FCMP | fp | V29 << 16 | ra << 5);
+        put(&e->as, OP_FCMP | fp | V29 << 16 | ra << 5);
         trap_if(e, COND_LE, TRAP_RANGE);
     } else if (to_bits - 1 < mantissa) {
         float_bound(e, V29, from, -(double)(1ull << (to_bits - 1)) - 1.0);
-        put(e, OP_FCMP | fp | V29 << 16 | ra << 5);
+        put(&e->as, OP_FCMP | fp | V29 << 16 | ra << 5);
         trap_if(e, COND_LE, TRAP_RANGE);
     } else {
         u64 sign = dbl ? 1ull << 63 : 1ull << 31;
-        float_imm(e, V29, sign | power_bits(from, (int32_t)to_bits - 1), dbl);
-        put(e, OP_FCMP | fp | V29 << 16 | ra << 5);
+        float_imm(&e->as, V29, sign | power_bits(from, (int32_t)to_bits - 1), dbl);
+        put(&e->as, OP_FCMP | fp | V29 << 16 | ra << 5);
         trap_if(e, COND_LT, TRAP_RANGE);
     }
 }
@@ -952,17 +979,17 @@ compare_imm(Emit *e, u32 reg, u64 v, u32 sf, bool may_negate)
     }
     u32 field;
     if (imm12(v, &field)) {
-        put(e, OP_SUBS_IMM | sf | field | reg << 5 | ZR);
+        put(&e->as, OP_SUBS_IMM | sf | field | reg << 5 | ZR);
         return;
     }
     u64 negated = sf ? 0 - v : (0 - v) & 0xFFFFFFFFu;
     if (may_negate && imm12(negated, &field)) {
-        put(e, OP_ADDS_IMM | sf | field | reg << 5 | ZR);
+        put(&e->as, OP_ADDS_IMM | sf | field | reg << 5 | ZR);
         return;
     }
     u32 temp = reg == X17 ? X8 : X17;
-    mov_imm(e, temp, v, sf);
-    put(e, OP_SUBS | sf | temp << 16 | reg << 5 | ZR);
+    mov_imm(&e->as, temp, v, sf);
+    put(&e->as, OP_SUBS | sf | temp << 16 | reg << 5 | ZR);
 }
 
 static void
@@ -973,14 +1000,14 @@ subtract_imm(Emit *e, u32 d, u32 n, u64 v, u32 sf)
     }
     u32 field;
     if (v == 0) {
-        put(e, OP_ORR | sf | n << 16 | ZR << 5 | d);
+        put(&e->as, OP_ORR | sf | n << 16 | ZR << 5 | d);
     } else if (imm12(v, &field)) {
-        put(e, OP_SUB_IMM | sf | field | n << 5 | d);
+        put(&e->as, OP_SUB_IMM | sf | field | n << 5 | d);
     } else if (imm12(sf ? 0 - v : (0 - v) & 0xFFFFFFFFu, &field)) {
-        put(e, OP_ADD_IMM | sf | field | n << 5 | d);
+        put(&e->as, OP_ADD_IMM | sf | field | n << 5 | d);
     } else {
-        mov_imm(e, X8, v, sf);
-        put(e, OP_SUB | sf | X8 << 16 | n << 5 | d);
+        mov_imm(&e->as, X8, v, sf);
+        put(&e->as, OP_SUB | sf | X8 << 16 | n << 5 | d);
     }
 }
 
@@ -988,7 +1015,7 @@ static void
 branch_to(Emit *e, u32 op, u32 target, u8 trap)
 {
     if (target == NO_VALUE) {
-        add_fixup(e, &e->traps[trap]);
+        add_fixup(&e->as, &e->traps[trap]);
     } else {
         e->branches = grow(
             e->branches,
@@ -996,9 +1023,9 @@ branch_to(Emit *e, u32 op, u32 target, u8 trap)
             e->nbranches + 1,
             sizeof *e->branches
         );
-        e->branches[e->nbranches++] = (Branch){ here(e), target };
+        e->branches[e->nbranches++] = (Branch){ here(&e->as), target };
     }
-    put(e, op);
+    put(&e->as, op);
 }
 
 static void
@@ -1028,10 +1055,10 @@ search(Emit *e, u32 r, u8 t, const Range *ranges, u32 n, u32 fallback, u8 trap)
     u32 mid = n / 2;
     compare_imm(e, r, ranges[mid].lo, width(t), is_signed(t));
     u32 left = 0;
-    add_fixup(e, &left);
-    put(e, OP_B_COND | (is_signed(t) ? COND_LT : COND_LO));
+    add_fixup(&e->as, &left);
+    put(&e->as, OP_B_COND | (is_signed(t) ? COND_LT : COND_LO));
     search(e, r, t, ranges + mid, n - mid, fallback, trap);
-    patch(e, left, here(e));
+    patch(&e->as, left, here(&e->as));
     search(e, r, t, ranges, mid, fallback, trap);
 }
 
@@ -1047,7 +1074,7 @@ check_member(Emit *e, u32 d, u8 t, const u32 *runs)
     u32 first = e->nbranches;
     search(e, d, t, e->ranges, n, NO_VALUE, TRAP_RANGE);
     for (u32 k = first; k < e->nbranches; k++) {
-        patch_one(e, e->branches[k].at, here(e));
+        patch_one(&e->as, e->branches[k].at, here(&e->as));
     }
     e->nbranches = first;
 }
@@ -1057,7 +1084,7 @@ narrow_wide(Emit *e, u32 a, u8 from, bool to_signed)
 {
     fetch_wide(e, a, X16, X17);
     if (is_signed(from) && to_signed) {
-        put(e, OP_SUBS | SF | SHIFT_ASR | X16 << 16 | 63u << 10 | X17 << 5 | ZR);
+        put(&e->as, OP_SUBS | SF | SHIFT_ASR | X16 << 16 | 63u << 10 | X17 << 5 | ZR);
         trap_if(e, COND_NE, TRAP_RANGE);
         return e->info[TYPE_ID_I64];
     }
@@ -1077,7 +1104,7 @@ narrow(Emit *e, u32 i, u32 to, u32 a)
         release(e, a);
         check_float_range(e, ra, from, to_bits, to_signed);
         u32 d = result(e, i, tt);
-        put(e,
+        put(&e->as,
             (to_signed ? OP_FCVTZS : OP_FCVTZU) | width(tt) | precision(from) |
                 ra << 5 | d);
         return;
@@ -1095,10 +1122,10 @@ narrow(Emit *e, u32 i, u32 to, u32 a)
     if (is_signed(from)) {
         if (to_signed && to_bits >= from_bits) {
         } else if (to_bits >= from_bits) {
-            put(e, OP_SUBS_IMM | sf | ra << 5 | ZR);
+            put(&e->as, OP_SUBS_IMM | sf | ra << 5 | ZR);
             trap_if(e, COND_LT, TRAP_RANGE);
         } else {
-            put(e,
+            put(&e->as,
                 OP_SUBS_EXT | sf | ra << 16 |
                     extension(to_bits, to_signed) << 13 | ra << 5 | ZR);
             trap_if(e, COND_NE, TRAP_RANGE);
@@ -1108,16 +1135,16 @@ narrow(Emit *e, u32 i, u32 to, u32 a)
         [[maybe_unused]] bool
             mask = logical_imm(~((1ull << (to_bits - to_signed)) - 1), sf, &field);
         assert(mask);
-        put(e, OP_ANDS_IMM | sf | field | ra << 5 | ZR);
+        put(&e->as, OP_ANDS_IMM | sf | field | ra << 5 | ZR);
         trap_if(e, COND_NE, TRAP_RANGE);
     }
     u32 d = result(e, i, tt);
     if (width(tt) && !sf && is_signed(from) && to_signed) {
-        put(e, OP_SXTW | ra << 5 | d);
+        put(&e->as, OP_SXTW | ra << 5 | d);
     } else if (width(tt) && !sf) {
-        put(e, OP_ORR | ra << 16 | ZR << 5 | d);
+        put(&e->as, OP_ORR | ra << 16 | ZR << 5 | d);
     } else {
-        mov(e, width(tt), d, ra);
+        mov(&e->as, width(tt), d, ra);
     }
     if (e->c->types.kinds[to] == TYPE_ENUM) {
         check_member(
@@ -1142,9 +1169,9 @@ truncate_to(Emit *e, u32 i, u32 to, u32 a)
     }
     u32 d = result(e, i, tt);
     if (is_small(tt)) {
-        put(e, extend_op(tt) | ra << 5 | d);
+        put(&e->as, extend_op(tt) | ra << 5 | d);
     } else {
-        put(e, OP_ORR | width(tt) | ra << 16 | ZR << 5 | d);
+        put(&e->as, OP_ORR | width(tt) | ra << 16 | ZR << 5 | d);
     }
 }
 
@@ -1184,7 +1211,7 @@ bitcast_to(Emit *e, u32 i, u32 to, u32 a)
     u32 d = result(e, i, tt);
     u32 op = is_float(tt) ? (wide ? OP_FMOV_FROM_X : OP_FMOV_FROM_W)
                           : (wide ? OP_FMOV_TO_X : OP_FMOV_TO_W);
-    put(e, op | ra << 5 | d);
+    put(&e->as, op | ra << 5 | d);
 }
 
 static NOINLINE void
@@ -1195,14 +1222,14 @@ check_align(Emit *e, u32 i, u32 type, u32 a, u32 align)
     assert(mask);
 
     u32 ra = fetch(e, a, X16);
-    put(e, OP_ANDS_IMM | SF | field | ra << 5 | ZR);
+    put(&e->as, OP_ANDS_IMM | SF | field | ra << 5 | ZR);
     trap_if(e, COND_NE, TRAP_ALIGN);
     if (can_take_over(e, i, a)) {
         take_over(e, a, i, e->info[type]);
         return;
     }
     release(e, a);
-    mov(e, SF, result(e, i, e->info[type]), ra);
+    mov(&e->as, SF, result(e, i, e->info[type]), ra);
 }
 
 static NOINLINE void
@@ -1215,7 +1242,7 @@ check_nil(Emit *e, u32 i, u32 type, u32 a)
         return;
     }
     release(e, a);
-    mov(e, SF, result(e, i, e->info[type]), ra);
+    mov(&e->as, SF, result(e, i, e->info[type]), ra);
 }
 
 static NOINLINE void
@@ -1231,12 +1258,12 @@ add_offset(Emit *e, u32 d, u32 n, u64 offset)
 {
     u32 field;
     if (offset == 0) {
-        mov(e, SF, d, n);
+        mov(&e->as, SF, d, n);
     } else if (imm12(offset, &field)) {
-        put(e, OP_ADD_IMM | SF | field | n << 5 | d);
+        put(&e->as, OP_ADD_IMM | SF | field | n << 5 | d);
     } else {
-        mov_imm(e, X17, offset, SF);
-        put(e, OP_ADD | SF | X17 << 16 | n << 5 | d);
+        mov_imm(&e->as, X17, offset, SF);
+        put(&e->as, OP_ADD | SF | X17 << 16 | n << 5 | d);
     }
 }
 
@@ -1246,7 +1273,7 @@ fetch_index(Emit *e, u32 x, u32 scratch)
     u8 t = operand_info(e, x);
     u32 r = fetch(e, x, scratch);
     if (bits_of(t) < 64) {
-        put(e,
+        put(&e->as,
             is_signed(t) ? OP_SXTW | r << 5 | scratch
                          : OP_ORR | r << 16 | ZR << 5 | scratch);
         r = scratch;
@@ -1271,13 +1298,13 @@ static void
 scaled_address(Emit *e, u32 d, u32 p, u32 r, u64 size)
 {
     if (size == 0) {
-        mov(e, SF, d, p);
+        mov(&e->as, SF, d, p);
     } else if ((size & (size - 1)) == 0) {
         u32 shift = (u32)__builtin_ctzll(size);
-        put(e, OP_ADD | SF | r << 16 | shift << 10 | p << 5 | d);
+        put(&e->as, OP_ADD | SF | r << 16 | shift << 10 | p << 5 | d);
     } else {
-        mov_imm(e, X8, size, SF);
-        put(e, OP_MADD | SF | X8 << 16 | p << 10 | r << 5 | d);
+        mov_imm(&e->as, X8, size, SF);
+        put(&e->as, OP_MADD | SF | X8 << 16 | p << 10 | r << 5 | d);
     }
 }
 
@@ -1327,7 +1354,7 @@ index_len(Emit *e, u32 i, u32 type, u32 a, u32 b)
         compare_imm(e, r, constant_bits(e, len), SF, false);
     } else {
         u32 n = fetch(e, len, X16);
-        put(e, OP_SUBS | SF | n << 16 | r << 5 | ZR);
+        put(&e->as, OP_SUBS | SF | n << 16 | r << 5 | ZR);
         release(e, len);
     }
     trap_if(e, COND_HS, TRAP_BOUNDS);
@@ -1401,7 +1428,7 @@ move_half(Emit *e, u32 i, u32 half, u8 info, u32 x)
     u32 r = fetch(e, x, X16);
     release(e, x);
     u32 d = half_result(e, i, half, info);
-    mov(e, SF, d, r);
+    mov(&e->as, SF, d, r);
 }
 
 static void
@@ -1421,7 +1448,7 @@ check_order(Emit *e, u32 x, u32 y)
         compare_imm(e, r, constant_bits(e, y), SF, false);
     } else {
         u32 q = fetch_index(e, y, X17);
-        put(e, OP_SUBS | SF | q << 16 | r << 5 | ZR);
+        put(&e->as, OP_SUBS | SF | q << 16 | r << 5 | ZR);
     }
     trap_if(e, COND_HI, TRAP_BOUNDS);
 }
@@ -1446,7 +1473,7 @@ slice(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
         u64 k = constant_bits(e, lo);
         if (hi & IR_CONST) {
             u32 d = half_result(e, i, 1, n);
-            mov_imm(e, d, constant_bits(e, hi) - k, SF);
+            mov_imm(&e->as, d, constant_bits(e, hi) - k, SF);
         } else if (k == 0) {
             move_half(e, i, 1, n, hi);
         } else {
@@ -1471,9 +1498,9 @@ slice(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
     u32 r = fetch_index(e, lo, X17);
     u32 q = (hi & IR_CONST) ? X16 : fetch_index(e, hi, X16);
     if (hi & IR_CONST) {
-        mov_imm(e, X16, constant_bits(e, hi), SF);
+        mov_imm(&e->as, X16, constant_bits(e, hi), SF);
     }
-    put(e, OP_SUB | SF | r << 16 | q << 5 | d1);
+    put(&e->as, OP_SUB | SF | r << 16 | q << 5 | d1);
     u32 p = fetch(e, a, X16);
     scaled_address(e, d0, p, r, size);
     release(e, a);
@@ -1486,22 +1513,22 @@ store_zeros(Emit *e, u32 p, u64 size)
 {
     u32 k = 0;
     for (; size >= 16; size -= 16, k += 16) {
-        put(e, OP_STP_X | (k / 8) << 15 | ZR << 10 | p << 5 | ZR);
+        put(&e->as, OP_STP_X | (k / 8) << 15 | ZR << 10 | p << 5 | ZR);
     }
     if (size & 8) {
-        put(e, OP_STRX | (k / 8) << 10 | p << 5 | ZR);
+        put(&e->as, OP_STRX | (k / 8) << 10 | p << 5 | ZR);
         k += 8;
     }
     if (size & 4) {
-        put(e, OP_STRW | (k / 4) << 10 | p << 5 | ZR);
+        put(&e->as, OP_STRW | (k / 4) << 10 | p << 5 | ZR);
         k += 4;
     }
     if (size & 2) {
-        put(e, OP_STRH | (k / 2) << 10 | p << 5 | ZR);
+        put(&e->as, OP_STRH | (k / 2) << 10 | p << 5 | ZR);
         k += 2;
     }
     if (size & 1) {
-        put(e, OP_STRB | k << 10 | p << 5 | ZR);
+        put(&e->as, OP_STRB | k << 10 | p << 5 | ZR);
     }
 }
 
@@ -1512,13 +1539,13 @@ zero_memory(Emit *e, u32 type, u32 a)
     u32 p = fetch(e, a, X16);
     release(e, a);
     if (size > UNROLLED_BYTES) {
-        mov(e, SF, X16, p);
+        mov(&e->as, SF, X16, p);
         p = X16;
-        mov_imm(e, X17, size / 32, SF);
-        put(e, OP_STP_X | 2 << 15 | ZR << 10 | X16 << 5 | ZR);
-        put(e, OP_STP_X_POST | 4 << 15 | ZR << 10 | X16 << 5 | ZR);
-        put(e, OP_SUBS_IMM | SF | 1 << 10 | X17 << 5 | X17);
-        put(e, OP_B_COND | ((u32)-3 & 0x7FFFFu) << 5 | COND_NE);
+        mov_imm(&e->as, X17, size / 32, SF);
+        put(&e->as, OP_STP_X | 2 << 15 | ZR << 10 | X16 << 5 | ZR);
+        put(&e->as, OP_STP_X_POST | 4 << 15 | ZR << 10 | X16 << 5 | ZR);
+        put(&e->as, OP_SUBS_IMM | SF | 1 << 10 | X17 << 5 | X17);
+        put(&e->as, OP_B_COND | ((u32)-3 & 0x7FFFFu) << 5 | COND_NE);
         size %= 32;
     }
     store_zeros(e, p, size);
@@ -1529,32 +1556,32 @@ copy_bytes(Emit *e, u32 d, u32 s, u64 size)
 {
     u32 k = 0;
     for (; size >= 32; size -= 32, k += 32) {
-        put(e, OP_LDP_Q | (k / 16) << 15 | V31 << 10 | s << 5 | V30);
-        put(e, OP_STP_Q | (k / 16) << 15 | V31 << 10 | d << 5 | V30);
+        put(&e->as, OP_LDP_Q | (k / 16) << 15 | V31 << 10 | s << 5 | V30);
+        put(&e->as, OP_STP_Q | (k / 16) << 15 | V31 << 10 | d << 5 | V30);
     }
     if (size & 16) {
-        put(e, OP_LDR_Q | (k / 16) << 10 | s << 5 | V30);
-        put(e, OP_STR_Q | (k / 16) << 10 | d << 5 | V30);
+        put(&e->as, OP_LDR_Q | (k / 16) << 10 | s << 5 | V30);
+        put(&e->as, OP_STR_Q | (k / 16) << 10 | d << 5 | V30);
         k += 16;
     }
     if (size & 8) {
-        put(e, OP_LDRX | (k / 8) << 10 | s << 5 | X8);
-        put(e, OP_STRX | (k / 8) << 10 | d << 5 | X8);
+        put(&e->as, OP_LDRX | (k / 8) << 10 | s << 5 | X8);
+        put(&e->as, OP_STRX | (k / 8) << 10 | d << 5 | X8);
         k += 8;
     }
     if (size & 4) {
-        put(e, OP_LDRW | (k / 4) << 10 | s << 5 | X8);
-        put(e, OP_STRW | (k / 4) << 10 | d << 5 | X8);
+        put(&e->as, OP_LDRW | (k / 4) << 10 | s << 5 | X8);
+        put(&e->as, OP_STRW | (k / 4) << 10 | d << 5 | X8);
         k += 4;
     }
     if (size & 2) {
-        put(e, OP_LDRH | (k / 2) << 10 | s << 5 | X8);
-        put(e, OP_STRH | (k / 2) << 10 | d << 5 | X8);
+        put(&e->as, OP_LDRH | (k / 2) << 10 | s << 5 | X8);
+        put(&e->as, OP_STRH | (k / 2) << 10 | d << 5 | X8);
         k += 2;
     }
     if (size & 1) {
-        put(e, OP_LDRB | k << 10 | s << 5 | X8);
-        put(e, OP_STRB | k << 10 | d << 5 | X8);
+        put(&e->as, OP_LDRB | k << 10 | s << 5 | X8);
+        put(&e->as, OP_STRB | k << 10 | d << 5 | X8);
     }
 }
 
@@ -1563,15 +1590,15 @@ copy_between(Emit *e, u32 d, u32 s, u64 size)
 {
     assert(s != X16);
     if (size > UNROLLED_BYTES) {
-        mov(e, SF, X16, d);
-        mov(e, SF, X17, s);
+        mov(&e->as, SF, X16, d);
+        mov(&e->as, SF, X17, s);
         d = X16;
         s = X17;
-        mov_imm(e, X8, size / 32, SF);
-        put(e, OP_LDP_Q_POST | 2 << 15 | V31 << 10 | X17 << 5 | V30);
-        put(e, OP_STP_Q_POST | 2 << 15 | V31 << 10 | X16 << 5 | V30);
-        put(e, OP_SUBS_IMM | SF | 1 << 10 | X8 << 5 | X8);
-        put(e, OP_B_COND | ((u32)-3 & 0x7FFFFu) << 5 | COND_NE);
+        mov_imm(&e->as, X8, size / 32, SF);
+        put(&e->as, OP_LDP_Q_POST | 2 << 15 | V31 << 10 | X17 << 5 | V30);
+        put(&e->as, OP_STP_Q_POST | 2 << 15 | V31 << 10 | X16 << 5 | V30);
+        put(&e->as, OP_SUBS_IMM | SF | 1 << 10 | X8 << 5 | X8);
+        put(&e->as, OP_B_COND | ((u32)-3 & 0x7FFFFu) << 5 | COND_NE);
         size %= 32;
     }
     copy_bytes(e, d, s, size);
@@ -1594,20 +1621,20 @@ move_into(Emit *e, u32 d, u32 x, bool fl)
     u8 t = operand_info(e, x);
     if (x & IR_CONST) {
         if (fl) {
-            float_imm(e, d, constant_bits(e, x), bits_of(t) == 64);
+            float_imm(&e->as, d, constant_bits(e, x), bits_of(t) == 64);
         } else {
-            mov_imm(e, d, constant_bits(e, x), width(t));
+            mov_imm(&e->as, d, constant_bits(e, x), width(t));
         }
         return;
     }
     if (e->regs[x] != NO_REG) {
         if (fl) {
-            fmov(e, d, e->regs[x] & 31u);
+            fmov(&e->as, d, e->regs[x] & 31u);
         } else {
-            mov(e, SF, d, e->regs[x] & 31u);
+            mov(&e->as, SF, d, e->regs[x] & 31u);
         }
     } else {
-        memory(e, fl ? OP_LDRD : OP_LDRX, 3, d, e->spills[x], fl ? X8 : d);
+        memory(&e->as, fl ? OP_LDRD : OP_LDRX, 3, d, e->spills[x], fl ? X8 : d);
     }
     release(e, x);
 }
@@ -1616,10 +1643,10 @@ static void
 piece(Emit *e, u32 op, u32 scale, u32 rt, u32 base, u32 offset)
 {
     if (base == SP) {
-        memory(e, op, scale, rt, offset, X16);
+        memory(&e->as, op, scale, rt, offset, X16);
         return;
     }
-    put(e, op | (offset >> scale) << 10 | base << 5 | rt);
+    put(&e->as, op | (offset >> scale) << 10 | base << 5 | rt);
 }
 
 static bool
@@ -1638,7 +1665,7 @@ load_chunk(Emit *e, u32 d, u32 base, u32 offset, u32 n)
     while (done < n) {
         s = n - done >= 2 ? 1 : 0;
         piece(e, ops[s], s, X17, base, offset + done);
-        put(e, OP_ORR | SF | X17 << 16 | (done * 8) << 10 | d << 5 | d);
+        put(&e->as, OP_ORR | SF | X17 << 16 | (done * 8) << 10 | d << 5 | d);
         done += 1u << s;
     }
 }
@@ -1671,7 +1698,7 @@ move_struct(Emit *e, bool load, u32 type, u32 first, u32 base, u32 offset)
         for (u32 k = 0; k < n; k += 2) {
             u32 at = offset + (k << scale);
             if (k + 1 < n && pairs_at(at, scale)) {
-                put(e,
+                put(&e->as,
                     two | (at >> scale) << 15 | (first + k + 1) << 10 |
                         base << 5 | (first + k));
             } else {
@@ -1686,7 +1713,7 @@ move_struct(Emit *e, bool load, u32 type, u32 first, u32 base, u32 offset)
 
     u32 size = (u32)check_type_size(e->c, type);
     if (size == 16 && pairs_at(offset, 3)) {
-        put(e,
+        put(&e->as,
             (load ? OP_LDP_X : OP_STP_X) | (offset >> 3) << 15 |
                 (first + 1) << 10 | base << 5 | first);
         return;
@@ -1711,12 +1738,12 @@ pass_pointer(Emit *e, u32 v, u32 type, u32 d)
     if (root == DATA_ROOT ||
         (root < DATA_ROOT &&
          e->ir->slots[e->fn->first_slot + root].weight != WEIGHT_ADDRESSED)) {
-        mov(e, SF, d, s);
+        mov(&e->as, SF, d, s);
         return;
     }
 
     u64 size = check_type_size(e->c, type);
-    sp_address(e, d, e->copies_at + e->copied);
+    sp_address(&e->as, d, e->copies_at + e->copied);
     copy_between(e, d, s, size);
     e->copied += (u32)((size + 7) & ~(u64)7);
     assert(e->copied <= e->fn->copies);
@@ -1739,7 +1766,7 @@ stack_struct(Emit *e, u32 v, u32 type, u32 regs, u32 offset)
     u32 s = fetch(e, v, X17);
     release(e, v);
     if (!(regs & REGS_POINTER)) {
-        sp_address(e, X16, offset);
+        sp_address(&e->as, X16, offset);
         copy_bytes(e, X16, s, check_type_size(e->c, type));
         return;
     }
@@ -1748,18 +1775,18 @@ stack_struct(Emit *e, u32 v, u32 type, u32 regs, u32 offset)
     if (root == DATA_ROOT ||
         (root < DATA_ROOT &&
          e->ir->slots[e->fn->first_slot + root].weight != WEIGHT_ADDRESSED)) {
-        memory(e, OP_STRX, 3, s, offset, X16);
+        memory(&e->as, OP_STRX, 3, s, offset, X16);
         return;
     }
 
     u64 size = check_type_size(e->c, type);
     u32 copy = e->copies_at + e->copied;
-    sp_address(e, X16, copy);
+    sp_address(&e->as, X16, copy);
     copy_between(e, X16, s, size);
     e->copied += (u32)((size + 7) & ~(u64)7);
     assert(e->copied <= e->fn->copies);
-    sp_address(e, X17, copy);
-    memory(e, OP_STRX, 3, X17, offset, X16);
+    sp_address(&e->as, X17, copy);
+    memory(&e->as, OP_STRX, 3, X17, offset, X16);
 }
 
 static void
@@ -1770,16 +1797,16 @@ lane_constant(Emit *e, u32 d, u8 t, u64 bits)
     u64 lane = bits & ones;
     if (lane == 0 || lane == ones) {
         u32 imm = lane ? 0xFF : 0;
-        put(e, OP_MOVI_64 | (imm >> 5) << 16 | (imm & 31) << 5 | d);
+        put(&e->as, OP_MOVI_64 | (imm >> 5) << 16 | (imm & 31) << 5 | d);
         return;
     }
     if (lane < 256 && scale < 3) {
         static const u32 movi[] = { OP_MOVI_8, OP_MOVI_16, OP_MOVI_32 };
-        put(e, movi[scale] | (u32)(lane >> 5) << 16 | (u32)(lane & 31) << 5 | d);
+        put(&e->as, movi[scale] | (u32)(lane >> 5) << 16 | (u32)(lane & 31) << 5 | d);
         return;
     }
-    mov_imm(e, X16, lane, scale == 3 ? SF : 0);
-    put(e, OP_DUP | (1u << scale) << 16 | X16 << 5 | d);
+    mov_imm(&e->as, X16, lane, scale == 3 ? SF : 0);
+    put(&e->as, OP_DUP | (1u << scale) << 16 | X16 << 5 | d);
 }
 
 static void
@@ -1787,14 +1814,14 @@ wide_constant(Emit *e, u32 d, u64 lo, u64 hi)
 {
     if ((lo == 0 || lo == ~0ull) && hi == lo) {
         u32 imm = lo ? 0xFF : 0;
-        put(e, OP_MOVI_64 | (imm >> 5) << 16 | (imm & 31) << 5 | d);
+        put(&e->as, OP_MOVI_64 | (imm >> 5) << 16 | (imm & 31) << 5 | d);
         return;
     }
-    mov_imm(e, X16, lo, SF);
-    put(e, OP_FMOV_FROM_X | X16 << 5 | d);
+    mov_imm(&e->as, X16, lo, SF);
+    put(&e->as, OP_FMOV_FROM_X | X16 << 5 | d);
     if (hi) {
-        mov_imm(e, X16, hi, SF);
-        put(e, OP_INS_D1 | X16 << 5 | d);
+        mov_imm(&e->as, X16, hi, SF);
+        put(&e->as, OP_INS_D1 | X16 << 5 | d);
     }
 }
 
@@ -1814,7 +1841,7 @@ fetch_lanes(Emit *e, u32 x, u32 scratch)
     if (home == NO_VALUE) {
         return V29;
     }
-    memory(e, OP_LDR_Q, 4, scratch, home, X8);
+    memory(&e->as, OP_LDR_Q, 4, scratch, home, X8);
     release_home(e, home);
     return scratch;
 }
@@ -1824,7 +1851,7 @@ move_lanes(Emit *e, u32 d, u32 x)
 {
     u32 r = fetch_lanes(e, x, d);
     if (r != d) {
-        put(e, OP_VORR | r << 16 | r << 5 | d);
+        put(&e->as, OP_VORR | r << 16 | r << 5 | d);
     }
 }
 
@@ -1839,7 +1866,7 @@ pass_vector(Emit *e, u32 v, ArgCursor *at)
     u32 place = check_place_arg(at, 1 | REGS_FLOAT, 16, 16, e->place);
     assert(place & PLACE_STACK);
     u32 r = fetch_lanes(e, v, V30);
-    memory(e, OP_STR_Q, 4, r, place & ~PLACE_STACK, X16);
+    memory(&e->as, OP_STR_Q, 4, r, place & ~PLACE_STACK, X16);
 }
 
 static NOINLINE void
@@ -1881,7 +1908,7 @@ stack_arg(Emit *e, u32 x, u8 info, ArgCursor *at, u32 how)
         scale = 3;
         info = (u8)(info & ~INFO_SCALE) | 3;
     }
-    memory(e, store_op(info, r), scale, r, place & ~PLACE_STACK, X16);
+    memory(&e->as, store_op(info, r), scale, r, place & ~PLACE_STACK, X16);
 }
 
 static NOINLINE void
@@ -1923,7 +1950,7 @@ static NOINLINE void
 point_result(Emit *e, u32 type, const u32 *args)
 {
     if (by_pointer(e, type)) {
-        sp_address(e, X8, e->slot_offsets[args[args[0] + 1]]);
+        sp_address(&e->as, X8, e->slot_offsets[args[args[0] + 1]]);
     }
 }
 
@@ -1931,7 +1958,7 @@ static NOINLINE void
 receive_result(Emit *e, u32 type, const u32 *args)
 {
     if (is_vector(e->info[type])) {
-        put(e, OP_VORR | 0 << 16 | 0 << 5 | V29);
+        put(&e->as, OP_VORR | 0 << 16 | 0 << 5 | V29);
         return;
     }
     if (!by_pointer(e, type)) {
@@ -1957,9 +1984,10 @@ bind_c(Emit *e, const Native *n, u32 decl)
     bool global = e->c->decls.kinds[decl] == DECL_VAR;
     char symbol[256];
     if (name.len >= sizeof symbol) {
-        e->error = global
-                     ? "the name of an `extern` global is longer than 255 bytes"
-                     : "the name of an `extern fn` is longer than 255 bytes";
+        e->as.error = global
+                        ? "the name of an `extern` global is longer than 255 "
+                          "bytes"
+                        : "the name of an `extern fn` is longer than 255 bytes";
         return false;
     }
     memcpy(symbol, name.text, name.len);
@@ -1970,9 +1998,11 @@ bind_c(Emit *e, const Native *n, u32 decl)
     }
     void *address = dlsym(e->process, symbol);
     if (!address) {
-        e->error = global
-                     ? "an `extern` global names a C variable that isn't loaded"
-                     : "an `extern fn` names a C function that is not loaded";
+        e->as
+            .error = global
+                       ? "an `extern` global names a C variable that isn't "
+                         "loaded"
+                       : "an `extern fn` names a C function that is not loaded";
         return false;
     }
     n->entries[decl] = (u64)(uintptr_t)address;
@@ -1985,9 +2015,9 @@ callback_address(Emit *e, u32 i, u32 type, u32 k, u32 decl, const Native *n)
     if (e->c->decls.bodies[decl] != NO_BODY) {
         u32 d = result(e, i, e->info[type]);
         u64 to = e->adapters[k];
-        adrp(e, d, to);
+        adrp(&e->as, d, to);
         if (to & 0xFFF) {
-            put(e, SF | OP_ADD_IMM | (u32)(to & 0xFFF) << 10 | d << 5 | d);
+            put(&e->as, SF | OP_ADD_IMM | (u32)(to & 0xFFF) << 10 | d << 5 | d);
         }
         return;
     }
@@ -1997,8 +2027,8 @@ callback_address(Emit *e, u32 i, u32 type, u32 k, u32 decl, const Native *n)
 
     u32 d = result(e, i, e->info[type]);
     u64 slot = (u64)(uintptr_t)(n->entries + decl);
-    adrp(e, d, slot);
-    put(e, OP_LDRX | (u32)((slot & 0xFFF) >> 3) << 10 | d << 5 | d);
+    adrp(&e->as, d, slot);
+    put(&e->as, OP_LDRX | (u32)((slot & 0xFFF) >> 3) << 10 | d << 5 | d);
 }
 
 static NOINLINE void
@@ -2010,27 +2040,27 @@ c_global_address(Emit *e, u32 i, u32 type, u32 decl, const Native *n)
 
     u32 d = result(e, i, e->info[type]);
     u64 slot = (u64)(uintptr_t)(n->entries + decl);
-    adrp(e, d, slot);
-    put(e, OP_LDRX | (u32)((slot & 0xFFF) >> 3) << 10 | d << 5 | d);
+    adrp(&e->as, d, slot);
+    put(&e->as, OP_LDRX | (u32)((slot & 0xFFF) >> 3) << 10 | d << 5 | d);
 }
 
 static NOINLINE void
 pair_result(Emit *e, u32 i, u8 t, u8 second)
 {
     if (is_float(t)) {
-        fmov(e, alloc(e, i, t), 0);
-        mov(e, SF, alloc(e, i + 1, second), 1);
+        fmov(&e->as, alloc(e, i, t), 0);
+        mov(&e->as, SF, alloc(e, i + 1, second), 1);
         return;
     }
     u32 d0 = half_result(e, i, 0, t);
     u32 d1 = half_result(e, i, 1, second);
     assert(d1 != 0);
     if (d0 == 1) {
-        mov(e, SF, d1, 1);
-        mov(e, SF, d0, 0);
+        mov(&e->as, SF, d1, 1);
+        mov(&e->as, SF, d0, 0);
     } else {
-        mov(e, SF, d0, 0);
-        mov(e, SF, d1, 1);
+        mov(&e->as, SF, d0, 0);
+        mov(&e->as, SF, d1, 1);
     }
 }
 
@@ -2054,15 +2084,15 @@ call(Emit *e, u32 i, u32 type, u32 decl, u32 b, const Native *n, u32 ints)
         point_result(e, type, args);
     }
     if (ints && (e->called || inside_loop(e))) {
-        put(e, OP_LOAD_CONTEXT);
+        put(&e->as, OP_LOAD_CONTEXT);
         e->context_saved = true;
     }
     e->called = true;
 
     u64 entry = (u64)(uintptr_t)(n->entries + decl);
-    adrp(e, X16, entry);
-    put(e, OP_LDR_X16_X16 | (u32)((entry & 0xFFF) >> 3) << 10);
-    put(e, OP_BLR_X16);
+    adrp(&e->as, X16, entry);
+    put(&e->as, OP_LDR_X16_X16 | (u32)((entry & 0xFFF) >> 3) << 10);
+    put(&e->as, OP_BLR_X16);
 
     if (t & INFO_MEMORY) {
         receive_result(e, type, args);
@@ -2076,11 +2106,11 @@ call(Emit *e, u32 i, u32 type, u32 decl, u32 b, const Native *n, u32 ints)
         bool fl = is_float(t);
         u32 d = result(e, i, e->info[type]);
         if (fl) {
-            fmov(e, d, 0);
+            fmov(&e->as, d, 0);
         } else if (ints == 0) {
             take_from_c(e, t, d, 0);
         } else {
-            mov(e, SF, d, 0);
+            mov(&e->as, SF, d, 0);
         }
     }
 }
@@ -2100,7 +2130,7 @@ load_pair(Emit *e, u32 i, u32 p, u8 t)
 {
     u32 d0 = half_result(e, i, 0, t);
     u32 d1 = half_result(e, i, 1, e->info[TYPE_ID_I64]);
-    put(e, OP_LDP_X | d1 << 10 | p << 5 | d0);
+    put(&e->as, OP_LDP_X | d1 << 10 | p << 5 | d0);
 }
 
 static NOINLINE void
@@ -2112,12 +2142,12 @@ load_flagged(Emit *e, u32 i, u32 p, u32 type)
     u32 size = (u32)check_type_size(e->c, e->c->types.arg0[type]);
     u32 flag = OP_LDRB | size << 10 | p << 5 | d1;
     if (d1 == p) {
-        put(e, load_op(t) | p << 5 | d0);
-        put(e, flag);
+        put(&e->as, load_op(t) | p << 5 | d0);
+        put(&e->as, flag);
         return;
     }
-    put(e, flag);
-    put(e, load_op(t) | p << 5 | d0);
+    put(&e->as, flag);
+    put(&e->as, load_op(t) | p << 5 | d0);
 }
 
 static NOINLINE void
@@ -2132,8 +2162,8 @@ store_flagged(Emit *e, u32 type, u32 a, u32 b)
     u32 r1 = (x[1] & IR_CONST) && constant_bits(e, x[1]) == 0 ? ZR
                                                               : fetch(e, x[1], X8);
     u32 size = (u32)check_type_size(e->c, e->c->types.arg0[type]);
-    put(e, store_op(t, r0) | p << 5 | r0);
-    put(e, OP_STRB | size << 10 | p << 5 | r1);
+    put(&e->as, store_op(t, r0) | p << 5 | r0);
+    put(&e->as, OP_STRB | size << 10 | p << 5 | r1);
     release(e, a);
     release(e, x[0]);
     release(e, x[1]);
@@ -2148,7 +2178,7 @@ store_pair(Emit *e, u32 a, u32 b)
                                                               : fetch(e, x[0], X17);
     u32 r1 = (x[1] & IR_CONST) && constant_bits(e, x[1]) == 0 ? ZR
                                                               : fetch(e, x[1], X8);
-    put(e, OP_STP_X | r1 << 10 | p << 5 | r0);
+    put(&e->as, OP_STP_X | r1 << 10 | p << 5 | r0);
     release(e, a);
     release(e, x[0]);
     release(e, x[1]);
@@ -2158,9 +2188,9 @@ static void
 move_pair(Emit *e, u32 d0, u32 d1, u32 a, u32 b)
 {
     if (in_register(e, a, d1) && in_register(e, b, d0)) {
-        mov(e, SF, X16, d0);
-        mov(e, SF, d0, d1);
-        mov(e, SF, d1, X16);
+        mov(&e->as, SF, X16, d0);
+        mov(&e->as, SF, d0, d1);
+        mov(&e->as, SF, d1, X16);
         release(e, a);
         release(e, b);
     } else if (in_register(e, b, d0)) {
@@ -2219,16 +2249,16 @@ open_switch(Emit *e, u32 i, u32 type, u32 a, u32 b)
         subtract_imm(e, X17, r, o.min, sf);
         compare_imm(e, X17, span - 1, sf, false);
         branch_to(e, OP_B_COND | COND_HI, fallback, TRAP_UNREACHABLE);
-        put(e, OP_ADR | 4u << 5 | X16);
-        put(e, OP_LDRSW_SCALED | X17 << 16 | X16 << 5 | X17);
-        put(e, OP_ADD | SF | X17 << 16 | X16 << 5 | X16);
-        put(e, OP_BR | X16 << 5);
-        o.table = here(e);
+        put(&e->as, OP_ADR | 4u << 5 | X16);
+        put(&e->as, OP_LDRSW_SCALED | X17 << 16 | X16 << 5 | X17);
+        put(&e->as, OP_ADD | SF | X17 << 16 | X16 << 5 | X16);
+        put(&e->as, OP_BR | X16 << 5);
+        o.table = here(&e->as);
         for (u64 k = 0; k < span; k++) {
-            put(e, 0);
+            put(&e->as, 0);
         }
         if (count < span && fallback == NO_VALUE) {
-            o.stub = here(e);
+            o.stub = here(&e->as);
             branch_to(e, OP_B, NO_VALUE, TRAP_UNREACHABLE);
         }
     } else {
@@ -2236,7 +2266,7 @@ open_switch(Emit *e, u32 i, u32 type, u32 a, u32 b)
     }
 
     e->arm_at = grow(e->arm_at, &e->arms_cap, e->narms + 1, sizeof *e->arm_at);
-    e->arm_at[e->narms++] = here(e);
+    e->arm_at[e->narms++] = here(&e->as);
     e->open = grow(e->open, &e->open_cap, e->nopen + 1, sizeof *e->open);
     e->open[e->nopen++] = o;
 }
@@ -2246,14 +2276,14 @@ finish_switch(Emit *e, const Open *o)
 {
     const u32 *arms = e->arm_at + o->first_arm;
     for (u32 k = o->first_branch; k < e->nbranches; k++) {
-        patch_one(e, e->branches[k].at, arms[e->branches[k].target]);
+        patch_one(&e->as, e->branches[k].at, arms[e->branches[k].target]);
     }
     if (o->table != NO_VALUE) {
         const u32 *x = e->ir->extra + e->fn->first_extra +
                        e->ir->bs[e->fn->first + o->target];
         u32 fallback = x[1] == NO_VALUE ? o->stub : arms[x[1]];
         for (u32 k = 0; k < o->span; k++) {
-            e->code[o->table + k] = (fallback - o->table) * 4;
+            e->as.code[o->table + k] = (fallback - o->table) * 4;
         }
         for (u32 k = 0; k < x[0]; k++) {
             const u32 *w = x + 2 + 5 * k;
@@ -2261,7 +2291,7 @@ finish_switch(Emit *e, const Open *o)
             u32 hi = (u32)((w[2] | (u64)w[3] << 32) - o->min);
             u32 offset = (arms[w[4]] - o->table) * 4;
             for (u32 v = lo; v <= hi; v++) {
-                e->code[o->table + v] = offset;
+                e->as.code[o->table + v] = offset;
             }
         }
     }
@@ -2419,11 +2449,11 @@ incoming_address(Emit *e, u32 d, u32 offset)
 {
     offset += 32;
     if (offset < 4096) {
-        put(e, OP_ADD_IMM | SF | offset << 10 | X29 << 5 | d);
+        put(&e->as, OP_ADD_IMM | SF | offset << 10 | X29 << 5 | d);
         return;
     }
-    mov_imm(e, d, offset, SF);
-    put(e, OP_ADD | SF | d << 16 | X29 << 5 | d);
+    mov_imm(&e->as, d, offset, SF);
+    put(&e->as, OP_ADD | SF | d << 16 | X29 << 5 | d);
 }
 
 static NOINLINE void
@@ -2432,7 +2462,7 @@ receive_vector(Emit *e, u32 p, ArgCursor *at)
     bool used = e->slots[p].weight != 0;
     if (at->floats < 8) {
         if (used) {
-            memory(e, OP_STR_Q, 4, at->floats, e->slot_offsets[p], X16);
+            memory(&e->as, OP_STR_Q, 4, at->floats, e->slot_offsets[p], X16);
         }
         at->floats++;
         return;
@@ -2443,8 +2473,8 @@ receive_vector(Emit *e, u32 p, ArgCursor *at)
     e->wide_record = true;
     if (used) {
         incoming_address(e, X16, place & ~PLACE_STACK);
-        put(e, OP_LDR_Q | X16 << 5 | V30);
-        memory(e, OP_STR_Q, 4, V30, e->slot_offsets[p], X16);
+        put(&e->as, OP_LDR_Q | X16 << 5 | V30);
+        memory(&e->as, OP_STR_Q, 4, V30, e->slot_offsets[p], X16);
     }
 }
 
@@ -2471,7 +2501,7 @@ receive_param(Emit *e, u32 p, ArgCursor *at)
     e->wide_record = true;
     if (slot->weight) {
         incoming_address(e, X17, place & ~PLACE_STACK);
-        sp_address(e, X16, e->slot_offsets[p]);
+        sp_address(&e->as, X16, e->slot_offsets[p]);
         copy_bytes(e, X16, X17, check_type_size(e->c, slot->type));
     }
 }
@@ -2494,13 +2524,13 @@ receive_stack(Emit *e, u32 p, u8 info, ArgCursor *at)
     u32 offset = (place & ~PLACE_STACK) + 32;
     assert((offset & ((1u << scale) - 1)) == 0);
     if ((offset >> scale) < 4096) {
-        put(e, load_op(info) | (offset >> scale) << 10 | X29 << 5 | r);
+        put(&e->as, load_op(info) | (offset >> scale) << 10 | X29 << 5 | r);
     } else {
         incoming_address(e, X16, offset - 32);
-        put(e, load_op(info) | X16 << 5 | r);
+        put(&e->as, load_op(info) | X16 << 5 | r);
     }
     if (h == NO_REG) {
-        store_typed(e, e->slots[p].type, r, e->slot_offsets[p]);
+        store_typed(&e->as, e->info[e->slots[p].type], r, e->slot_offsets[p]);
     }
 }
 
@@ -2524,7 +2554,7 @@ param_address(Emit *e, u32 i, u32 p, u8 info)
         return;
     }
     u32 d = result(e, i, info);
-    memory(e, OP_LDRX, 3, d, e->slot_offsets[p], d);
+    memory(&e->as, OP_LDRX, 3, d, e->slot_offsets[p], d);
 }
 
 static NOINLINE void
@@ -2533,13 +2563,13 @@ return_struct(Emit *e, u32 type, u32 a)
     if (e->result_at != NO_VALUE) {
         u32 s = fetch(e, a, X17);
         release(e, a);
-        memory(e, OP_LDRX, 3, X16, e->result_at, X16);
+        memory(&e->as, OP_LDRX, 3, X16, e->result_at, X16);
         copy_between(e, X16, s, check_type_size(e->c, type));
         return;
     }
     u32 p = fetch(e, a, X16);
     if (p < 8) {
-        mov(e, SF, X16, p);
+        mov(&e->as, SF, X16, p);
         p = X16;
     }
     move_struct(e, true, type, 0, p, 0);
@@ -2621,7 +2651,7 @@ keep_lanes(Emit *e, u32 v)
         return;
     }
     u32 home = new_home(e);
-    memory(e, OP_STR_Q, 4, V29, home, X8);
+    memory(&e->as, OP_STR_Q, 4, V29, home, X8);
     e->spills[v] = home;
 }
 
@@ -2644,15 +2674,15 @@ lane_shift(Emit *e, u8 kind, u8 t, u32 b)
         check_wide_count(e, b, bits, X17);
     } else {
         rb = fetch(e, b, X17);
-        put(e, OP_SUBS_IMM | width(count_info) | bits << 10 | rb << 5 | ZR);
+        put(&e->as, OP_SUBS_IMM | width(count_info) | bits << 10 | rb << 5 | ZR);
         trap_if(e, COND_HS, TRAP_SHIFT);
         release(e, b);
     }
     if (kind == IR_SHR) {
-        put(e, OP_SUB | rb << 16 | ZR << 5 | X16);
+        put(&e->as, OP_SUB | rb << 16 | ZR << 5 | X16);
         rb = X16;
     }
-    put(e, OP_DUP | (1u << scale) << 16 | rb << 5 | V31);
+    put(&e->as, OP_DUP | (1u << scale) << 16 | rb << 5 | V31);
     return (is_signed(t) ? OP_SSHL : OP_USHL) | scale << 22 | V31 << 16;
 }
 
@@ -2661,20 +2691,20 @@ shift_lanes(Emit *e, u8 kind, u8 t, u32 a, u32 b)
 {
     u32 op = lane_shift(e, kind, t, b);
     u32 r = fetch_lanes(e, a, V30);
-    put(e, op | r << 5 | V29);
+    put(&e->as, op | r << 5 | V29);
 }
 
 static void
 gather_bits(Emit *e, u32 scale, u32 r, u32 d)
 {
     u32 bits = 8u << scale;
-    put(e, OP_USHR_IMM | (bits + 1) << 16 | r << 5 | V29);
+    put(&e->as, OP_USHR_IMM | (bits + 1) << 16 | r << 5 | V29);
     for (u32 n = 1, w = bits; w < 64; n *= 2, w *= 2) {
-        put(e, OP_USRA | (3 * w + n) << 16 | V29 << 5 | V29);
+        put(&e->as, OP_USRA | (3 * w + n) << 16 | V29 << 5 | V29);
     }
-    put(e, OP_UMOV_B | V29 << 5 | X16);
-    put(e, OP_UMOV_B | 8u << 17 | V29 << 5 | X17);
-    put(e, OP_ORR | X17 << 16 | (8u >> scale) << 10 | X16 << 5 | d);
+    put(&e->as, OP_UMOV_B | V29 << 5 | X16);
+    put(&e->as, OP_UMOV_B | 8u << 17 | V29 << 5 | X17);
+    put(&e->as, OP_ORR | X17 << 16 | (8u >> scale) << 10 | X16 << 5 | d);
 }
 
 static void
@@ -2711,14 +2741,14 @@ lane_op(u8 kind, u8 t)
 static void
 multiply_wide_lanes(Emit *e, u32 ra, u32 rb)
 {
-    put(e, OP_UMOV_D | ra << 5 | X16);
-    put(e, OP_UMOV_D | rb << 5 | X17);
-    put(e, OP_MUL | SF | X17 << 16 | X16 << 5 | X16);
-    put(e, OP_UMOV_D | 1u << 20 | ra << 5 | X17);
-    put(e, OP_UMOV_D | 1u << 20 | rb << 5 | X8);
-    put(e, OP_MUL | SF | X8 << 16 | X17 << 5 | X17);
-    put(e, OP_FMOV_FROM_X | X16 << 5 | V29);
-    put(e, OP_INS_D1 | X17 << 5 | V29);
+    put(&e->as, OP_UMOV_D | ra << 5 | X16);
+    put(&e->as, OP_UMOV_D | rb << 5 | X17);
+    put(&e->as, OP_MUL | SF | X17 << 16 | X16 << 5 | X16);
+    put(&e->as, OP_UMOV_D | 1u << 20 | ra << 5 | X17);
+    put(&e->as, OP_UMOV_D | 1u << 20 | rb << 5 | X8);
+    put(&e->as, OP_MUL | SF | X8 << 16 | X17 << 5 | X17);
+    put(&e->as, OP_FMOV_FROM_X | X16 << 5 | V29);
+    put(&e->as, OP_INS_D1 | X17 << 5 | V29);
 }
 
 static u32
@@ -2751,7 +2781,7 @@ wide_home(Emit *e, u32 x)
     u32 home = e->spills[x];
     if (home == NO_VALUE) {
         home = new_home(e);
-        memory(e, OP_STR_Q, 4, V29, home, X8);
+        memory(&e->as, OP_STR_Q, 4, V29, home, X8);
     }
     return home;
 }
@@ -2763,14 +2793,14 @@ call_routine(Emit *e, u32 a, u32 b, u32 *calls, u32 mode)
     u32 hb = wide_home(e, b);
     u32 hr = new_home(e);
 
-    sp_address(e, X16, ha);
-    sp_address(e, X17, hb);
-    sp_address(e, X8, hr);
+    sp_address(&e->as, X16, ha);
+    sp_address(&e->as, X17, hb);
+    sp_address(&e->as, X8, hr);
     if (mode) {
-        put(e, OP_ADD_IMM | SF | mode << 10 | X8 << 5 | X8);
+        put(&e->as, OP_ADD_IMM | SF | mode << 10 | X8 << 5 | X8);
     }
-    add_fixup(e, calls);
-    put(e, OP_BL);
+    add_fixup(&e->as, calls);
+    put(&e->as, OP_BL);
 
     release_home(e, ha);
     release_home(e, hb);
@@ -2787,8 +2817,8 @@ add_sub_wide(Emit *e, u32 i, u8 kind, u8 t, u32 a, u32 b)
     fetch_wide(e, b, X8, b1);
 
     u32 carry = sub ? (checked ? OP_SBCS : OP_SBC) : (checked ? OP_ADCS : OP_ADC);
-    put(e, (sub ? OP_SUBS : OP_ADDS) | SF | X8 << 16 | X16 << 5 | X16);
-    put(e, carry | SF | b1 << 16 | X17 << 5 | X17);
+    put(&e->as, (sub ? OP_SUBS : OP_ADDS) | SF | X8 << 16 | X16 << 5 | X16);
+    put(&e->as, carry | SF | b1 << 16 | X17 << 5 | X17);
     if (checked) {
         trap_if(e, is_signed(t) ? COND_VS : (sub ? COND_LO : COND_HS), TRAP_OVERFLOW);
     }
@@ -2799,23 +2829,23 @@ add_sub_wide(Emit *e, u32 i, u8 kind, u8 t, u32 a, u32 b)
 static void
 unsigned_product(Emit *e, u32 b0, u32 b1, u32 *overflow)
 {
-    put(e, OP_SUBS_IMM | SF | X17 << 5 | ZR);
-    put(e, OP_CCMP_IMM | SF | (u32)COND_NE << 12 | b1 << 5 | 4);
-    add_fixup(e, overflow);
-    put(e, OP_B_COND | COND_NE);
-    put(e, OP_UMULH | b0 << 16 | X17 << 5 | X8);
-    add_fixup(e, overflow);
-    put(e, OP_CBNZ | SF | X8);
-    put(e, OP_UMULH | b1 << 16 | X16 << 5 | X8);
-    add_fixup(e, overflow);
-    put(e, OP_CBNZ | SF | X8);
-    put(e, OP_MUL | SF | b0 << 16 | X17 << 5 | X8);
-    put(e, OP_MADD | SF | b1 << 16 | X8 << 10 | X16 << 5 | X8);
-    put(e, OP_UMULH | b0 << 16 | X16 << 5 | X17);
-    put(e, OP_ADDS | SF | X8 << 16 | X17 << 5 | X17);
-    add_fixup(e, overflow);
-    put(e, OP_B_COND | COND_HS);
-    put(e, OP_MUL | SF | b0 << 16 | X16 << 5 | X16);
+    put(&e->as, OP_SUBS_IMM | SF | X17 << 5 | ZR);
+    put(&e->as, OP_CCMP_IMM | SF | (u32)COND_NE << 12 | b1 << 5 | 4);
+    add_fixup(&e->as, overflow);
+    put(&e->as, OP_B_COND | COND_NE);
+    put(&e->as, OP_UMULH | b0 << 16 | X17 << 5 | X8);
+    add_fixup(&e->as, overflow);
+    put(&e->as, OP_CBNZ | SF | X8);
+    put(&e->as, OP_UMULH | b1 << 16 | X16 << 5 | X8);
+    add_fixup(&e->as, overflow);
+    put(&e->as, OP_CBNZ | SF | X8);
+    put(&e->as, OP_MUL | SF | b0 << 16 | X17 << 5 | X8);
+    put(&e->as, OP_MADD | SF | b1 << 16 | X8 << 10 | X16 << 5 | X8);
+    put(&e->as, OP_UMULH | b0 << 16 | X16 << 5 | X17);
+    put(&e->as, OP_ADDS | SF | X8 << 16 | X17 << 5 | X17);
+    add_fixup(&e->as, overflow);
+    put(&e->as, OP_B_COND | COND_HS);
+    put(&e->as, OP_MUL | SF | b0 << 16 | X16 << 5 | X16);
 }
 
 static void
@@ -2836,11 +2866,11 @@ multiply_wide(Emit *e, u32 i, u8 kind, u8 t, u32 a, u32 b)
     if (kind == IR_MUL) {
         unsigned_product(e, b0, b1, &e->traps[TRAP_OVERFLOW]);
     } else {
-        put(e, OP_MUL | SF | b1 << 16 | X16 << 5 | b1);
-        put(e, OP_MADD | SF | b0 << 16 | b1 << 10 | X17 << 5 | X17);
-        put(e, OP_UMULH | b0 << 16 | X16 << 5 | b1);
-        put(e, OP_ADD | SF | b1 << 16 | X17 << 5 | X17);
-        put(e, OP_MUL | SF | b0 << 16 | X16 << 5 | X16);
+        put(&e->as, OP_MUL | SF | b1 << 16 | X16 << 5 | b1);
+        put(&e->as, OP_MADD | SF | b0 << 16 | b1 << 10 | X17 << 5 | X17);
+        put(&e->as, OP_UMULH | b0 << 16 | X16 << 5 | b1);
+        put(&e->as, OP_ADD | SF | b1 << 16 | X17 << 5 | X17);
+        put(&e->as, OP_MUL | SF | b0 << 16 | X16 << 5 | X16);
     }
     e->free_int |= 1u << b0 | 1u << b1;
     keep_wide(e, i, t, X16, X17);
@@ -2859,7 +2889,7 @@ shift_wide(Emit *e, u32 i, u8 kind, u8 t, u32 a, u32 b)
             lsl_imm(e, X17, X16, n - 64);
             lo = ZR;
         } else if (kind == IR_SHL && n > 0) {
-            put(e, OP_EXTR | X16 << 16 | (64 - n) << 10 | X17 << 5 | X17);
+            put(&e->as, OP_EXTR | X16 << 16 | (64 - n) << 10 | X17 << 5 | X17);
             lsl_imm(e, X16, X16, n);
         } else if (n >= 64) {
             shift_imm(e, shr, SF, X16, X17, n - 64);
@@ -2869,7 +2899,7 @@ shift_wide(Emit *e, u32 i, u8 kind, u8 t, u32 a, u32 b)
                 hi = ZR;
             }
         } else if (n > 0) {
-            put(e, OP_EXTR | X16 << 16 | n << 10 | X17 << 5 | X16);
+            put(&e->as, OP_EXTR | X16 << 16 | n << 10 | X17 << 5 | X16);
             shift_imm(e, shr, SF, X17, X17, n);
         }
         keep_wide(e, i, t, lo, hi);
@@ -2884,37 +2914,37 @@ shift_wide(Emit *e, u32 i, u8 kind, u8 t, u32 a, u32 b)
         check_wide_count(e, b, 128, c);
     } else {
         n = fetch(e, b, c);
-        put(e, OP_SUBS_IMM | width(count_info) | 128u << 10 | n << 5 | ZR);
+        put(&e->as, OP_SUBS_IMM | width(count_info) | 128u << 10 | n << 5 | ZR);
         trap_if(e, COND_HS, TRAP_SHIFT);
         release(e, b);
     }
     fetch_wide(e, a, X16, X17);
 
     u32 field = logical_field(64, 0);
-    put(e, OP_ORN | SF | n << 16 | ZR << 5 | X8);
+    put(&e->as, OP_ORN | SF | n << 16 | ZR << 5 | X8);
     if (kind == IR_SHL) {
         shift_imm(e, OP_LSR_IMM, SF, t1, X16, 1);
-        put(e, OP_LSRV | SF | X8 << 16 | t1 << 5 | t1);
-        put(e, OP_LSLV | SF | n << 16 | X17 << 5 | X8);
-        put(e, OP_ORR | SF | X8 << 16 | t1 << 5 | t1);
-        put(e, OP_LSLV | SF | n << 16 | X16 << 5 | X8);
-        put(e, OP_ANDS_IMM | field | n << 5 | ZR);
-        put(e, OP_CSEL | SF | t1 << 16 | (u32)COND_NE << 12 | X8 << 5 | X17);
-        put(e, OP_CSEL | SF | X8 << 16 | (u32)COND_NE << 12 | ZR << 5 | X16);
+        put(&e->as, OP_LSRV | SF | X8 << 16 | t1 << 5 | t1);
+        put(&e->as, OP_LSLV | SF | n << 16 | X17 << 5 | X8);
+        put(&e->as, OP_ORR | SF | X8 << 16 | t1 << 5 | t1);
+        put(&e->as, OP_LSLV | SF | n << 16 | X16 << 5 | X8);
+        put(&e->as, OP_ANDS_IMM | field | n << 5 | ZR);
+        put(&e->as, OP_CSEL | SF | t1 << 16 | (u32)COND_NE << 12 | X8 << 5 | X17);
+        put(&e->as, OP_CSEL | SF | X8 << 16 | (u32)COND_NE << 12 | ZR << 5 | X16);
     } else {
         lsl_imm(e, t1, X17, 1);
-        put(e, OP_LSLV | SF | X8 << 16 | t1 << 5 | t1);
-        put(e, OP_LSRV | SF | n << 16 | X16 << 5 | X8);
-        put(e, OP_ORR | SF | X8 << 16 | t1 << 5 | t1);
-        put(e, (s ? OP_ASRV : OP_LSRV) | SF | n << 16 | X17 << 5 | X8);
-        put(e, OP_ANDS_IMM | field | n << 5 | ZR);
-        put(e, OP_CSEL | SF | t1 << 16 | (u32)COND_NE << 12 | X8 << 5 | X16);
+        put(&e->as, OP_LSLV | SF | X8 << 16 | t1 << 5 | t1);
+        put(&e->as, OP_LSRV | SF | n << 16 | X16 << 5 | X8);
+        put(&e->as, OP_ORR | SF | X8 << 16 | t1 << 5 | t1);
+        put(&e->as, (s ? OP_ASRV : OP_LSRV) | SF | n << 16 | X17 << 5 | X8);
+        put(&e->as, OP_ANDS_IMM | field | n << 5 | ZR);
+        put(&e->as, OP_CSEL | SF | t1 << 16 | (u32)COND_NE << 12 | X8 << 5 | X16);
         u32 fill = ZR;
         if (s) {
             shift_imm(e, OP_ASR_IMM, SF, t1, X17, 63);
             fill = t1;
         }
-        put(e, OP_CSEL | SF | X8 << 16 | (u32)COND_NE << 12 | fill << 5 | X17);
+        put(&e->as, OP_CSEL | SF | X8 << 16 | (u32)COND_NE << 12 | fill << 5 | X17);
     }
     e->free_int |= 1u << c | 1u << t1;
     keep_wide(e, i, t, X16, X17);
@@ -2925,13 +2955,13 @@ negate_wide(Emit *e, u32 i, u8 kind, u8 t, u32 a)
 {
     fetch_wide(e, a, X16, X17);
     if (kind == IR_NEG && !is_signed(t)) {
-        put(e, OP_ORR | SF | X17 << 16 | X16 << 5 | X8);
+        put(&e->as, OP_ORR | SF | X17 << 16 | X16 << 5 | X8);
         trap_unless_zero(e, X8, SF, TRAP_OVERFLOW);
         keep_wide(e, i, t, ZR, ZR);
         return;
     }
-    put(e, OP_SUBS | SF | X16 << 16 | ZR << 5 | X16);
-    put(e, (kind == IR_NEG ? OP_SBCS : OP_SBC) | SF | X17 << 16 | ZR << 5 | X17);
+    put(&e->as, OP_SUBS | SF | X16 << 16 | ZR << 5 | X16);
+    put(&e->as, (kind == IR_NEG ? OP_SBCS : OP_SBC) | SF | X17 << 16 | ZR << 5 | X17);
     if (kind == IR_NEG) {
         trap_if(e, COND_VS, TRAP_OVERFLOW);
     }
@@ -2947,15 +2977,15 @@ compare_wide(Emit *e, u32 i, u8 kind, u8 t, u32 a, u32 b)
 
     u8 cond;
     if (kind == IR_EQ || kind == IR_NE) {
-        put(e, OP_SUBS | SF | X8 << 16 | X16 << 5 | ZR);
-        put(e, OP_CCMP | SF | b1 << 16 | (u32)COND_EQ << 12 | X17 << 5);
+        put(&e->as, OP_SUBS | SF | X8 << 16 | X16 << 5 | ZR);
+        put(&e->as, OP_CCMP | SF | b1 << 16 | (u32)COND_EQ << 12 | X17 << 5);
         cond = kind == IR_EQ ? COND_EQ : COND_NE;
     } else {
         bool swapped = kind == IR_GT || kind == IR_LE;
         u32 l0 = swapped ? X8 : X16, l1 = swapped ? b1 : X17;
         u32 r0 = swapped ? X16 : X8, r1 = swapped ? X17 : b1;
-        put(e, OP_SUBS | SF | r0 << 16 | l0 << 5 | ZR);
-        put(e, OP_SBCS | SF | r1 << 16 | l1 << 5 | ZR);
+        put(&e->as, OP_SUBS | SF | r0 << 16 | l0 << 5 | ZR);
+        put(&e->as, OP_SBCS | SF | r1 << 16 | l1 << 5 | ZR);
         bool less = kind == IR_LT || kind == IR_GT;
         cond = is_signed(t) ? (less ? COND_LT : COND_GE) : (less ? COND_LO : COND_HS);
     }
@@ -2980,10 +3010,10 @@ overflows_wide(Emit *e, u32 i, u8 kind, u8 t, u32 a, u32 b)
         u32 d = result(e, i, e->info[TYPE_ID_BOOL]);
 
         u32 done = 0;
-        put(e, OP_MOVZ | 1u << 5 | d);
+        put(&e->as, OP_MOVZ | 1u << 5 | d);
         unsigned_product(e, b0, b1, &done);
-        put(e, OP_MOVZ | d);
-        patch(e, done, here(e));
+        put(&e->as, OP_MOVZ | d);
+        patch(&e->as, done, here(&e->as));
         e->free_int |= 1u << b0 | 1u << b1;
         return;
     }
@@ -2992,8 +3022,8 @@ overflows_wide(Emit *e, u32 i, u8 kind, u8 t, u32 a, u32 b)
     u32 b1 = take_reg(e, false);
     fetch_wide(e, a, X16, X17);
     fetch_wide(e, b, X8, b1);
-    put(e, (sub ? OP_SUBS : OP_ADDS) | SF | X8 << 16 | X16 << 5 | ZR);
-    put(e, (sub ? OP_SBCS : OP_ADCS) | SF | b1 << 16 | X17 << 5 | ZR);
+    put(&e->as, (sub ? OP_SUBS : OP_ADDS) | SF | X8 << 16 | X16 << 5 | ZR);
+    put(&e->as, (sub ? OP_SBCS : OP_ADCS) | SF | b1 << 16 | X17 << 5 | ZR);
     e->free_int |= 1u << b1;
     flag_result(e, i, s ? COND_VS : sub ? COND_LO : COND_HS);
 }
@@ -3010,20 +3040,20 @@ wide_from_float(Emit *e, u32 i, u8 t, u8 from, u32 a)
 
     u32 src = ra;
     if (s) {
-        put(e, OP_FCMP_ZERO | fp | ra << 5);
-        put(e, OP_FABS | fp | ra << 5 | V30);
+        put(&e->as, OP_FCMP_ZERO | fp | ra << 5);
+        put(&e->as, OP_FABS | fp | ra << 5 | V30);
         src = V30;
     }
-    float_imm(e, V29, power_bits(from, -64), dbl);
-    put(e, OP_FMUL | fp | V29 << 16 | src << 5 | V31);
-    put(e, OP_FCVTZU | SF | fp | V31 << 5 | X17);
-    put(e, OP_UCVTF | SF | fp | X17 << 5 | V31);
-    float_imm(e, V29, power_bits(from, 64), dbl);
-    put(e, OP_FMUL | fp | V29 << 16 | V31 << 5 | V31);
-    put(e, OP_FSUB | fp | V31 << 16 | src << 5 | V31);
-    put(e, OP_FCVTZU | SF | fp | V31 << 5 | X16);
+    float_imm(&e->as, V29, power_bits(from, -64), dbl);
+    put(&e->as, OP_FMUL | fp | V29 << 16 | src << 5 | V31);
+    put(&e->as, OP_FCVTZU | SF | fp | V31 << 5 | X17);
+    put(&e->as, OP_UCVTF | SF | fp | X17 << 5 | V31);
+    float_imm(&e->as, V29, power_bits(from, 64), dbl);
+    put(&e->as, OP_FMUL | fp | V29 << 16 | V31 << 5 | V31);
+    put(&e->as, OP_FSUB | fp | V31 << 16 | src << 5 | V31);
+    put(&e->as, OP_FCVTZU | SF | fp | V31 << 5 | X16);
     if (s) {
-        put(e, OP_CSINV | SF | ZR << 16 | (u32)(COND_MI ^ 1) << 12 | ZR << 5 | X8);
+        put(&e->as, OP_CSINV | SF | ZR << 16 | (u32)(COND_MI ^ 1) << 12 | ZR << 5 | X8);
         negate_if(e, X16, X17, X8);
     }
     keep_wide(e, i, t, X16, X17);
@@ -3045,7 +3075,7 @@ convert_to_wide(Emit *e, u32 i, u8 kind, u8 t, u32 a)
     }
     if (is_wide(from)) {
         fetch_wide(e, a, X16, X17);
-        put(e, OP_SUBS_IMM | SF | X17 << 5 | ZR);
+        put(&e->as, OP_SUBS_IMM | SF | X17 << 5 | ZR);
         trap_if(e, COND_LT, TRAP_RANGE);
         keep_wide(e, i, t, X16, X17);
         return;
@@ -3054,13 +3084,13 @@ convert_to_wide(Emit *e, u32 i, u8 kind, u8 t, u32 a)
     u32 ra = fetch(e, a, X16);
     release(e, a);
     if (kind == IR_NARROW) {
-        put(e, OP_SUBS_IMM | width(from) | ra << 5 | ZR);
+        put(&e->as, OP_SUBS_IMM | width(from) | ra << 5 | ZR);
         trap_if(e, COND_LT, TRAP_RANGE);
     }
     if (width(from)) {
-        mov(e, SF, X16, ra);
+        mov(&e->as, SF, X16, ra);
     } else {
-        put(e,
+        put(&e->as,
             is_signed(from) ? OP_SXTW | ra << 5 | X16
                             : OP_ORR | ra << 16 | ZR << 5 | X16);
     }
@@ -3141,7 +3171,7 @@ static u32
 quarter(Emit *e, u32 x, u32 q, u32 r)
 {
     if (!(x & IR_CONST)) {
-        memory(e, OP_LDR_Q, 4, r, e->spills[x] + 16 * q, X8);
+        memory(&e->as, OP_LDR_Q, 4, r, e->spills[x] + 16 * q, X8);
     }
     return r;
 }
@@ -3149,7 +3179,7 @@ quarter(Emit *e, u32 x, u32 q, u32 r)
 static void
 put_quarter(Emit *e, u32 r, u32 home, u32 q)
 {
-    memory(e, OP_STR_Q, 4, r, home + 16 * q, X8);
+    memory(&e->as, OP_STR_Q, 4, r, home + 16 * q, X8);
 }
 
 static u32
@@ -3180,7 +3210,8 @@ top_bits64(Emit *e, u32 i, u8 t, u32 type, u32 a)
     for (u32 q = 0; q < 4; q++) {
         gather_bits(e, scale, quarter(e, a, q, V30), q ? X16 : d);
         if (q) {
-            put(e, OP_ORR | SF | X16 << 16 | (q * (16u >> scale)) << 10 | d << 5 | d);
+            put(&e->as,
+                OP_ORR | SF | X16 << 16 | (q * (16u >> scale)) << 10 | d << 5 | d);
         }
     }
     release_quarters(e, a);
@@ -3198,7 +3229,7 @@ store_at64(Emit *e, u32 a, u32 b)
     } else {
         u32 p = fetch(e, a, X16);
         for (u32 q = 0; q < 4; q++) {
-            put(e, OP_STR_Q | q << 10 | p << 5 | quarter(e, b, q, V30));
+            put(&e->as, OP_STR_Q | q << 10 | p << 5 | quarter(e, b, q, V30));
         }
         release(e, a);
     }
@@ -3210,7 +3241,7 @@ load_at64(Emit *e, u32 a, u32 home)
 {
     if (a == e->framed) {
         for (u32 q = 0; q < 4; q++) {
-            memory(e, OP_LDR_Q, 4, V29, e->framed_offset + 16 * q, X8);
+            memory(&e->as, OP_LDR_Q, 4, V29, e->framed_offset + 16 * q, X8);
             put_quarter(e, V29, home, q);
         }
         e->framed = NO_VALUE;
@@ -3219,7 +3250,7 @@ load_at64(Emit *e, u32 a, u32 home)
     u32 p = fetch(e, a, X16);
     release(e, a);
     for (u32 q = 0; q < 4; q++) {
-        put(e, OP_LDR_Q | q << 10 | p << 5 | V29);
+        put(&e->as, OP_LDR_Q | q << 10 | p << 5 | V29);
         put_quarter(e, V29, home, q);
     }
 }
@@ -3229,7 +3260,7 @@ unary_quarters(Emit *e, u32 op, u32 a, u32 home)
 {
     constant_quarter(e, a, V30);
     for (u32 q = 0; q < 4; q++) {
-        put(e, op | quarter(e, a, q, V30) << 5 | V29);
+        put(&e->as, op | quarter(e, a, q, V30) << 5 | V29);
         put_quarter(e, V29, home, q);
     }
     release_quarters(e, a);
@@ -3240,11 +3271,11 @@ lookup64(Emit *e, u32 a, u32 b, u32 home)
 {
     u32 r = fetch_lanes(e, a, V31);
     if (r != V31) {
-        put(e, OP_VORR | r << 16 | r << 5 | V31);
+        put(&e->as, OP_VORR | r << 16 | r << 5 | V31);
     }
     constant_quarter(e, b, V30);
     for (u32 q = 0; q < 4; q++) {
-        put(e, OP_TBL | quarter(e, b, q, V30) << 16 | V31 << 5 | V29);
+        put(&e->as, OP_TBL | quarter(e, b, q, V30) << 16 | V31 << 5 | V29);
         put_quarter(e, V29, home, q);
     }
     release_quarters(e, b);
@@ -3265,9 +3296,9 @@ binary_quarters(Emit *e, u8 kind, u8 t, u32 a, u32 b, u32 home)
             if (kind == IR_LT || kind == IR_LE) {
                 swap(&ra, &rb);
             }
-            put(e, lane_op(kind, t) | rb << 16 | ra << 5 | V29);
+            put(&e->as, lane_op(kind, t) | rb << 16 | ra << 5 | V29);
             if (kind == IR_NE) {
-                put(e, OP_VNOT | V29 << 5 | V29);
+                put(&e->as, OP_VNOT | V29 << 5 | V29);
             }
         }
         put_quarter(e, V29, home, q);
@@ -3286,9 +3317,9 @@ lanes64(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
         case IR_ELSE: {
             Open *o = &e->open[e->nopen - 1];
             copy_quarters(e, transfer_home(e), a);
-            add_fixup(e, &o->ends);
-            put(e, OP_B);
-            patch(e, o->skip, here(e));
+            add_fixup(&e->as, &o->ends);
+            put(&e->as, OP_B);
+            patch(&e->as, o->skip, here(&e->as));
             o->skip = 0;
             return;
         }
@@ -3299,8 +3330,8 @@ lanes64(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
                          e->ir->kinds[e->fn->first + i + 1] == IR_END &&
                          o == &e->open[e->nopen - 1];
             if (!falls) {
-                add_fixup(e, &o->ends);
-                put(e, OP_B);
+                add_fixup(&e->as, &o->ends);
+                put(&e->as, OP_B);
             }
             return;
         }
@@ -3318,7 +3349,7 @@ lanes64(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
         case IR_SPLAT: {
             u32 r = fetch(e, a, X16);
             release(e, a);
-            put(e, OP_DUP | (1u << (t & INFO_SCALE)) << 16 | r << 5 | V29);
+            put(&e->as, OP_DUP | (1u << (t & INFO_SCALE)) << 16 | r << 5 | V29);
             for (u32 q = 0; q < 4; q++) {
                 put_quarter(e, V29, home, q);
             }
@@ -3339,9 +3370,9 @@ lanes64(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
             if (o.kind == IR_IF) {
                 copy_quarters(e, transfer_home(e), a);
             }
-            patch(e, o.ends, here(e));
+            patch(&e->as, o.ends, here(&e->as));
             for (u32 q = 0; q < 4; q++) {
-                memory(e, OP_LDR_Q, 4, V29, transfer_home(e) + 16 * q, X8);
+                memory(&e->as, OP_LDR_Q, 4, V29, transfer_home(e) + 16 * q, X8);
                 put_quarter(e, V29, home, q);
             }
             break;
@@ -3367,51 +3398,51 @@ lanes(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b, const Native *n)
     }
     switch (kind) {
         case IR_LOAD:
-            memory(e, OP_LDR_Q, 4, V29, e->slot_offsets[a], X8);
+            memory(&e->as, OP_LDR_Q, 4, V29, e->slot_offsets[a], X8);
             break;
         case IR_LOAD_AT: {
             if (a == e->framed) {
-                memory(e, OP_LDR_Q, 4, V29, e->framed_offset, X8);
+                memory(&e->as, OP_LDR_Q, 4, V29, e->framed_offset, X8);
                 e->framed = NO_VALUE;
                 break;
             }
             u32 p = fetch(e, a, X16);
             release(e, a);
-            put(e, OP_LDR_Q | p << 5 | V29);
+            put(&e->as, OP_LDR_Q | p << 5 | V29);
             break;
         }
         case IR_SPLAT: {
             u32 r = fetch(e, a, X16);
             release(e, a);
-            put(e, OP_DUP | (1u << (t & INFO_SCALE)) << 16 | r << 5 | V29);
+            put(&e->as, OP_DUP | (1u << (t & INFO_SCALE)) << 16 | r << 5 | V29);
             break;
         }
         case IR_SHL:
         case IR_SHR: shift_lanes(e, kind, t, a, b); break;
         case IR_NEG_WRAP: {
             u32 r = fetch_lanes(e, a, V30);
-            put(e, OP_VNEG | (u32)(t & INFO_SCALE) << 22 | r << 5 | V29);
+            put(&e->as, OP_VNEG | (u32)(t & INFO_SCALE) << 22 | r << 5 | V29);
             break;
         }
         case IR_BIT_NOT: {
             u32 r = fetch_lanes(e, a, V30);
-            put(e, OP_VNOT | r << 5 | V29);
+            put(&e->as, OP_VNOT | r << 5 | V29);
             break;
         }
         case IR_STORE: {
             u32 r = fetch_lanes(e, b, V30);
-            memory(e, OP_STR_Q, 4, r, e->slot_offsets[a], X8);
+            memory(&e->as, OP_STR_Q, 4, r, e->slot_offsets[a], X8);
             return;
         }
         case IR_STORE_AT: {
             u32 r = fetch_lanes(e, b, V30);
             if (a == e->framed) {
-                memory(e, OP_STR_Q, 4, r, e->framed_offset, X8);
+                memory(&e->as, OP_STR_Q, 4, r, e->framed_offset, X8);
                 e->framed = NO_VALUE;
                 return;
             }
             u32 p = fetch(e, a, X16);
-            put(e, OP_STR_Q | p << 5 | r);
+            put(&e->as, OP_STR_Q | p << 5 | r);
             release(e, a);
             return;
         }
@@ -3421,8 +3452,8 @@ lanes(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b, const Native *n)
         case IR_RET:
             move_lanes(e, 0, a);
             if (i + 1 < e->fn->count) {
-                add_fixup(e, &e->epilogue);
-                put(e, OP_B);
+                add_fixup(&e->as, &e->epilogue);
+                put(&e->as, OP_B);
             }
             return;
         case IR_IF: {
@@ -3430,15 +3461,15 @@ lanes(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b, const Native *n)
             Open o = { .target = i, .kind = IR_IF, .result = NO_REG };
             if (e->fused == a) {
                 spill_all(e);
-                add_fixup(e, &o.skip);
-                put(e, OP_B_COND | (u32)(e->fused_cond ^ 1));
+                add_fixup(&e->as, &o.skip);
+                put(&e->as, OP_B_COND | (u32)(e->fused_cond ^ 1));
                 e->fused = NO_VALUE;
             } else {
                 u32 r = fetch(e, a, X16);
                 release(e, a);
                 spill_all(e);
-                add_fixup(e, &o.skip);
-                put(e, OP_CBZ | r);
+                add_fixup(&e->as, &o.skip);
+                put(&e->as, OP_CBZ | r);
             }
             e->open[e->nopen++] = o;
             return;
@@ -3446,9 +3477,9 @@ lanes(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b, const Native *n)
         case IR_ELSE: {
             Open *o = &e->open[e->nopen - 1];
             move_lanes(e, V29, a);
-            add_fixup(e, &o->ends);
-            put(e, OP_B);
-            patch(e, o->skip, here(e));
+            add_fixup(&e->as, &o->ends);
+            put(&e->as, OP_B);
+            patch(&e->as, o->skip, here(&e->as));
             o->skip = 0;
             return;
         }
@@ -3459,8 +3490,8 @@ lanes(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b, const Native *n)
                          e->ir->kinds[e->fn->first + i + 1] == IR_END &&
                          o == &e->open[e->nopen - 1];
             if (!falls) {
-                add_fixup(e, &o->ends);
-                put(e, OP_B);
+                add_fixup(&e->as, &o->ends);
+                put(&e->as, OP_B);
             }
             return;
         }
@@ -3470,7 +3501,7 @@ lanes(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b, const Native *n)
             if (o.kind == IR_IF) {
                 move_lanes(e, V29, a);
             }
-            patch(e, o.ends, here(e));
+            patch(&e->as, o.ends, here(&e->as));
             break;
         }
         default: {
@@ -3483,9 +3514,9 @@ lanes(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b, const Native *n)
             if (kind == IR_LT || kind == IR_LE) {
                 swap(&ra, &rb);
             }
-            put(e, lane_op(kind, t) | rb << 16 | ra << 5 | V29);
+            put(&e->as, lane_op(kind, t) | rb << 16 | ra << 5 | V29);
             if (kind == IR_NE) {
-                put(e, OP_VNOT | V29 << 5 | V29);
+                put(&e->as, OP_VNOT | V29 << 5 | V29);
             }
             break;
         }
@@ -3501,7 +3532,7 @@ save_routine_regs(Emit *e)
 {
     for (u32 k = 0; k < sizeof routine_saves; k++) {
         u32 r = routine_saves[k];
-        put(e, OP_STP_X_PRE | 0x7Eu << 15 | (r + 1) << 10 | SP << 5 | r);
+        put(&e->as, OP_STP_X_PRE | 0x7Eu << 15 | (r + 1) << 10 | SP << 5 | r);
     }
 }
 
@@ -3510,123 +3541,123 @@ restore_routine_regs(Emit *e)
 {
     for (u32 k = sizeof routine_saves; k-- > 0;) {
         u32 r = routine_saves[k];
-        put(e, OP_LDP_X_POST | 2u << 15 | (r + 1) << 10 | SP << 5 | r);
+        put(&e->as, OP_LDP_X_POST | 2u << 15 | (r + 1) << 10 | SP << 5 | r);
     }
 }
 
 static void
 patch_test(Emit *e, u32 at)
 {
-    e->code[at] |= ((here(e) - at) & 0x3FFFu) << 5;
+    e->as.code[at] |= ((here(&e->as) - at) & 0x3FFFu) << 5;
 }
 
 static NOINLINE void
 emit_divmod(Emit *e)
 {
     save_routine_regs(e);
-    put(e, OP_LDP_X | 1u << 10 | X16 << 5 | 0);
-    put(e, OP_LDP_X | 3u << 10 | X17 << 5 | 2);
-    put(e, OP_ORR | SF | 3u << 16 | 2u << 5 | 9);
+    put(&e->as, OP_LDP_X | 1u << 10 | X16 << 5 | 0);
+    put(&e->as, OP_LDP_X | 3u << 10 | X17 << 5 | 2);
+    put(&e->as, OP_ORR | SF | 3u << 16 | 2u << 5 | 9);
     trap_if_zero(e, 9, SF, TRAP_DIVIDE);
 
-    u32 to_unsigned = here(e);
-    put(e, OP_TBZ | 1u << 19 | X8);
-    put(e, OP_EOR | SF | 3u << 16 | 1u << 5 | 10);
-    put(e, OP_ANDS_IMM | SF | logical_field(1, SF) | X8 << 5 | ZR);
-    put(e, OP_CSEL | SF | 10u << 16 | (u32)COND_NE << 12 | 1u << 5 | 10);
+    u32 to_unsigned = here(&e->as);
+    put(&e->as, OP_TBZ | 1u << 19 | X8);
+    put(&e->as, OP_EOR | SF | 3u << 16 | 1u << 5 | 10);
+    put(&e->as, OP_ANDS_IMM | SF | logical_field(1, SF) | X8 << 5 | ZR);
+    put(&e->as, OP_CSEL | SF | 10u << 16 | (u32)COND_NE << 12 | 1u << 5 | 10);
     shift_imm(e, OP_ASR_IMM, SF, 9, 1, 63);
     negate_if(e, 0, 1, 9);
     shift_imm(e, OP_ASR_IMM, SF, 9, 3, 63);
     negate_if(e, 2, 3, 9);
     patch_test(e, to_unsigned);
 
-    put(e, OP_ORR | SF | 3u << 16 | 1u << 5 | 9);
-    u32 to_slow = here(e);
-    put(e, OP_CBNZ | SF | 9);
-    put(e, OP_UDIV | SF | 2u << 16 | 0u << 5 | 9);
-    put(e, OP_MSUB | SF | 2u << 16 | 0u << 10 | 9u << 5 | 4);
-    mov(e, SF, 0, 9);
-    mov(e, SF, 5, ZR);
-    u32 to_select = here(e);
-    put(e, OP_B);
-    patch_one(e, to_slow, here(e));
+    put(&e->as, OP_ORR | SF | 3u << 16 | 1u << 5 | 9);
+    u32 to_slow = here(&e->as);
+    put(&e->as, OP_CBNZ | SF | 9);
+    put(&e->as, OP_UDIV | SF | 2u << 16 | 0u << 5 | 9);
+    put(&e->as, OP_MSUB | SF | 2u << 16 | 0u << 10 | 9u << 5 | 4);
+    mov(&e->as, SF, 0, 9);
+    mov(&e->as, SF, 5, ZR);
+    u32 to_select = here(&e->as);
+    put(&e->as, OP_B);
+    patch_one(&e->as, to_slow, here(&e->as));
 
-    mov(e, SF, 4, ZR);
-    mov(e, SF, 5, ZR);
-    put(e, OP_MOVZ | 128u << 5 | 9);
-    u32 loop = here(e);
-    put(e, OP_EXTR | 4u << 16 | 63u << 10 | 5u << 5 | 5);
-    put(e, OP_EXTR | 1u << 16 | 63u << 10 | 4u << 5 | 4);
-    put(e, OP_EXTR | 0u << 16 | 63u << 10 | 1u << 5 | 1);
+    mov(&e->as, SF, 4, ZR);
+    mov(&e->as, SF, 5, ZR);
+    put(&e->as, OP_MOVZ | 128u << 5 | 9);
+    u32 loop = here(&e->as);
+    put(&e->as, OP_EXTR | 4u << 16 | 63u << 10 | 5u << 5 | 5);
+    put(&e->as, OP_EXTR | 1u << 16 | 63u << 10 | 4u << 5 | 4);
+    put(&e->as, OP_EXTR | 0u << 16 | 63u << 10 | 1u << 5 | 1);
     lsl_imm(e, 0, 0, 1);
-    put(e, OP_SUBS | SF | 2u << 16 | 4u << 5 | 6);
-    put(e, OP_SBCS | SF | 3u << 16 | 5u << 5 | 7);
-    put(e, OP_CSEL | SF | 4u << 16 | (u32)COND_HS << 12 | 6u << 5 | 4);
-    put(e, OP_CSEL | SF | 5u << 16 | (u32)COND_HS << 12 | 7u << 5 | 5);
-    put(e, OP_CSINC | SF | 0u << 16 | (u32)COND_LO << 12 | 0u << 5 | 0);
-    put(e, OP_SUBS_IMM | SF | 1u << 10 | 9u << 5 | 9);
-    put(e, OP_B_COND | ((loop - here(e)) & 0x7FFFFu) << 5 | COND_NE);
-    patch_one(e, to_select, here(e));
+    put(&e->as, OP_SUBS | SF | 2u << 16 | 4u << 5 | 6);
+    put(&e->as, OP_SBCS | SF | 3u << 16 | 5u << 5 | 7);
+    put(&e->as, OP_CSEL | SF | 4u << 16 | (u32)COND_HS << 12 | 6u << 5 | 4);
+    put(&e->as, OP_CSEL | SF | 5u << 16 | (u32)COND_HS << 12 | 7u << 5 | 5);
+    put(&e->as, OP_CSINC | SF | 0u << 16 | (u32)COND_LO << 12 | 0u << 5 | 0);
+    put(&e->as, OP_SUBS_IMM | SF | 1u << 10 | 9u << 5 | 9);
+    put(&e->as, OP_B_COND | ((loop - here(&e->as)) & 0x7FFFFu) << 5 | COND_NE);
+    patch_one(&e->as, to_select, here(&e->as));
 
-    put(e, OP_ANDS_IMM | SF | logical_field(1, SF) | X8 << 5 | ZR);
-    put(e, OP_CSEL | SF | 0u << 16 | (u32)COND_NE << 12 | 4u << 5 | 0);
-    put(e, OP_CSEL | SF | 1u << 16 | (u32)COND_NE << 12 | 5u << 5 | 1);
-    u32 to_store = here(e);
-    put(e, OP_TBZ | 1u << 19 | X8);
+    put(&e->as, OP_ANDS_IMM | SF | logical_field(1, SF) | X8 << 5 | ZR);
+    put(&e->as, OP_CSEL | SF | 0u << 16 | (u32)COND_NE << 12 | 4u << 5 | 0);
+    put(&e->as, OP_CSEL | SF | 1u << 16 | (u32)COND_NE << 12 | 5u << 5 | 1);
+    u32 to_store = here(&e->as);
+    put(&e->as, OP_TBZ | 1u << 19 | X8);
     shift_imm(e, OP_ASR_IMM, SF, 10, 10, 63);
-    u32 to_negate = here(e);
-    put(e, OP_TBNZ | X8);
-    put(e, OP_BICS | SF | 10u << 16 | 1u << 5 | ZR);
+    u32 to_negate = here(&e->as);
+    put(&e->as, OP_TBNZ | X8);
+    put(&e->as, OP_BICS | SF | 10u << 16 | 1u << 5 | ZR);
     trap_if(e, COND_MI, TRAP_OVERFLOW);
     patch_test(e, to_negate);
     negate_if(e, 0, 1, 10);
     patch_test(e, to_store);
 
-    put(e, OP_AND_IMM | SF | logical_field(~3ull, SF) | X8 << 5 | X8);
-    put(e, OP_STP_X | 1u << 10 | X8 << 5 | 0);
+    put(&e->as, OP_AND_IMM | SF | logical_field(~3ull, SF) | X8 << 5 | X8);
+    put(&e->as, OP_STP_X | 1u << 10 | X8 << 5 | 0);
     restore_routine_regs(e);
-    put(e, OP_RET);
+    put(&e->as, OP_RET);
 }
 
 static NOINLINE void
 emit_signed_multiply(Emit *e)
 {
     save_routine_regs(e);
-    put(e, OP_LDP_X | 1u << 10 | X16 << 5 | 0);
-    put(e, OP_LDP_X | 3u << 10 | X17 << 5 | 2);
-    put(e, OP_EOR | SF | 3u << 16 | 1u << 5 | 10);
+    put(&e->as, OP_LDP_X | 1u << 10 | X16 << 5 | 0);
+    put(&e->as, OP_LDP_X | 3u << 10 | X17 << 5 | 2);
+    put(&e->as, OP_EOR | SF | 3u << 16 | 1u << 5 | 10);
     shift_imm(e, OP_ASR_IMM, SF, 10, 10, 63);
     shift_imm(e, OP_ASR_IMM, SF, 9, 1, 63);
     negate_if(e, 0, 1, 9);
     shift_imm(e, OP_ASR_IMM, SF, 9, 3, 63);
     negate_if(e, 2, 3, 9);
 
-    put(e, OP_SUBS_IMM | SF | 1u << 5 | ZR);
-    put(e, OP_CCMP_IMM | SF | (u32)COND_NE << 12 | 3u << 5 | 4);
-    put(e, OP_CSET | (u32)(COND_NE ^ 1) << 12 | 6);
-    put(e, OP_UMULH | 2u << 16 | 1u << 5 | 4);
-    put(e, OP_UMULH | 3u << 16 | 0u << 5 | 5);
-    put(e, OP_ORR | SF | 5u << 16 | 4u << 5 | 4);
-    put(e, OP_SUBS_IMM | SF | 4u << 5 | ZR);
-    put(e, OP_CSINC | 6u << 16 | (u32)COND_EQ << 12 | 6u << 5 | 6);
-    put(e, OP_MUL | SF | 2u << 16 | 1u << 5 | 4);
-    put(e, OP_MADD | SF | 3u << 16 | 4u << 10 | 0u << 5 | 4);
-    put(e, OP_UMULH | 2u << 16 | 0u << 5 | 5);
-    put(e, OP_ADDS | SF | 4u << 16 | 5u << 5 | 5);
-    put(e, OP_CSINC | 6u << 16 | (u32)COND_LO << 12 | 6u << 5 | 6);
-    put(e, OP_MUL | SF | 2u << 16 | 0u << 5 | 4);
+    put(&e->as, OP_SUBS_IMM | SF | 1u << 5 | ZR);
+    put(&e->as, OP_CCMP_IMM | SF | (u32)COND_NE << 12 | 3u << 5 | 4);
+    put(&e->as, OP_CSET | (u32)(COND_NE ^ 1) << 12 | 6);
+    put(&e->as, OP_UMULH | 2u << 16 | 1u << 5 | 4);
+    put(&e->as, OP_UMULH | 3u << 16 | 0u << 5 | 5);
+    put(&e->as, OP_ORR | SF | 5u << 16 | 4u << 5 | 4);
+    put(&e->as, OP_SUBS_IMM | SF | 4u << 5 | ZR);
+    put(&e->as, OP_CSINC | 6u << 16 | (u32)COND_EQ << 12 | 6u << 5 | 6);
+    put(&e->as, OP_MUL | SF | 2u << 16 | 1u << 5 | 4);
+    put(&e->as, OP_MADD | SF | 3u << 16 | 4u << 10 | 0u << 5 | 4);
+    put(&e->as, OP_UMULH | 2u << 16 | 0u << 5 | 5);
+    put(&e->as, OP_ADDS | SF | 4u << 16 | 5u << 5 | 5);
+    put(&e->as, OP_CSINC | 6u << 16 | (u32)COND_LO << 12 | 6u << 5 | 6);
+    put(&e->as, OP_MUL | SF | 2u << 16 | 0u << 5 | 4);
 
-    mov_imm(e, 9, 0x7FFFFFFFFFFFFFFFull, SF);
-    put(e, OP_SUB | SF | 10u << 16 | 9u << 5 | 9);
-    put(e, OP_ORN | SF | 10u << 16 | ZR << 5 | 7);
-    put(e, OP_SUBS | SF | 4u << 16 | 7u << 5 | ZR);
-    put(e, OP_SBCS | SF | 5u << 16 | 9u << 5 | ZR);
-    put(e, OP_CSINC | 6u << 16 | (u32)COND_HS << 12 | 6u << 5 | 6);
+    mov_imm(&e->as, 9, 0x7FFFFFFFFFFFFFFFull, SF);
+    put(&e->as, OP_SUB | SF | 10u << 16 | 9u << 5 | 9);
+    put(&e->as, OP_ORN | SF | 10u << 16 | ZR << 5 | 7);
+    put(&e->as, OP_SUBS | SF | 4u << 16 | 7u << 5 | ZR);
+    put(&e->as, OP_SBCS | SF | 5u << 16 | 9u << 5 | ZR);
+    put(&e->as, OP_CSINC | 6u << 16 | (u32)COND_HS << 12 | 6u << 5 | 6);
     negate_if(e, 4, 5, 10);
-    put(e, OP_STP_X | 5u << 10 | X8 << 5 | 4);
-    put(e, OP_SUBS_IMM | 6u << 5 | ZR);
+    put(&e->as, OP_STP_X | 5u << 10 | X8 << 5 | 4);
+    put(&e->as, OP_SUBS_IMM | 6u << 5 | ZR);
     restore_routine_regs(e);
-    put(e, OP_RET);
+    put(&e->as, OP_RET);
 }
 
 static void
@@ -3634,11 +3665,11 @@ begin_function(Emit *e, u32 *code)
 {
     const IrFunc *fn = e->fn;
     memset(code, 0, PROLOGUE_WORDS * sizeof *code);
-    e->at = code + PROLOGUE_WORDS;
+    e->as.at = code + PROLOGUE_WORDS;
 
     const IrSlot *slots = e->slots;
     if (e->result_at != NO_VALUE) {
-        memory(e, OP_STRX, 3, X8, e->result_at, X16);
+        memory(&e->as, OP_STRX, 3, X8, e->result_at, X16);
     }
     ArgCursor args = { FIRST_INT_ARG, 0, 0 };
     for (u32 p = 0; p < fn->nparams; p++) {
@@ -3658,12 +3689,12 @@ begin_function(Emit *e, u32 *code)
         u8 h = e->slot_regs[p];
         if (h != NO_REG) {
             if (fl) {
-                fmov(e, h & 31u, r);
+                fmov(&e->as, h & 31u, r);
             } else {
                 take_from_c(e, info, h, r);
             }
         } else if (slots[p].weight) {
-            store_typed(e, type, r, e->slot_offsets[p]);
+            store_typed(&e->as, e->info[type], r, e->slot_offsets[p]);
         }
     }
 }
@@ -3678,7 +3709,7 @@ store_local(Emit *e, u32 type, u32 slot, u32 b)
         r = fetch(e, b, is_float(e->info[type]) ? V30 : X16);
         release(e, b);
     }
-    store_typed(e, type, r, e->slot_offsets[slot]);
+    store_typed(&e->as, e->info[type], r, e->slot_offsets[slot]);
 }
 
 static void
@@ -3700,7 +3731,7 @@ load_at(Emit *e, u32 i, u32 type, u32 a)
         return;
     }
     u32 d = result(e, i, t);
-    put(e, load_op(t) | p << 5 | d);
+    put(&e->as, load_op(t) | p << 5 | d);
 }
 
 static void
@@ -3711,7 +3742,7 @@ store_at(Emit *e, u32 type, u32 a, u32 b)
     u32 r = (b & IR_CONST) && constant_bits(e, b) == 0
               ? ZR
               : fetch(e, b, is_float(t) ? V30 : X17);
-    put(e, store_op(t, r) | p << 5 | r);
+    put(&e->as, store_op(t, r) | p << 5 | r);
     release(e, a);
     release(e, b);
 }
@@ -3740,21 +3771,21 @@ finish_function(Emit *e, u32 *code)
     bool record = fn->calls || frame || e->wide_record;
     assert(frame || !(e->divisions | e->products));
     bool wide = e->context_saved || e->wide_record;
-    patch(e, e->epilogue, here(e));
-    e->at += callee_words(e->at, true, e->saved_int, e->saved_float);
+    patch(&e->as, e->epilogue, here(&e->as));
+    e->as.at += callee_words(e->as.at, true, e->saved_int, e->saved_float);
     if (record) {
         if (frame) {
-            put(e, OP_RESET_SP);
+            put(&e->as, OP_RESET_SP);
         }
-        put(e, wide ? OP_POP_CONTEXT_FRAME : OP_POP_FRAME);
+        put(&e->as, wide ? OP_POP_CONTEXT_FRAME : OP_POP_FRAME);
     }
-    put(e, OP_RET);
+    put(&e->as, OP_RET);
     if (e->divisions) {
-        patch(e, e->divisions, here(e));
+        patch(&e->as, e->divisions, here(&e->as));
         emit_divmod(e);
     }
     if (e->products) {
-        patch(e, e->products, here(e));
+        patch(&e->as, e->products, here(&e->as));
         emit_signed_multiply(e);
     }
 
@@ -3765,27 +3796,27 @@ finish_function(Emit *e, u32 *code)
     }
     for (; kinds; kinds &= kinds - 1) {
         u32 k = (u32)__builtin_ctz(kinds);
-        patch(e, e->traps[k], here(e));
-        put(e, OP_BRK | k << 5);
+        patch(&e->as, e->traps[k], here(&e->as));
+        put(&e->as, OP_BRK | k << 5);
     }
 
     if (frame >= FRAME_LIMIT) {
-        e->error = "a function's frame is larger than 16 MB";
+        e->as.error = "a function's frame is larger than 16 MB";
         return 0;
     }
     u32 probe = 0;
     if (frame >= PROBE_INTERVAL) {
-        probe = here(e);
-        mov_imm(e, X16, frame / PROBE_INTERVAL, SF);
-        put(e, OP_SUB_SP_HIGH | 1 << 10);
-        put(e, OP_STR_ZR_SP);
-        put(e, OP_SUBS_IMM | SF | 1 << 10 | X16 << 5 | X16);
-        put(e, OP_B_COND | ((u32)-3 & 0x7FFFFu) << 5 | COND_NE);
+        probe = here(&e->as);
+        mov_imm(&e->as, X16, frame / PROBE_INTERVAL, SF);
+        put(&e->as, OP_SUB_SP_HIGH | 1 << 10);
+        put(&e->as, OP_STR_ZR_SP);
+        put(&e->as, OP_SUBS_IMM | SF | 1 << 10 | X16 << 5 | X16);
+        put(&e->as, OP_B_COND | ((u32)-3 & 0x7FFFFu) << 5 | COND_NE);
         if (frame % PROBE_INTERVAL) {
-            put(e, OP_SUB_SP | (frame % PROBE_INTERVAL) << 10);
-            put(e, OP_STR_ZR_SP);
+            put(&e->as, OP_SUB_SP | (frame % PROBE_INTERVAL) << 10);
+            put(&e->as, OP_STR_ZR_SP);
         }
-        put(e, OP_B);
+        put(&e->as, OP_B);
     }
 
     u32 prologue[PROLOGUE_WORDS];
@@ -3813,7 +3844,7 @@ finish_function(Emit *e, u32 *code)
     memcpy(code + entry, prologue, k * sizeof *prologue);
     if (probe) {
         u32 from = entry + jump;
-        u32 back = here(e) - 1;
+        u32 back = here(&e->as) - 1;
         code[from] = OP_B | ((probe - from) & 0x03FFFFFFu);
         code[back] = OP_B | ((from + 1 - back) & 0x03FFFFFFu);
     }
@@ -3862,12 +3893,14 @@ store_stack_args(Emit *e, const u32 *params, ArgCursor *in, ArgCursor *out)
             u32 r = X16;
             if (from & PLACE_STACK) {
                 u32 offset = 16 + (from & ~PLACE_STACK) + step;
-                put(e, unit_loads[scale] | (offset >> scale) << 10 | X29 << 5 | X16);
+                put(&e->as,
+                    unit_loads[scale] | (offset >> scale) << 10 | X29 << 5 | X16);
             } else {
                 assert(!(regs & REGS_FLOAT));
                 r = from + u;
             }
-            put(e, unit_stores[scale] | ((to + step) >> scale) << 10 | SP << 5 | r);
+            put(&e->as,
+                unit_stores[scale] | ((to + step) >> scale) << 10 | SP << 5 | r);
         }
     }
 }
@@ -3884,35 +3917,36 @@ emit_adapter(Emit *e, u32 decl, const Native *n)
         place_param(e, &out, params[j], &regs);
     }
     if (in.stack > ADAPTER_STACK_LIMIT || out.stack > ADAPTER_STACK_LIMIT) {
-        e->error = "a callback for C needs over 4064 bytes of stack arguments";
+        e->as.error = "a callback for C needs over 4064 bytes of stack "
+                      "arguments";
         return;
     }
 
     u32 frame = (out.stack + 15) & ~15u;
     if (frame) {
-        put(e, OP_PUSH_FRAME);
-        put(e, OP_SET_FRAME);
-        put(e, OP_SUB_SP | frame << 10);
+        put(&e->as, OP_PUSH_FRAME);
+        put(&e->as, OP_SET_FRAME);
+        put(&e->as, OP_SUB_SP | frame << 10);
         ArgCursor from = { 0, 0, 0 };
         ArgCursor to = { FIRST_INT_ARG, 0, 0 };
         store_stack_args(e, params, &from, &to);
     }
     for (u32 r = in.ints < 7 ? in.ints : 7; r-- > 0;) {
-        mov(e, SF, r + 1, r);
+        mov(&e->as, SF, r + 1, r);
     }
 
     u64 context = (u64)(uintptr_t)(n->entries + e->c->decls.count);
-    adrp(e, 0, context);
-    put(e, OP_LDRX | (u32)((context & 0xFFF) >> 3) << 10);
+    adrp(&e->as, 0, context);
+    put(&e->as, OP_LDRX | (u32)((context & 0xFFF) >> 3) << 10);
     u64 entry = (u64)(uintptr_t)(n->entries + decl);
-    adrp(e, X16, entry);
-    put(e, OP_LDR_X16_X16 | (u32)((entry & 0xFFF) >> 3) << 10);
+    adrp(&e->as, X16, entry);
+    put(&e->as, OP_LDR_X16_X16 | (u32)((entry & 0xFFF) >> 3) << 10);
     if (!frame) {
-        put(e, OP_BR | X16 << 5);
+        put(&e->as, OP_BR | X16 << 5);
         return;
     }
-    put(e, OP_BLR_X16);
-    put(e, OP_RESET_SP);
-    put(e, OP_POP_FRAME);
-    put(e, OP_RET);
+    put(&e->as, OP_BLR_X16);
+    put(&e->as, OP_RESET_SP);
+    put(&e->as, OP_POP_FRAME);
+    put(&e->as, OP_RET);
 }

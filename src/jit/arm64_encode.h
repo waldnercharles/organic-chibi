@@ -191,9 +191,9 @@ enum
 };
 
 static void
-put(Emit *e, u32 word)
+put(Assembler *as, u32 word)
 {
-    *e->at++ = word;
+    *as->at++ = word;
 }
 
 static u32
@@ -209,43 +209,22 @@ precision(u8 info)
 }
 
 static void
-patch_one(Emit *e, u32 at, u32 target)
+patch_one(Assembler *as, u32 at, u32 target)
 {
     int32_t delta = (int32_t)target - (int32_t)at;
-    u32 word = e->code[at];
+    u32 word = as->code[at];
     if ((word & 0x7C000000u) == OP_B) {
-        e->code[at] = word | ((u32)delta & 0x03FFFFFFu);
+        as->code[at] = word | ((u32)delta & 0x03FFFFFFu);
     } else {
         if (delta < -(1 << 18) || delta >= (1 << 18)) {
-            e->error = "a function is too large for a conditional branch";
+            as->error = "a function is too large for a conditional branch";
         }
-        e->code[at] = word | ((u32)delta & 0x7FFFFu) << 5;
+        as->code[at] = word | ((u32)delta & 0x7FFFFu) << 5;
     }
 }
 
 static void
-trap_if(Emit *e, u8 cond, u8 kind)
-{
-    add_fixup(e, &e->traps[kind]);
-    put(e, OP_B_COND | cond);
-}
-
-static void
-trap_unless_zero(Emit *e, u32 reg, u32 sf, u8 kind)
-{
-    add_fixup(e, &e->traps[kind]);
-    put(e, OP_CBNZ | sf | reg);
-}
-
-static void
-trap_if_zero(Emit *e, u32 reg, u32 sf, u8 kind)
-{
-    add_fixup(e, &e->traps[kind]);
-    put(e, OP_CBZ | sf | reg);
-}
-
-static void
-mov_imm(Emit *e, u32 reg, u64 value, u32 sf)
+mov_imm(Assembler *as, u32 reg, u64 value, u32 sf)
 {
     u32 halves = sf ? 4 : 2;
     if (!sf) {
@@ -268,108 +247,106 @@ mov_imm(Emit *e, u32 reg, u64 value, u32 sf)
         }
         if (first) {
             u32 imm = inverted ? ~h & 0xFFFF : h;
-            put(e, (inverted ? OP_MOVN : OP_MOVZ) | sf | i << 21 | imm << 5 | reg);
+            put(as, (inverted ? OP_MOVN : OP_MOVZ) | sf | i << 21 | imm << 5 | reg);
             first = false;
         } else {
-            put(e, OP_MOVK | sf | i << 21 | h << 5 | reg);
+            put(as, OP_MOVK | sf | i << 21 | h << 5 | reg);
         }
     }
     if (first) {
-        put(e, (inverted ? OP_MOVN : OP_MOVZ) | sf | reg);
+        put(as, (inverted ? OP_MOVN : OP_MOVZ) | sf | reg);
     }
 }
 
 static void
-mov(Emit *e, u32 sf, u32 d, u32 m)
+mov(Assembler *as, u32 sf, u32 d, u32 m)
 {
     if (d != m) {
-        put(e, OP_ORR | sf | m << 16 | ZR << 5 | d);
+        put(as, OP_ORR | sf | m << 16 | ZR << 5 | d);
     }
 }
 
 static void
-fmov(Emit *e, u32 d, u32 n)
+fmov(Assembler *as, u32 d, u32 n)
 {
     if (d != n) {
-        put(e, OP_FMOV | DOUBLE | n << 5 | d);
+        put(as, OP_FMOV | DOUBLE | n << 5 | d);
     }
 }
 
 static void
-float_imm(Emit *e, u32 reg, u64 bits, bool is_double)
+float_imm(Assembler *as, u32 reg, u64 bits, bool is_double)
 {
     if (bits == 0) {
-        put(e, (is_double ? OP_FMOV_FROM_X : OP_FMOV_FROM_W) | ZR << 5 | reg);
+        put(as, (is_double ? OP_FMOV_FROM_X : OP_FMOV_FROM_W) | ZR << 5 | reg);
         return;
     }
-    mov_imm(e, X8, bits, is_double ? SF : 0);
-    put(e, (is_double ? OP_FMOV_FROM_X : OP_FMOV_FROM_W) | X8 << 5 | reg);
+    mov_imm(as, X8, bits, is_double ? SF : 0);
+    put(as, (is_double ? OP_FMOV_FROM_X : OP_FMOV_FROM_W) | X8 << 5 | reg);
 }
 
 static void
-adrp(Emit *e, u32 d, u64 to)
+adrp(Assembler *as, u32 d, u64 to)
 {
-    u64 pc = (u64)(uintptr_t)(e->code + here(e));
+    u64 pc = (u64)(uintptr_t)(as->code + here(as));
     int64_t pages = (int64_t)((to & ~0xFFFull) - (pc & ~0xFFFull)) >> 12;
-    put(e, OP_ADRP | ((u32)pages & 3) << 29 | (((u32)pages >> 2) & 0x7FFFFu) << 5 | d);
+    put(as, OP_ADRP | ((u32)pages & 3) << 29 | (((u32)pages >> 2) & 0x7FFFFu) << 5 | d);
 }
 
 static void
-sp_address(Emit *e, u32 d, u32 offset)
+sp_address(Assembler *as, u32 d, u32 offset)
 {
     if (offset >= (1u << 24)) {
-        e->error = "a function's frame is larger than 16 MB";
+        as->error = "a function's frame is larger than 16 MB";
         return;
     }
-    put(e, OP_ADD_FROM_SP | (offset & 0xFFF) << 10 | d);
+    put(as, OP_ADD_FROM_SP | (offset & 0xFFF) << 10 | d);
     if (offset >> 12) {
-        put(e, OP_ADD_HIGH | (offset >> 12) << 10 | d << 5 | d);
+        put(as, OP_ADD_HIGH | (offset >> 12) << 10 | d << 5 | d);
     }
 }
 
 static void
-memory(Emit *e, u32 op, u32 scale, u32 rt, u32 offset, u32 address)
+memory(Assembler *as, u32 op, u32 scale, u32 rt, u32 offset, u32 address)
 {
     if ((offset & ((1u << scale) - 1)) == 0 && (offset >> scale) < 4096) {
-        put(e, op | (offset >> scale) << 10 | SP << 5 | rt);
+        put(as, op | (offset >> scale) << 10 | SP << 5 | rt);
         return;
     }
-    sp_address(e, address, offset);
-    put(e, op | address << 5 | rt);
+    sp_address(as, address, offset);
+    put(as, op | address << 5 | rt);
 }
 
 static void
-load_typed(Emit *e, u32 type, u32 rt, u32 offset)
+load_typed(Assembler *as, u8 t, u32 rt, u32 offset)
 {
-    u8 t = e->info[type];
     if (is_float(t)) {
         bool d = bits_of(t) == 64;
-        memory(e, d ? OP_LDRD : OP_LDRS, d ? 3 : 2, rt, offset, X8);
+        memory(as, d ? OP_LDRD : OP_LDRS, d ? 3 : 2, rt, offset, X8);
         return;
     }
     bool s = is_signed(t);
     switch (bits_of(t)) {
-        case 8: memory(e, s ? OP_LDRSB : OP_LDRB, 0, rt, offset, rt); break;
-        case 16: memory(e, s ? OP_LDRSH : OP_LDRH, 1, rt, offset, rt); break;
-        case 32: memory(e, OP_LDRW, 2, rt, offset, rt); break;
-        default: memory(e, OP_LDRX, 3, rt, offset, rt); break;
+        case 8: memory(as, s ? OP_LDRSB : OP_LDRB, 0, rt, offset, rt); break;
+        case 16: memory(as, s ? OP_LDRSH : OP_LDRH, 1, rt, offset, rt); break;
+        case 32: memory(as, OP_LDRW, 2, rt, offset, rt); break;
+        default: memory(as, OP_LDRX, 3, rt, offset, rt); break;
     }
 }
 
 static void
-store_typed(Emit *e, u32 type, u32 rt, u32 offset)
+store_typed(Assembler *as, u8 t, u32 rt, u32 offset)
 {
-    u8 t = e->info[type];
     if (is_float(t) && rt != ZR) {
         bool d = bits_of(t) == 64;
-        memory(e, d ? OP_STRD : OP_STRS, d ? 3 : 2, rt, offset, X8);
+        memory(as, d ? OP_STRD : OP_STRS, d ? 3 : 2, rt, offset, X8);
         return;
     }
     switch (bits_of(t)) {
-        case 8: memory(e, OP_STRB, 0, rt, offset, X8); break;
-        case 16: memory(e, OP_STRH, 1, rt, offset, X8); break;
-        case 32: memory(e, OP_STRW, 2, rt, offset, X8); break;
-        default: memory(e, OP_STRX, 3, rt, offset, X8); break;
+        case 8: memory(as, OP_STRB, 0, rt, offset, X8); break;
+        case 16: memory(as, OP_STRH, 1, rt, offset, X8); break;
+        case 32: memory(as, OP_STRW, 2, rt, offset, X8); break;
+        default: memory(as, OP_STRX, 3, rt, offset, X8); break;
     }
 }
 
@@ -403,69 +380,69 @@ store_op(u8 t, u32 rt)
 }
 
 static void
-store_spill(Emit *e, u32 h, u32 offset)
+store_spill(Assembler *as, u32 h, u32 offset)
 {
-    memory(e, h >= 32 ? OP_STRD : OP_STRX, 3, h & 31, offset, X8);
+    memory(as, h >= 32 ? OP_STRD : OP_STRX, 3, h & 31, offset, X8);
 }
 
 static void
-load_spill(Emit *e, u32 reg, u32 offset, bool fl)
+load_spill(Assembler *as, u32 reg, u32 offset, bool fl)
 {
-    memory(e, fl ? OP_LDRD : OP_LDRX, 3, reg, offset, fl ? X8 : reg);
+    memory(as, fl ? OP_LDRD : OP_LDRX, 3, reg, offset, fl ? X8 : reg);
 }
 
 static void
-load_immediate(Emit *e, u32 reg, u64 bits, u8 info)
+load_immediate(Assembler *as, u32 reg, u64 bits, u8 info)
 {
     if (is_float(info)) {
-        float_imm(e, reg, bits, bits_of(info) == 64);
+        float_imm(as, reg, bits, bits_of(info) == 64);
     } else {
-        mov_imm(e, reg, bits, width(info));
+        mov_imm(as, reg, bits, width(info));
     }
 }
 
 static void
-move_reg(Emit *e, u32 d, u32 m, bool fl)
+move_reg(Assembler *as, u32 d, u32 m, bool fl)
 {
     if (fl) {
-        fmov(e, d, m);
+        fmov(as, d, m);
     } else {
-        mov(e, SF, d, m);
+        mov(as, SF, d, m);
     }
 }
 
 static void
-jump_later(Emit *e, u32 *list)
+jump_later(Assembler *as, u32 *list)
 {
-    add_fixup(e, list);
-    put(e, OP_B);
+    add_fixup(as, list);
+    put(as, OP_B);
 }
 
 static void
-jump_back(Emit *e, u32 start)
+jump_back(Assembler *as, u32 start)
 {
-    put(e, OP_B | ((start - here(e)) & 0x03FFFFFFu));
+    put(as, OP_B | ((start - here(as)) & 0x03FFFFFFu));
 }
 
 static void
-skip_if_zero(Emit *e, u32 *list, u32 reg)
+skip_if_zero(Assembler *as, u32 *list, u32 reg)
 {
-    add_fixup(e, list);
-    put(e, OP_CBZ | reg);
+    add_fixup(as, list);
+    put(as, OP_CBZ | reg);
 }
 
 static void
-skip_unless_flags(Emit *e, u32 *list)
+skip_unless_flags(Assembler *as, u32 *list, u8 cond)
 {
-    add_fixup(e, list);
-    put(e, OP_B_COND | (u32)(e->fused_cond ^ 1));
+    add_fixup(as, list);
+    put(as, OP_B_COND | (u32)(cond ^ 1));
 }
 
 static void
-align_loop(Emit *e)
+align_loop(Assembler *as)
 {
-    put(e, OP_NOP);
-    while ((uintptr_t)e->at & 15) {
-        put(e, OP_NOP);
+    put(as, OP_NOP);
+    while ((uintptr_t)as->at & 15) {
+        put(as, OP_NOP);
     }
 }
