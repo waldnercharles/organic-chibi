@@ -3,16 +3,11 @@ static const char NO_MEMORY[] = "the x86-64 backend doesn't support arrays, "
                                 "structs or slices yet";
 static const char
     NO_C_CALLS[] = "the x86-64 backend doesn't support calls into C yet";
-static const char NO_SWITCH[] = "the x86-64 backend doesn't support switch yet";
 static const char
     NO_DIVISION[] = "the x86-64 backend doesn't support division, "
                     "shifts or bit counts yet";
 static const char NO_PAIRS[] = "the x86-64 backend doesn't support optionals, "
                                "errors or tuples yet";
-static const char NO_ENUM_CHECKS[] = "the x86-64 backend doesn't support "
-                                     "conversions to enums yet";
-static const char NO_WIDE_MULTIPLY[] = "the x86-64 backend doesn't support "
-                                       "checked u64 multiplication yet";
 
 static void
 refuse(Emit *e, const char *why)
@@ -178,6 +173,40 @@ product(Emit *e, u32 w, u32 d, u32 ra, u32 rb, const int32_t *imm)
 }
 
 static void
+free_reg(Emit *e, u32 reg, u32 avoid)
+{
+    u32 v = e->holders[reg];
+    if (v == NO_VALUE) {
+        return;
+    }
+    u32 spare = e->free_int & ~avoid;
+    if (!spare) {
+        spill_reg(e, reg);
+        return;
+    }
+    u32 to = (u32)__builtin_ctz(spare);
+    mov_rr(&e->as, 1, to, reg);
+    e->free_int = (e->free_int & ~(1u << to)) | 1u << reg;
+    e->holders[to] = v;
+    e->holders[reg] = NO_VALUE;
+    e->regs[v] = (u8)to;
+}
+
+static void
+wide_product(Emit *e, u32 a, u32 b)
+{
+    u32 avoid = 1u << RAX | 1u << RDX;
+    free_reg(e, RAX, avoid);
+    free_reg(e, RDX, avoid);
+    u32 ra = fetch(e, a, SCRATCH);
+    u32 rb = fetch(e, b, SCRATCH2);
+    mov_rr(&e->as, 1, RAX, ra);
+    unary_r(&e->as, UNARY_MUL, 1, rb);
+    release(e, a);
+    release(e, b);
+}
+
+static void
 check_high_half(Emit *e, u32 d)
 {
     mov_rr(&e->as, 1, SCRATCH, d);
@@ -198,7 +227,9 @@ multiply(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
     bool s = is_signed(t);
     u32 w = width(t);
     if (!wrap && !small && !s && w) {
-        refuse(e, NO_WIDE_MULTIPLY);
+        wide_product(e, a, b);
+        trap_if(e, CC_O, TRAP_OVERFLOW);
+        mov_rr(&e->as, 1, result(e, i, t), RAX);
         return;
     }
     if ((a & IR_CONST) && !(b & IR_CONST)) {
@@ -424,7 +455,8 @@ test_overflow(Emit *e, u32 i, u8 kind, u32 type, u32 a, u32 b)
     bool mul = kind == IR_MUL_OVERFLOWS;
     bool sub = kind == IR_SUB_OVERFLOWS;
     if (mul && !small && !s && w) {
-        refuse(e, NO_WIDE_MULTIPLY);
+        wide_product(e, a, b);
+        flag_result(e, i, CC_O);
         return;
     }
     if (!sub && (a & IR_CONST) && !(b & IR_CONST)) {
@@ -489,6 +521,108 @@ convert(Emit *e, u32 i, u32 to, u32 a)
     }
 }
 
+enum
+{
+    JUMP = 0xFF,
+};
+
+static void
+compare_value(Emit *e, u32 reg, u64 v, u32 w)
+{
+    int64_t sv = w ? (int64_t)v : (int32_t)(u32)v;
+    if (fits32(sv)) {
+        alu_imm(&e->as, ALU_CMP, w, reg, (int32_t)sv);
+        return;
+    }
+    mov_imm(&e->as, RAX, v, 1);
+    alu_rr(&e->as, ALU_CMP, 1, reg, RAX);
+}
+
+static void
+subtract_value(Emit *e, u32 d, u32 n, u64 v, u32 w)
+{
+    mov_rr(&e->as, w, d, n);
+    int64_t sv = w ? (int64_t)v : (int32_t)(u32)v;
+    if (fits32(sv)) {
+        alu_imm(&e->as, ALU_SUB, w, d, (int32_t)sv);
+        return;
+    }
+    mov_imm(&e->as, RAX, v, 1);
+    alu_rr(&e->as, ALU_SUB, 1, d, RAX);
+}
+
+static void
+branch_to(Emit *e, u8 cond, u32 target, u8 trap)
+{
+    if (cond == JUMP) {
+        put(&e->as, OP_JMP32);
+    } else {
+        opcode(&e->as, OP_JCC32 | cond);
+    }
+    if (target == NO_VALUE) {
+        add_fixup(&e->as, &e->traps[trap]);
+    } else {
+        e->branches = grow(
+            e->branches,
+            &e->branches_cap,
+            e->nbranches + 1,
+            sizeof *e->branches
+        );
+        e->branches[e->nbranches++] = (Branch){ here(&e->as), target };
+    }
+    put32(&e->as, 0);
+}
+
+static void
+test_range(Emit *e, u32 r, u8 t, Range range, u8 trap)
+{
+    u32 w = width(t);
+    if (range.lo == range.hi) {
+        compare_value(e, r, range.lo, w);
+        branch_to(e, CC_E, range.target, trap);
+        return;
+    }
+    subtract_value(e, SCRATCH2, r, range.lo, w);
+    compare_value(e, SCRATCH2, range.hi - range.lo, w);
+    branch_to(e, CC_BE, range.target, trap);
+}
+
+static void
+search(Emit *e, u32 r, u8 t, const Range *ranges, u32 n, u32 fallback, u8 trap)
+{
+    if (n <= 3) {
+        for (u32 k = 0; k < n; k++) {
+            test_range(e, r, t, ranges[k], trap);
+        }
+        branch_to(e, JUMP, fallback, trap);
+        return;
+    }
+    u32 mid = n / 2;
+    compare_value(e, r, ranges[mid].lo, width(t));
+    u32 left = 0;
+    jump_if(&e->as, &left, is_signed(t) ? CC_L : CC_B);
+    search(e, r, t, ranges + mid, n - mid, fallback, trap);
+    patch(&e->as, left, here(&e->as));
+    search(e, r, t, ranges, mid, fallback, trap);
+}
+
+static void
+check_member(Emit *e, u32 d, u8 t, const u32 *runs)
+{
+    u32 n = runs[0] / 4;
+    e->ranges = grow(e->ranges, &e->ranges_cap, n + 1, sizeof *e->ranges);
+    for (u32 k = 0; k < n; k++) {
+        const u32 *v = runs + 1 + 4 * k;
+        e->ranges[k] = (Range){ v[0] | (u64)v[1] << 32, v[2] | (u64)v[3] << 32, 0 };
+    }
+    u32 first = e->nbranches;
+    search(e, d, t, e->ranges, n, NO_VALUE, TRAP_RANGE);
+    for (u32 k = first; k < e->nbranches; k++) {
+        patch_one(&e->as, e->branches[k].at, here(&e->as));
+    }
+    e->nbranches = first;
+}
+
 static void
 narrow(Emit *e, u32 i, u32 to, u32 a)
 {
@@ -498,11 +632,6 @@ narrow(Emit *e, u32 i, u32 to, u32 a)
         refuse(e, NO_FLOATS);
         return;
     }
-    if (e->c->types.kinds[to] == TYPE_ENUM) {
-        refuse(e, NO_ENUM_CHECKS);
-        return;
-    }
-
     u32 to_bits = bits_of(tt);
     bool to_signed = is_signed(tt);
     u32 ra = fetch(e, a, SCRATCH);
@@ -533,6 +662,14 @@ narrow(Emit *e, u32 i, u32 to, u32 a)
         extend(&e->as, 32, is_signed(from) && to_signed, d, ra);
     } else {
         move_narrower(e, tt, from, d, ra);
+    }
+    if (e->c->types.kinds[to] == TYPE_ENUM) {
+        check_member(
+            e,
+            d,
+            tt,
+            e->ir->extra + e->fn->first_extra + e->ir->bs[e->fn->first + i]
+        );
     }
 }
 
@@ -880,18 +1017,90 @@ store_at(Emit *e, u32 type, u32 a, u32 b)
 static NOINLINE void
 open_switch(Emit *e, u32 i, u32 type, u32 a, u32 b)
 {
-    (void)i;
-    (void)type;
-    (void)a;
-    (void)b;
-    refuse(e, NO_SWITCH);
+    u8 t = e->info[type];
+    u32 w = width(t);
+    u64 mask = w ? ~0ull : 0xFFFFFFFFull;
+    const u32 *x = e->ir->extra + e->fn->first_extra + b;
+    u32 n = x[0];
+    u32 fallback = x[1];
+    u32 r = fetch(e, a, SCRATCH);
+    release(e, a);
+    spill_all(e);
+    mov_rr(&e->as, 1, SCRATCH, r);
+
+    Open o = { .target = i,
+               .kind = IR_SWITCH,
+               .result = NO_REG,
+               .first_branch = e->nbranches,
+               .first_arm = e->narms,
+               .table = NO_VALUE,
+               .stub = NO_VALUE };
+    e->ranges = grow(e->ranges, &e->ranges_cap, n + 1, sizeof *e->ranges);
+    u64 count = 0;
+    for (u32 k = 0; k < n; k++) {
+        const u32 *v = x + 2 + 5 * k;
+        Range range = { v[0] | (u64)v[1] << 32, v[2] | (u64)v[3] << 32, v[4] };
+        e->ranges[k] = range;
+        count += ((range.hi - range.lo) & mask) + 1;
+    }
+
+    u64 span = n ? ((e->ranges[n - 1].hi - e->ranges[0].lo) & mask) + 1 : 0;
+    if (n >= 4 && span != 0 && span <= 8ull * n && 10 * count >= 4 * span) {
+        o.min = e->ranges[0].lo;
+        o.span = (u32)span;
+        subtract_value(e, SCRATCH2, SCRATCH, o.min, w);
+        compare_value(e, SCRATCH2, span - 1, w);
+        branch_to(e, CC_A, fallback, TRAP_UNREACHABLE);
+        u32 disp = lea_rip(&e->as, SCRATCH);
+        load_entry(&e->as, SCRATCH2, SCRATCH, SCRATCH2);
+        alu_rr(&e->as, ALU_ADD, 1, SCRATCH, SCRATCH2);
+        jump_reg(&e->as, SCRATCH);
+        o.table = here(&e->as);
+        u32 rel = o.table - (disp + 4);
+        memcpy(e->as.code + disp, &rel, 4);
+        memset(e->as.at, 0, 4 * span);
+        e->as.at += 4 * span;
+        if (count < span && fallback == NO_VALUE) {
+            o.stub = here(&e->as);
+            branch_to(e, JUMP, NO_VALUE, TRAP_UNREACHABLE);
+        }
+    } else {
+        search(e, SCRATCH, t, e->ranges, n, fallback, TRAP_UNREACHABLE);
+    }
+
+    e->arm_at = grow(e->arm_at, &e->arms_cap, e->narms + 1, sizeof *e->arm_at);
+    e->arm_at[e->narms++] = here(&e->as);
+    e->open = grow(e->open, &e->open_cap, e->nopen + 1, sizeof *e->open);
+    e->open[e->nopen++] = o;
 }
 
 static NOINLINE void
 finish_switch(Emit *e, const Open *o)
 {
-    (void)o;
-    refuse(e, NO_SWITCH);
+    const u32 *arms = e->arm_at + o->first_arm;
+    for (u32 k = o->first_branch; k < e->nbranches; k++) {
+        patch_one(&e->as, e->branches[k].at, arms[e->branches[k].target]);
+    }
+    if (o->table != NO_VALUE) {
+        const u32 *x = e->ir->extra + e->fn->first_extra +
+                       e->ir->bs[e->fn->first + o->target];
+        u32 fallback = x[1] == NO_VALUE ? o->stub : arms[x[1]];
+        u32 entry = fallback - o->table;
+        for (u32 k = 0; k < o->span; k++) {
+            memcpy(e->as.code + o->table + 4 * k, &entry, 4);
+        }
+        for (u32 k = 0; k < x[0]; k++) {
+            const u32 *v = x + 2 + 5 * k;
+            u32 lo = (u32)((v[0] | (u64)v[1] << 32) - o->min);
+            u32 hi = (u32)((v[2] | (u64)v[3] << 32) - o->min);
+            entry = arms[v[4]] - o->table;
+            for (u32 m = lo; m <= hi; m++) {
+                memcpy(e->as.code + o->table + 4 * m, &entry, 4);
+            }
+        }
+    }
+    e->nbranches = o->first_branch;
+    e->narms = o->first_arm;
 }
 
 static u32

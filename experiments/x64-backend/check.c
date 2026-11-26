@@ -108,6 +108,21 @@ static const char *const X64_PROGRAMS[] = {
     "    y: u32 = u32(b & 0xFFF)\n"
     "    return int(x * y)\n"
     "}\n"
+    "fn u64_mul(a: int, b: int) -> int {\n"
+    "    x: u64 = u64(a & 0xFFFFFFFFFF) * 0x1000000\n"
+    "    y: u64 = u64(b & 0xFFFF) * 0x10000000\n"
+    "    z := x * y\n"
+    "    live := u64(a & 7) + u64(b & 7)\n"
+    "    return int(z & 0x7FFFFFFFFFFFFFFF) + int(live * u64(b & 3))\n"
+    "}\n"
+    "fn mul_pressure(a: int, b: int) -> int {\n"
+    "    p := u64(a & 15) + 1\n"
+    "    q := u64(b & 15) + 2\n"
+    "    r := u64(a & 3) + 3\n"
+    "    s := u64(b & 3) + 4\n"
+    "    t := (p + q) + (r * s) * (p * q + (q * s) * (r + (p * s)))\n"
+    "    return int(t + p * q * r * s)\n"
+    "}\n"
     "fn narrowing(a: int, b: int) -> int {\n"
     "    x: i8 = i8(a * 10)\n"
     "    y: u16 = u16(b * 6000)\n"
@@ -348,8 +363,11 @@ static void
 run_functions(const char *text, const char *label)
 {
     size_t len = strlen(text);
-    char *one = malloc(len + 1);
-    const char *at = text;
+    char *one = malloc(2 * len + 1);
+    const char *first = strncmp(text, "fn ", 3) == 0 ? text : strstr(text, "\nfn ");
+    size_t prelude = first ? (size_t)(first - text) + (first != text) : 0;
+    memcpy(one, text, prelude);
+    const char *at = text + prelude;
     u32 k = 0;
     while ((at = strstr(at, "fn ")) != NULL) {
         if (at != text && at[-1] != '\n') {
@@ -361,8 +379,8 @@ run_functions(const char *text, const char *label)
             break;
         }
         end += 3;
-        memcpy(one, at, (size_t)(end - at));
-        one[end - at] = 0;
+        memcpy(one + prelude, at, (size_t)(end - at));
+        one[prelude + (size_t)(end - at)] = 0;
         char name[128];
         snprintf(name, sizeof name, "%s.%u", label, k++);
         Program p;

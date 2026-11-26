@@ -1,5 +1,6 @@
 #include "../../src/common.h"
 
+#include <assert.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -207,6 +208,10 @@ main(void)
             snprintf(text, sizeof text, "neg %s", reg(w, d));
             line(text);
             start();
+            unary_r(&as, UNARY_MUL, w, d);
+            snprintf(text, sizeof text, "mul %s", reg(w, d));
+            line(text);
+            start();
             unary_r(&as, UNARY_NOT, w, d);
             snprintf(text, sizeof text, "not %s", reg(w, d));
             line(text);
@@ -315,6 +320,27 @@ main(void)
         start();
         trap_kind(&as, k);
         snprintf(text, sizeof text, "ud1 eax, dword ptr [rax + %u]", k);
+        line(text);
+    }
+    for (u32 d = 0; d < 16; d++) {
+        for (u32 b = 0; b < 16; b++) {
+            for (u32 x = 0; x < 16; x++) {
+                if ((b & 7) == 5 || x == RSP) {
+                    continue;
+                }
+                start();
+                load_entry(&as, d, b, x);
+                snprintf(text, sizeof text, "movsxd %s, dword ptr [%s + 4*%s]", R64[d], R64[b], R64[x]);
+                line(text);
+            }
+        }
+        start();
+        jump_reg(&as, d);
+        snprintf(text, sizeof text, "jmp %s", R64[d]);
+        line(text);
+        start();
+        lea_rip(&as, d);
+        snprintf(text, sizeof text, "lea %s, [rip]", R64[d]);
         line(text);
     }
     start();

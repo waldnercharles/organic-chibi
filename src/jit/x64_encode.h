@@ -41,6 +41,7 @@ enum
 {
     UNARY_NOT = 2,
     UNARY_NEG = 3,
+    UNARY_MUL = 4,
 };
 
 enum
@@ -346,6 +347,33 @@ touch_stack(Assembler *as)
 {
     rm(as, 0, OP_ALU_IMM8, 1, ALU_OR, RSP, 0, false);
     put(as, 0);
+}
+
+static u32
+lea_rip(Assembler *as, u32 d)
+{
+    rex(as, 1, d, 0, false);
+    put(as, OP_LEA);
+    put(as, (u8)(0x05 | (d & 7) << 3));
+    u32 at = here(as);
+    put32(as, 0);
+    return at;
+}
+
+static void
+load_entry(Assembler *as, u32 d, u32 base, u32 index)
+{
+    assert((base & 7) != 5 && index != RSP);
+    put(as, (u8)(0x48 | (d >> 3) << 2 | (index >> 3) << 1 | base >> 3));
+    put(as, OP_MOVSXD);
+    put(as, (u8)(0x04 | (d & 7) << 3));
+    put(as, (u8)(0x80 | (index & 7) << 3 | (base & 7)));
+}
+
+static void
+jump_reg(Assembler *as, u32 r)
+{
+    rr(as, 0, OP_GROUP5, 0, 4, r, false);
 }
 
 static void
