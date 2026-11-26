@@ -1,6 +1,6 @@
 #define _DEFAULT_SOURCE
 
-#include "../src/jit.h"
+#include "../../src/jit.h"
 #include "../../src/lexer.h"
 #include "../../src/parser.h"
 #include "../../test/backend_programs.h"

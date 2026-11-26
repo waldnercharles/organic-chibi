@@ -1,5 +1,5 @@
 #define _DEFAULT_SOURCE
-#include "../src/jit.h"
+#include "../../src/jit.h"
 
 #include <stdio.h>
 #include <stdlib.h>
