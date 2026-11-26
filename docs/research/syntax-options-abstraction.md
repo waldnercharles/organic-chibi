@@ -580,12 +580,13 @@ Compile-time parameters are the same in every option below: sheet 6's `$T: type`
 
 ### Questions for you
 
-1. Is the compile-time marker `$` (A), `comptime` (B) or `#` (C)?
+1. Is the compile-time marker `$` (A), `comptime` (B) or `#` (C)? Answered 2026-11-25: `$`.
 2. Does `const X := e` always evaluate `e` at compile time, with no extra marker (D)?
-3. Are compile-time branches and loops explicit, `$if`, `$for` and `$switch` (G), rather than implied by a constant condition (H)?
+3. Are compile-time branches and loops explicit, `$if`, `$for` and `$switch` (G), rather than implied by a constant condition (H)? Answered 2026-11-25: yes.
 4. May a top-level `$if` declare names, with the declaration pass registering the names from every branch?
 5. Must every generated top-level name be written in source (J), leaving declared-name generators (K) and text insertion (L) out for now? Answered 2026-11-25: no. The owner chose B4, so insertion (L) is in, and J and K stay as the forms that never make a lookup wait (the compile-time declarations row of [../decisions.md](../decisions.md)).
 6. Is the build program a `build.chibi` file with an entry function, run by the interpreter (M)?
+7. Added 2026-11-25, after the owner chose B4: is inserted code built from text, from syntax trees or both, and may a program watch the compiler's work (N)? Answered the same day: both, and yes.
 
 ---
 
