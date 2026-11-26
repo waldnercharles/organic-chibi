@@ -1,5 +1,5 @@
 #define _DEFAULT_SOURCE
-#include "../../src/arm64.h"
+#include "../src/jit.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -55,7 +55,7 @@ main(void)
         return 1;
     }
     Native n;
-    if (!arm64_compile(&n, &ch, CONVENTION_HOST)) {
+    if (!jit_compile(&n, &ch, CONVENTION_HOST)) {
         printf("error %s\n", n.error);
         return 1;
     }

@@ -1,6 +1,6 @@
 #define _DEFAULT_SOURCE
 
-#include "arm64.h"
+#include "jit.h"
 
 #include <assert.h>
 #include <dlfcn.h>
@@ -1213,7 +1213,7 @@ emit_function(Emit *e, const IrFunc *fn, Code *code, const Native *n)
 }
 
 bool
-arm64_compile(Native *n, const Checker *c, Convention convention)
+jit_compile(Native *n, const Checker *c, Convention convention)
 {
     const Ir *ir = &c->ir;
     size_t units = 0;

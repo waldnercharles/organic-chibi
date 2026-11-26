@@ -1,6 +1,6 @@
 #define _DEFAULT_SOURCE
 
-#include "../src/arm64.h"
+#include "../src/jit.h"
 #include "../vendor/pico_unit/pico_unit.h"
 #include "backend_programs.h"
 #include "ir_reference.h"
@@ -67,7 +67,7 @@ build(Program *p, const char *text)
     if (!check_text(p, text, false, false)) {
         return false;
     }
-    if (!arm64_compile(&p->n, &p->c, CONVENTION_HOST)) {
+    if (!jit_compile(&p->n, &p->c, CONVENTION_HOST)) {
         fprintf(stderr, "arm64 test: %s\n", p->n.error);
         return false;
     }
@@ -494,7 +494,7 @@ rejects(const char *text)
                            true };
     check_init(&p.c, &p.lx.names, &p.file, 1);
     check_package(&p.c);
-    bool ok = count >= 0 && p.c.ndiags == 0 && !arm64_compile(&p.n, &p.c, CONVENTION_HOST) &&
+    bool ok = count >= 0 && p.c.ndiags == 0 && !jit_compile(&p.n, &p.c, CONVENTION_HOST) &&
               p.n.error && strstr(p.n.error, "supports only") != NULL;
     if (!ok) {
         fprintf(stderr, "arm64 test: expected the backend to reject\n%s", text);
@@ -2024,7 +2024,7 @@ TEST_CASE(store_while_loaded)
     code->bs[first] = code->bs[first + 1];
     code->as[first + 1] = slot;
     code->bs[first + 1] = value;
-    REQUIRE(arm64_compile(&p.n, &p.c, CONVENTION_HOST));
+    REQUIRE(jit_compile(&p.n, &p.c, CONVENTION_HOST));
     REQUIRE(((I1 *)fn(&p, "f"))(CONTEXT, 7) == 75);
     release_program(&p);
     return true;
@@ -3082,7 +3082,7 @@ TEST_CASE(calls_into_c)
 
     for (size_t k = 0; k < sizeof C_CALL_LIMITS / sizeof C_CALL_LIMITS[0]; k++) {
         REQUIRE(check_text(&p, C_CALL_LIMITS[k][0], false, false));
-        REQUIRE(!arm64_compile(&p.n, &p.c, CONVENTION_HOST) && strcmp(p.n.error, C_CALL_LIMITS[k][1]) == 0);
+        REQUIRE(!jit_compile(&p.n, &p.c, CONVENTION_HOST) && strcmp(p.n.error, C_CALL_LIMITS[k][1]) == 0);
         release_program(&p);
     }
     return true;
@@ -3463,7 +3463,7 @@ TEST_CASE(stack_arguments)
     release_program(&p);
 
     REQUIRE(check_text(&p, STACK_ARGUMENTS, false, false));
-    REQUIRE(arm64_compile(&p.n, &p.c, CONVENTION_APPLE));
+    REQUIRE(jit_compile(&p.n, &p.c, CONVENTION_APPLE));
     for (int64_t x = 0; x < 20; x++) {
         REQUIRE(chibi_calls_agree(&p, x));
 
@@ -3606,7 +3606,7 @@ TEST_CASE(variadic_calls)
     release_program(&p);
 
     REQUIRE(check_text(&p, VARIADIC_CALLS, false, false));
-    REQUIRE(arm64_compile(&p.n, &p.c, CONVENTION_APPLE));
+    REQUIRE(jit_compile(&p.n, &p.c, CONVENTION_APPLE));
     for (int64_t x = 0; x < 20; x++) {
         REQUIRE(vprobe_agrees(&p, x, CONVENTION_APPLE));
         REQUIRE(named_then_variadic(&p, x));
@@ -4012,7 +4012,7 @@ TEST_CASE(callbacks)
     release_program(&p);
 
     REQUIRE(check_text(&p, CALLBACKS, false, false));
-    REQUIRE(arm64_compile(&p.n, &p.c, CONVENTION_APPLE));
+    REQUIRE(jit_compile(&p.n, &p.c, CONVENTION_APPLE));
     for (int64_t x = 0; x < 20; x++) {
         REQUIRE(sorts(&p, x));
         REQUIRE(odd_layouts(&p, x));
@@ -4039,7 +4039,7 @@ TEST_CASE(callback_stack_limit)
 
     Program p;
     REQUIRE(check_text(&p, text, false, false));
-    REQUIRE(!arm64_compile(&p.n, &p.c, CONVENTION_HOST));
+    REQUIRE(!jit_compile(&p.n, &p.c, CONVENTION_HOST));
     REQUIRE(strcmp(p.n.error, "a callback for C needs over 4064 bytes of stack arguments") == 0);
     release_program(&p);
     return true;
@@ -5378,7 +5378,7 @@ TEST_CASE(release_fast)
     catch_traps();
     Program p;
     REQUIRE(check_text(&p, RELEASE_FAST_GRID, true, false));
-    REQUIRE(arm64_compile(&p.n, &p.c, CONVENTION_HOST));
+    REQUIRE(jit_compile(&p.n, &p.c, CONVENTION_HOST));
     for (size_t k = 0; k < sizeof RELEASE_FAST_CASES / sizeof RELEASE_FAST_CASES[0]; k++) {
         CallCase t = RELEASE_FAST_CASES[k];
         int64_t got = 0;
@@ -5414,7 +5414,7 @@ vector_runs_agree(const char *text, const VectorRun *runs, size_t n, bool releas
     if (!check_text(&p, text, release_fast, false)) {
         return false;
     }
-    if (!arm64_compile(&p.n, &p.c, CONVENTION_HOST)) {
+    if (!jit_compile(&p.n, &p.c, CONVENTION_HOST)) {
         fprintf(stderr, "arm64 test: %s\n", p.n.error);
         return false;
     }
@@ -6867,7 +6867,7 @@ TEST_CASE(top_level_code)
 {
     Program p;
     REQUIRE(check_text(&p, TOP_LEVEL, false, true));
-    REQUIRE(arm64_compile(&p.n, &p.c, CONVENTION_HOST));
+    REQUIRE(jit_compile(&p.n, &p.c, CONVENTION_HOST));
     native_set_context(&p.n, DEFAULT_CONTEXT);
     REQUIRE(p.c.ir.nexports == 1 && p.c.ir.callbacks[0] == p.c.entry);
     MAIN *entry = (MAIN *)native_export(&p.n, 0);

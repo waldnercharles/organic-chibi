@@ -1,5 +1,5 @@
 #define _DEFAULT_SOURCE
-#include "../../src/arm64.h"
+#include "../src/jit.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,7 +35,7 @@ main(int argc, char **argv)
         check_dump_ir(stdout, &ch);
     }
     Native n;
-    if (!arm64_compile(&n, &ch, CONVENTION_HOST)) {
+    if (!jit_compile(&n, &ch, CONVENTION_HOST)) {
         printf("error %s\n", n.error);
         return 1;
     }

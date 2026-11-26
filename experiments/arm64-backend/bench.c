@@ -1,6 +1,6 @@
 #define _DEFAULT_SOURCE
 
-#include "../../src/arm64.h"
+#include "../src/jit.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -197,7 +197,7 @@ main(int argc, char **argv)
         }
 
         Native native;
-        if (!arm64_compile(&native, &c, CONVENTION_HOST)) {
+        if (!jit_compile(&native, &c, CONVENTION_HOST)) {
             fprintf(stderr, "arm64-backend: %s\n", native.error);
             return 1;
         }

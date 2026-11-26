@@ -1,5 +1,5 @@
-#ifndef CHIBI_ARM64_H
-#define CHIBI_ARM64_H
+#ifndef CHIBI_JIT_H
+#define CHIBI_JIT_H
 
 #include "native.h"
 
@@ -14,6 +14,6 @@ typedef enum
 #endif
 } Convention;
 
-bool arm64_compile(Native *n, const Checker *c, Convention convention);
+bool jit_compile(Native *n, const Checker *c, Convention convention);
 
 #endif

@@ -1,7 +1,7 @@
 #ifndef CHIBI_IR_REFERENCE_H
 #define CHIBI_IR_REFERENCE_H
 
-#include "../src/arm64.h"
+#include "../src/jit.h"
 
 typedef struct
 {

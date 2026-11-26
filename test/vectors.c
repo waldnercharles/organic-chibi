@@ -1,6 +1,6 @@
 #include "vectors.h"
 
-#include "../src/arm64.h"
+#include "../src/jit.h"
 
 const char VECTOR_BODY[] =
     "import \"std/simd\"\n"

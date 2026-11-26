@@ -1,6 +1,6 @@
 #define _DEFAULT_SOURCE
 
-#include "../../src/arm64.h"
+#include "../src/jit.h"
 #include "../../src/lexer.h"
 #include "../../src/parser.h"
 #include "../../test/backend_programs.h"
@@ -28,7 +28,7 @@ emit_hash(const char *label, u32 index, const Checker *c)
     for (int convention = 0; convention < 2; convention++) {
         Native n;
         Convention cv = convention ? CONVENTION_APPLE : CONVENTION_AAPCS64;
-        if (!arm64_compile(&n, c, cv)) {
+        if (!jit_compile(&n, c, cv)) {
             fprintf(out, "%s %u %d refused %s\n", label, index, convention, n.error);
             native_free(&n);
             continue;
