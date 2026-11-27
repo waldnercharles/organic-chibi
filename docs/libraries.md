@@ -29,13 +29,6 @@ The curated set row of 2026-11-27. Windows gets prebuilt libraries; other system
 | [SDL2](https://github.com/libsdl-org/SDL/tree/SDL2) | 2.32.10 | Zlib | 318,157 | the same for code written against SDL2 |
 | [Box2D](https://github.com/erincatto/box2d) | 3.2.0 | MIT | 32,921 | 2D physics |
 | [Box3D](https://github.com/erincatto/box3d) | a pinned commit; the only release is 0.1.0 | MIT | 46,067 at 0.1.0 | 3D physics |
-
-## Proposed for the set, not decided
-
-[vendor-libraries.md](research/vendor-libraries.md) section 6.1 recommends these. Each had a commit in 2026.
-
-| Library | Version | License | Code lines | Gives |
-|---|---|---|---|---|
 | stb_truetype | 1.28 | public domain or MIT | 3,670 | font rasterizing |
 | kb_text_shape | 2.32 | zlib | 26,771 | text shaping, in place of FreeType and HarfBuzz (245,000 lines) |
 | stb_image | 2.34 | public domain or MIT | 5,662 | the image formats SDL3 doesn't load, until the standard library's decoders replace it |
@@ -50,6 +43,6 @@ The curated set row of 2026-11-27. Windows gets prebuilt libraries; other system
 - **Cute Framework**, as a whole (the curated set row of 2026-11-27). Box2D, Box3D and SDL3 come from it into the set. chibi's features make minicoro, glad, `cute_spirv.h` and debugbreak unnecessary. The standard library replaces PhysicsFS, `cute_png.h`, `cute_sound.h`, `cute_tls.h` and s2n-tls ([vendor-libraries.md](research/vendor-libraries.md) sections 5 and 6.2).
 - **SDL_image, SDL_mixer, SDL_ttf and miniaudio.** SDL 3.4 covers what they would add, or they bring large or LGPL parts. Odin's SDL_mixer builds load the LGPL-2.1 `libgme.dll`, and SDL_ttf wraps FreeType ([vendor-libraries.md](research/vendor-libraries.md) section 5).
 
-## TLS: not decided
+## TLS: from the operating system
 
-[tls.md](research/tls.md) recommends vendoring no TLS for chibi's git client: Schannel on Windows, Network.framework on macOS, and the distribution's OpenSSL 3 (`libssl.so.3`) on Linux. If chibi vendors one, it should be rustls through rustls-ffi, or Mbed TLS where the archive must build from C alone. TLS written in chibi should come after self-hosting, ported from Go's `crypto/tls`. Zig's is not a safe reference: its verifier never checks basicConstraints, an open bug since 2026-06-21.
+chibi's git client uses Schannel on Windows, Network.framework on macOS, and the distribution's OpenSSL 3 (`libssl.so.3`) on Linux, and chibi vendors no TLS library (the TLS row of 2026-11-27). If that ever has to change, [tls.md](research/tls.md) recommends rustls through rustls-ffi, or Mbed TLS where the archive must build from C alone. TLS written in chibi should come after self-hosting, ported from Go's `crypto/tls`. Zig's is not a safe reference: its verifier never checks basicConstraints, an open bug since 2026-06-21.
