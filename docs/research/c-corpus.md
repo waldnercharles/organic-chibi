@@ -654,7 +654,7 @@ Ordered by what they block.
 1. **What must the corpus do first:** only lex and parse (H1), or also type-check and run (H5, H6, self-hosting)? This decides the front end and the order of phases.
 2. **Which line count is the metric?** For the mix, the candidates give 1.63M physical, 1.42M non-blank, 1.17M non-blank non-comment, or 1.06M code lines without preprocessor and data lines. Do generated and expanded lines count? This decides how much code the corpus needs.
 3. **May translated third-party code live in the repository?** Permissive licenses only? tcc under LGPL? The GPL id games? If not, the corpus is generated locally from pinned commits and ignored by git.
-   - **Answered 2026-11-09:** chibi-v2 is GPL-3.0-only, and the owner accepts GPL code in the corpus. The id Software games may be committed as test data.
+   - **Answered 2026-11-09:** chibi-v2 is GPL-3.0-only, and the owner accepts GPL code in the corpus. The id Software games may be committed as test data. On 2026-11-27 chibi-v2 became zlib, which reopens this question (the license row of that date in [../decisions.md](../decisions.md)).
 4. **What language is the translator written in:** C, a scripting language, or eventually chibi? This blocks the first line of translator code.
 5. **The core syntax decisions** (section 4), in this order:
    - pointer and array types, and member access through pointers;

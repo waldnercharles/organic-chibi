@@ -21,47 +21,35 @@ These are not vendored. The user installs them.
 
 ## Shipped with chibi: decided, not vendored yet
 
-The 2026-11-09 goal names prebuilt archives of SDL3 and Cute Framework (CF). The dependencies row of 2026-11-26 makes them part of a curated set, prebuilt for Windows, with bindings from the C import.
+The curated set row of 2026-11-27. Windows gets prebuilt libraries; other systems link the system's library. Versions and code lines come from [vendor-libraries.md](research/vendor-libraries.md) section 6.1.
 
-| Library | Version | License | Gives |
-|---|---|---|---|
-| [SDL3](https://github.com/libsdl-org/SDL) | 3.4.0, the version CF requires | Zlib | windows, input, audio, the GPU API |
-| [Cute Framework](https://github.com/RandyGaul/cute_framework) | `6b00978a`, the commit the shader research read | zlib or public domain | 2D game framework on SDL3 |
+| Library | Version | License | Code lines | Gives |
+|---|---|---|---|---|
+| [SDL3](https://github.com/libsdl-org/SDL) | 3.4.20 | Zlib | 493,069 | windows, input, audio output and mixing, the GPU API, PNG, BMP and WAV loading, files and storage |
+| [SDL2](https://github.com/libsdl-org/SDL/tree/SDL2) | 2.32.10 | Zlib | 318,157 | the same for code written against SDL2 |
+| [Box2D](https://github.com/erincatto/box2d) | 3.2.0 | MIT | 32,921 | 2D physics |
+| [Box3D](https://github.com/erincatto/box3d) | a pinned commit; the only release is 0.1.0 | MIT | 46,067 at 0.1.0 | 3D physics |
 
-### What Cute Framework brings with it
+## Proposed for the set, not decided
 
-A prebuilt CF archive contains these libraries too. Read from CF's `CMakeLists.txt` and `libraries/` at `6b00978a`.
+[vendor-libraries.md](research/vendor-libraries.md) section 6.1 recommends these. Each had a commit in 2026.
 
-CMake downloads these when CF is built:
+| Library | Version | License | Code lines | Gives |
+|---|---|---|---|---|
+| stb_truetype | 1.28 | public domain or MIT | 3,670 | font rasterizing |
+| kb_text_shape | 2.32 | zlib | 26,771 | text shaping, in place of FreeType and HarfBuzz (245,000 lines) |
+| stb_image | 2.34 | public domain or MIT | 5,662 | the image formats SDL3 doesn't load, until the standard library's decoders replace it |
+| stb_vorbis | 1.25 | public domain or MIT | 4,131 | Ogg Vorbis decoding |
+| cgltf | 1.15 | MIT | 7,313 | glTF models |
+| Dear ImGui, with dear_bindings and the SDL3 and SDL_GPU backends | 1.93.1 | MIT | 44,798 C++, plus the C bindings | tool UI |
+| ENet | 1.3.18 | MIT | 4,862 | reliable UDP |
+| Vulkan-Headers, headers only | 1.4.354 | Apache-2.0 | 22,697 in `vulkan_core.h` | code that goes below SDL3's GPU API |
 
-| Library | Version | License | Notes |
-|---|---|---|---|
-| [Box2D](https://github.com/erincatto/box2d) | v3.1.1 | MIT | 2D physics |
-| [Box3D](https://github.com/erincatto/box3d) | v0.1.0 | MIT | 3D physics |
-| [PhysicsFS](https://github.com/icculus/physfs) | commit `9d18d36b` | Zlib | file system over archives |
-| SDL3 | 3.4.0 | Zlib | listed above |
-| [s2n-tls](https://github.com/aws/s2n-tls) | v1.6.3 | Apache-2.0 | Linux only. TLS for `cute_tls.h`. Links the system's libcrypto. |
-| wgpu-native | v29.0.1.1 | not checked | Only with `CF_WEBGPU`, which is off by default. |
+## Not shipped
 
-CF's repository holds these:
+- **Cute Framework**, as a whole (the curated set row of 2026-11-27). Box2D, Box3D and SDL3 come from it into the set. chibi's features make minicoro, glad, `cute_spirv.h` and debugbreak unnecessary. The standard library replaces PhysicsFS, `cute_png.h`, `cute_sound.h`, `cute_tls.h` and s2n-tls ([vendor-libraries.md](research/vendor-libraries.md) sections 5 and 6.2).
+- **SDL_image, SDL_mixer, SDL_ttf and miniaudio.** SDL 3.4 covers what they would add, or they bring large or LGPL parts. Odin's SDL_mixer builds load the LGPL-2.1 `libgme.dll`, and SDL_ttf wraps FreeType ([vendor-libraries.md](research/vendor-libraries.md) section 5).
 
-| Library | License | Notes |
-|---|---|---|
-| Dear ImGui, with the `dcimgui` C bindings | MIT | |
-| glad 0.1.36 output | not stated in the file | OpenGL 3.3 and GLES 3.0 loader |
-| `khrplatform.h` | Khronos MIT-style | |
-| stb_truetype v1.26, stb_vorbis v1.09 | MIT or public domain | |
-| minicoro | MIT No Attribution or public domain | stackful coroutines |
-| debugbreak.h | BSD-style | |
-| pico_qt, pico_unit | zlib or public domain | |
-| CF's own `cute_*.h` headers | CF's license | among them `cute_spirv.h` (shaders), `cute_tls.h`, `cute_png.h`, `cute_sound.h`, `cute_net.h` |
+## TLS: not decided
 
-CF has had no glslang, SDL_shadercross or DXC since July 2026, when `cute_spirv.h` replaced them ([shader-languages.md](research/shader-languages.md)).
-
-## Not intended yet
-
-- **TLS for chibi's own git client.** The client that replaces the `git` command needs HTTPS. Windows and macOS include TLS (Secure Channel and Network.framework), and CF's `cute_tls.h` already wraps both in 1,735 lines. Linux has no TLS in the OS, so CF uses s2n-tls with the system's libcrypto. The alternative is TLS written in chibi. The owner decides when the client is built.
-
-## Open
-
-- **The license of chibi's own wrappers.** The dependencies row ships chibi wrappers where a C API is awkward, and games link them. Under the compiler's GPL-3.0-only, every game that uses a wrapper would have to be GPL. Old Chibi licensed its runtime LGPL-3.0-only to avoid this (the license row of 2026-11-09). This needs a decision before the first wrapper ships.
+[tls.md](research/tls.md) recommends vendoring no TLS for chibi's git client: Schannel on Windows, Network.framework on macOS, and the distribution's OpenSSL 3 (`libssl.so.3`) on Linux. If chibi vendors one, it should be rustls through rustls-ffi, or Mbed TLS where the archive must build from C alone. TLS written in chibi should come after self-hosting, ported from Go's `crypto/tls`. Zig's is not a safe reference: its verifier never checks basicConstraints, an open bug since 2026-06-21.
