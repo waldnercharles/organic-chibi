@@ -389,6 +389,7 @@ There is no public compiler source, and almost everything below is **UNVERIFIED*
 - **Order:** declarations are order-independent, resolved by a multithreaded job system.
 - **Build:** the whole program is compiled from source on every build.
 - **Metaprogram:** `build.jai` uses the workspace and message API (`compiler_wait_for_message`, `add_build_string`).
+- **Dependencies** (added 2026-11-26): there is no package manager. The compiler ships a `modules` folder with the modules "that most people would want", such as `Basic`, `File`, `Math`, `Simp` (2D rendering), `Window_Creation`, `Input`, `GetRect` (UI) and `Thread` ([Jai Community wiki, Modules and Libraries](https://github.com/Jai-Community/Jai-Community-Library/wiki/Modules-and-Libraries)). A community module is copied or symlinked into that folder ([onelivesleft/Metaprogram](https://github.com/onelivesleft/Metaprogram)).
 
 Primary sources:
 - Blow's demos show `#run` compile-time execution ([2014](https://www.youtube.com/watch?v=UTqZNujQOlA)) and polymorphic procedures ([2015](https://www.youtube.com/watch?v=BwqeFrlSpuI)).
