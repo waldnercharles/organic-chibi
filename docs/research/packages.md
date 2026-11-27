@@ -324,6 +324,11 @@ All C3 code paths below are under [src/compiler/ at b2e1e99](https://github.com/
 
 **Build.** There is no build file: `odin build <dir>` plus flags ([ODOC/overview.md#L36-L43](https://github.com/odin-lang/odin-lang.org/blob/1d272b93ccbd9a7e23f21cdbc2a6b5d5b8e5daa4/content/docs/overview.md#L36-L43)).
 
+**Dependencies** (added 2026-11-26).
+- There is no package manager, by design. Ginger Bill separates packages, repositories, build systems and package managers, and objects only to the last: a package manager downloads a package's dependencies, "and its dependencies, and its dependencies", which he calls "the automation of dependency hell". His answer is "copying and vendoring each package manually, and fixing the specific versions down", and he credits a strong standard library, as in Go, with keeping dependency counts low ([Package Managers are Evil](https://www.gingerbill.org/article/2025/09/08/package-managers-are-evil/), 2025-09-08).
+- `core:` is the standard library (`fmt`, `os`, `net`, `crypto`, `image`, `encoding`, `thread` and others). `vendor:` holds bindings that "are curated and maintained by the Odin team", with the binaries they need: SDL2 and SDL3, raylib, GLFW, OpenGL, Vulkan, Direct3D 11 and 12, Apple's frameworks, wgpu, box2d, miniaudio, stb, cgltf, ENet, Lua, microui, nanovg, curl, zlib and more ([vendor/README.md](https://github.com/odin-lang/Odin/blob/85afcb386c389aafcec4f2e33d27ff8b42579822/vendor/README.md)).
+- On Windows the libraries ship prebuilt (`vendor/sdl3` holds `SDL3.dll` and `SDL3.lib`); elsewhere the binding links the system's library, `system:SDL3` ([sdl3__foreign.odin](https://github.com/odin-lang/Odin/blob/85afcb386c389aafcec4f2e33d27ff8b42579822/vendor/sdl3/sdl3__foreign.odin)).
+
 **Hot reload.**
 - `-build-mode:dll` plus `core:dynlib`. Loading the same library again "unloads the previous incarnation, allowing for straightforward hot reload support" ([lib.odin#L110-L124](https://github.com/odin-lang/Odin/blob/85afcb386c389aafcec4f2e33d27ff8b42579822/core/dynlib/lib.odin#L110-L124)).
 - The replaced unit is the whole DLL. Keeping game state in the host is a convention; see the secondary pointer [Karl Zylinski](https://zylinski.se/posts/hot-reload-gameplay-code/).
