@@ -568,6 +568,28 @@ Compile-time parameters are the same in every option below: sheet 6's `$T: type`
   //> define: DEBUG=1
   ```
 
+**The build program, looked at again (2026-11-26).** With N chosen, M splits into three questions.
+
+*What the build code does*
+
+- **M1. It describes a graph of steps** (Zig: `zig build` compiles `build.zig` with the build runner, and the result is a graph of steps that run concurrently; [packages.md](packages.md), Zig). `pub fn build(g: *Graph)` adds steps: compile, link, run, test, install, and a custom step that calls a chibi function. When `build` returns, the compiler runs the steps, those that don't depend on each other in parallel, and skips a step whose inputs haven't changed. `chibi build test` runs the step named `test`. A watcher (N) is a function attached to a compile step. A language server calls `build` and reads the graph without compiling anything.
+- **M2. It drives the compiler itself** (Jai: the build program calls `compiler_create_workspace`, `set_build_options` and `add_build_file` ([The Way to Jai 30A L113-L155](https://github.com/Ivo-Balbaert/The_Way_to_Jai/blob/19cb4b7acb0de2798c769f9ad73313a4d15f4056/book/30A_Integrated_build_system.md#L113-L155)), and to watch, loops on `compiler_wait_for_message` (option N)). It's the simplest to explain and can do anything in any order. But the compiler sees calls, not a graph: steps run in the order written unless the build code starts threads, skipping unchanged work is the build code's job, and a language server learns the build only by running all of it.
+
+M1 keeps M2's power through its custom step, whose function may call the compiler and decide what to build next. Only that step loses caching.
+
+*Where dependencies are listed*
+
+- **P1. In the build code** (Jai). The build code fetches or imports what it likes. A package manager or language server has to run it to learn the dependencies, and so runs code from every package it reads. Swift's `Package.swift` is code of this kind, which SwiftPM runs in a sandbox.
+- **P2. In a data file** (Zig's `build.zig.zon`, which names each dependency's URL and content hash; [packages.md](packages.md), Zig). A tool reads and writes it without running anything. It's a second format beside chibi.
+- **P3. In `build.chibi`, as a constant that must be a literal**, such as `pub const DEPENDENCIES := .[.{ name = "sdl", url = "…", hash = "…" }]`. A tool parses the file and reads the literal without running it, so it has P2's property in chibi's own syntax. The cost is one rule that applies to one name, and a fetch command that edits chibi source to add a hash, as `cargo add` edits `Cargo.toml`. No language studied does this.
+
+*Whether a program needs a build file*
+
+- **R1. No.** `chibi run game.chibi` and `chibi build game.chibi` build one program with default options, as `zig run main.zig`, `jai main.jai` and `go run .` do, and the driver's file is the entry (top-level code, 2026-11-12). A build file is needed only for several programs, C libraries, options or dependencies.
+- **R2. Yes, always.** Every program has a `build.chibi`. It's one rule, at the cost of a second file for every small program.
+
+**Recommendation: M1, P3 and R1.** A graph lets the compiler run steps in parallel and skip unchanged ones, which a program that drives the compiler can't offer without its author writing both. The custom step and the watcher keep M2's power. P3 lets tools read dependencies without running anyone's code and needs no second format. R1 keeps a one-file program a one-file program.
+
 ### Recommendation
 
 **I recommend `$` as the one marker (A), `const` plus `$` expressions for running code (D), explicit `$if`, `$for` and `$switch` (G), top-level names written in source with their contents computed (J), and a `build.chibi` program run by the interpreter (M),** because together they come to five rules built from one token the lexer already produces, every form is decided at its first token, every top-level name is visible to the declaration pass so checking stays order-free and parallel, nothing generates text that has to be parsed again, and each rule composes with the others: a `$for` can sit in a struct body, a `const` can hold a type, and a created type can get methods. The rules, stated once:
@@ -581,11 +603,11 @@ Compile-time parameters are the same in every option below: sheet 6's `$T: type`
 ### Questions for you
 
 1. Is the compile-time marker `$` (A), `comptime` (B) or `#` (C)? Answered 2026-11-25: `$`.
-2. Does `const X := e` always evaluate `e` at compile time, with no extra marker (D)?
+2. Does `const X := e` always evaluate `e` at compile time, with no extra marker (D)? Answered 2026-11-26: yes.
 3. Are compile-time branches and loops explicit, `$if`, `$for` and `$switch` (G), rather than implied by a constant condition (H)? Answered 2026-11-25: yes.
-4. May a top-level `$if` declare names, with the declaration pass registering the names from every branch?
+4. May a top-level `$if` declare names, with the declaration pass registering the names from every branch? Answered 2026-11-26: yes, in the most powerful form (the row of that date in [../decisions.md](../decisions.md)).
 5. Must every generated top-level name be written in source (J), leaving declared-name generators (K) and text insertion (L) out for now? Answered 2026-11-25: no. The owner chose B4, so insertion (L) is in, and J and K stay as the forms that never make a lookup wait (the compile-time declarations row of [../decisions.md](../decisions.md)).
-6. Is the build program a `build.chibi` file with an entry function, run by the interpreter (M)?
+6. Is the build program a `build.chibi` file with an entry function, run by the interpreter (M)? On 2026-11-26 the owner asked for the options, which are now the three questions under "The build program, looked at again": what the build code does (M1 or M2), where dependencies are listed (P1, P2 or P3), and whether a program needs a build file (R1 or R2).
 7. Added 2026-11-25, after the owner chose B4: is inserted code built from text, from syntax trees or both, and may a program watch the compiler's work (N)? Answered the same day: both, and yes.
 
 ---
