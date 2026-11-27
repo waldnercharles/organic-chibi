@@ -64,7 +64,7 @@ The points below are hypotheses until they are measured on chibi-v2. Testable ve
 
 ## Next step
 
-Updated 2026-11-20. Built so far:
+The current order and status are in [../roadmap.md](../roadmap.md), which every step updates. This section was last updated 2026-11-20 and keeps the history of steps 2b to 3i. Built so far:
 - the lexer and parser;
 - checker steps 1 and 2: declarations, function bodies, exact constants and the typed IR;
 - step 2b, a one-pass arm64 backend that writes into executable memory and calls through a table of function addresses;

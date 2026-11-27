@@ -739,6 +739,16 @@ u64 check_field_offset(const Checker *c, u32 field);
 
 u64 check_member_offset(const Checker *c, u32 decl, u32 member);
 
+typedef struct
+{
+    u32 *at;
+    u32 count;
+    u32 cap;
+    u32 scanned;
+} LineStarts;
+
+u32 check_line(const Checker *c, LineStarts *l, u32 file, u32 token);
+
 enum
 {
     REGS_COUNT = 7,

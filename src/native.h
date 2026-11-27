@@ -2,6 +2,7 @@
 #define CHIBI_NATIVE_H
 
 #include "check.h"
+#include "gdb_jit.h"
 
 typedef struct
 {
@@ -16,6 +17,9 @@ typedef struct
     size_t code_size;
     u8 *globals;
     size_t globals_size;
+    u8 *symfile;
+    size_t symfile_size;
+    JitCodeEntry *debugger;
     const char *error;
 } Native;
 
@@ -25,6 +29,7 @@ void *native_entry(const Native *n, u32 decl);
 void *native_export(const Native *n, u32 i);
 void native_replace(Native *n, u32 decl, void *entry);
 void native_set_context(Native *n, void *context);
+void native_describe(Native *n, u8 *symfile, size_t size);
 void native_free(Native *n);
 
 #endif

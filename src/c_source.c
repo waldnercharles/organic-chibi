@@ -22,14 +22,6 @@ typedef struct
 
 typedef struct
 {
-    u32 *at;
-    u32 count;
-    u32 cap;
-    u32 scanned;
-} LineStarts;
-
-typedef struct
-{
     FILE *out;
     const Checker *c;
     const char *prefix;
@@ -992,38 +984,7 @@ put_c_global(Source *s, u32 decl)
 static u32
 line_at(Source *s, u32 file, u32 token)
 {
-    const char *src = s->c->files[file].src;
-    LineStarts *l = &s->line_starts[file];
-    u32 pos = s->c->files[file].tokens.starts[token];
-    if (pos >= l->scanned) {
-        u32 n = 0;
-        for (u32 p = l->scanned; p < pos; p++) {
-            n += src[p] == '\n';
-        }
-        if (l->count + n > l->cap) {
-            l->cap = (l->count + n) * 2;
-            l->at = realloc(l->at, l->cap * sizeof *l->at);
-        }
-        const char *q = src + l->scanned;
-        for (u32 k = 0; k < n; k++) {
-            q = (const char *)memchr(q, '\n', (size_t)(src + pos - q)) + 1;
-            l->at[l->count++] = (u32)(q - src);
-        }
-        l->scanned = pos;
-        return l->count + 1;
-    }
-
-    u32 lo = 0;
-    u32 hi = l->count;
-    while (lo < hi) {
-        u32 mid = lo + (hi - lo) / 2;
-        if (l->at[mid] <= pos) {
-            lo = mid + 1;
-        } else {
-            hi = mid;
-        }
-    }
-    return lo + 1;
+    return check_line(s->c, &s->line_starts[file], file, token);
 }
 
 static void

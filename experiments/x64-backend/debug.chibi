@@ -1,0 +1,30 @@
+fn fib(n: int) -> int {
+    if n < 2 {
+        return n
+    }
+    a := fib(n - 1)
+    b := fib(n - 2)
+    return a + b
+}
+
+fn sum(limit: int) -> int {
+    total := 0
+    for i in 0..limit {
+        total += fib(i)
+    }
+    return total
+}
+
+fn run() -> int {
+    return sum(10)
+}
+
+fn cube(x: int) -> int {
+    y := x * x
+    return y * x
+}
+
+fn boom() -> int {
+    big := 3000000
+    return cube(big) + 1
+}

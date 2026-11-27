@@ -10,6 +10,8 @@ A function tried alone keeps the top-level declarations that come before the pro
 
 `make check ARGS=-v` also names each refused program and the reason.
 
+`make debug` (step 3x.3.1) builds `debug.c`, which compiles `debug.chibi` with `JIT_DEBUGGER | JIT_PERF_MAP` and calls the function named on its command line, then runs gdb on it twice and checks the output: a breakpoint on a chibi line, a backtrace through three JIT frames into C, `next` over a call, `finish`, the perf map, and a trap's backtrace. `debug.c FILE FUNCTION SYMFILE` also writes the object that gdb reads, for `llvm-dwarfdump` and `readelf`.
+
 `make encode` writes 28,933 instructions with the encoder, covering every register pair, the immediates and displacements at each size boundary, the memory forms that need a SIB byte or a zero displacement, and the indexed load of a jump table, then has `llvm-mc` assemble the same text and compares the bytes. The encoder picks the encodings `llvm-mc` picks.
 
 ## What the backend does (step 3x.2, 2026-11-26)

@@ -121,6 +121,9 @@ main(int argc, char **argv)
     open_counters();
 #endif
 
+    const char *flags = getenv("CHIBI_BENCH_JIT_FLAGS");
+    u32 jit_flags = flags ? (u32)strtoul(flags, NULL, 10) : 0;
+
     const char *lockstep = getenv("CHIBI_BENCH_LOCKSTEP");
     int turn_in = -1;
     int turn_out = -1;
@@ -197,7 +200,7 @@ main(int argc, char **argv)
         }
 
         Native native;
-        if (!jit_compile(&native, &c, CONVENTION_HOST)) {
+        if (!jit_compile(&native, &c, CONVENTION_HOST, jit_flags)) {
             fprintf(stderr, "arm64-backend: %s\n", native.error);
             return 1;
         }

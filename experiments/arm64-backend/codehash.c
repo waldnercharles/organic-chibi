@@ -28,7 +28,7 @@ emit_hash(const char *label, u32 index, const Checker *c)
     for (int convention = 0; convention < 2; convention++) {
         Native n;
         Convention cv = convention ? CONVENTION_APPLE : CONVENTION_AAPCS64;
-        if (!jit_compile(&n, c, cv)) {
+        if (!jit_compile(&n, c, cv, 0)) {
             fprintf(out, "%s %u %d refused %s\n", label, index, convention, n.error);
             native_free(&n);
             continue;

@@ -27,6 +27,11 @@ enum
     FUNCTION_ALIGN = 4,
     ADAPTER_STACK_LIMIT = 4064,
     ALIAS_ARGUMENTS = 1,
+    ELF_MACHINE = 183,
+    DWARF_RETURN = 30,
+    DWARF_SP = 31,
+    DWARF_D0 = 64,
+    ENTRY_CFA = 0,
 };
 
 typedef u32 Code;

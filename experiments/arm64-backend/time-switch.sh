@@ -30,6 +30,12 @@ if [ -f src/jit.c ]; then
     LIBSRC=$(echo "$LIBSRC" | sed 's|src/arm64.c|src/jit.c|')
     BOOT=$(echo "$BOOT" | sed 's|src/arm64.c|src/jit.c|')
 fi
+C_ONLY=""
+if [ -f src/symfile.c ]; then
+    LIBSRC="src/symfile.c src/gdb_jit.c $LIBSRC"
+    BOOT=$(echo "$BOOT" | sed 's|src/jit.c|src/symfile.c src/jit.c|')
+    C_ONLY="src/gdb_jit.c"
+fi
 
 echo "== tools"
 clang --version | head -1
@@ -53,7 +59,7 @@ echo "== benches"
 sed "s/^#define RUNS 11$/#define RUNS $N/" "$D/bench.c" > experiments/arm64-backend/bench-switch.c
 clang $FLAGS -Wall -Wextra -Werror -o "$W/bench-c" experiments/arm64-backend/bench-switch.c $LIBSRC vendor/xxhash/xxhash.c
 clang $FLAGS -fno-lto -w -Dchibi_trap=chibi_trap_translated -Dchibi_context=chibi_context_translated -c -o "$W/lib-f.o" "$W/lib-f.c"
-clang $FLAGS -Wall -Wextra -Werror -o "$W/bench-t" experiments/arm64-backend/bench-switch.c "$W/lib-f.o" vendor/xxhash/xxhash.c
+clang $FLAGS -Wall -Wextra -Werror -o "$W/bench-t" experiments/arm64-backend/bench-switch.c "$W/lib-f.o" vendor/xxhash/xxhash.c $C_ONLY
 
 echo "== corpus"
 rm -rf "$W/corpus"

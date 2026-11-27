@@ -347,7 +347,7 @@ run_text(const char *text, const char *label, bool verbose)
         skipped++;
         return false;
     }
-    if (!jit_compile(&p.n, &p.c, CONVENTION_HOST)) {
+    if (!jit_compile(&p.n, &p.c, CONVENTION_HOST, 0)) {
         if (verbose) {
             printf("no   %s: %s\n", label, p.n.error);
         }
@@ -385,7 +385,7 @@ run_functions(const char *text, const char *label)
         snprintf(name, sizeof name, "%s.%u", label, k++);
         Program p;
         if (check_text(&p, one)) {
-            if (jit_compile(&p.n, &p.c, CONVENTION_HOST)) {
+            if (jit_compile(&p.n, &p.c, CONVENTION_HOST, 0)) {
                 agree_on_grid(&p, name, false);
             } else {
                 refused++;

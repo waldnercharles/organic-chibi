@@ -1,4 +1,5 @@
 #include "check.h"
+#include "simd.h"
 
 #include <assert.h>
 #include <stdlib.h>
@@ -13559,6 +13560,48 @@ code_free(IrCode *code)
     free(code->slots);
     free(code->consts);
     free(code->lines);
+}
+
+static void
+scan_lines(LineStarts *l, const char *src, u32 to)
+{
+    for (u32 p = l->scanned; p < to; p += 64) {
+        if (l->count + 64 > l->cap) {
+            l->cap = l->cap ? l->cap * 2 : 1024;
+            l->at = realloc(l->at, l->cap * sizeof *l->at);
+        }
+        u64 m = simd_mask64(simd_eq(simd_load64(src + p), '\n'));
+        if (to - p < 64) {
+            m &= ((u64)1 << (to - p)) - 1;
+        }
+        for (; m; m &= m - 1) {
+            l->at[l->count] = p + (u32)__builtin_ctzll(m) + 1;
+            l->count += 1;
+        }
+    }
+    l->scanned = to;
+}
+
+u32
+check_line(const Checker *c, LineStarts *l, u32 file, u32 token)
+{
+    u32 pos = c->files[file].tokens.starts[token];
+    if (pos >= l->scanned) {
+        scan_lines(l, c->files[file].src, pos);
+        return l->count + 1;
+    }
+
+    u32 lo = 0;
+    u32 hi = l->count;
+    while (lo < hi) {
+        u32 mid = lo + (hi - lo) / 2;
+        if (l->at[mid] <= pos) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo + 1;
 }
 
 void

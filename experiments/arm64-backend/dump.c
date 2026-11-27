@@ -35,7 +35,7 @@ main(int argc, char **argv)
         check_dump_ir(stdout, &ch);
     }
     Native n;
-    if (!jit_compile(&n, &ch, CONVENTION_HOST)) {
+    if (!jit_compile(&n, &ch, CONVENTION_HOST, 0)) {
         printf("error %s\n", n.error);
         return 1;
     }

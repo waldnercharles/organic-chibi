@@ -14,6 +14,12 @@ typedef enum
 #endif
 } Convention;
 
-bool jit_compile(Native *n, const Checker *c, Convention convention);
+enum
+{
+    JIT_DEBUGGER = 1,
+    JIT_PERF_MAP = 2,
+};
+
+bool jit_compile(Native *n, const Checker *c, Convention convention, u32 flags);
 
 #endif

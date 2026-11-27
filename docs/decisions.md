@@ -1,6 +1,6 @@
 # Decisions
 
-These are choices the owner has made for chibi-v2. Each entry states the decision, its date, and the reason or evidence behind it. Open questions are listed in [research/README.md](research/README.md), and claims still to be measured are in [hypotheses.md](hypotheses.md).
+These are choices the owner has made for chibi-v2. Each entry states the decision, its date, and the reason or evidence behind it. Open questions are listed in [research/README.md](research/README.md), claims still to be measured are in [hypotheses.md](hypotheses.md), and the order of the work is in [roadmap.md](roadmap.md).
 
 ## Language
 

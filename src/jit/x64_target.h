@@ -38,7 +38,14 @@ enum
     CODE_PER_ADAPTER = 128,
     CODE_PER_ADAPTER_PARAM = 48,
     FUNCTION_ALIGN = 16,
+    ELF_MACHINE = 62,
+    DWARF_RETURN = 16,
+    DWARF_SP = 7,
+    DWARF_RBP = 6,
+    ENTRY_CFA = 8,
 };
+
+static const u8 DWARF_REGS[16] = { 0, 2, 1, 3, 7, 6, 4, 5, 8, 9, 10, 11, 12, 13, 14, 15 };
 
 static const u8 INT_ARG_REGS[INT_ARGS] = { RDI, RSI, RDX, RCX, R8, R9 };
 

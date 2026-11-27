@@ -121,8 +121,53 @@ native_set_context(Native *n, void *context)
 }
 
 void
+native_describe(Native *n, u8 *symfile, size_t size)
+{
+    JitCodeEntry *entry = malloc(sizeof *entry);
+    JitCodeEntry *first = __jit_debug_descriptor.first_entry;
+    *entry = (JitCodeEntry){ .next_entry = first,
+                             .prev_entry = NULL,
+                             .symfile_addr = symfile,
+                             .symfile_size = size };
+    if (first) {
+        first->prev_entry = entry;
+    }
+    __jit_debug_descriptor.first_entry = entry;
+    __jit_debug_descriptor.relevant_entry = entry;
+    __jit_debug_descriptor.action_flag = JIT_REGISTER_FN;
+    __jit_debug_register_code();
+
+    n->symfile = symfile;
+    n->symfile_size = size;
+    n->debugger = entry;
+}
+
+static void
+forget_symfile(JitCodeEntry *entry)
+{
+    JitCodeEntry *prev = entry->prev_entry;
+    JitCodeEntry *next = entry->next_entry;
+    if (prev) {
+        prev->next_entry = next;
+    } else {
+        __jit_debug_descriptor.first_entry = next;
+    }
+    if (next) {
+        next->prev_entry = prev;
+    }
+    __jit_debug_descriptor.relevant_entry = entry;
+    __jit_debug_descriptor.action_flag = JIT_UNREGISTER_FN;
+    __jit_debug_register_code();
+    free(entry);
+}
+
+void
 native_free(Native *n)
 {
+    if (n->debugger) {
+        forget_symfile(n->debugger);
+    }
+    free(n->symfile);
     if (n->memory) {
         munmap(n->memory, n->size);
     }

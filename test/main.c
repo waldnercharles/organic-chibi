@@ -30,6 +30,7 @@ TEST_SUITE(parser_tests);
 TEST_SUITE(check_tests);
 TEST_SUITE(exact_tests);
 TEST_SUITE(arm64_tests);
+TEST_SUITE(symfile_tests);
 TEST_SUITE(c_source_tests);
 TEST_SUITE(driver_tests);
 
@@ -45,6 +46,7 @@ main(void)
     RUN_TEST_SUITE(check_tests);
     RUN_TEST_SUITE(exact_tests);
     RUN_TEST_SUITE(arm64_tests);
+    RUN_TEST_SUITE(symfile_tests);
     RUN_TEST_SUITE(c_source_tests);
     RUN_TEST_SUITE(driver_tests);
 

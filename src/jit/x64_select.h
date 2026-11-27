@@ -1272,6 +1272,45 @@ frames_lanes(const Emit *e, u32 v)
     return false;
 }
 
+static NOINLINE void
+describe_frame(Emit *e, u32 entry)
+{
+    const IrFunc *fn = e->fn;
+    u32 nsaves = (u32)__builtin_popcount(e->saved_int);
+    u32 pushes = nsaves + e->context_saved;
+    bool record = fn->calls || e->locals + e->spill_max || pushes || e->wide_record;
+    if (!record) {
+        return;
+    }
+    u32 pushed = 4 + e->context_saved;
+    for (u32 r = 0; r < 16; r++) {
+        pushed += (e->saved_int >> r & 1) * (1 + (r >= 8));
+    }
+
+    e->frame_at = entry;
+    frame_advance(e, entry + 1);
+    frame_cfa_offset(e, 16);
+    frame_saved(e, DWARF_RBP, 16);
+    frame_advance(e, entry + 4);
+    frame_cfa_register(e, DWARF_RBP);
+    frame_advance(e, entry + pushed);
+    u32 below = 16 + 8 * e->context_saved;
+    for (u32 r = 0; r < 16; r++) {
+        if (e->saved_int >> r & 1) {
+            below += 8;
+            frame_saved(e, DWARF_REGS[r], below);
+        }
+    }
+    frame_advance(e, e->popped);
+    frame_remember(e);
+    frame_cfa(e, DWARF_SP, 8);
+    frame_restore(e, DWARF_RBP);
+    if (e->stubs < here(&e->as)) {
+        frame_advance(e, e->stubs);
+        frame_recall(e);
+    }
+}
+
 static u32
 finish_function(Emit *e, Code *code)
 {
@@ -1294,7 +1333,9 @@ finish_function(Emit *e, Code *code)
     if (record) {
         put(&e->as, OP_LEAVE);
     }
+    e->popped = here(&e->as);
     put(&e->as, OP_RET);
+    e->stubs = here(&e->as);
 
     static_assert(NTRAPS <= 32, "every trap kind needs a bit in `kinds`");
     u32 kinds = 0;

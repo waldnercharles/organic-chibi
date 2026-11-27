@@ -26,7 +26,8 @@ TEST_SRC  := test/*.c test/random/*.c $(SRC)
 BENCH_SRC := bench/*.c test/random/*.c $(SRC)
 
 TRANSLATED     := src/arena.c src/str.c src/names.c src/exact.c src/parser.c src/lexer.c \
-                  src/check.c src/native.c src/jit.c src/driver.c src/c_source.c
+                  src/check.c src/native.c src/symfile.c src/jit.c src/driver.c src/c_source.c
+C_ONLY         := src/gdb_jit.c
 TRANSLATED_SRC := test/*.c test/random/*.c $(filter-out $(TRANSLATED), $(SRC))
 BOOTSTRAP      := $(TRANSLATED) src/main.c
 
@@ -74,7 +75,7 @@ translated:
 	$(CC) $(SAFE) -w -c -o build/translated/host/chibi.o build/translated/host/chibi.c && wait $$lib
 	@$(CC) $(SAFE) -DCHIBI_TEST_CC='"$(CC)"' -o build/test-translated $(TRANSLATED_SRC) build/translated/host/lib.o
 	@build/test-translated
-	@$(CC) $(SAFE) -o build/chibi-bootstrap build/translated/host/chibi.o $(filter vendor/%, $(SRC))
+	@$(CC) $(SAFE) -o build/chibi-bootstrap build/translated/host/chibi.o $(filter vendor/%, $(SRC)) $(C_ONLY)
 	@build/chibi-bootstrap c -o build/translated/host/chibi.2.c build/translated/entry.chibi build/translated/host/*.chibi
 	@cmp build/translated/host/chibi.c build/translated/host/chibi.2.c
 	@echo "bootstrap: passed ($(ARCH))"
@@ -97,7 +98,7 @@ ifneq ($(QEMU),)
 	$(CC) $(ARM64) -w -c -o build/translated/arm64/chibi.o build/translated/arm64/chibi.c && wait $$lib
 	@$(CC) $(ARM64) -o build/test-translated-arm64 $(TRANSLATED_SRC) build/translated/arm64/lib.o
 	@QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU) build/test-translated-arm64
-	@$(CC) $(ARM64) -o build/chibi-bootstrap-arm64 build/translated/arm64/chibi.o $(filter vendor/%, $(SRC))
+	@$(CC) $(ARM64) -o build/chibi-bootstrap-arm64 build/translated/arm64/chibi.o $(filter vendor/%, $(SRC)) $(C_ONLY)
 	@QEMU_LD_PREFIX=/usr/aarch64-linux-gnu $(QEMU) build/chibi-bootstrap-arm64 c -o build/translated/arm64/chibi.2.c \
 		build/translated/entry.chibi build/translated/arm64/*.chibi
 	@cmp build/translated/arm64/chibi.c build/translated/arm64/chibi.2.c

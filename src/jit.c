@@ -1,6 +1,7 @@
 #define _DEFAULT_SOURCE
 
 #include "jit.h"
+#include "symfile.h"
 
 #include <assert.h>
 #include <dlfcn.h>
@@ -156,6 +157,12 @@ typedef struct
     u32 nhomes64;
     u32 homes64_cap;
     u32 transfer64;
+    Symfile *symfile;
+    u32 base;
+    u32 popped;
+    u32 stubs;
+    u32 frame_at;
+    u32 line;
 } Emit;
 
 static void *
@@ -176,6 +183,164 @@ static u32
 here(const Assembler *as)
 {
     return (u32)(as->at - as->code);
+}
+
+static NOINLINE void
+open_symbol(Emit *e, u32 decl, u32 flags)
+{
+    Symfile *s = e->symfile;
+    s->symbols = grow(s->symbols, &s->symbols_cap, s->nsymbols + 1, sizeof *s->symbols);
+    s->frames = grow(s->frames, &s->frames_cap, s->nframes + FRAME_BYTES_PER_SYMBOL, 1);
+    s->symbols[s->nsymbols] = (Symbol){ .decl = decl,
+                                        .flags = flags,
+                                        .first_row = s->nrows,
+                                        .first_frame = s->nframes };
+}
+
+static NOINLINE void
+close_symbol(Emit *e, u32 low, u32 stubs, u32 high)
+{
+    Symfile *s = e->symfile;
+    Symbol *sym = &s->symbols[s->nsymbols];
+    s->nsymbols += 1;
+    sym->low = (e->base + low) * (u32)sizeof(Code);
+    sym->stubs = (e->base + stubs) * (u32)sizeof(Code);
+    sym->high = (e->base + high) * (u32)sizeof(Code);
+    sym->nrows = s->nrows - sym->first_row;
+    sym->nframe = s->nframes - sym->first_frame;
+}
+
+static void
+mark_row(Emit *e, u32 token)
+{
+    Symfile *s = e->symfile;
+    u32 offset = (e->base + here(&e->as)) * (u32)sizeof(Code);
+    u32 first = s->symbols[s->nsymbols].first_row;
+    if (s->nrows > first && s->rows[s->nrows - 1].offset == offset) {
+        s->rows[s->nrows - 1].token = token;
+        return;
+    }
+    s->rows = grow(s->rows, &s->rows_cap, s->nrows + 1, sizeof *s->rows);
+    s->rows[s->nrows] = (SymbolRow){ offset, token };
+    s->nrows += 1;
+}
+
+static NOINLINE u32
+next_line(Emit *e, u32 i)
+{
+    const IrFunc *fn = e->fn;
+    const IrLine *lines = e->ir->lines + fn->first_line;
+    u32 j = e->line;
+    while (j < fn->nlines && lines[j].end <= i) {
+        j++;
+    }
+    e->line = j;
+    if (j == fn->nlines) {
+        return fn->count;
+    }
+    mark_row(e, lines[j].token);
+    return lines[j].end < fn->count ? lines[j].end : fn->count;
+}
+
+static void
+frame_byte(Emit *e, u32 b)
+{
+    Symfile *s = e->symfile;
+    assert(s->nframes < s->frames_cap);
+    s->frames[s->nframes] = (u8)b;
+    s->nframes += 1;
+}
+
+static void
+frame_uleb(Emit *e, u32 v)
+{
+    while (v >= 0x80) {
+        frame_byte(e, (v & 0x7F) | 0x80);
+        v >>= 7;
+    }
+    frame_byte(e, v);
+}
+
+static void
+frame_advance(Emit *e, u32 to)
+{
+    u32 delta = to - e->frame_at;
+    e->frame_at = to;
+    if (delta == 0) {
+        return;
+    }
+    if (delta < 0x40) {
+        frame_byte(e, DW_CFA_advance_loc | delta);
+    } else if (delta <= 0xFF) {
+        frame_byte(e, DW_CFA_advance_loc1);
+        frame_byte(e, delta);
+    } else if (delta <= 0xFFFF) {
+        frame_byte(e, DW_CFA_advance_loc2);
+        frame_byte(e, delta & 0xFF);
+        frame_byte(e, delta >> 8);
+    } else {
+        frame_byte(e, DW_CFA_advance_loc4);
+        for (u32 k = 0; k < 4; k++) {
+            frame_byte(e, delta >> 8 * k & 0xFF);
+        }
+    }
+}
+
+static void
+frame_cfa(Emit *e, u32 reg, u32 offset)
+{
+    frame_byte(e, DW_CFA_def_cfa);
+    frame_uleb(e, reg);
+    frame_uleb(e, offset);
+}
+
+static void
+frame_cfa_offset(Emit *e, u32 offset)
+{
+    frame_byte(e, DW_CFA_def_cfa_offset);
+    frame_uleb(e, offset);
+}
+
+static void
+frame_cfa_register(Emit *e, u32 reg)
+{
+    frame_byte(e, DW_CFA_def_cfa_register);
+    frame_uleb(e, reg);
+}
+
+static void
+frame_saved(Emit *e, u32 reg, u32 below_cfa)
+{
+    if (reg < 64) {
+        frame_byte(e, DW_CFA_offset | reg);
+    } else {
+        frame_byte(e, DW_CFA_offset_extended);
+        frame_uleb(e, reg);
+    }
+    frame_uleb(e, below_cfa / 8);
+}
+
+static void
+frame_restore(Emit *e, u32 reg)
+{
+    if (reg < 64) {
+        frame_byte(e, DW_CFA_restore | reg);
+        return;
+    }
+    frame_byte(e, DW_CFA_restore_extended);
+    frame_uleb(e, reg);
+}
+
+static void
+frame_remember(Emit *e)
+{
+    frame_byte(e, DW_CFA_remember_state);
+}
+
+static void
+frame_recall(Emit *e)
+{
+    frame_byte(e, DW_CFA_restore_state);
 }
 
 static bool
@@ -964,15 +1129,22 @@ emit_function(Emit *e, const IrFunc *fn, Code *code, const Native *n)
         e->alias_at = realloc(e->alias_at, e->values_cap * sizeof *e->alias_at);
     }
     memset(e->regs, NO_REG, fn->count);
+    if (UNLIKELY(e->symfile != NULL)) {
+        open_symbol(e, fn->decl, 0);
+    }
     pin_locals(e);
     lay_out_frame(e);
     begin_function(e, code);
 
     u32 i = 0;
-    u32 count = fn->count;
     u32 first = fn->first;
-    while (i < count && !e->as.error) {
-        for (; i < count && !e->as.error; i++) {
+    u32 stop = fn->count;
+    if (UNLIKELY(e->symfile != NULL)) {
+        e->line = 0;
+        stop = next_line(e, 0);
+    }
+    while (i < fn->count && !e->as.error) {
+        for (; i < stop && !e->as.error; i++) {
             u32 at = first + i;
             u8 kind = ir->kinds[at];
             u32 type = ir->types[at];
@@ -1084,7 +1256,7 @@ emit_function(Emit *e, const IrFunc *fn, Code *code, const Native *n)
                 case IR_ASSUME: release(e, a); break;
                 case IR_RET:
                     return_value(e, type, a, b);
-                    if (i + 1 < count) {
+                    if (i + 1 < fn->count) {
                         jump_later(&e->as, &e->epilogue);
                     }
                     break;
@@ -1186,7 +1358,7 @@ emit_function(Emit *e, const IrFunc *fn, Code *code, const Native *n)
                     if (type != TYPE_ID_NONE) {
                         hand_over(e, o, type, b);
                     }
-                    bool falls = i + 1 < count && ir->kinds[first + i + 1] == IR_END &&
+                    bool falls = i + 1 < fn->count && ir->kinds[first + i + 1] == IR_END &&
                                  o == &e->open[e->nopen - 1];
                     if (!falls) {
                         jump_later(&e->as, &o->ends);
@@ -1203,15 +1375,20 @@ emit_function(Emit *e, const IrFunc *fn, Code *code, const Native *n)
                 default: assert(false && "unknown IR instruction");
             }
         }
-        if (i < count && !e->as.error) {
-            u32 at = first + i;
-            if (!is_vector(e->info[ir->types[at]])) {
-                e->as.error = UNSUPPORTED_TYPE;
-                break;
-            }
-            lanes(e, i, ir->kinds[at], ir->types[at], ir->as[at], ir->bs[at], n);
-            i++;
+        if (i >= fn->count || e->as.error) {
+            break;
         }
+        if (i >= stop) {
+            stop = next_line(e, i);
+            continue;
+        }
+        u32 at = first + i;
+        if (!is_vector(e->info[ir->types[at]])) {
+            e->as.error = UNSUPPORTED_TYPE;
+            break;
+        }
+        lanes(e, i, ir->kinds[at], ir->types[at], ir->as[at], ir->bs[at], n);
+        i++;
     }
 
     if (fn->count == 0 || ir->kinds[fn->first + fn->count - 1] != IR_RET) {
@@ -1221,7 +1398,7 @@ emit_function(Emit *e, const IrFunc *fn, Code *code, const Native *n)
 }
 
 bool
-jit_compile(Native *n, const Checker *c, Convention convention)
+jit_compile(Native *n, const Checker *c, Convention convention, u32 flags)
 {
     const Ir *ir = &c->ir;
     size_t units = 0;
@@ -1284,6 +1461,8 @@ jit_compile(Native *n, const Checker *c, Convention convention)
                .homes_cap = 16,
                .homes64 = malloc(16 * sizeof *e.homes64),
                .homes64_cap = 16 };
+    Symfile symfile = { 0 };
+    e.symfile = flags ? &symfile : NULL;
     u64 *adapters = malloc(ir->ncallbacks * sizeof *adapters);
     for (u32 k = 0; k < ir->ncallbacks && !e.as.error; k++) {
         u32 decl = ir->callbacks[k];
@@ -1292,7 +1471,14 @@ jit_compile(Native *n, const Checker *c, Convention convention)
         }
         used = (used + FUNCTION_ALIGN - 1) & ~(size_t)(FUNCTION_ALIGN - 1);
         e.as.code = e.as.at = start + used;
+        e.base = (u32)used;
+        if (e.symfile) {
+            open_symbol(&e, decl, SYMBOL_ADAPTER);
+        }
         emit_adapter(&e, decl, n);
+        if (e.symfile) {
+            close_symbol(&e, 0, here(&e.as), here(&e.as));
+        }
         adapters[k] = (u64)(uintptr_t)e.as.code;
         used += here(&e.as);
         assert(used <= units);
@@ -1302,12 +1488,33 @@ jit_compile(Native *n, const Checker *c, Convention convention)
         const IrFunc *fn = &ir->funcs[f];
         used = (used + FUNCTION_ALIGN - 1) & ~(size_t)(FUNCTION_ALIGN - 1);
         Code *at = start + used;
+        e.base = (u32)used;
         u32 entry = emit_function(&e, fn, at, n);
+        if (e.symfile) {
+            describe_frame(&e, entry);
+            close_symbol(&e, entry, e.stubs, here(&e.as));
+        }
         n->entries[fn->decl] = (u64)(uintptr_t)(at + entry);
         used += here(&e.as);
         assert(used <= units);
     }
     native_end(n, used * sizeof(Code));
+    if (e.symfile && !e.as.error) {
+        SymfileTarget target = { .machine = ELF_MACHINE,
+                                 .code_align = (u8)sizeof(Code),
+                                 .return_column = DWARF_RETURN,
+                                 .stack_column = DWARF_SP,
+                                 .entry_cfa = ENTRY_CFA };
+        if (flags & JIT_DEBUGGER) {
+            size_t size = 0;
+            u8 *bytes = symfile_write(&symfile, c, &target, n->code, n->code_size, &size);
+            native_describe(n, bytes, size);
+        }
+        if (flags & JIT_PERF_MAP) {
+            symfile_write_perf_map(&symfile, c, n->code);
+        }
+    }
+    symfile_free(&symfile);
 
     free(info);
     free(e.regs);
