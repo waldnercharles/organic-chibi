@@ -9,15 +9,10 @@ check:
 	@$(CC) $(FLAGS) -o $(BUILD)/x64-check check.c $(SRC) $(TEST) -lm
 	@$(BUILD)/x64-check $(ARGS)
 
-debug:
-	@mkdir -p $(BUILD)
-	@$(CC) $(FLAGS) -o $(BUILD)/x64-debug debug.c $(SRC)
-	@python3 debug.py $(BUILD)/x64-debug
-
 encode:
 	@mkdir -p $(BUILD)
 	@$(CC) $(FLAGS) -o $(BUILD)/x64-encode encode.c
 	@$(BUILD)/x64-encode > $(BUILD)/x64-encode.txt
 	@python3 encode.py $(BUILD)/x64-encode.txt
 
-.PHONY: check debug encode
+.PHONY: check encode
