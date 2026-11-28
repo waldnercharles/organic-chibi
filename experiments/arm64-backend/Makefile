@@ -2,11 +2,12 @@ CC     ?= cc
 BUILD  := ../../build
 SRC    := ../../src/native.c ../../src/symfile.c ../../src/gdb_jit.c ../../src/jit.c ../../src/check.c ../../src/exact.c ../../src/lexer.c ../../src/parser.c ../../src/arena.c ../../src/names.c ../../src/str.c ../../vendor/xxhash/xxhash.c
 CORPUS := /tmp/check-bodies-corpus
+HOST   := $(if $(filter x86_64 amd64,$(shell uname -m)),-march=x86-64-v2,)
 
 run:
 	@mkdir -p $(BUILD) $(CORPUS)
 	@python3 ../check-bodies/gen.py 200 100 $(CORPUS)
-	@$(CC) -std=c23 -Wall -Wextra -Werror -O3 -flto -DNDEBUG -falign-functions=64 -o $(BUILD)/arm64-backend bench.c $(SRC)
+	@$(CC) -std=c23 -Wall -Wextra -Werror -O3 -flto -DNDEBUG -falign-functions=64 $(HOST) -o $(BUILD)/arm64-backend bench.c $(SRC)
 	@$(BUILD)/arm64-backend $(CORPUS)/*.chibi
 
 output:
