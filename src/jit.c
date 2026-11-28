@@ -66,6 +66,13 @@ typedef struct
 
 typedef struct
 {
+    u32 fixups;
+    u32 token;
+    u8 kind;
+} TrapSite;
+
+typedef struct
+{
     u32 target;
     u32 start;
     u32 skip;
@@ -142,6 +149,9 @@ typedef struct
     Range *ranges;
     u32 ranges_cap;
     u32 traps[NTRAPS];
+    TrapSite *sites;
+    u32 nsites;
+    u32 sites_cap;
     u32 divisions;
     u32 products;
     u32 fused;
@@ -161,6 +171,7 @@ typedef struct
     u32 base;
     u32 popped;
     u32 stubs;
+    bool debugger;
     u32 line;
     u32 row_offset;
 } Emit;
@@ -193,6 +204,7 @@ open_symbol(Emit *e, u32 decl, u32 flags, u32 rows)
     s->frames = grow(s->frames, &s->frames_cap, s->nframes + FRAME_BYTES_PER_SYMBOL, 1);
     s->rows = grow(s->rows, &s->rows_cap, s->nrows + rows, sizeof *s->rows);
     e->row_offset = UINT32_MAX;
+    e->nsites = 0;
     s->symbols[s->nsymbols] = (Symbol){ .decl = decl,
                                         .flags = flags,
                                         .first_row = s->nrows,
@@ -200,13 +212,12 @@ open_symbol(Emit *e, u32 decl, u32 flags, u32 rows)
 }
 
 static NOINLINE void
-close_symbol(Emit *e, u32 low, u32 stubs, u32 high)
+close_symbol(Emit *e, u32 low, u32 high)
 {
     Symfile *s = e->symfile;
     Symbol *sym = &s->symbols[s->nsymbols];
     s->nsymbols += 1;
     sym->low = (e->base + low) * (u32)sizeof(Code);
-    sym->stubs = (e->base + stubs) * (u32)sizeof(Code);
     sym->high = (e->base + high) * (u32)sizeof(Code);
     sym->nrows = s->nrows - sym->first_row;
     sym->nframe = s->nframes - sym->first_frame;
@@ -224,6 +235,48 @@ mark_row(Emit *e, u32 token)
     e->row_offset = offset;
 }
 
+static NOINLINE void
+add_trap_sites(Emit *e, u32 kinds)
+{
+    Symfile *s = e->symfile;
+    u32 first = s->symbols[s->nsymbols].first_row;
+    u32 token = s->nrows > first ? s->rows[s->nrows - 1].token : NO_LINE;
+
+    e->sites = grow(e->sites, &e->sites_cap, e->nsites + NTRAPS, sizeof *e->sites);
+    TrapSite *at = e->sites + e->nsites;
+    for (; kinds; kinds &= kinds - 1) {
+        u32 k = (u32)__builtin_ctz(kinds);
+        *at = (TrapSite){ e->traps[k], token, (u8)k };
+        at += 1;
+        e->traps[k] = 0;
+    }
+    e->nsites = (u32)(at - e->sites);
+}
+
+static ALWAYS_INLINE void
+close_traps(Emit *e)
+{
+    u32 kinds = 0;
+    for (u32 k = 1; k < NTRAPS; k++) {
+        kinds |= (u32)(e->traps[k] != 0) << k;
+    }
+    if (kinds) {
+        add_trap_sites(e, kinds);
+    }
+}
+
+static NOINLINE void
+open_stubs(Emit *e)
+{
+    if (e->debugger) {
+        close_traps(e);
+    }
+
+    Symfile *s = e->symfile;
+    s->rows = grow(s->rows, &s->rows_cap, s->nrows + 1 + e->nsites, sizeof *s->rows);
+    mark_row(e, NO_LINE);
+}
+
 static NOINLINE u32
 next_line(Emit *e, u32 i)
 {
@@ -236,6 +289,9 @@ next_line(Emit *e, u32 i)
     e->line = j;
     if (j == fn->nlines) {
         return fn->count;
+    }
+    if (e->debugger) {
+        close_traps(e);
     }
     mark_row(e, lines[j].token);
     return lines[j].end < fn->count ? lines[j].end : fn->count;
@@ -1481,6 +1537,7 @@ jit_compile(Native *n, const Checker *c, Convention convention, u32 flags)
                .homes64_cap = 16 };
     Symfile symfile = { 0 };
     e.symfile = flags ? &symfile : NULL;
+    e.debugger = flags & JIT_DEBUGGER;
     u64 *adapters = malloc(ir->ncallbacks * sizeof *adapters);
     for (u32 k = 0; k < ir->ncallbacks && !e.as.error; k++) {
         u32 decl = ir->callbacks[k];
@@ -1495,7 +1552,7 @@ jit_compile(Native *n, const Checker *c, Convention convention, u32 flags)
         }
         emit_adapter(&e, decl, n);
         if (e.symfile) {
-            close_symbol(&e, 0, here(&e.as), here(&e.as));
+            close_symbol(&e, 0, here(&e.as));
         }
         adapters[k] = (u64)(uintptr_t)e.as.code;
         used += here(&e.as);
@@ -1510,7 +1567,7 @@ jit_compile(Native *n, const Checker *c, Convention convention, u32 flags)
         u32 entry = emit_function(&e, fn, at, n);
         if (e.symfile) {
             describe_frame(&e, entry);
-            close_symbol(&e, entry, e.stubs, here(&e.as));
+            close_symbol(&e, entry, here(&e.as));
         }
         n->entries[fn->decl] = (u64)(uintptr_t)(at + entry);
         used += here(&e.as);
@@ -1536,6 +1593,7 @@ jit_compile(Native *n, const Checker *c, Convention convention, u32 flags)
 
     free(info);
     free(e.regs);
+    free(e.sites);
     free(e.vinfo);
     free(e.spills);
     free(e.spill_free);

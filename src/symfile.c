@@ -234,16 +234,13 @@ write_lines(Bytes *b, const Symfile *s, const Checker *c, const SymfileTarget *t
             any = true;
         }
         for (u32 r = 0; r < sym->nrows; r++) {
-            u32 l = check_line(c, &starts[file], file, rows[r].token);
+            u32 row_token = rows[r].token;
+            u32 l = row_token == NO_LINE ? 0 : check_line(c, &starts[file], file, row_token);
             if (any && l == line) {
                 continue;
             }
             line_row(b, &at, &line, (rows[r].offset - sym->low) / align, l);
             any = true;
-        }
-        u32 stubs = (sym->stubs - sym->low) / align;
-        if (sym->stubs < sym->high && stubs > at) {
-            line_row(b, &at, &line, stubs, 0);
         }
         u32 end = (sym->high - sym->low) / align;
         if (end > at) {

@@ -52,7 +52,7 @@ if debugger == "gdb":
     ]
     out = gdb("boom", ["run", "bt"])
     checks += [
-        ("a trap stops in the function that trapped", rf"Program received signal {TRAPS}.*\n{ADDR} in cube \(\) at debug\.chibi:\d+", out),
+        ("a trap stops at the line of the check that failed", rf"Program received signal {TRAPS}.*\n({ADDR} in )?cube \(\) at debug\.chibi:23\n", out),
         ("the backtrace from a trap reaches main", rf"#1  {ADDR} in boom \(\) at debug\.chibi:29\n#2  {ADDR} in main ", out),
     ]
 else:
@@ -67,7 +67,7 @@ else:
     ]
     out = lldb("boom", ["run"], ["bt", "process kill"])
     checks += [
-        ("a trap stops in the function that trapped", rf"stop reason = [^\n]*{TRAPS}[^\n]*\n +frame #0: {ADDR} {frame('cube', r'\d+')}", out),
+        ("a trap stops at the line of the check that failed", rf"stop reason = [^\n]*{TRAPS}[^\n]*\n +frame #0: {ADDR} {frame('cube', 23)}\n", out),
         ("the backtrace from a trap reaches main", rf"frame #1: {ADDR} {frame('boom', 29)}\n +frame #2: {ADDR} [^`\n]+`main", out),
     ]
 

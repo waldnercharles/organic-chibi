@@ -24,6 +24,7 @@ enum
 {
     SYMBOL_ADAPTER = 1,
     FRAME_BYTES_PER_SYMBOL = 128,
+    NO_LINE = 0xFFFFFFFFu,
 };
 
 typedef struct
@@ -31,7 +32,6 @@ typedef struct
     u32 decl;
     u32 flags;
     u32 low;
-    u32 stubs;
     u32 high;
     u32 first_row;
     u32 nrows;

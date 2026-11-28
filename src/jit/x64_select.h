@@ -1312,6 +1312,16 @@ describe_frame(Emit *e, u32 entry)
     end_frame(e, f);
 }
 
+static NOINLINE void
+place_trap_sites(Emit *e)
+{
+    for (u32 k = 0; k < e->nsites; k++) {
+        patch(&e->as, e->sites[k].fixups, here(&e->as));
+        mark_row(e, e->sites[k].token);
+        trap_kind(&e->as, e->sites[k].kind);
+    }
+}
+
 static u32
 finish_function(Emit *e, Code *code)
 {
@@ -1337,6 +1347,9 @@ finish_function(Emit *e, Code *code)
     e->popped = here(&e->as);
     put(&e->as, OP_RET);
     e->stubs = here(&e->as);
+    if (UNLIKELY(e->symfile != NULL)) {
+        open_stubs(e);
+    }
 
     static_assert(NTRAPS <= 32, "every trap kind needs a bit in `kinds`");
     u32 kinds = 0;
@@ -1347,6 +1360,9 @@ finish_function(Emit *e, Code *code)
         u32 k = (u32)__builtin_ctz(kinds);
         patch(&e->as, e->traps[k], here(&e->as));
         trap_kind(&e->as, k);
+    }
+    if (UNLIKELY(e->symfile != NULL)) {
+        place_trap_sites(e);
     }
 
     if (frame >= FRAME_LIMIT) {

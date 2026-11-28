@@ -25,6 +25,6 @@ fn cube(x: int) -> int {
 }
 
 fn boom() -> int {
-    big := 3000000
+    big := 4000000000
     return cube(big) + 1
 }

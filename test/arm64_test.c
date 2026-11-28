@@ -1887,13 +1887,15 @@ TEST_CASE(differential)
             REQUIRE(false);
         }
 
+        Native described;
+        REQUIRE(jit_compile(&described, &p.c, CONVENTION_HOST, JIT_DEBUGGER));
         IrReference ref;
         ir_reference_init(&ref, &p.c);
-        for (u32 e = 0; e < PROGRAM_ENTRIES; e++) {
+        for (u32 e = 0; e < 2 * PROGRAM_ENTRIES; e++) {
             char name[8];
-            snprintf(name, sizeof name, "e%u", e);
+            snprintf(name, sizeof name, "e%u", e % PROGRAM_ENTRIES);
             u32 decl = decl_named(&p, name);
-            E4 *f = (E4 *)native_entry(&p.n, decl);
+            E4 *f = (E4 *)native_entry(e < PROGRAM_ENTRIES ? &p.n : &described, decl);
             for (int run = 0; run < 6; run++) {
                 int64_t args[3] = { random_argument(&rng),
                                     random_argument(&rng),
@@ -1908,11 +1910,12 @@ TEST_CASE(differential)
                 if (want_trap != got_trap || (!want_trap && (int64_t)want != got)) {
                     fprintf(
                         stderr,
-                        "differential: seed %llu, %s(%lld, %lld, %lld, %g): "
+                        "differential: seed %llu, %s%s(%lld, %lld, %lld, %g): "
                         "reference %lld "
                         "(trap %d), native %lld (trap %d)\n%s",
                         (unsigned long long)seed,
                         name,
+                        e < PROGRAM_ENTRIES ? "" : " with debug info",
                         (long long)args[0],
                         (long long)args[1],
                         (long long)args[2],
@@ -1924,6 +1927,7 @@ TEST_CASE(differential)
                         text
                     );
                     ir_reference_free(&ref);
+                    native_free(&described);
                     release_program(&p);
                     free(text);
                     REQUIRE(false);
@@ -1931,6 +1935,7 @@ TEST_CASE(differential)
             }
         }
         ir_reference_free(&ref);
+        native_free(&described);
         release_program(&p);
     }
     free(text);

@@ -293,8 +293,51 @@ TEST_CASE(frames_follow_the_prologue)
     return true;
 }
 
-TEST_CASE(debug_info_leaves_code_unchanged)
+static bool
+is_trap(const u8 *at, u32 machine, u32 kind)
 {
+    if (machine == 62) {
+        return at[0] == 0x0F && at[1] == 0xB9 && at[2] == 0x40 && at[3] == kind;
+    }
+    return read_le(at, 4) == (0xD4200000u | kind << 5);
+}
+
+static u32
+trap_rows(const Row *rows, u32 n, u64 lo, u64 hi, u32 line, u32 machine)
+{
+    u32 found = 0;
+    for (u32 k = 0; k < n; k++) {
+        u64 a = rows[k].addr;
+        found += a >= lo && a < hi && rows[k].line == line &&
+                 is_trap((const u8 *)(uintptr_t)a, machine, TRAP_OVERFLOW);
+    }
+    return found;
+}
+
+TEST_CASE(failed_checks_stop_at_their_lines)
+{
+    Program p;
+    REQUIRE(compile(&p, DESCRIBED, JIT_DEBUGGER));
+    const u8 *elf = p.n.symfile;
+    u32 machine = (u32)read_le(elf + 0x12, 2);
+    Section text = section_named(elf, ".text");
+    const u8 *sym = section_named(elf, ".symtab").at + 24;
+    u64 lo = text.addr + read_le(sym + 8, 8);
+    u64 hi = lo + read_le(sym + 16, 8);
+
+    Row rows[64];
+    u32 n = decode_lines(section_named(elf, ".debug_line"), rows, 64);
+    REQUIRE(n <= 64);
+    REQUIRE(trap_rows(rows, n, lo, hi, 2, machine) == 1);
+    REQUIRE(trap_rows(rows, n, lo, hi, 3, machine) == 1);
+    release(&p);
+    return true;
+}
+
+TEST_CASE(line_tables_leave_code_unchanged)
+{
+    char path[64];
+    snprintf(path, sizeof path, "/tmp/perf-%d.map", (int)getpid());
     u32 compared = 0;
     u32 failed = 0;
     for (u32 k = 0; k < NBACKEND_PROGRAMS; k++) {
@@ -304,16 +347,17 @@ TEST_CASE(debug_info_leaves_code_unchanged)
             continue;
         }
         Program again = { 0 };
-        Program described = { 0 };
+        Program mapped = { 0 };
         bool built = compile(&again, BACKEND_PROGRAMS[k], 0) &&
-                     compile(&described, BACKEND_PROGRAMS[k], JIT_DEBUGGER);
+                     compile(&mapped, BACKEND_PROGRAMS[k], JIT_PERF_MAP);
         bool stable = built && same_code(&plain.n, &again.n);
-        failed += !built || (stable && !same_code(&plain.n, &described.n));
+        failed += !built || (stable && !same_code(&plain.n, &mapped.n));
         compared += stable;
-        release(&described);
+        release(&mapped);
         release(&again);
         release(&plain);
     }
+    unlink(path);
     REQUIRE(failed == 0);
     REQUIRE(compared > 20);
     return true;
@@ -353,6 +397,7 @@ TEST_SUITE(symfile_tests)
 {
     RUN_TEST_CASE(debugger_sees_functions_and_lines);
     RUN_TEST_CASE(frames_follow_the_prologue);
-    RUN_TEST_CASE(debug_info_leaves_code_unchanged);
+    RUN_TEST_CASE(failed_checks_stop_at_their_lines);
+    RUN_TEST_CASE(line_tables_leave_code_unchanged);
     RUN_TEST_CASE(perf_map_names_functions);
 }
