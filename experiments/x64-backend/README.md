@@ -49,16 +49,23 @@ Measured on the Ryzen 9 9900X, pinned to one core, with clang 22 and gcc 16 unde
 
 The checks account for the release builds' distance from C: with the same checks, the C takes as long as `chibi build`, and without them `--release-fast` matches clang -O2 and gcc -O2. gcc's checked `sum` loop runs 14 instructions to clang's 9, from the C backend's output and from the hand-written C alike.
 
-**Compile time,** for the compiler itself: its 13 C files (23,445 lines), one after the other, against the 41,219-line chibi translation that `make translated` writes, through `experiments/arm64-backend/bench.c`. The C times include starting the compiler 13 times, about 113 ms for clang and 48 ms for gcc; chibi's count lexing, parsing, checking and arm64 code generation in memory, without reading files or linking, and spread by about 15% from run to run at this size, more than debug info costs.
+**Compile time,** for the compiler itself: its 13 C files (23,466 lines, 42,870 after preprocessing) against the 41,228-line chibi translation that `make translated` writes, one process each, from start to exit, pinned to one core. chibi reads the 21 files, lexes, parses, checks and generates arm64 code into executable memory, ready to run; the x86-64 backend can't compile the compiler yet. clang and gcc compile the 13 files in one invocation and link them with the objects of `gdb_jit.c` and xxHash into an executable. Means of 50 runs for chibi and 3 for the C compilers, each within 1.5%:
 
-| Compiler | Time |
+| Compiler | Source to runnable code |
 |---|---|
-| chibi | 10.0–11.9 ms |
-| chibi with debug info | 10.1–11.5 ms |
-| clang -fsyntax-only | 309 ms |
-| clang -O0 | 491 ms |
-| clang -O0 -g | 655 ms |
-| clang -O2 | 3,691 ms |
-| gcc -fsyntax-only | 650 ms |
-| gcc -O0 | 1,715 ms |
-| gcc -O2 | 7,377 ms |
+| chibi | 13.8 ms |
+| clang -O0 | 514 ms |
+| clang -O2 | 3,711 ms |
+| gcc -O0 | 1,730 ms |
+| gcc -O2 | 7,535 ms |
+
+Of chibi's 13.8 ms, starting the process takes 0.6 ms, and lexing, parsing, checking and code generation take 10.0–11.9 ms in `experiments/arm64-backend/bench.c`, which repeats them in memory with the files already read; debug info adds less than their 15% spread from run to run at this size (10.1–11.5 ms). The rest is reading 2.1 MB and touching fresh memory. Of clang's 514 ms, linking takes 15 ms. In separate invocations per file, one after the other, without linking, clang -O0 takes 491 ms, -O0 -g 655 ms, -O2 3,691 ms and -fsyntax-only 309 ms, and gcc 1,715 ms, 7,377 ms at -O2 and 650 ms for -fsyntax-only.
+
+**Release builds compile at the C compiler's speed.** `chibi c` writes the translation's 131,187 lines of C in 35 ms, one file, so the C compiler can't spread it over cores:
+
+| C compiler, one core | checked | `--release-fast` |
+|---|---|---|
+| clang -O0 | 670 ms | 639 ms |
+| clang -O2 | 4,897 ms | 4,651 ms |
+| gcc -O0 | 2,384 ms | 2,204 ms |
+| gcc -O2 | 8,524 ms | 8,117 ms |
