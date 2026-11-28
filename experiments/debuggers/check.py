@@ -95,10 +95,10 @@ else:
     if ARM64:
         out = lldb("run", ["breakpoint set --file types.chibi --line 17", "run", "frame variable", "expression *q"], [], "types.chibi")
         checks += [
-            ("a struct parameter and a float show their values", r"\(int\) k = 10\n\(Point\) at = \(x = 7, y = 8\)\n\(f64\) scale = 1\.5\n", out),
-            ("a struct and an array show their values", r"\(Point\) p = \(x = 5, y = -4\)\n\(int\[3\]\) xs = \(\[0\] = 1, \[1\] = 2, \[2\] = 3\)\n", out),
-            ("a string and a slice show their values", r"\(string\) name = \(ptr = \"chibi\", len = 5\)\n.*part = \(ptr = 0x[0-9a-f]+, len = 2\)\n", out),
-            ("a pointer, an enum and an int show their values", r"\(Mode\) mode = busy\n\(int\) total = 38\n(.*\n)*.*\(Point\) \$0 = \(x = 5, y = -4\)", out),
+            ("a struct parameter and a float show their values", r"\(int\) k = 10\n\(Point\) at = \{\n  x = 7\n  y = 8\n\}\n\(f64\) scale = 1\.5\n", out),
+            ("a struct and an array show their values", r"\(Point\) p = \{\n  x = 5\n  y = -4\n\}\n\(int\[3\]\) xs = \(\[0\] = 1, \[1\] = 2, \[2\] = 3\)\n", out),
+            ("a string and a slice show their values", rf"\(string\) name = \(ptr = \"chibi\", len = 5\)\n.*part = \{{\n  ptr = {ADDR}\n  len = 2\n\}}\n", out),
+            ("a pointer, an enum and an int show their values", r"\(Mode\) mode = busy\n\(int\) total = 38\n(.*\n)*.*\(Point\) \$0 = \{\n  x = 5\n  y = -4\n\}", out),
         ]
 
 failed = 0
