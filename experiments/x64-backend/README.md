@@ -31,12 +31,23 @@ The debugger checks for both backends are in [experiments/debuggers](../debugger
 
 Measured on the Ryzen 9 9900X, pinned to one core, with clang 22 and gcc 16 under Fedora 44.
 
-**Generated code.** The backend runs only integer code without division or shifts yet, so `make output`'s `collatz` and `primes` can't run here, and `sum` adds `i ^ (i + 7)` in place of `i ^ (i >> 3)`. Best of 7, in ms, across three processes:
+**Generated code.** The backend runs only integer code without division or shifts yet, so `make output`'s `collatz` and `primes` can't run here, and `sum` adds `i ^ (i + 7)` in place of `i ^ (i >> 3)`. The release builds are `chibi build`'s: the C backend's output, compiled with `-std=c11 -O2`. chibi checks `+`, `-` and `*` for overflow in debug and release builds and wraps in release-fast builds (the Integer overflow row of 2026-11-10), so its `fib` checks three operations and its `sum` two. The plain C checks only `sum`'s `total +=`, and "C with chibi's checks" checks the same operations as chibi, with `__builtin_add_overflow` and `__builtin_trap`. Best of 7, in ms, across three processes:
 
-| Function | chibi | clang -O0 | clang -O2 | gcc -O0 | gcc -O2 |
-|---|---|---|---|---|---|
-| `fib(35)` | 29.8–30.1 | 26.2–26.9 | 15.4–15.5 | 29.9–30.7 | 6.1–6.2 |
-| `sum(1000000000)`, checked | 246–253 | 962–989 | 193–198 | 453–465 | 229–232 |
+| Build | `fib(35)` | `sum(1000000000)` |
+|---|---|---|
+| chibi, development backend | 29.9–30.9 | 250–251 |
+| `chibi build`, clang | 25.9–26.3 | 226–227 |
+| `chibi build`, gcc | 25.7–26.2 | 363–379 |
+| `chibi build --release-fast`, clang | 15.3–15.6 | 157 |
+| `chibi build --release-fast`, gcc | 5.6–5.7 | 221–224 |
+| C, clang -O0 | 26.5–27.3 | 971–985 |
+| C, clang -O2 | 15.4–15.8 | 195–198 |
+| C, gcc -O0 | 26.4–27.3 | 473–484 |
+| C, gcc -O2 | 6.4–6.6 | 238–244 |
+| C with chibi's checks, clang -O2 | 25.7–26.1 | 240–247 |
+| C with chibi's checks, gcc -O2 | 25.4–26.2 | 375–389 |
+
+The checks account for the release builds' distance from C: with the same checks, the C takes as long as `chibi build`, and without them `--release-fast` matches clang -O2 and gcc -O2. gcc's checked `sum` loop runs 14 instructions to clang's 9, from the C backend's output and from the hand-written C alike.
 
 **Compile time,** for the compiler itself: its 13 C files (23,445 lines), one after the other, against the 41,219-line chibi translation that `make translated` writes, through `experiments/arm64-backend/bench.c`. The C times include starting the compiler 13 times, about 113 ms for clang and 48 ms for gcc; chibi's count lexing, parsing, checking and arm64 code generation in memory, without reading files or linking, and spread by about 15% from run to run at this size, more than debug info costs.
 
