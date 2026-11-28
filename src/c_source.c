@@ -2054,7 +2054,7 @@ c_source_package(FILE *out, const Checker *c, const char *prefix)
     }
 
     for (u32 f = 0; f < c->nfiles; f++) {
-        free(line_starts[f].at);
+        check_free_lines(&line_starts[f]);
     }
     free(line_starts);
     free(done);

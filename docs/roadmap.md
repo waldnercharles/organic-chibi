@@ -12,10 +12,10 @@ Updated 2026-11-27, and with every step that changes it. This page gives the ord
 The owner chose on 2026-11-25 to build the x86-64 development backend and debug info in C, translated, before chibi becomes the compiler's source.
 
 1. **3x.3 Debug info for the development backends.**
-   - 3x.3.1 Function names, line tables, unwinding through gdb's JIT interface, and a perf map. Built 2026-11-27.
+   - 3x.3.1 Function names, line tables, unwinding through gdb's JIT interface, and a perf map. Built 2026-11-27. Debug info costs 19% more code generation time than none (365.9 against 306.9 cycles per line on the Ryzen 9 9900X), and nothing when off.
    - 3x.3.2 A failed check stops at its own line, not the function's last. Next; it changes the generated code, so it comes with measurements and a choice for the owner.
    - 3x.3.3 Locals, parameters and their types in the debugger.
-   - Check lldb on macOS, on the M4 Pro or GitHub's macOS runner.
+   - lldb: checked 2026-11-27 on x86-64 and arm64 Linux and on GitHub's macOS runner, and CI runs gdb and lldb on every push ([experiments/debuggers](../experiments/debuggers/README.md)).
 2. **3x.4** Division, shifts and bit counts on x86-64, then floats.
 3. **3x.5** Pointers, arrays, structs, slices, bounds checks and stack probes on x86-64.
 4. **3x.6** Calls into C on x86-64: System V's classes for structs, variadic calls, callbacks, exports and C globals.

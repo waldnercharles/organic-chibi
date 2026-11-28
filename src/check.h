@@ -741,13 +741,16 @@ u64 check_member_offset(const Checker *c, u32 decl, u32 member);
 
 typedef struct
 {
-    u32 *at;
+    u64 *newlines;
+    u32 *before;
     u32 count;
     u32 cap;
-    u32 scanned;
+    u32 total;
 } LineStarts;
 
 u32 check_line(const Checker *c, LineStarts *l, u32 file, u32 token);
+
+void check_free_lines(LineStarts *l);
 
 enum
 {

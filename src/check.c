@@ -45,6 +45,12 @@ enum
 
 enum
 {
+    LINE_BLOCK_BYTES = 64,
+    LINE_BLOCKS_AHEAD = LEXER_SOURCE_PADDING / LINE_BLOCK_BYTES,
+};
+
+enum
+{
     SHORT_TESTED = 0xFFFFFFFBu,
     SHORT_VALUE,
     SHORT_FOLD,
@@ -13563,45 +13569,42 @@ code_free(IrCode *code)
 }
 
 static void
-scan_lines(LineStarts *l, const char *src, u32 to)
+count_lines(LineStarts *l, const char *src, u32 to)
 {
-    for (u32 p = l->scanned; p < to; p += 64) {
-        if (l->count + 64 > l->cap) {
-            l->cap = l->cap ? l->cap * 2 : 1024;
-            l->at = realloc(l->at, l->cap * sizeof *l->at);
-        }
-        u64 m = simd_mask64(simd_eq(simd_load64(src + p), '\n'));
-        if (to - p < 64) {
-            m &= ((u64)1 << (to - p)) - 1;
-        }
-        for (; m; m &= m - 1) {
-            l->at[l->count] = p + (u32)__builtin_ctzll(m) + 1;
-            l->count += 1;
-        }
+    if (to > l->cap) {
+        l->cap = to * 2;
+        l->newlines = realloc(l->newlines, l->cap * sizeof *l->newlines);
+        l->before = realloc(l->before, l->cap * sizeof *l->before);
     }
-    l->scanned = to;
+    u32 total = l->total;
+    for (u32 k = l->count; k < to; k++) {
+        u64 newlines = simd_mask64(simd_eq(simd_load64(src + (size_t)k * LINE_BLOCK_BYTES), '\n'));
+        l->newlines[k] = newlines;
+        l->before[k] = total;
+        total += (u32)__builtin_popcountll(newlines);
+    }
+    l->total = total;
+    l->count = to;
 }
 
 u32
 check_line(const Checker *c, LineStarts *l, u32 file, u32 token)
 {
     u32 pos = c->files[file].tokens.starts[token];
-    if (pos >= l->scanned) {
-        scan_lines(l, c->files[file].src, pos);
-        return l->count + 1;
+    u32 block = pos / LINE_BLOCK_BYTES;
+    if (block >= l->count) {
+        count_lines(l, c->files[file].src, block + LINE_BLOCKS_AHEAD);
     }
 
-    u32 lo = 0;
-    u32 hi = l->count;
-    while (lo < hi) {
-        u32 mid = lo + (hi - lo) / 2;
-        if (l->at[mid] <= pos) {
-            lo = mid + 1;
-        } else {
-            hi = mid;
-        }
-    }
-    return lo + 1;
+    u64 earlier = l->newlines[block] & (((u64)1 << (pos % LINE_BLOCK_BYTES)) - 1);
+    return l->before[block] + (u32)__builtin_popcountll(earlier) + 1;
+}
+
+void
+check_free_lines(LineStarts *l)
+{
+    free(l->newlines);
+    free(l->before);
 }
 
 void

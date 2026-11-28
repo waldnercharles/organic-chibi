@@ -255,7 +255,7 @@ write_lines(Bytes *b, const Symfile *s, const Checker *c, const SymfileTarget *t
         bytes_u8(b, DW_LNE_end_sequence);
     }
     for (u32 f = 0; f < c->nfiles; f++) {
-        free(starts[f].at);
+        check_free_lines(&starts[f]);
     }
     free(starts);
     bytes_patch32(b, start, b->count - start - 4);

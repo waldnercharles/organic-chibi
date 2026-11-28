@@ -161,8 +161,8 @@ typedef struct
     u32 base;
     u32 popped;
     u32 stubs;
-    u32 frame_at;
     u32 line;
+    u32 row_offset;
 } Emit;
 
 static void *
@@ -186,11 +186,13 @@ here(const Assembler *as)
 }
 
 static NOINLINE void
-open_symbol(Emit *e, u32 decl, u32 flags)
+open_symbol(Emit *e, u32 decl, u32 flags, u32 rows)
 {
     Symfile *s = e->symfile;
     s->symbols = grow(s->symbols, &s->symbols_cap, s->nsymbols + 1, sizeof *s->symbols);
     s->frames = grow(s->frames, &s->frames_cap, s->nframes + FRAME_BYTES_PER_SYMBOL, 1);
+    s->rows = grow(s->rows, &s->rows_cap, s->nrows + rows, sizeof *s->rows);
+    e->row_offset = UINT32_MAX;
     s->symbols[s->nsymbols] = (Symbol){ .decl = decl,
                                         .flags = flags,
                                         .first_row = s->nrows,
@@ -215,14 +217,11 @@ mark_row(Emit *e, u32 token)
 {
     Symfile *s = e->symfile;
     u32 offset = (e->base + here(&e->as)) * (u32)sizeof(Code);
-    u32 first = s->symbols[s->nsymbols].first_row;
-    if (s->nrows > first && s->rows[s->nrows - 1].offset == offset) {
-        s->rows[s->nrows - 1].token = token;
-        return;
-    }
-    s->rows = grow(s->rows, &s->rows_cap, s->nrows + 1, sizeof *s->rows);
-    s->rows[s->nrows] = (SymbolRow){ offset, token };
-    s->nrows += 1;
+    u32 n = s->nrows - (offset == e->row_offset);
+    assert(n < s->rows_cap);
+    s->rows[n] = (SymbolRow){ offset, token };
+    s->nrows = n + 1;
+    e->row_offset = offset;
 }
 
 static NOINLINE u32
@@ -242,105 +241,124 @@ next_line(Emit *e, u32 i)
     return lines[j].end < fn->count ? lines[j].end : fn->count;
 }
 
-static void
-frame_byte(Emit *e, u32 b)
+typedef struct
+{
+    u8 *at;
+    u32 code;
+} Cfa;
+
+static Cfa
+start_frame(Emit *e, u32 code)
 {
     Symfile *s = e->symfile;
-    assert(s->nframes < s->frames_cap);
-    s->frames[s->nframes] = (u8)b;
-    s->nframes += 1;
+    return (Cfa){ s->frames + s->nframes, code };
 }
 
 static void
-frame_uleb(Emit *e, u32 v)
+end_frame(Emit *e, Cfa f)
+{
+    Symfile *s = e->symfile;
+    s->nframes = (u32)(f.at - s->frames);
+    assert(s->nframes <= s->frames_cap);
+}
+
+static void
+frame_byte(Cfa *f, u32 b)
+{
+    *f->at = (u8)b;
+    f->at += 1;
+}
+
+static void
+frame_uleb(Cfa *f, u32 v)
 {
     while (v >= 0x80) {
-        frame_byte(e, (v & 0x7F) | 0x80);
+        frame_byte(f, (v & 0x7F) | 0x80);
         v >>= 7;
     }
-    frame_byte(e, v);
+    frame_byte(f, v);
 }
 
 static void
-frame_advance(Emit *e, u32 to)
+frame_advance(Cfa *f, u32 to)
 {
-    u32 delta = to - e->frame_at;
-    e->frame_at = to;
+    u32 delta = to - f->code;
+    f->code = to;
     if (delta == 0) {
         return;
     }
     if (delta < 0x40) {
-        frame_byte(e, DW_CFA_advance_loc | delta);
+        frame_byte(f, DW_CFA_advance_loc | delta);
     } else if (delta <= 0xFF) {
-        frame_byte(e, DW_CFA_advance_loc1);
-        frame_byte(e, delta);
+        frame_byte(f, DW_CFA_advance_loc1);
+        frame_byte(f, delta);
     } else if (delta <= 0xFFFF) {
-        frame_byte(e, DW_CFA_advance_loc2);
-        frame_byte(e, delta & 0xFF);
-        frame_byte(e, delta >> 8);
+        frame_byte(f, DW_CFA_advance_loc2);
+        frame_byte(f, delta & 0xFF);
+        frame_byte(f, delta >> 8);
     } else {
-        frame_byte(e, DW_CFA_advance_loc4);
+        frame_byte(f, DW_CFA_advance_loc4);
         for (u32 k = 0; k < 4; k++) {
-            frame_byte(e, delta >> 8 * k & 0xFF);
+            frame_byte(f, delta >> 8 * k & 0xFF);
         }
     }
 }
 
 static void
-frame_cfa(Emit *e, u32 reg, u32 offset)
+frame_cfa(Cfa *f, u32 reg, u32 offset)
 {
-    frame_byte(e, DW_CFA_def_cfa);
-    frame_uleb(e, reg);
-    frame_uleb(e, offset);
+    frame_byte(f, DW_CFA_def_cfa);
+    frame_uleb(f, reg);
+    frame_uleb(f, offset);
 }
 
 static void
-frame_cfa_offset(Emit *e, u32 offset)
+frame_cfa_offset(Cfa *f, u32 offset)
 {
-    frame_byte(e, DW_CFA_def_cfa_offset);
-    frame_uleb(e, offset);
+    frame_byte(f, DW_CFA_def_cfa_offset);
+    frame_uleb(f, offset);
 }
 
 static void
-frame_cfa_register(Emit *e, u32 reg)
+frame_cfa_register(Cfa *f, u32 reg)
 {
-    frame_byte(e, DW_CFA_def_cfa_register);
-    frame_uleb(e, reg);
+    frame_byte(f, DW_CFA_def_cfa_register);
+    frame_uleb(f, reg);
 }
 
 static void
-frame_saved(Emit *e, u32 reg, u32 below_cfa)
+frame_saved(Cfa *f, u32 reg, u32 below_cfa)
 {
     if (reg < 64) {
-        frame_byte(e, DW_CFA_offset | reg);
+        frame_byte(f, DW_CFA_offset | reg);
     } else {
-        frame_byte(e, DW_CFA_offset_extended);
-        frame_uleb(e, reg);
+        frame_byte(f, DW_CFA_offset_extended);
+        frame_uleb(f, reg);
     }
-    frame_uleb(e, below_cfa / 8);
+    frame_uleb(f, below_cfa / 8);
 }
 
 static void
-frame_restore(Emit *e, u32 reg)
+frame_restore(Cfa *f, u32 reg)
 {
     if (reg < 64) {
-        frame_byte(e, DW_CFA_restore | reg);
+        frame_byte(f, DW_CFA_restore | reg);
         return;
     }
-    frame_byte(e, DW_CFA_restore_extended);
-    frame_uleb(e, reg);
+    frame_byte(f, DW_CFA_restore_extended);
+    frame_uleb(f, reg);
 }
 
 static void
-frame_remember(Emit *e)
+frame_remember(Cfa *f)
 {
-    frame_byte(e, DW_CFA_remember_state);
+    frame_byte(f, DW_CFA_remember_state);
 }
 
 static void
-frame_recall(Emit *e)
+frame_recall(Cfa *f)
 {
-    frame_byte(e, DW_CFA_restore_state);
+    frame_byte(f, DW_CFA_restore_state);
 }
 
 static bool
@@ -1130,7 +1148,7 @@ emit_function(Emit *e, const IrFunc *fn, Code *code, const Native *n)
     }
     memset(e->regs, NO_REG, fn->count);
     if (UNLIKELY(e->symfile != NULL)) {
-        open_symbol(e, fn->decl, 0);
+        open_symbol(e, fn->decl, 0, fn->nlines);
     }
     pin_locals(e);
     lay_out_frame(e);
@@ -1473,7 +1491,7 @@ jit_compile(Native *n, const Checker *c, Convention convention, u32 flags)
         e.as.code = e.as.at = start + used;
         e.base = (u32)used;
         if (e.symfile) {
-            open_symbol(&e, decl, SYMBOL_ADAPTER);
+            open_symbol(&e, decl, SYMBOL_ADAPTER, 0);
         }
         emit_adapter(&e, decl, n);
         if (e.symfile) {

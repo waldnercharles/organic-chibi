@@ -3782,38 +3782,39 @@ describe_frame(Emit *e, u32 entry)
     u32 words = PROLOGUE_WORDS - entry;
     u32 popped = e->popped;
 
-    e->frame_at = entry;
-    frame_advance(e, entry + 1);
-    frame_cfa_offset(e, rec);
-    frame_saved(e, X29, rec);
-    frame_saved(e, DWARF_RETURN, rec - 8);
-    frame_advance(e, entry + 2);
-    frame_cfa_register(e, X29);
-    frame_advance(e, entry + words);
+    Cfa f = start_frame(e, entry);
+    frame_advance(&f, entry + 1);
+    frame_cfa_offset(&f, rec);
+    frame_saved(&f, X29, rec);
+    frame_saved(&f, DWARF_RETURN, rec - 8);
+    frame_advance(&f, entry + 2);
+    frame_cfa_register(&f, X29);
+    frame_advance(&f, entry + words);
     u32 below = rec;
     for (u32 r = 19; r < 29; r += 2) {
         if (e->saved_int & (3u << r)) {
             below += 16;
-            frame_saved(e, r, below);
-            frame_saved(e, r + 1, below - 8);
+            frame_saved(&f, r, below);
+            frame_saved(&f, r + 1, below - 8);
         }
     }
     for (u32 r = 8; r < 16; r += 2) {
         if (e->saved_float & (3u << r)) {
             below += 16;
-            frame_saved(e, DWARF_D0 + r, below);
-            frame_saved(e, DWARF_D0 + r + 1, below - 8);
+            frame_saved(&f, DWARF_D0 + r, below);
+            frame_saved(&f, DWARF_D0 + r + 1, below - 8);
         }
     }
-    frame_advance(e, popped);
-    frame_remember(e);
-    frame_cfa(e, DWARF_SP, 0);
-    frame_restore(e, X29);
-    frame_restore(e, DWARF_RETURN);
+    frame_advance(&f, popped);
+    frame_remember(&f);
+    frame_cfa(&f, DWARF_SP, 0);
+    frame_restore(&f, X29);
+    frame_restore(&f, DWARF_RETURN);
     if (e->stubs < here(&e->as)) {
-        frame_advance(e, e->stubs);
-        frame_recall(e);
+        frame_advance(&f, e->stubs);
+        frame_recall(&f);
     }
+    end_frame(e, f);
 }
 
 static u32
@@ -4008,16 +4009,17 @@ emit_adapter(Emit *e, u32 decl, const Native *n)
     u32 popped = here(&e->as);
     put(&e->as, OP_RET);
     if (e->symfile) {
-        e->frame_at = 0;
-        frame_advance(e, 1);
-        frame_cfa_offset(e, 16);
-        frame_saved(e, X29, 16);
-        frame_saved(e, DWARF_RETURN, 8);
-        frame_advance(e, 2);
-        frame_cfa_register(e, X29);
-        frame_advance(e, popped);
-        frame_cfa(e, DWARF_SP, 0);
-        frame_restore(e, X29);
-        frame_restore(e, DWARF_RETURN);
+        Cfa f = start_frame(e, 0);
+        frame_advance(&f, 1);
+        frame_cfa_offset(&f, 16);
+        frame_saved(&f, X29, 16);
+        frame_saved(&f, DWARF_RETURN, 8);
+        frame_advance(&f, 2);
+        frame_cfa_register(&f, X29);
+        frame_advance(&f, popped);
+        frame_cfa(&f, DWARF_SP, 0);
+        frame_restore(&f, X29);
+        frame_restore(&f, DWARF_RETURN);
+        end_frame(e, f);
     }
 }

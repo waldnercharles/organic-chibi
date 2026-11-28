@@ -1287,28 +1287,29 @@ describe_frame(Emit *e, u32 entry)
         pushed += (e->saved_int >> r & 1) * (1 + (r >= 8));
     }
 
-    e->frame_at = entry;
-    frame_advance(e, entry + 1);
-    frame_cfa_offset(e, 16);
-    frame_saved(e, DWARF_RBP, 16);
-    frame_advance(e, entry + 4);
-    frame_cfa_register(e, DWARF_RBP);
-    frame_advance(e, entry + pushed);
+    Cfa f = start_frame(e, entry);
+    frame_advance(&f, entry + 1);
+    frame_cfa_offset(&f, 16);
+    frame_saved(&f, DWARF_RBP, 16);
+    frame_advance(&f, entry + 4);
+    frame_cfa_register(&f, DWARF_RBP);
+    frame_advance(&f, entry + pushed);
     u32 below = 16 + 8 * e->context_saved;
     for (u32 r = 0; r < 16; r++) {
         if (e->saved_int >> r & 1) {
             below += 8;
-            frame_saved(e, DWARF_REGS[r], below);
+            frame_saved(&f, DWARF_REGS[r], below);
         }
     }
-    frame_advance(e, e->popped);
-    frame_remember(e);
-    frame_cfa(e, DWARF_SP, 8);
-    frame_restore(e, DWARF_RBP);
+    frame_advance(&f, e->popped);
+    frame_remember(&f);
+    frame_cfa(&f, DWARF_SP, 8);
+    frame_restore(&f, DWARF_RBP);
     if (e->stubs < here(&e->as)) {
-        frame_advance(e, e->stubs);
-        frame_recall(e);
+        frame_advance(&f, e->stubs);
+        frame_recall(&f);
     }
+    end_frame(e, f);
 }
 
 static u32

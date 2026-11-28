@@ -26,3 +26,28 @@ The debugger checks for both backends are in [experiments/debuggers](../debugger
 - **Frames.** Each function reserves 48 bytes before its body, and the prologue it needs is written at the end of them: `push rbp`, `mov rbp, rsp`, `push rdi` when the context is saved, the callee-saved registers, then `sub rsp`. A frame of 4 KB or more is reserved a page at a time by a stub after the traps. Every `return` jumps to one epilogue, which ends with `leave` and `ret`.
 - **Traps** are `ud1 eax, [rax + kind]`, so a `SIGILL` handler reads the kind at the fourth byte.
 - **Refused for now,** each with its own message: floats, arrays, structs and slices, division, shifts and bit counts, optionals, errors and tuples, vectors, 128-bit integers, and calls into C.
+
+## Against clang and gcc (2026-11-27)
+
+Measured on the Ryzen 9 9900X, pinned to one core, with clang 22 and gcc 16 under Fedora 44.
+
+**Generated code.** The backend runs only integer code without division or shifts yet, so `make output`'s `collatz` and `primes` can't run here, and `sum` adds `i ^ (i + 7)` in place of `i ^ (i >> 3)`. Best of 7, in ms, across three processes:
+
+| Function | chibi | clang -O0 | clang -O2 | gcc -O0 | gcc -O2 |
+|---|---|---|---|---|---|
+| `fib(35)` | 29.8–30.1 | 26.2–26.9 | 15.4–15.5 | 29.9–30.7 | 6.1–6.2 |
+| `sum(1000000000)`, checked | 246–253 | 962–989 | 193–198 | 453–465 | 229–232 |
+
+**Compile time,** for the compiler itself: its 13 C files (23,445 lines), one after the other, against the 41,219-line chibi translation that `make translated` writes, through `experiments/arm64-backend/bench.c`. The C times include starting the compiler 13 times, about 113 ms for clang and 48 ms for gcc; chibi's count lexing, parsing, checking and arm64 code generation in memory, without reading files or linking, and spread by about 15% from run to run at this size, more than debug info costs.
+
+| Compiler | Time |
+|---|---|
+| chibi | 10.0–11.9 ms |
+| chibi with debug info | 10.1–11.5 ms |
+| clang -fsyntax-only | 309 ms |
+| clang -O0 | 491 ms |
+| clang -O0 -g | 655 ms |
+| clang -O2 | 3,691 ms |
+| gcc -fsyntax-only | 650 ms |
+| gcc -O0 | 1,715 ms |
+| gcc -O2 | 7,377 ms |
