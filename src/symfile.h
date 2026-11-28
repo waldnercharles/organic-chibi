@@ -27,6 +27,16 @@ enum
     NO_LINE = 0xFFFFFFFFu,
 };
 
+enum
+{
+    HOME_NONE = 0,
+    HOME_BY_POINTER = 0x20000000u,
+    HOME_REGISTER = 0x40000000u,
+    HOME_STACK = 0x80000000u,
+    HOME_KIND = 0xC0000000u,
+    HOME_VALUE = HOME_BY_POINTER - 1,
+};
+
 typedef struct
 {
     u32 decl;
@@ -65,6 +75,7 @@ typedef struct
     u8 *frames;
     u32 nframes;
     u32 frames_cap;
+    u32 *homes;
 } Symfile;
 
 u8 *symfile_write(const Symfile *s, const Checker *c, const SymfileTarget *t, const u8 *code,

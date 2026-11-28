@@ -42,6 +42,7 @@ enum
     DWARF_RETURN = 16,
     DWARF_SP = 7,
     DWARF_RBP = 6,
+    DWARF_XMM0 = 17,
     ENTRY_CFA = 8,
 };
 
@@ -50,6 +51,12 @@ static const u8 DWARF_REGS[16] = { 0, 2, 1, 3, 7, 6, 4, 5, 8, 9, 10, 11, 12, 13,
 static const u8 INT_ARG_REGS[INT_ARGS] = { RDI, RSI, RDX, RCX, R8, R9 };
 
 typedef u8 Code;
+
+static u32
+dwarf_register(u32 r)
+{
+    return r < 32 ? DWARF_REGS[r] : DWARF_XMM0 + r - 32;
+}
 
 #if defined(__x86_64__)
 #define HOST_RUNS_CODE true

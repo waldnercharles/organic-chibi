@@ -44,6 +44,11 @@ static const char DESCRIBED[] = "fn add(a: int, b: int) -> int {\n"
                                 "    return y\n"
                                 "}\n";
 
+static const char LOCALS[] = "fn area(width: int, height: i32) -> int {\n"
+                             "    scaled := width * int(height)\n"
+                             "    return scaled\n"
+                             "}\n";
+
 static bool
 compile(Program *p, const char *text, u32 flags)
 {
@@ -262,6 +267,30 @@ TEST_CASE(debugger_sees_functions_and_lines)
     return true;
 }
 
+static bool
+has_text(Section s, const char *text)
+{
+    size_t n = strlen(text) + 1;
+    for (u64 k = 0; k + n <= s.size; k++) {
+        if (memcmp(s.at + k, text, n) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+TEST_CASE(debugger_sees_locals)
+{
+    Program p;
+    REQUIRE(compile(&p, LOCALS, JIT_DEBUGGER));
+    Section info = section_named(p.n.symfile, ".debug_info");
+    Section strings = section_named(p.n.symfile, ".debug_str");
+    REQUIRE(has_text(strings, "width") && has_text(strings, "height"));
+    REQUIRE(has_text(strings, "scaled") && has_text(info, "i32"));
+    release(&p);
+    return true;
+}
+
 TEST_CASE(frames_follow_the_prologue)
 {
     Program p;
@@ -396,6 +425,7 @@ TEST_CASE(perf_map_names_functions)
 TEST_SUITE(symfile_tests)
 {
     RUN_TEST_CASE(debugger_sees_functions_and_lines);
+    RUN_TEST_CASE(debugger_sees_locals);
     RUN_TEST_CASE(frames_follow_the_prologue);
     RUN_TEST_CASE(failed_checks_stop_at_their_lines);
     RUN_TEST_CASE(line_tables_leave_code_unchanged);

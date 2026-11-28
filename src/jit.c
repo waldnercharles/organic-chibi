@@ -1471,6 +1471,22 @@ emit_function(Emit *e, const IrFunc *fn, Code *code, const Native *n)
     return finish_function(e, code);
 }
 
+static NOINLINE void
+describe_locals(Emit *e)
+{
+    const IrFunc *fn = e->fn;
+    u32 *homes = e->symfile->homes + fn->first_slot;
+    for (u32 k = 0; k < fn->nslots; k++) {
+        u8 r = e->slot_regs[k];
+        bool by_ref = k < 32 ? e->by_ref >> k & 1
+                             : k < fn->nparams && e->slots[k].type != slot_type(e, k);
+        u32 home = r != NO_REG       ? HOME_REGISTER | dwarf_register(r)
+                 : e->slots[k].weight ? HOME_STACK | e->slot_offsets[k]
+                                      : HOME_NONE;
+        homes[k] = home | (by_ref ? HOME_BY_POINTER : 0);
+    }
+}
+
 bool
 jit_compile(Native *n, const Checker *c, Convention convention, u32 flags)
 {
@@ -1538,6 +1554,9 @@ jit_compile(Native *n, const Checker *c, Convention convention, u32 flags)
     Symfile symfile = { 0 };
     e.symfile = flags ? &symfile : NULL;
     e.debugger = flags & JIT_DEBUGGER;
+    if (e.debugger) {
+        symfile.homes = malloc(ir->code.nslots * sizeof *symfile.homes + 1);
+    }
     u64 *adapters = malloc(ir->ncallbacks * sizeof *adapters);
     for (u32 k = 0; k < ir->ncallbacks && !e.as.error; k++) {
         u32 decl = ir->callbacks[k];
@@ -1567,6 +1586,9 @@ jit_compile(Native *n, const Checker *c, Convention convention, u32 flags)
         u32 entry = emit_function(&e, fn, at, n);
         if (e.symfile) {
             describe_frame(&e, entry);
+            if (e.debugger) {
+                describe_locals(&e);
+            }
             close_symbol(&e, entry, here(&e.as));
         }
         n->entries[fn->decl] = (u64)(uintptr_t)(at + entry);

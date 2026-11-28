@@ -4,7 +4,7 @@ Updated 2026-11-27, and with every step that changes it. This page gives the ord
 
 ## Where things stand
 
-- **Built:** the lexer and parser; the checker and its typed IR, through step 3k; the one-pass arm64 development backend (JIT); the C backend with `chibi build` and `chibi c`; the C-to-chibi translator and the bootstrap check; the x86-64 development backend's integers, control flow and `switch` (3x.0–3x.2); and debug info for both development backends' functions, lines and frames (3x.3.1).
+- **Built:** the lexer and parser; the checker and its typed IR, through step 3k; the one-pass arm64 development backend (JIT); the C backend with `chibi build` and `chibi c`; the C-to-chibi translator and the bootstrap check; the x86-64 development backend's integers, control flow and `switch` (3x.0–3x.2); and debug info for both development backends: functions, lines, frames, failed checks, parameters, locals and types (3x.3).
 - **The compiler's source is still C.** `make translated` translates it to chibi on every run, and the translated compiler rebuilds its own C byte for byte. On the Ryzen 9 9900X the translation runs within 1% of the C build's cycles.
 
 ## Now: before the switch
@@ -14,9 +14,9 @@ The owner chose on 2026-11-25 to build the x86-64 development backend and debug 
 1. **3x.3 Debug info for the development backends.**
    - 3x.3.1 Function names, line tables, unwinding through gdb's JIT interface, and a perf map. Built 2026-11-27. Debug info costs 19% more code generation time than none (365.9 against 306.9 cycles per line on the Ryzen 9 9900X), and nothing when off.
    - 3x.3.2 A failed check stops at its own line, not the function's last. Built 2026-11-27: with debug info, each statement gets its own trap stubs, 2.9% more code on the corpus and 5.8% more code generation time (382.2 against 361.2 cycles per line); without, the code and its speed are unchanged.
-   - 3x.3.3 Locals, parameters and their types in the debugger. Next.
+   - 3x.3.3 Locals, parameters and their types in the debugger. Built 2026-11-28: one location per variable, since each slot has one home, and chibi's type names in both debuggers; 6.3% more code generation time with debug info (400.4 against 376.5 cycles per line), and the code is unchanged.
    - lldb: checked 2026-11-27 on x86-64 and arm64 Linux and on GitHub's macOS runner, and CI runs gdb and lldb on every push ([experiments/debuggers](../experiments/debuggers/README.md)).
-2. **3x.4** Division, shifts and bit counts on x86-64, then floats.
+2. **3x.4** Division, shifts and bit counts on x86-64, then floats. Next.
 3. **3x.5** Pointers, arrays, structs, slices, bounds checks and stack probes on x86-64.
 4. **3x.6** Calls into C on x86-64: System V's classes for structs, variadic calls, callbacks, exports and C globals.
 5. **3x.7** Optionals, errors and tuples, then 16- and 64-byte vectors and 128-bit integers. x86-64 hosts then use the x86-64 backend by default.

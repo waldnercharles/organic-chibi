@@ -9,6 +9,9 @@
 - `finish` returns to `sum` at line 13;
 - the program runs to its end, and the perf map names each function;
 - a trap stops at the line of the check that failed, `cube`'s first line, with a backtrace through `boom` to `main`.
+- stopped in `locals`, the parameters and locals show their values, with chibi's type names, and the backtrace shows the arguments.
+
+On arm64 hosts, a third run stops in `types.chibi`'s `shapes` and prints a struct parameter, a float, a struct changed through a pointer, an array, a string, a slice and an enum. The x86-64 backend can't compile those types yet.
 
 lldb loads JIT code through gdb's interface only when `plugin.jit-loader.gdb.enable` is on, which is the default on Linux and not on macOS, so the check turns it on. `make lldb LLDB=lldb-18` picks another lldb, as on Ubuntu.
 

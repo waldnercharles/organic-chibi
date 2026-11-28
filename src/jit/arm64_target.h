@@ -36,6 +36,12 @@ enum
 
 typedef u32 Code;
 
+static u32
+dwarf_register(u32 r)
+{
+    return r < 32 ? r : DWARF_D0 + r - 32;
+}
+
 #if defined(__aarch64__)
 #define HOST_RUNS_CODE true
 #else

@@ -1,0 +1,22 @@
+struct Point { x: i32, y: i32 }
+
+enum Mode: u8 { idle, busy }
+
+fn shapes(k: int, at: Point, scale: f64) -> int {
+    p := Point.{ 3, -4 }
+    xs := int.[1, 2, 3]
+    name := "chibi"
+    part := xs[1..]
+    q := &p
+    mode := Mode.busy
+    total := int(p.x + at.y) + xs[1] + name.len + part.len + int(scale * 2.0) + k
+    q.x = 5
+    if mode == .busy {
+        total += int(q.x)
+    }
+    return total
+}
+
+fn run() -> int {
+    return shapes(10, Point.{ 7, 8 }, 1.5)
+}

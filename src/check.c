@@ -6,8 +6,6 @@
 #include <string.h>
 
 #define CHECK_MAX_DEPTH 1000
-#define MEMBER_UNDEFINED 0xFFFFFFFFu
-#define MEMBER_NONE 0xFFFFFFFEu
 
 enum
 {

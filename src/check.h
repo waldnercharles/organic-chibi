@@ -356,6 +356,12 @@ typedef struct
     u8 kind;
 } Diagnostic;
 
+enum
+{
+    MEMBER_NONE = 0xFFFFFFFEu,
+    MEMBER_UNDEFINED = 0xFFFFFFFFu,
+};
+
 typedef struct
 {
     u32 name;

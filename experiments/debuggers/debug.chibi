@@ -28,3 +28,20 @@ fn boom() -> int {
     big := 4000000000
     return cube(big) + 1
 }
+
+enum Mode: u8 { idle, busy }
+
+fn locals(n: int, scale: i32) -> int {
+    count := n * 2
+    small: u8 = 200
+    ok := count > 10
+    mode := Mode.busy
+    if ok and mode == .busy {
+        count += int(scale)
+    }
+    return count + int(small)
+}
+
+fn inspect() -> int {
+    return locals(7, -3)
+}
