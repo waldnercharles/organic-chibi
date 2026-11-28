@@ -29,6 +29,7 @@ The owner chose on 2026-11-25 to build the x86-64 development backend and debug 
 - **The build program** as compile-time code in any file, adding steps to a graph that may grow (decided 2026-11-26).
 - **Dependencies:** a flat list pinned by git commit or hash, fetched through the `git` command at first. The curated libraries: SDL2, SDL3, Box2D, Box3D, stb_truetype, kb_text_shape, stb_image, stb_vorbis, cgltf, Dear ImGui, ENet and Vulkan-Headers ([libraries.md](libraries.md)).
 - **Generics and packages.**
+- **chibi's own optimizing backend,** written in chibi once compile-time code, generics and packages exist (decided 2026-11-27). Debug builds start on the one-pass backend's code and swap in its code for hot functions while the program runs, and it replaces the C backend for release builds.
 - **The C tests in chibi,** translated once chibi has what they need, such as `@test` and calls through function values (the Compiler row of 2026-11-25).
 - **Still to decide,** in [research/README.md](research/README.md) under "After self-hosting": reflection, tasks and coroutines, the memory model, hot reload, targets such as WebAssembly, and the GPU recommendations.
 
@@ -36,7 +37,6 @@ The owner chose on 2026-11-25 to build the x86-64 development backend and debug 
 
 The 2026-11-09 goal is a chibi that needs no C compiler:
 
-- chibi's own optimizing backend, the second tier beside the development backend (decided 2026-11-25), in place of the C backend for release builds;
 - a C header parser written in chibi, in place of clang for imports;
 - chibi's own linker;
 - prebuilt archives of the curated C libraries;
